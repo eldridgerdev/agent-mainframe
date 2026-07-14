@@ -10,6 +10,7 @@ mod harness;
 mod help;
 mod hooks;
 mod markdown;
+mod plan_interview;
 mod pr_review;
 mod project;
 mod prompt_library;
@@ -36,9 +37,10 @@ pub use hooks::{
     draw_running_hook_dialog,
 };
 pub use markdown::{draw_markdown_loading, draw_markdown_viewer};
+pub use plan_interview::draw_plan_interview_dialog;
 pub use pr_review::{
-    draw_pr_number_prompt, draw_pr_picker, draw_pr_review, draw_pr_review_loading,
-    draw_review_memory_bootstrap_running,
+    PrReviewUsage, draw_ai_pr_review_running, draw_pr_number_prompt, draw_pr_picker,
+    draw_pr_review, draw_pr_review_loading, draw_review_memory_bootstrap_running,
 };
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use prompt_library::{

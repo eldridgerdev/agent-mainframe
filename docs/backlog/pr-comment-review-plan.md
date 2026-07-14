@@ -1,6 +1,6 @@
-# PR Comment Review
+# PR Triage
 
-- **Status:** Backlog
+- **Status:** Partial
 - **Owner:** unassigned
 - **Relates to:** `trigger_final_review` / `DiffViewer` mode
   (`src/app/review.rs`), embedded tmux view (`AppMode::Viewing`,
@@ -623,8 +623,10 @@ from the last *N* PRs) is reached from the PR entry flow:
       `src/app/state.rs` (`FixConfirmState`, `PrReviewState`),
       `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
-- [x] **Fix several comments in one pass against the same dedicated session.**
-      The throughput loop. `space` toggles a **batch mark** on the selected
+- [~] **Queue marked comments as separate prompts — removed.** This earlier
+      throughput loop was superseded by the safer combined-prompt workflow
+      below and removed in the later keymap-simplification backlog item.
+      Previously, `space` toggled a **batch mark** on the selected
       comment (`PrReviewState::marked`, a `HashSet<u64>` keyed by comment id so
       marks survive the hide-resolved filter), shown as a leading `●` in the list
       and a marked-count in the footer (`F fix-marked(N)`). `F` then **queues
@@ -656,8 +658,7 @@ from the last *N* PRs) is reached from the PR entry flow:
       that flags the combined case (the dialog title becomes "Inject combined fix
       for N comments"). On inject it delivers the one prompt into the dedicated
       review session via the shared compose seam and switches the user in to
-      launch-and-leave (send-and-leave, distinct from `F`'s N separate
-      auto-submitted prompts): **every included comment is marked `Fixing` and
+      launch-and-leave: **every included comment is marked `Fixing` and
       persisted, and the marked set is cleared**, so the next refresh reconciles
       what got resolved. First fix of a dedicated-review PR still picks the
       harness first — the batch flow stashes a `pending_batch` flag so the
@@ -848,18 +849,29 @@ from the last *N* PRs) is reached from the PR entry flow:
       untouched — a human's quoted diff still renders. Unit-tested (fence
       stripped, suggestion-fence stripped, leading `> ` lines stripped, a
       non-diff fence left byte-for-byte intact). → `src/app/pr_review.rs`.
-- [ ] **AI attribution on AMF-posted comments (honesty — from real use).**
-      When AMF posts content the agent harness generated (Epic E AI-review
-      findings, and any future AI-drafted reply), append a **subtle, machine
-      attribution footer** so reviewers can tell it was written by the agent
-      harness *through AMF* — e.g. a one-line footer naming the harness
-      (`— drafted by <harness> via AMF`) and/or a hidden marker for tooling.
-      Scope it to **AI-authored** bodies: a user-typed reply (the Epic C
-      "not-needed" reason, hand-edited templates) is the user's own words and
-      shouldn't be misattributed — though an optional lighter "posted via
-      AMF" tag for those is worth deciding (see open question). Make the exact
-      footer text a single shared helper so replies and review posts stay
-      consistent. → `src/app/pr_review.rs`, `src/github.rs`.
+- [x] **AI attribution on AMF-posted comments (honesty — from real use).**
+      A new shared `append_ai_attribution` helper (`src/app/pr_review.rs`)
+      appends `— drafted by Claude via AMF` to AI-authored GitHub content —
+      wired into `build_ai_review`'s inline-comment bodies (Epic E `W` — "post
+      as GitHub review"), which previously posted `f.body` verbatim with no
+      attribution of their own. The top-level review summary already
+      self-identifies (`"AI review, via AMF."` as its opening line, unchanged),
+      but each *inline* comment can surface on its own — e.g. GitHub's
+      Files-changed view — without the summary in sight, so it needed its own
+      marker. Hardcoded to "Claude" rather than a generic `<harness>` slot:
+      AI-review generation always runs through
+      `ClaudeLauncher::run_headless`, independent of whichever harness a
+      "fix" gets injected into (`review_harness` only targets the fix
+      session), so there's no other harness it could currently be. Scoped to
+      AI-authored bodies only, per the original design — a user-typed reply
+      (the Epic C "not-needed" reason, hand-edited "done in `<sha>`"
+      template) is the user's own words and stays unmarked; the general/
+      pathless findings folded into the summary bullet list aren't
+      individually footed since the summary's opening line already covers
+      them. One shared helper so any future AI-drafted reply routes through
+      the same wording. Unit-tested (`append_ai_attribution` appends the
+      footer and trims trailing whitespace first; `build_ai_review`'s inline
+      body now includes it). → `src/app/pr_review.rs`.
 - [x] **BUG: triage/reply state is lost on return (from real use).**
       Root cause was the **head-SHA in the triage key**, not a missing flush:
       `pr_review_set_triage` (`m`/`s`), the reply post path, and the
@@ -1000,72 +1012,449 @@ first), and the reviewer's output (plus comments triaged in the pane)
       (`MEMORY_CATEGORIES`, `memory_finding_seed`), `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`,
       `src/app/tests.rs`.
-- [ ] **Perform an AI code review of the PR (local draft → optionally post).**
-      A pane action (e.g. `A`) that asks the agent to review the PR **diff**
-      (`gh pr diff`, fetched in Rust) and surface findings. **Default:
-      local draft** — findings appear in the existing list+detail pane as
-      draft items the user triages with the same verbs already built
-      (`f` inject-fix / `r` post / `s` skip / `M` add-to-memory), nothing
-      posts automatically. **Optional, configurable:** once vetted, a
-      "post as GitHub review" action drafts a real review (inline comments +
-      summary) and posts it via `gh` after explicit approval (reuses the
-      Epic C write substrate + the first-write `repo`-scope 403 handling).
-      The **review-findings memory is injected as context** so the agent
-      checks the team's known issues first. This spends agent tokens by
-      design — show a token preview and treat it as an explicit action,
-      distinct from zero-token triage. → `src/app/pr_review.rs`,
-      `src/github.rs`, `ClaudeLauncher::run_headless` (`src/claude.rs`),
+- [x] **Perform an AI code review of the PR (local draft → optionally post).**
+      `A` in the review pane asks the agent to review the PR **diff**
+      (`GhCli::pr_diff` → `gh pr diff <n>`, fetched in Rust) and surface
+      findings. **Default: local draft** — the diff fetch + one headless
+      `ClaudeLauncher::run_headless` pass run on a background thread (the same
+      channel/poll/full-screen-running-view shape as the review-memory
+      lookback bootstrap: `AiReviewProgress`/`AiReviewStage`,
+      `AppMode::AiPrReviewRunning`, `App::poll_ai_pr_review_bg` wired into
+      `main.rs`), with a token estimate shown once the prompt is assembled.
+      The agent is instructed to emit a fixed `### path:line` / body shape
+      (`ai_review_prompt`), parsed deterministically (`parse_ai_findings` —
+      malformed or pathless headings degrade to a general/`### General`
+      finding rather than erroring) and turned into ordinary draft
+      `PrComment`s (`findings_to_comments`, synthetic ids from a high
+      `AI_FINDING_ID_BASE` so they can never collide with a real GitHub
+      comment id; a new `PrComment::ai_generated` flag, `#[serde(default)]`
+      for cache backward-compat) merged into the pane's existing
+      `review.comments` — so the whole existing list/detail/sort/filter/triage
+      machinery (`f` inject-fix / `s` skip / `M` add-to-memory) works
+      unchanged, with an `[AI]` chip in the detail header for visual
+      distinction. `R`/`n` reply is guarded with a clear message on an
+      unposted draft (no real GitHub thread to reply into yet); `x` resolve
+      already degrades gracefully (no `thread_id`). The **review-findings
+      memory is injected as context** (`review_memory_path` → read the file,
+      empty string on miss) so the agent checks the team's known issues
+      first — and a new `AppConfig::ai_review_skill: Option<String>` (e.g.
+      `"review"`) optionally leads the prompt with an existing installed
+      Claude Code review skill/command as the primary methodology, since AMF
+      ships no bundled skill for reviewing a PR diff itself (checked: the
+      repo's own `ai-review.md` command reviews AMF's *tracked-change
+      history*, not a PR diff — unrelated); AMF still owns parsing the
+      findings back out either way. **Persistence:** draft findings persist
+      in the existing `pr_review_cache` JSON blob (no new table — `PrReview`/
+      `PrComment` were already `Serialize`/`Deserialize`), so a same-head-SHA
+      re-open replays them without re-spending tokens; a manual refresh (`r`)
+      carries forward same-SHA drafts (`App::carry_forward_ai_drafts`, called
+      before the fresh fetch overwrites the cache row) and correctly drops
+      them at a new SHA (the drafts reviewed code that's since changed —
+      re-run `A`). Each `A` run replaces the prior AI-draft set rather than
+      accumulating duplicates. **Optional, explicit action:** `W` gathers
+      every draft finding that isn't skipped or already posted, splits it into
+      inline `GhCli::create_review` comments (anchored `path`+`line` findings)
+      vs. a bulleted, editable summary (pathless/file-level findings —
+      GitHub has no line-less inline comment), and posts as a `COMMENT`-event
+      review (never auto-approve/request-changes, so no self-review 422 to
+      handle) after an approve/edit confirm dialog (mirrors the reply dialog:
+      edit the summary, `⏎` posts). On success every included finding is
+      marked `Replied` (so a second `W` doesn't duplicate); on failure — e.g.
+      GitHub's whole-review-rejected-if-any-comment-is-outside-the-diff
+      contract — the drafts are left untouched, reusing `create_review`'s
+      existing first-write `repo`-scope 403 handling. Unit-tested (prompt
+      assembly incl. the skill directive, findings parsing incl. malformed/
+      empty input, synthetic-id/kind assignment, the inline-vs-summary split,
+      the background poll's progress/success/error/cancel paths, and the
+      refresh-merge preserving same-SHA drafts while dropping them at a new
+      SHA). → `src/app/pr_review.rs`, `src/app/state.rs`, `src/app/mod.rs`,
+      `src/github.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/main.rs`,
+      `src/app/tests.rs`, `CHANGELOG.md`.
+
+      **Follow-up from real use, same day.** `esc`-ing back to the pane while
+      the background pass was still running left no trace that anything was
+      happening — the running screen's throbber disappears with it, and
+      nothing in the ordinary pane hinted a review was in flight. The header
+      now shows a throbber + "AI review running…" for as long as
+      `App::ai_review_bg` is `Some`, and `App::has_visible_animation` gained
+      a `PrReview` arm keyed off the same field so the throbber actually
+      advances frame-to-frame while sitting in the pane (previously
+      `PrReview` fell through to the default `false`, so nothing forced a
+      redraw cadence). Unit-tested (`has_visible_animation` toggles with
+      `ai_review_bg`). → `src/ui/dialogs/pr_review.rs`, `src/ui/dashboard.rs`,
+      `src/app/mod.rs`, `src/app/tests.rs`.
+
+      **Second follow-up, same day.** The running screen itself (before
+      backing out) had the identical bug: `redraw_signature()` only hashes
+      the mode's *discriminant*, so a stage change within
+      `AppMode::AiPrReviewRunning` doesn't register as "state changed," and
+      the throbber only advanced on the rare frame the background poll
+      itself forced a redraw — otherwise it sat visibly frozen for the whole
+      blocking `gh pr diff` / `claude -p` call, reading as stuck. Same root
+      cause on two sibling screens that share the pattern
+      (`AppMode::PrReviewLoading`, `AppMode::ReviewMemoryBootstrapRunning`),
+      so all three gained an unconditional `has_visible_animation` arm
+      (mirroring how `DiffViewerLoading`/`MarkdownLoading` are already
+      handled) rather than just the one that was reported. Unit-tested
+      (all three modes report `has_visible_animation() == true`). →
+      `src/app/mod.rs`, `src/app/tests.rs`.
+
+      **Third follow-up, same day.** With the throbber fixed, the actual
+      report was "the review runs, says it's done, but nothing happens" —
+      two compounding bugs. (1) `PrReviewLoading`/`PrReview`/`PrPicker`/
+      `ReviewMemoryBootstrapRunning`/`AiPrReviewRunning` each `return` from
+      `ui::dashboard::draw` before reaching the shared `draw_toasts` call, so
+      *every* toast pushed while any of them is showing — including the AI
+      review's own "found N findings" result — was silently swallowed; all
+      five now draw toasts too. (2) `parse_ai_findings` required the exact
+      `###` heading level `ai_review_prompt` asks for; a model that
+      substitutes `##`/`#` (common) or wraps its whole reply in a code fence
+      (also common, despite "no prose outside it") now parses to **zero**
+      findings with nothing to show and no error — indistinguishable from a
+      genuinely clean diff. The parser now accepts any 1-4-level heading
+      (`strip_finding_heading`) and strips a single outer code fence
+      (`strip_outer_code_fence`) before parsing; `AiReviewProgress::Done`'s
+      success payload became `AiReviewOutcome { findings, raw_output }` so
+      [`App::poll_ai_pr_review_bg`] can tell the two zero-finding cases apart
+      — a **0-finding** result now pushes a *warning* toast pointing at the
+      debug log (`D`) instead of a quiet success, and the raw response is
+      always logged (`log_warn` when 0 findings from non-empty output,
+      `log_debug` otherwise) so a persistent mismatch is diagnosable without
+      re-running anything. Unit-tested (both new parse helpers; the poll's
+      zero-vs-nonzero toast/log branches indirectly via existing coverage). →
+      `src/app/pr_review.rs`, `src/ui/dashboard.rs`, `src/app/tests.rs`.
+
+      **Fourth follow-up, same day — the actual root cause.** Neither of the
+      above was it. Real-world use hit `claude headless command failed`
+      directly (not a silent 0-finding parse miss). Reproduced outside AMF:
+      `ClaudeLauncher::run_headless`/`spawn_headless` pass the prompt as a
+      `-p <prompt>` `argv` element, and Linux caps any single argument at
+      `MAX_ARG_STRLEN` (128 KiB, independent of the ~2 MiB total `ARG_MAX`) —
+      confirmed via a standalone Rust repro: a ~190 KB prompt makes
+      `Command::output()` return `Err(ArgumentListTooLong)` (`E2BIG`)
+      *before* `claude` ever runs. A real PR diff clears 128 KB routinely.
+      Piping the same prompt over stdin instead (`cat prompt | claude -p
+      --output-format text`) was verified working up to 300+ KB against the
+      live binary, including a case where the model correctly flagged a bug
+      in the padding content — so both `run_headless` (blocking, via a
+      writer thread + `wait_with_output` to avoid a pipe deadlock between
+      writing stdin and draining stdout/stderr) and `spawn_headless`
+      (non-blocking, via a detached writer thread so the call keeps returning
+      the `Child` immediately) now write the prompt to piped stdin instead of
+      `argv`. This is shared infrastructure, not specific to this pane: it
+      also fixes the review-memory lookback bootstrap and final review's
+      diff walkthrough / co-review / changeset overview for any prompt over
+      the same limit. A live-`claude` regression test lives at
+      `claude::tests::run_headless_handles_a_prompt_over_the_argv_limit`,
+      `#[ignore]`d (matches this file's existing no-live-external-calls
+      convention) — run manually with `cargo test -- --ignored
+      run_headless_handles_a_prompt_over_the_argv_limit`. →
+      `src/claude.rs`.
+
+      **Fifth follow-up, same day.** With the review actually completing,
+      real use against this PR's own live diff surfaced three more gaps —
+      good evidence the "does this belong in this pane" question above is
+      the right one to sit with. (1) `findings_to_comments` builds a draft
+      with `is_bot: false`, and the role chip fell through straight to
+      `[human]` — a synthetic finding is neither; it now checks
+      `ai_generated` first and shows `[ai]` (the marker-legend footer text
+      updated to match). (2) A draft finding never had a `diff_hunk` at all
+      — nothing about *generating* a finding produces one the way GitHub's
+      API hands one over for free on a *fetched* comment — so the detail
+      pane's whole "Diff hunk" section was silently absent for every AI
+      finding. Fixed by reusing the diff parser already built for the
+      Final Review feature (`crate::diff::parse_unified_diff`, `DiffFile`/
+      `DiffHunk`): `run_ai_pr_review` parses the already-fetched PR diff once
+      and re-matches each anchored finding's `path:line` back into it
+      (`diff_hunk_for_line`), reconstructing the same `@@ ... @@`-plus-body
+      shape GitHub returns so it renders and injects exactly like a fetched
+      comment's hunk would (`None` when the line doesn't land in any hunk —
+      degrades the same way an unavailable GitHub hunk already does).
+      (3) The real bug from the "does this belong here" analysis above:
+      `esc` (`cancel_ai_pr_review`) restores `self.mode` to `PrReview` well
+      before the background pass finishes; `Done` used to look for
+      `AppMode::AiPrReviewRunning` to find where to merge, and once
+      cancelled that match failed — findings were parsed, logged, and then
+      never merged into any comment list, while the success/warning toast
+      still fired unconditionally, falsely announcing results that were
+      silently thrown away. Fixed with a new `App::ai_review_pending:
+      Option<PrReviewState>`, set alongside `ai_review_bg` in
+      `start_ai_pr_review` and *not* cleared by cancel, so `Done`'s handler
+      can always find where the review was for. It now resolves a `Target`
+      (`Running` / `Pane` / `Elsewhere`) from the *current* `self.mode`
+      before merging — `Pane` merges into whatever live state the user has
+      (including further triage made after cancelling, not the stale
+      pre-`A` snapshot), `Elsewhere` (navigated to a different PR/pane
+      entirely) caches without touching `self.mode`, and the toast notes
+      "(re-open to see it)" for that case. `start_ai_pr_review` also gained
+      a re-entrancy guard (a second `A` while one is already running now
+      warns instead of orphaning the first). Unit-tested (the exact
+      cancel-then-triage-then-Done sequence, the re-entrancy guard, plus
+      `diff_hunk_for_line` against a real parsed diff). →
+      `src/app/pr_review.rs`, `src/app/mod.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/app/tests.rs`.
+
+      **Sixth follow-up, same day.** Item (2) above still showed "the whole
+      file" — `diff_hunk_for_line` was reconstructing the *entire* matched
+      hunk verbatim, and this PR's own diff has hunks that are large
+      contiguous blocks of new code (whole functions added in one place),
+      so "the matching hunk" and "the whole file region" were
+      indistinguishable in practice. Rewrote it to walk the hunk tracking
+      old/new line numbers, locate the target line's index, and slice a
+      fixed `AI_FINDING_HUNK_CONTEXT_LINES` (6) window of lines on each
+      side — capped regardless of how large the real hunk is — then
+      synthesizes a matching `@@ ... @@` header for the trimmed range
+      rather than reusing the original hunk's. Unit-tested against a
+      40-line synthetic added-lines hunk: the returned window is bounded,
+      contains the target line, and excludes lines far to either side. →
+      `src/app/pr_review.rs`.
+
+      **Seventh follow-up, same day.** GitHub-fetched comments still bypassed
+      that windowing: in real use, an outdated single-line comment arrived
+      with a 92-line `diff_hunk`, so the detail pane and fix prompt buried the
+      referenced line in an entire newly-added function. `PrComment::prompt_hunk`
+      now parses any large line-anchored GitHub hunk and rebuilds it around the
+      comment's actual old/new-side line with three surrounding lines on each
+      side and a corrected `@@` header. The transform happens when the hunk is
+      consumed, so existing cached reviews improve without a refresh; file-level
+      comments and malformed unanchored oversized hunks keep the existing
+      suppression safety net. Unit-tested against a 40-line added block, with
+      the target retained and distant lines excluded. → `src/app/pr_review.rs`,
+      `src/github.rs`, `src/ui/dialogs/pr_review.rs`.
+
+      **Eighth follow-up — surface `A` failures as toasts (from real use).** A
+      failed background AI-review run called the shared `show_error`, which
+      stored the failure in AMF's dashboard status message. The result handler
+      then restored the full-screen PR Triage pane, where that message is not
+      rendered, so the user saw the run end without being able to read the
+      error. AI-review worker failures now remain logged with their full detail
+      and also push an eight-second error toast before returning to the pane;
+      unexpected worker-channel termination uses the same visible path. The
+      normal pane state is preserved, including when the user already cancelled
+      the running screen while the job continued in the background. Focused
+      tests cover both a returned worker error and a disconnected worker. →
+      `src/app/pr_review.rs`, `src/app/tests.rs`.
+- [x] **Choose the agent harness for `A` AI reviews.** The first `A` in a PR
+      Triage pane now opens an independent single-select picker over the
+      project's allowed agents, highlights the project's preferred harness,
+      and remembers the choice in `PrReviewState::ai_review_harness` for later
+      `A` runs in that pane. This is deliberately separate from
+      `review_harness`, so one provider can generate review findings while
+      another owns the dedicated `f`/`B` fix session. Confirming validates the
+      selected CLI before the diff fetch or paid pass starts; an unavailable
+      provider leaves the picker open with its actionable error, while cancel
+      returns to the pane with no background job or token spend. The footer and
+      running screen name the selected review harness.
+
+      A new typed `HeadlessRunner` routes the existing background lifecycle
+      through all four built-in agents: Claude print mode, Codex `exec`,
+      OpenCode `run`, and Pi print mode. Every runner receives the prompt over
+      piped stdin (including OpenCode, whose current `run` implementation
+      explicitly merges piped stdin into its message), preserving support for
+      PR diffs beyond Linux's per-argument size limit; stdout is drained while
+      a writer thread feeds stdin to avoid large-prompt/large-response pipe
+      deadlocks. Spawn, write, exit-status, and stderr failures name the chosen
+      provider and continue through the existing PR Triage error-toast path.
+      Since posted findings are no longer necessarily Claude-authored, their
+      attribution is now the accurate provider-neutral `drafted by AI via AMF`.
+      Focused tests cover every runner command, stdin delivery,
+      provider-specific stderr, preferred-default picker state, remembered
+      choice, and cancellation before spend. → `src/headless.rs`,
+      `src/app/state.rs`, `src/app/pr_review.rs`,
       `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
-      `src/app/state.rs`.
+      `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a
   GitHub review; and, while reviewing, add a noteworthy comment to the
   memory with one key — each recurring finding written down once making
   the next review cheaper and sharper.
+ - [x] **BUG: `W` post failure gives a cryptic error and kicks you out of the
+      pane (from real use).** Reported: pressing `W` to post the AI review
+      showed `Error: `gh api` (create review) failed: gh: Unprocessable
+      Entity (HTTP 422)` (confirmed via the debug log, `D`) and dropped
+      straight back to the dashboard. **Two compounding problems, both
+      fixed:** (1) The 422 itself is GitHub's documented behavior for
+      `GhCli::create_review` — the whole review is rejected if *any* inline
+      comment's `path`/`line` doesn't land inside the PR's current diff —
+      but `gh api`'s stderr for it is just the terse `Unprocessable Entity
+      (HTTP 422)` line with no indication of *which* finding is the culprit,
+      and AMF was passing it straight through with no translation. Fixed
+      with a new `is_review_rejected_entity_error` check (sibling to the
+      existing `is_missing_write_scope`, `src/github.rs`) that detects the
+      422/"Unprocessable Entity" case and bails with an actionable message
+      instead (likely a stale AI finding since the diff moved — refresh and
+      re-run `A`, or skip it and retry `W`). (2) Far worse: on *any* error,
+      `pr_review_post_ai_review` called `self.show_error(e)`
+      (`src/app/project_ops.rs`), which unconditionally sets
+      `self.mode = AppMode::Normal` for every mode except `Normal`/`Help`/
+      `Viewing` — `PrReview` wasn't exempted, so a recoverable posting
+      failure silently booted the user all the way back to the dashboard.
+      Fixed by extracting a new `App::fail_ai_review_post` helper: it
+      captures the live `PrReviewState` (with the still-open post-confirm
+      dialog) before calling `show_error`, records the failure on a new
+      `AiReviewPostConfirmState::error` field, then restores `self.mode` to
+      that captured pane afterward — so the dialog stays open with the
+      error shown inline (`draw_ai_review_post_dialog`,
+      `src/ui/dialogs/pr_review.rs`, a new `danger`-styled row above the
+      summary body) instead of losing the pane. `show_error` itself is
+      untouched (still the shared logging/toast/message path other modes
+      rely on); only this one call site now works around its mode reset,
+      matching the same "capture origin before show_error, restore after"
+      pattern already used by `poll_ai_pr_review_bg` and
+      `poll_review_memory_bootstrap_bg`. Unit-tested
+      (`is_review_rejected_entity_error` against the exact real-use stderr
+      line and other error strings; `fail_ai_review_post` keeps the dialog
+      open with the error recorded rather than falling back to
+      `AppMode::Normal` — `GhCli::create_review` itself isn't invoked in
+      tests, matching this file's no-live-`gh`-calls convention). →
+      `src/github.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
+       `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
+
+      **Follow-up, same day — the actual root cause.** The "stale finding"
+      diagnosis above was wrong: real use hit the *identical* 422 immediately
+      after `r` (refresh) + `A` (re-run the AI review) — a fresh diff and a
+      fresh model pass reproducing the same failure rules out staleness.
+      The real cause is that models compute `<path>:<line>` from the raw
+      unified-diff text themselves (`ai_review_prompt` shows the diff, not
+      pre-computed line numbers) by mentally counting from the `@@ -a,b +c,d
+      @@` hunk headers — an inherently error-prone arithmetic task, and a
+      miscount reproduces identically on every re-run since it's not a
+      function of *when* the diff was fetched. AMF already had the exact
+      signal for this: `run_ai_pr_review` matches each finding's `path:line`
+      back into the fetched diff via `diff_hunk_for_line`, and a line that
+      doesn't correspond to anything in the diff returns `None` — but
+      `build_ai_review` wasn't consulting that signal before deciding a
+      finding was inline-postable, so a finding with a miscounted line got
+      sent to GitHub's create-review API anyway, which validates the exact
+      same thing (a `line` outside the diff's hunks) and rejects the whole
+      review. Fixed by adding `f.diff_hunk.is_some()` to `build_ai_review`'s
+      inline-eligibility guard — a finding whose line didn't match anything
+      in the diff (and isn't file-level) now folds into the summary bullet
+      list (with its `path:line` kept as context, unlike the file-level
+      case which drops the line it never had) instead of a doomed inline
+      post, eliminating the whole failure class rather than just handling
+      it better after the fact. Unit-tested (a finding with no matching hunk
+      folds into the summary rather than the inline list; the two existing
+      `build_ai_review` tests updated to set a matching `diff_hunk` on their
+      still-inline-expected fixtures). → `src/app/pr_review.rs`,
+      `src/app/tests.rs`.
 
 ## Nice to have
 
-- **Triage-session token/cost tracker.** Surface a running tally of
-  tokens, usage, and estimated `$$` spent during a PR-comment triage
-  session — so the user can see, in-pane, exactly what the review loop
-  is costing. Builds on the Epic D "token usage surfaced per session"
-  item (`token_tracking.rs`), but scoped specifically to the PR-review
-  pane: count tokens spent on fix injections and reply drafts, attribute
-  them to the PR (`PR# + head SHA`), and show a live total in the pane
-  header or status bar (e.g. `~3.2k tok · ~$0.04 this session`). Because
-  triage is intentionally zero-token for fetch/list/triage, this makes
-  the "only pay for the work you asked for" design constraint visible and
-  auditable. Stretch: per-comment cost breakdown and a per-PR cumulative
-  total persisted in SQLite, so re-opening a PR shows total spend to
-  date.
+- [x] **BUG — support sequential/multiple PRs for the same feature branch.**
+      When a feature branch is reused for another PR, AMF can keep showing the
+      previous closed PR instead of the current open one (observed here: the
+      feature still reports closed PR #449 while work has moved to PR #450).
+      Treat the PR number as changing feature state rather than a permanent
+      branch identity: branch auto-detection should prefer the current open PR
+      when GitHub has multiple PRs for the same head branch, and a transition
+      to a different PR number must invalidate or replace the active-PR badge,
+      cached `PrReviewState`, pending AI-review target, and `P` return stash
+      associated with the old PR. Preserve each PR's own SQLite comment/cache
+      history under its existing PR-number keys, but never let reopening the
+      feature silently restore a closed predecessor. Manual selection of a
+      closed PR in the picker must remain possible and explicit. Add regression
+      coverage for closed `#N` + open `#N+1` on one branch, including dashboard
+      badge refresh, `G` auto-entry, and returning from the linked triage
+      session. Shipped by replacing bare `gh pr view` auto-detection with a
+      branch-scoped all-state query that explicitly selects the newest open PR.
+      A PR-number transition now replaces the active badge and invalidates old
+      in-memory return/loading/AI-review targets without deleting either PR's
+      SQLite cache or triage history; an explicitly selected closed PR can stay
+      open, but can no longer be restored implicitly after its open successor is
+      detected. Regression tests cover closed-to-open selection, multiple-open
+      tie-breaking, badge replacement, stale target invalidation, and the linked
+      triage-session return path. → `src/github.rs`, `src/app/pr_review.rs`,
+      `src/app/sync.rs`, `src/app/tests.rs`.
 
-- **Active-PR indicator on the dashboard.** Show a marker next to a
-  feature in the dashboard list when its branch has an open PR — e.g. a
-  small badge or icon, ideally with the PR number and unresolved-comment
-  count (`PR #321 · 4`). Makes it obvious which features have a PR worth
-  reviewing (and how much is outstanding) before pressing `G`, and turns
-  the review entry point into something you're nudged toward rather than
-  having to remember. Must stay cheap: resolve PR state in the
-  background (reuse the `GhCli` layer) and cache it per `branch + head
-  SHA` so the dashboard never blocks or spams `gh`; refresh on the
-  existing status-sync cadence rather than per-frame. Stretch: dim/hide
-  the badge once all threads are resolved, and color it by review state
-  (changes-requested vs. approved vs. comments-only).
+- [x] **BUG — posted AI-review findings remain trapped as drafts after `W`.**
+      After generating findings with `A` and successfully posting them as a
+      GitHub review with `W`, the pane still treats each finding as an
+      unposted synthetic AI draft. The user cannot use the normal follow-up
+      workflow to mark it done and post a `Done in <sha>` reply; the action is
+      rejected with the "AI draft" message even though the finding now exists
+      on GitHub. Separate **provenance** (`ai_generated`) from **publication
+      state**. On successful `W`, reconcile every posted inline finding with
+      its real GitHub review-comment/thread identity (and general findings with
+      the posted review/conversation representation), then enable the same
+      `m`, `R`, `n`, and applicable `x` actions as reviewer-authored comments.
+      A refresh or cache-hit reopen must retain that mapping and must not
+      recreate a duplicate draft; failed or cancelled `W` must leave findings
+      as local drafts. Add regression coverage for `A` → `W` → mark done →
+      reply, including inline and summary-folded findings and a reopen after
+      posting. Shipped by separating AI provenance (`ai_generated`) from
+      publication (`ai_published`) and retaining the created review id plus
+      each real inline comment id/thread id. A successful `W` now re-fetches
+      the posted review, reconciles inline and summary-folded findings without
+      changing their local triage state, and enables the normal
+      done/reply/not-needed/resolve actions. Cache refresh carries those mapped
+      findings forward while removing duplicate freshly-fetched GitHub
+      representations; if the immediate identity fetch fails, publication is
+      still recorded so retrying `W` cannot double-post and refresh can finish
+      the mapping. New `A` runs replace only unposted drafts and allocate fresh
+      synthetic ids above retained published findings. Regression tests cover
+      inline + summary reconciliation, entering the Done reply flow, and a
+      cache-backed refresh/reopen without duplicates. → `src/github.rs`,
+      `src/app/pr_review.rs`, `src/app/tests.rs`,
+      `src/db/pr_review_cache.rs`.
 
-- **Highlight the logged-in user's own PRs in the PR picker.** `GhCli::list_prs`
-  already returns each PR's `author` login (`src/github.rs`,
-  `PrListEntry::author`), and `gh api user`/`gh auth status` can resolve the
-  current account cheaply and cache it for the session (mirrors the existing
-  `gh auth status` caching noted under the preconditions section). Use that to
-  visually distinguish rows authored by the logged-in user in
-  `draw_pr_picker` (`src/ui/dialogs/pr_review.rs`) — e.g. a distinct color,
-  a `(you)` suffix, or sorting/grouping them first — so triaging your own
-  open PRs (the common case: fix review comments left on work you authored)
-  doesn't require reading every `@author` in the list to find them. Cheap and
-  read-only; no new `gh` calls beyond what's already cached.
+- [x] **Triage-session token/cost tracker.** The pane now snapshots the
+      selected fix target's usage when a PR-triage visit begins and shows the
+      live delta as `this visit N eff · $X` beside the existing cumulative
+      session usage. A dedicated session created by the first fix starts at
+      zero; switching to an already-running live session snapshots it at the
+      moment it is selected, so unrelated earlier work is not charged to the
+      triage visit. Returning with `P` or manually refreshing comments preserves
+      the snapshot. Per-counter saturating subtraction handles corrected or
+      rotated provider totals safely, and the narrow-header fallback prefers
+      the visit tally when both totals do not fit. Focused tests cover growth,
+      unchanged baselines, and saturating deltas. Stretch remains: per-comment
+      cost breakdown and a per-PR cumulative total persisted in SQLite. →
+      `src/app/state.rs`, `src/app/pr_review.rs`, `src/token_tracking.rs`,
+      `src/ui/dashboard.rs`, `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
 
-- **Rename the feature to "PR Triage."** "PR Comment Review" / "PR review"
+- [x] **Active-PR indicator on the dashboard.** Feature rows now show
+      `[PR #321 · 4 open]` when their branch has an open pull request, with
+      zero-open badges colored as complete and a number-only fallback when
+      thread metadata is temporarily unavailable. A single non-overlapping
+      background batch runs on the existing feature-status sync cadence,
+      reusing `GhCli::resolve_pr` and `GhCli::review_threads`; rendering only
+      reads the in-memory cache, so no `gh` process can block a dashboard
+      frame. Cache entries carry the feature branch and PR head SHA, stale
+      results are discarded after a branch change, confirmed no-PR results
+      remove the badge, and transient GitHub failures preserve the last known
+      value. Focused tests cover applying/removing/preserving cached results,
+      rejecting stale-branch results, and rendering the badge with its open
+      thread count. Stretch remains: color the badge by review state
+      (changes-requested vs. approved vs. comments-only). → `src/app/sync.rs`,
+      `src/app/mod.rs`, `src/main.rs`, `src/ui/list.rs`, `src/app/tests.rs`.
+
+- [x] **Highlight the logged-in user's own PRs in the PR picker.** A new
+      `GhCli::current_user` (`src/github.rs`, `gh api user -q .login`) — also
+      now shared by `is_self_review`, which duplicated the same call inline —
+      is resolved once per session via `App::resolve_gh_current_user` and
+      memoized in a new `App::gh_current_user: Option<Option<String>>` field
+      (outer `None` = not yet attempted; `Some(None)` = attempted and failed,
+      also cached so an unauthenticated `gh` doesn't retry the call on every
+      picker open/refresh). `open_pr_picker` resolves it once and stores the
+      login on the new `PrPickerState::current_user` field; `pr_picker_row`
+      (`src/ui/dialogs/pr_review.rs`) compares it case-insensitively against
+      each entry's `author` and, on a match, bolds the `@author` span and adds
+      a `you` chip — so triaging your own open PRs (the common case: fixing
+      review comments left on work you authored) doesn't require reading
+      every `@author` in the list. `pr_picker_toggle_closed` (`a`) re-fetches
+      the entry list but leaves `current_user` untouched, since toggling the
+      open/closed filter doesn't change who's logged in. Cheap and read-only —
+      no new `gh` calls beyond the one made once per session. Unit-tested
+      (`pr_picker_row` tags a matching author case-insensitively, leaves a
+      non-matching author untagged, and stays untagged when the current user
+      is unresolved). → `src/github.rs`, `src/app/mod.rs`,
+      `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
+
+- [x] **Rename the feature to "PR Triage."** "PR Comment Review" / "PR review"
   reads as passive (just reading comments) when the feature actually drives
   the whole loop — triaging, fixing, replying, resolving. "PR Triage" matches
   what the pane does and disambiguates from the separate Epic E "AI code
@@ -1080,30 +1469,75 @@ first), and the reviewer's output (plus comments triaged in the pane)
   existing dedicated review sessions created under the old label would need a
   migration note (or the lookup would need to accept both labels for a
   transition period) rather than silently losing track of already-running
-  sessions. Pure rename — no behavior change otherwise.
+  sessions. Shipped across the dashboard/help entry, pane and picker titles,
+  loading/status labels, session-harness copy, README, and linked-session
+  return badge. New dedicated sessions use the `"PR Triage"` label; lookup
+  prefers that label but still recognizes the legacy `"PR Review"` label so
+  an already-running session is reused across upgrades. Focused unit coverage
+  verifies both current-label preference and legacy-label compatibility. →
+  `src/app/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+  `src/ui/dialogs/help.rs`, `src/ui/status.rs`, `src/ui/dashboard.rs`,
+  `src/github.rs`, `README.md`.
 
-- **Dedicated review-session status badge in the PR review pane.** The
-  Viewing-mode corner badge (`[Ctrl+Space P: back to review]`,
-  `src/ui/dashboard.rs`) tells you when you're *inside* the dedicated
-  review session, but there's no equivalent the other way round: sitting in
-  the review pane while `f` has a fix running in the background, nothing
-  in-pane shows whether that dedicated session even exists yet, or whether
-  it's actively working vs. idle/finished. Add a small header badge —
-  alongside the Epic D "token usage surfaced per session" span already in
-  `draw_pr_review`'s header (`src/ui/dialogs/pr_review.rs`) — that reads
-  something like `[dedicated ● working]` / `[dedicated idle]` once
-  `fix_session_index` resolves a session, reusing the same
-  `thinking_features` tracking `App::is_feature_thinking` already exposes
-  (`src/app/sync.rs`). Gotcha to design around: `is_feature_thinking` is
-  keyed by `tmux_session` at the *feature* level, not per-window, so as-is
-  it can't distinguish "the dedicated review session is thinking" from
-  "some other window in this feature is thinking" when they share a tmux
-  session — likely needs a per-window/per-session variant of the thinking
-  probe, or a pane-content check scoped to the review session's window
-  specifically.
+- [x] **Dedicated triage-session status badge in the PR Triage pane.** Once
+      the dedicated session exists, the pane header now shows
+      `[dedicated ● working]` while that exact agent session is thinking or
+      running a tool, and `[dedicated idle]` when it is waiting/finished; no
+      badge is shown before the first `f` creates the session. The existing
+      hook/plugin messages already carry `amf_feature_session_id`, but AMF
+      previously discarded that precision after using it for token-source
+      binding and retained only feature-level `tmux_session` activity. New
+      per-feature-session thinking/tool sets preserve those IDs through IPC,
+      and `pr_review_dedicated_session_working` checks the current or legacy
+      dedicated-session label against them. This avoids a blocking
+      `capture-pane` probe and, crucially, prevents another agent window in the
+      same feature from falsely lighting the badge. The local Codex
+      prompt-submit fast path now records the exact feature-session ID too, so
+      it does not wait for the later IPC round trip. Focused tests cover no
+      badge before creation, idle/working transitions, and isolation from a
+      different agent window in the same tmux session. → `src/app/mod.rs`,
+      `src/app/notifications.rs`, `src/app/sync.rs`, `src/app/pr_review.rs`,
+      `src/ui/dashboard.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/app/tests.rs`.
 
 ## Open questions
 
+- **Does "AI review of the PR diff" (`A`/`W`) actually belong in this pane? —
+  RECONSIDER.** Real use surfaced a cluster of friction that all traces back
+  to the same seam: this pane's data model and state machine were built for
+  *triaging comments other people/bots already left on GitHub* — every
+  `PrComment` was assumed to have a real GitHub identity, resolution state,
+  and (for inline ones) a `diff_hunk` GitHub hands over for free. Bolting
+  "the AI generates its own draft comments" onto that model meant fighting
+  the fit at nearly every step so far:
+  - Draft findings need a synthetic id range clear of real GitHub ids, and
+    `reply_target()`/`x` resolve had to be specially guarded or degrade
+    silently for a comment with no real thread.
+  - The author/role chip defaulted a draft to `is_bot: false`, which read as
+    "human" until special-cased — a symptom of forcing a third kind
+    (AI-authored, not-yet-posted) through a two-value bot/human model.
+  - `diff_hunk` isn't free the way it is for a GitHub comment — it had to be
+    reverse-engineered by re-parsing the whole PR diff
+    (`crate::diff::parse_unified_diff`) and matched back to each finding's
+    `path:line` after the fact, because nothing in the "generate findings"
+    path naturally produces one.
+  - The background-job lifecycle (start → running screen → cancel → done)
+    doesn't compose cleanly with "merge results into whichever pane state
+    the user is looking at by the time it finishes," which is a different
+    shape of problem than triage's request/response actions and caused a
+    real bug (findings silently dropped, with a false success toast, when
+    `Done` arrived after the user had already `esc`-ed back to the pane —
+    see the fourth follow-up below).
+
+  None of this is unfixable — each has landed a patch — but the accumulation
+  is a signal, not noise. Worth stepping back before adding anything more to
+  `A`/`W` specifically: is a dedicated "AI code review" workflow (its own
+  view/state, findings that are first-class rather than synthetic
+  `PrComment`s wearing a disguise, its own lifecycle for a background
+  generate-then-review pass) the better shape, with this pane staying
+  focused on triaging what reviewers *actually said*? Needs more
+  investigation and thought before deciding — not resolved here, just
+  flagged from real use.
 - **Which agent session runs the fixes? — DECIDED.** Default to spinning
   up (and reusing) one **dedicated review session** for all of the PR's
   fixes; offer **reuse-the-existing-live-session** as an option; never
@@ -1168,6 +1602,64 @@ first), and the reviewer's output (plus comments triaged in the pane)
 - **Posting AI-review findings (Epic E):** when posting as a real GitHub
   review, tag AMF-generated comments for honesty (subtle footer), same
   open question as AI-drafted replies above?
+
+## Backlog
+
+- [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
+  every marked comment's fix into the review session immediately (auto-submit
+  each). `B` opens a confirm dialog before combining them into one prompt and
+  launching. Both advance a batch of marked items, but `B` lets the user
+  review/edit before committing, while `F` is fire-and-forget with no
+  visibility. Real use found `F` not useful — users prefer the confirm
+  visibility of `B`. Removed the handler, queueing implementation, help/footer
+  hints, README guidance, and obsolete tests; `Space` + `B` is now the only
+  marked-comment batch workflow. → `src/handlers/pr_review.rs`,
+  `src/app/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+  `src/ui/dialogs/help.rs`, `src/app/tests.rs`, `README.md`, `CHANGELOG.md`.
+
+- **Keymap audit — too many bindings.** The PR triage pane has accumulated
+  many keybinds (`f`, `B`, `r`, `n`, `R`, `x`, `o`, `P`, `M`, `W`, `A`,
+  `i`, `space`, `#`, `g`, `a`, `G`, `h`, `j/k`, etc.). Real use reports the
+  pane is hard to use and overwhelming. Audit every binding: is it needed? Can
+  it be removed or merged with another? Can the workflow be simplified to
+  require fewer keys and fewer modes/dialogs? Example: can `r`/`n` be merged
+  into a single "reply" key that prompts for the reply kind (fix/not-needed)?
+  Can `A`/`W` (AI review) be deferred or simplified? Prioritize discoverability
+  and lean keymaps over feature breadth.
+
+- **AI review result persistence (UX — visibility).** When running an AI review
+  (`A`), the user can escape back to the pane, navigate away, or close AMF
+  entirely. When they return to the PR later, there's no indication of what
+  happened: no visual marker that a review ran, no indication of success/error,
+  no message if it found zero findings ("all good, no issues"). The review result
+  is cached (persisted in `pr_review_cache`), so the findings are there — but
+  there's no discovery mechanism. The UI should surface whether an AI review has
+  been run on the current head SHA and what the outcome was, possibly as a small
+  badge/note in the pane header or a toast on re-entry that summarizes the
+  result (N findings / error / "no findings").
+
+- **"Done in `<commit>`" reply needs AI attribution and smarter commit detection
+  (honesty + UX).** The `R` keybind seeds a "Done in `<sha>`" reply from the
+  latest commit, but two issues: (1) the template is currently posted with no AI
+  attribution unlike other AI-authored content (inconsistent honesty), and (2)
+  there's no detection whether that commit actually addresses the specific
+  comment being replied to — it just uses HEAD blindly. Smarter detection could
+  parse the comment's file/line context and search recent commits for ones that
+  touched that same file/line (e.g. via `git log -L` or blame), so the reply
+  references a commit that actually fixed the issue rather than whatever
+  happened to be pushed most recently. If no matching commit is found, either
+  fall back to HEAD with a caveat hint ("latest commit") or prompt the user to
+  pick from recent commits that touched the file.
+
+- **Model selection independent of agent harness (flexibility).** Currently, AI
+  generation features in the PR triage pane (AI review `A`, reply drafting, etc.)
+  are tied to the configured harness or a fixed small/fast model hardcoded in
+  the prompt. Real use wants finer control: run an AI review with a powerful,
+  slower model (to catch subtleties), but use a cheaper/faster model for "not
+  needed" reply drafts or quick triage suggestions. Add a configurable
+  `ai_models` map to `AppConfig` (e.g. `review_model`, `reply_draft_model`,
+  `triage_model`) so each AI action can select its own model independently of
+  the feature's working harness. Fall back to harness default if not configured.
 
 ## Reasoning / when to build
 

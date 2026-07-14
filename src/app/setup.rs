@@ -50,7 +50,7 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":amf-active-hook-guard-v1");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":quoted-claude-hooks-v2");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -149,21 +149,72 @@ fn claude_managed_commands() -> Vec<String> {
         .collect()
 }
 
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn shell_unquote_single(value: &str) -> String {
+    value
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+        .map(|value| value.replace("'\\''", "'"))
+        .unwrap_or_else(|| value.to_string())
+}
+
+pub(crate) fn claude_hook_command(path: &Path) -> String {
+    shell_quote(&path.to_string_lossy())
+}
+
 fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
-    if managed_commands.iter().any(|managed| managed == command) {
+    let normalized = shell_unquote_single(command);
+    if managed_commands
+        .iter()
+        .any(|managed| managed == command || managed == &normalized)
+    {
         return true;
     }
 
-    // The XDG-aware config-dir resolver depends on HOME/XDG_CONFIG_HOME.
-    // Older verification runs could install hooks while HOME pointed at a
-    // temporary Claude scratchpad, leaving deleted helper paths such as
-    // /tmp/claude-.../scratchpad/amf_verify_home/.config/amf/tool-stop.sh.
-    // Treat only AMF's known helper names under a .config/amf directory as
-    // managed so unrelated user hooks with the same basename are preserved.
-    let Some((parent, name)) = command.rsplit_once('/') else {
+    // The config-dir resolver depends on HOME/XDG_CONFIG_HOME and can differ
+    // across platforms. Older runs may leave helper paths from a previous AMF
+    // config root, including macOS' Library/Application Support path.
+    // Treat only AMF's known helper names under a recognized AMF config
+    // directory as managed so unrelated user hooks with the same basename are
+    // preserved.
+    let Some((parent, name)) = normalized.rsplit_once('/') else {
         return false;
     };
-    CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name) && parent.ends_with("/.config/amf")
+    CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name)
+        && (parent.ends_with("/.config/amf")
+            || parent.ends_with("/Library/Application Support/amf"))
+}
+
+fn is_unquoted_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
+    !(command.starts_with('\'') && command.ends_with('\''))
+        && is_amf_claude_hook_command(command, managed_commands)
+}
+
+fn has_unquoted_amf_claude_hooks(
+    settings: &serde_json::Value,
+    managed_commands: &[String],
+) -> bool {
+    settings
+        .get("hooks")
+        .and_then(|value| value.as_object())
+        .is_some_and(|hooks_obj| {
+            hooks_obj.values().any(|entries| {
+                entries.as_array().is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry["hooks"].as_array().is_some_and(|hooks| {
+                            hooks.iter().any(|hook| {
+                                hook["command"].as_str().is_some_and(|command| {
+                                    is_unquoted_amf_claude_hook_command(command, managed_commands)
+                                })
+                            })
+                        })
+                    })
+                })
+            })
+        })
 }
 
 fn is_amf_claude_hook_entry(entry: &serde_json::Value, managed_commands: &[String]) -> bool {
@@ -511,6 +562,35 @@ pub fn refresh_claude_hooks_for_store(store: &ProjectStore) -> usize {
     // once both passes are done.  If this store has no opencode features the
     // opencode function still runs (empty loop) and stamps correctly.
     refreshed
+}
+
+pub fn repair_unquoted_claude_hooks_for_store(store: &ProjectStore) -> usize {
+    let managed_commands = claude_managed_commands();
+    let mut repaired = 0usize;
+    for project in &store.projects {
+        for feature in &project.features {
+            if !matches!(feature.agent, AgentKind::Claude) {
+                continue;
+            }
+            let settings_path = feature
+                .workdir
+                .join(".claude")
+                .join(CLAUDE_SETTINGS_LOCAL_JSON);
+            let settings = read_json_object(&settings_path);
+            if !has_unquoted_amf_claude_hooks(&settings, &managed_commands) {
+                continue;
+            }
+            ensure_notification_hooks(
+                &feature.workdir,
+                &project.repo,
+                &feature.mode,
+                &feature.agent,
+                feature.is_worktree,
+            );
+            repaired += 1;
+        }
+    }
+    repaired
 }
 
 /// Apply one-time, version-gated migrations to a freshly loaded config.
@@ -888,31 +968,13 @@ pub fn ensure_notification_hooks(
 
     let config_dir = crate::project::amf_config_dir();
     let managed_commands = claude_managed_commands();
-    let notify_cmd = config_dir.join("notify.sh").to_string_lossy().into_owned();
-    let clear_cmd = config_dir
-        .join("clear-notify.sh")
-        .to_string_lossy()
-        .into_owned();
-    let save_prompt_cmd = config_dir
-        .join("save-prompt.sh")
-        .to_string_lossy()
-        .into_owned();
-    let thinking_start_cmd = config_dir
-        .join("thinking-start.sh")
-        .to_string_lossy()
-        .into_owned();
-    let thinking_stop_cmd = config_dir
-        .join("thinking-stop.sh")
-        .to_string_lossy()
-        .into_owned();
-    let tool_start_cmd = config_dir
-        .join("tool-start.sh")
-        .to_string_lossy()
-        .into_owned();
-    let tool_stop_cmd = config_dir
-        .join("tool-stop.sh")
-        .to_string_lossy()
-        .into_owned();
+    let notify_cmd = claude_hook_command(&config_dir.join("notify.sh"));
+    let clear_cmd = claude_hook_command(&config_dir.join("clear-notify.sh"));
+    let save_prompt_cmd = claude_hook_command(&config_dir.join("save-prompt.sh"));
+    let thinking_start_cmd = claude_hook_command(&config_dir.join("thinking-start.sh"));
+    let thinking_stop_cmd = claude_hook_command(&config_dir.join("thinking-stop.sh"));
+    let tool_start_cmd = claude_hook_command(&config_dir.join("tool-start.sh"));
+    let tool_stop_cmd = claude_hook_command(&config_dir.join("tool-stop.sh"));
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
     let diff_review_cmd = if wants_diff_review {
@@ -954,6 +1016,7 @@ pub fn ensure_notification_hooks(
         }),
     ];
     if wants_diff_review && let Some(ref dr_cmd) = diff_review_cmd {
+        let dr_cmd = shell_quote(dr_cmd);
         pre_tool_hooks.push(serde_json::json!({
             "type": "command",
             "command": dr_cmd,
@@ -1014,83 +1077,77 @@ pub fn ensure_notification_hooks(
     ensure_amf_skills(workdir, agent);
 }
 
-pub fn ensure_plan_mode_claude_md(workdir: &Path, repo: &Path, enabled: bool) {
+pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled: bool) {
     const BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";
     const END: &str = "<!-- AMF:plan-instructions:end -->";
-
-    // The shared plan file lives at the repo root so all worktrees
-    // see the same file. Store it gitignored in a local-only location.
-    let plan_file = repo.join("PLAN.md");
-    let plan_path_str = plan_file.to_string_lossy();
-
-    let block = format!(
-        concat!(
-            "<!-- AMF:plan-instructions:begin -->\n\n",
-            "## Plan Mode\n\n",
-            "You are in **PLAN MODE**. A shared plan file is at:\n\n",
-            "```\n",
-            "{plan_file}\n",
-            "```\n\n",
-            "**Before doing any implementation work:**\n\n",
-            "1. Read the plan file to understand the current state\n",
-            "2. Update the plan with your intended approach\n",
-            "3. Keep the plan updated as you make progress\n\n",
-            "**Plan file format:**\n\n",
-            "```markdown\n",
-            "# Plan\n\n",
-            "## Goal\n",
-            "<overall objective>\n\n",
-            "## Tasks\n",
-            "- [ ] Task 1\n",
-            "- [x] Completed task\n\n",
-            "## Notes\n",
-            "<decisions, discoveries, blockers>\n",
-            "```\n\n",
-            "Update task checkboxes as you complete work. Other agents\n",
-            "working in parallel will read this same file.\n\n",
-            "<!-- AMF:plan-instructions:end -->\n",
-        ),
-        plan_file = plan_path_str,
+    const BLOCK: &str = concat!(
+        "<!-- AMF:plan-instructions:begin -->\n\n",
+        "## Plan Mode\n\n",
+        "This feature has a user-authored plan at `.claude/plan.md`.\n\n",
+        "Before doing implementation work, read the plan. Treat its decisions ",
+        "as settled unless the user says otherwise, and keep its task ",
+        "checkboxes and notes current as work progresses.\n\n",
+        "<!-- AMF:plan-instructions:end -->\n",
     );
+    const AGENTS_IGNORE_BEGIN: &str = "# AMF:plan-instructions:begin";
+    const AGENTS_IGNORE_END: &str = "# AMF:plan-instructions:end";
 
-    // Ensure PLAN.md is gitignored at the repo root.
-    let gitignore_path = repo.join(".gitignore");
-    ensure_gitignore_entry(&gitignore_path, "PLAN.md");
-
-    // Create a skeleton PLAN.md if enabling and file doesn't exist.
-    if enabled && !plan_file.exists() {
-        let _ = std::fs::write(
-            &plan_file,
-            "# Plan\n\n## Goal\n\n<describe the overall objective>\n\n\
-             ## Tasks\n\n- [ ] Task 1\n\n## Notes\n\n",
-        );
-    }
-
-    // Inject/remove plan instructions from workdir's CLAUDE.local.md.
-    let md_path = workdir.join("CLAUDE.local.md");
+    let uses_claude_local = matches!(agent, AgentKind::Claude);
+    let md_path = workdir.join(if uses_claude_local {
+        "CLAUDE.local.md"
+    } else {
+        "AGENTS.md"
+    });
+    let instruction_file_existed = md_path.exists();
     let current = std::fs::read_to_string(&md_path).unwrap_or_default();
     let has_block = current.contains(BEGIN);
+    let gitignore_path = workdir.join(".gitignore");
 
-    // Ensure CLAUDE.local.md is gitignored at the workdir root.
-    let wt_gitignore = workdir.join(".gitignore");
-    ensure_gitignore_entry(&wt_gitignore, "CLAUDE.local.md");
+    if uses_claude_local && enabled {
+        ensure_gitignore_entry(&gitignore_path, "CLAUDE.local.md");
+    } else if enabled && !instruction_file_existed {
+        let ignore = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+        if !ignore.lines().any(|line| line == "AGENTS.md") {
+            let managed_ignore = format!("{AGENTS_IGNORE_BEGIN}\nAGENTS.md\n{AGENTS_IGNORE_END}\n");
+            let content = if ignore.is_empty() {
+                managed_ignore
+            } else {
+                format!("{}\n{}", ignore.trim_end(), managed_ignore)
+            };
+            let _ = std::fs::write(&gitignore_path, content);
+        }
+    }
 
     if enabled {
         if has_block {
             return; // already injected
         }
         let content = if current.is_empty() {
-            block.clone()
+            BLOCK.to_string()
         } else {
-            format!("{}\n{}", current.trim_end(), block)
+            format!("{}\n{}", current.trim_end(), BLOCK)
         };
         let _ = std::fs::write(&md_path, content);
-    } else if has_block {
-        let stripped = strip_between_markers(&current, BEGIN, END);
-        if stripped.trim().is_empty() {
-            let _ = std::fs::remove_file(&md_path);
-        } else {
-            let _ = std::fs::write(&md_path, format!("{}\n", stripped.trim_end()));
+    } else {
+        if has_block {
+            let stripped = strip_between_markers(&current, BEGIN, END);
+            if stripped.trim().is_empty() {
+                let _ = std::fs::remove_file(&md_path);
+            } else {
+                let _ = std::fs::write(&md_path, format!("{}\n", stripped.trim_end()));
+            }
+        }
+
+        if !uses_claude_local
+            && let Ok(ignore) = std::fs::read_to_string(&gitignore_path)
+            && ignore.contains(AGENTS_IGNORE_BEGIN)
+        {
+            let stripped = strip_between_markers(&ignore, AGENTS_IGNORE_BEGIN, AGENTS_IGNORE_END);
+            if stripped.trim().is_empty() {
+                let _ = std::fs::remove_file(&gitignore_path);
+            } else {
+                let _ = std::fs::write(&gitignore_path, format!("{}\n", stripped.trim_end()));
+            }
         }
     }
 }
@@ -1105,7 +1162,7 @@ pub fn strip_between_markers(s: &str, begin: &str, end: &str) -> String {
             end_pos
         };
         // eat leading blank line before begin marker
-        let begin_pos = if bi >= 2 && &s[bi - 2..bi] == "\n\n" {
+        let begin_pos = if s[..bi].ends_with("\n\n") {
             bi - 1
         } else {
             bi

@@ -33,7 +33,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("D", "View debug log"),
         ("p", "Open syntax parser picker"),
         ("L", "Open prompt library"),
-        ("G", "Review PR comments (experimental)"),
+        ("G", "Open PR Triage (experimental)"),
         ("T", "Theme picker"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
@@ -85,6 +85,37 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
+        "  During a plan interview:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let plan_interview_keybinds: Vec<(&str, &str)> = vec![
+        ("Enter", "Save answer and continue"),
+        ("Alt+Enter", "Insert a newline (free-text answers)"),
+        ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
+        ("Ctrl+B", "Return to the previous question"),
+        ("Ctrl+S", "Skip an optional question"),
+        ("Ctrl+F", "Finish early with answers so far"),
+        ("Esc", "Cancel (launch without plan or feature)"),
+    ];
+
+    for (key, desc) in &plan_interview_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
         "  While viewing (embedded tmux):",
         Style::default()
             .fg(theme.primary.to_color())
@@ -113,7 +144,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("R", "Refresh pane sizing"),
         ("D", "Debug log"),
         ("A", "Manage agent harnesses"),
-        ("P", "Back to PR review pane (if one is stashed)"),
+        ("P", "Back to PR Triage (if one is stashed)"),
     ];
 
     for (key, desc) in &view_keybinds {
@@ -166,7 +197,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  While reviewing PR comments:",
+        "  In PR Triage:",
         Style::default()
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
@@ -180,10 +211,9 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("f", "Inject scoped fix into agent session"),
         ("", "(e edit · Tab inject · Ctrl+T vim)"),
         ("Space", "Mark comment for batch fix"),
-        ("F", "Queue marked fixes as separate prompts"),
         ("B", "Inject one combined prompt for all marked"),
         ("t", "Toggle fix target session"),
-        ("", "(first fix picks the review harness)"),
+        ("", "(first fix picks the triage harness)"),
         ("P", "Jump to the linked fix session"),
         ("", "(Ctrl+Space P there jumps back)"),
         ("R", "Reply 'Done in <sha>'"),
@@ -195,8 +225,12 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("s", "Skip comment (local)"),
         ("i", "Install syntax highlighting for file"),
         ("r", "Refresh comments from GitHub"),
-        ("g", "Pick a different PR to review"),
-        ("q / Esc", "Close review pane"),
+        ("g", "Pick a different PR to triage"),
+        ("A", "AI review of the PR diff (draft findings)"),
+        ("", "(first run picks and remembers its harness)"),
+        ("W", "Post AI-review draft findings to GitHub"),
+        ("", "(e edit summary)"),
+        ("q / Esc", "Close PR Triage"),
     ];
 
     for (key, desc) in &pr_review_keybinds {

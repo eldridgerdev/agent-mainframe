@@ -67,6 +67,20 @@ pub struct PrListEntry {
     pub state: String,
 }
 
+/// The PR selected by `gh pr view` from the local branch's tracking/push
+/// configuration. We inspect its state so a closed predecessor is not restored
+/// when the branch is reused before its successor PR is opened.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ResolvedPrCandidate {
+    number: u32,
+    #[serde(rename = "headRefOid")]
+    head_sha: String,
+    url: String,
+    /// `OPEN`, `CLOSED`, or `MERGED`.
+    #[serde(default)]
+    state: String,
+}
+
 /// `gh pr list` nests the author under `{ "login": ... }`; flatten it to the
 /// login string (empty when GitHub omits the user, e.g. a deleted account).
 fn deserialize_author_login<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -117,6 +131,10 @@ pub struct ReviewComment {
     /// Line the comment was originally left on (survives outdating).
     #[serde(default)]
     pub original_line: Option<u32>,
+    /// Which side of the diff `line` addresses (`"RIGHT"` for the current
+    /// file, `"LEFT"` for the base file).
+    #[serde(default)]
+    pub side: Option<String>,
     #[serde(default)]
     pub diff_hunk: Option<String>,
     /// What the comment is anchored to: `"line"` (the default) or `"file"` for a
@@ -193,12 +211,25 @@ pub struct PrFileComment {
     pub body: String,
 }
 
+/// Identity returned by GitHub after creating a PR review. Callers use the
+/// review id to associate the subsequently-fetched inline comments with the
+/// local findings that produced them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreatedPrReview {
+    pub id: u64,
+}
+
+#[derive(Deserialize)]
+struct CreatedPrReviewResponse {
+    id: u64,
+}
+
 impl GhCli {
     /// Check that a working `gh` binary is on PATH. Mirrors
     /// `TmuxManager::check_available` / `ClaudeLauncher::check_available`.
     pub fn check_available() -> Result<()> {
         let output = Command::new("gh").arg("--version").output().context(
-            "GitHub CLI (`gh`) not found. Install it from https://cli.github.com to use PR review.",
+            "GitHub CLI (`gh`) not found. Install it from https://cli.github.com to use PR Triage.",
         )?;
         if !output.status.success() {
             bail!("GitHub CLI (`gh`) is not working correctly. Try `gh --version`.");
@@ -228,25 +259,25 @@ impl GhCli {
     /// an error for missing-remote / network / other failures.
     pub fn resolve_pr(workdir: &Path) -> Result<PrResolution> {
         let output = Command::new("gh")
-            .args(["pr", "view", "--json", "number,headRefOid,url"])
+            .args(["pr", "view", "--json", "number,headRefOid,url,state"])
             .current_dir(workdir)
             .output()
             .context("Failed to run `gh pr view`.")?;
 
         if output.status.success() {
-            let pr = parse_pr_json(&output.stdout)?;
-            return Ok(PrResolution::Found(pr));
+            return Ok(match parse_open_resolved_pr(&output.stdout)? {
+                Some(pr) => PrResolution::Found(pr),
+                None => PrResolution::NoPrForBranch,
+            });
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         match classify_pr_view_error(&stderr) {
             PrViewError::NoPr => Ok(PrResolution::NoPrForBranch),
             PrViewError::NoRemote => bail!(
-                "No GitHub remote found for this repository. PR review needs a GitHub-hosted repo."
+                "No GitHub remote found for this repository. PR Triage needs a GitHub-hosted repo."
             ),
-            PrViewError::Other => {
-                bail!("`gh pr view` failed: {}", stderr.trim());
-            }
+            PrViewError::Other => bail!("`gh pr view` failed: {}", stderr.trim()),
         }
     }
 
@@ -269,8 +300,15 @@ impl GhCli {
                 ".author.login",
             ],
         )?;
-        let me = Self::gh_stdout(workdir, &["api", "user", "-q", ".login"])?;
+        let me = Self::current_user(workdir)?;
         Ok(!author.is_empty() && author.eq_ignore_ascii_case(&me))
+    }
+
+    /// Resolve the authenticated `gh` user's login. Cheap (one `gh api` call),
+    /// but callers driving UI (e.g. the PR picker) should memoize this for the
+    /// session rather than re-resolving on every render.
+    pub fn current_user(workdir: &Path) -> Result<String> {
+        Self::gh_stdout(workdir, &["api", "user", "-q", ".login"])
     }
 
     /// Run `gh <args>` in `workdir` and return trimmed stdout, erroring on a
@@ -308,6 +346,15 @@ impl GhCli {
             bail!("Could not load PR #{number}: {}", stderr.trim());
         }
         parse_pr_json(&output.stdout)
+    }
+
+    /// Fetch the PR's unified diff (`gh pr diff <number>`), plain patch text —
+    /// not `--json`. Used as the AI reviewer's input; zero agent tokens by
+    /// itself (one `gh` call). Only the whole string's leading/trailing
+    /// whitespace is trimmed ([`Self::gh_stdout`]); interior diff content is
+    /// untouched.
+    pub fn pr_diff(workdir: &Path, number: u32) -> Result<String> {
+        Self::gh_stdout(workdir, &["pr", "diff", &number.to_string()])
     }
 
     /// List the repository's pull requests for the PR picker. `include_closed`
@@ -452,7 +499,7 @@ impl GhCli {
         body: &str,
         event: &str,
         comments: &[PrReviewComment],
-    ) -> Result<()> {
+    ) -> Result<CreatedPrReview> {
         let payload = build_review_request_json(&pr.head_sha, body, event, comments);
         let endpoint = format!("repos/{}/{}/pulls/{}/reviews", pr.owner, pr.repo, pr.number);
 
@@ -480,9 +527,20 @@ impl GhCli {
                     "Posting to GitHub needs the `repo` scope. Run `! gh auth refresh -s repo` and try again."
                 );
             }
+            if is_review_rejected_entity_error(&stderr) {
+                bail!(
+                    "GitHub rejected the review (422) — most likely one of the inline comments \
+                     no longer lines up with the current diff (the PR moved since the AI review \
+                     ran). Refresh (r) and re-run the AI review (A), or skip the stale finding \
+                     and try W again. Raw: {}",
+                    stderr.trim()
+                );
+            }
             bail!("`gh api` (create review) failed: {}", stderr.trim());
         }
-        Ok(())
+        let response: CreatedPrReviewResponse = serde_json::from_slice(&output.stdout)
+            .context("Failed to parse the created GitHub review response.")?;
+        Ok(CreatedPrReview { id: response.id })
     }
 
     /// Post a whole-file review comment (`subject_type: "file"`), pinned to the
@@ -648,6 +706,17 @@ fn is_missing_write_scope(stderr: &str) -> bool {
     s.contains("http 403") || (s.contains("403") && s.contains("scope")) || s.contains("must have")
 }
 
+/// Whether a `create_review` failure is GitHub's 422 Unprocessable Entity —
+/// its documented response when any inline comment in the review doesn't
+/// land inside the PR's current diff. `gh api`'s stderr for this case is
+/// just a terse status line with no detail on which comment is at fault, so
+/// this drives a friendlier, actionable message instead of passing it
+/// through verbatim.
+fn is_review_rejected_entity_error(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("422") || s.contains("unprocessable entity")
+}
+
 /// Run `gh api --paginate --slurp <endpoint>` and flatten the result.
 ///
 /// `--slurp` wraps paginated array responses as an array *of pages*
@@ -785,6 +854,26 @@ fn parse_pr_json(stdout: &[u8]) -> Result<PrRef> {
     })
 }
 
+/// Accept the PR selected by `gh pr view` only while it is open. `gh` retains
+/// the local branch's remote/tracking-aware selection semantics, while this
+/// state check prevents a closed predecessor from being auto-restored.
+fn parse_open_resolved_pr(stdout: &[u8]) -> Result<Option<PrRef>> {
+    let candidate: ResolvedPrCandidate =
+        serde_json::from_slice(stdout).context("Failed to parse `gh pr view` JSON output.")?;
+    if !candidate.state.eq_ignore_ascii_case("open") {
+        return Ok(None);
+    }
+    let (owner, repo) = parse_owner_repo(&candidate.url)
+        .with_context(|| format!("Could not parse owner/repo from PR url: {}", candidate.url))?;
+    Ok(Some(PrRef {
+        number: candidate.number,
+        head_sha: candidate.head_sha,
+        url: candidate.url,
+        owner,
+        repo,
+    }))
+}
+
 /// Parse the `gh pr list --json …` array into [`PrListEntry`] rows, sorted
 /// newest-updated first (GitHub's order is not guaranteed across flags).
 fn parse_pr_list_json(stdout: &[u8]) -> Result<Vec<PrListEntry>> {
@@ -824,6 +913,24 @@ mod tests {
         ));
         assert!(!is_missing_write_scope("HTTP 422: Validation Failed"));
         assert!(!is_missing_write_scope("could not resolve host github.com"));
+    }
+
+    #[test]
+    fn detects_review_rejected_entity_error() {
+        // The exact terse line `gh api` gives for this case (confirmed from
+        // real use — the debug log showed exactly this).
+        assert!(is_review_rejected_entity_error(
+            "gh: Unprocessable Entity (HTTP 422)"
+        ));
+        assert!(is_review_rejected_entity_error(
+            "HTTP 422: Validation Failed"
+        ));
+        assert!(!is_review_rejected_entity_error(
+            "gh: HTTP 403: Resource not accessible by integration"
+        ));
+        assert!(!is_review_rejected_entity_error(
+            "could not resolve host github.com"
+        ));
     }
 
     #[test]
@@ -975,6 +1082,26 @@ mod tests {
             classify_pr_view_error("HTTP 500 something broke"),
             PrViewError::Other
         );
+    }
+
+    #[test]
+    fn branch_pr_resolution_accepts_open_successor() {
+        let json = br#"{"number":450,"headRefOid":"new",
+            "url":"https://github.com/acme/amf/pull/450","state":"OPEN"}"#;
+
+        let pr = parse_open_resolved_pr(json).unwrap().unwrap();
+        assert_eq!(pr.number, 450);
+        assert_eq!(pr.head_sha, "new");
+        assert_eq!(pr.owner, "acme");
+        assert_eq!(pr.repo, "amf");
+    }
+
+    #[test]
+    fn branch_pr_resolution_rejects_closed_predecessor() {
+        let json = br#"{"number":449,"headRefOid":"old",
+            "url":"https://github.com/acme/amf/pull/449","state":"CLOSED"}"#;
+
+        assert!(parse_open_resolved_pr(json).unwrap().is_none());
     }
 
     #[test]

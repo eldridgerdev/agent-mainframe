@@ -511,6 +511,88 @@ impl App {
         let session_kind = state.view.session_kind.clone();
         let key = compose_target_key(&session, &window);
 
+        // Writing an image to the Windows clipboard and waiting for the
+        // harness to read it back through PowerShell can take several
+        // seconds. Keep the composer on screen while that work runs so its
+        // existing `[Pasting...]` indicator remains visible instead of
+        // making AMF look frozen.
+        let parts = split_compose_parts(&text, &state.images);
+        let has_image_part = parts
+            .iter()
+            .any(|part| matches!(part, ComposePart::Image(_)));
+        if !state.is_slash_command() && crate::app::util::is_wsl() && has_image_part {
+            if !text.is_empty() {
+                self.persist_startup_prompt(&state.workdir, &text);
+            }
+
+            let images = state.images.clone();
+            let worker_session = session.clone();
+            let worker_window = window.clone();
+            let wakeup = self.view_wakeup_tx();
+            let (tx, rx) = mpsc::channel();
+            std::thread::Builder::new()
+                .name("compose-image-submit".to_string())
+                .spawn(move || {
+                    let result = (|| -> Result<()> {
+                        crate::tmux::TmuxManager::send_key_name(
+                            &worker_session,
+                            &worker_window,
+                            "C-u",
+                        )?;
+                        for part in &parts {
+                            match part {
+                                ComposePart::Text(segment) => {
+                                    crate::tmux::TmuxManager::paste_text(
+                                        &worker_session,
+                                        &worker_window,
+                                        segment,
+                                    )?;
+                                }
+                                ComposePart::Image(idx) => {
+                                    let image = &images[*idx];
+                                    crate::app::util::copy_image_to_clipboard(
+                                        &image.data,
+                                        &image.mime,
+                                    )?;
+                                    let baseline = crate::tmux::TmuxManager::capture_pane(
+                                        &worker_session,
+                                        &worker_window,
+                                    )
+                                    .map(|pane| count_image_placeholders(&pane))
+                                    .unwrap_or(0);
+                                    crate::tmux::TmuxManager::send_key_name(
+                                        &worker_session,
+                                        &worker_window,
+                                        "C-v",
+                                    )?;
+                                    wait_for_image_ingested(
+                                        &worker_session,
+                                        &worker_window,
+                                        baseline,
+                                    );
+                                }
+                            }
+                        }
+                        crate::tmux::TmuxManager::send_key_name(
+                            &worker_session,
+                            &worker_window,
+                            "Enter",
+                        )
+                    })()
+                    .map_err(|err| err.to_string());
+                    let _ = tx.send(result);
+                    let byte = 1u8;
+                    unsafe { libc::write(wakeup.as_raw_fd(), &byte as *const u8 as *const _, 1) };
+                })
+                .expect("failed to start compose image submit worker");
+
+            let mut state = state;
+            state.submit_in_progress = true;
+            self.mode = AppMode::Compose(state);
+            self.compose_submit = Some(ComposeSubmit { target: key, rx });
+            return Ok(());
+        }
+
         // Clear any leftover text in the harness input (e.g. typed
         // during direct mode) so the submission cannot merge with it.
         self.tmux.send_key_name(&session, &window, "C-u")?;
@@ -534,7 +616,6 @@ impl App {
             if !text.is_empty() {
                 self.persist_startup_prompt(&state.workdir, &text);
             }
-            let parts = split_compose_parts(&text, &state.images);
             for part in &parts {
                 match part {
                     ComposePart::Text(segment) => {
@@ -572,6 +653,64 @@ impl App {
         }
         self.request_view_snapshot_pane_burst();
         Ok(())
+    }
+
+    /// Finish a background WSL image submission without blocking redraws.
+    /// Returns true when completion changed visible state.
+    pub fn poll_compose_submit(&mut self) -> bool {
+        let Some(submit) = &self.compose_submit else {
+            return false;
+        };
+
+        let result = match submit.rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("compose image submit worker stopped before returning a result".to_string())
+            }
+        };
+        let Some(submit) = self.compose_submit.take() else {
+            return false;
+        };
+
+        let matches_target = matches!(
+            &self.mode,
+            AppMode::Compose(state)
+                if state.submit_in_progress
+                    && compose_target_key(&state.view.session, &state.view.window) == submit.target
+        );
+        if !matches_target {
+            return true;
+        }
+
+        match result {
+            Ok(()) => {
+                let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+                    AppMode::Compose(state) => state,
+                    other => {
+                        self.mode = other;
+                        return true;
+                    }
+                };
+                let session = state.view.session.clone();
+                let window = state.view.window.clone();
+                let session_kind = state.view.session_kind.clone();
+                self.compose_drafts.remove(&submit.target);
+                self.mode = AppMode::Viewing(state.view);
+                if session_kind == SessionKind::Codex {
+                    self.note_codex_prompt_submit(&session, &window);
+                }
+                self.request_view_snapshot_pane_burst();
+            }
+            Err(err) => {
+                if let AppMode::Compose(state) = &mut self.mode {
+                    state.submit_in_progress = false;
+                }
+                self.push_toast_warning(format!("Could not send image: {err}"));
+            }
+        }
+
+        true
     }
 }
 

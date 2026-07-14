@@ -9,15 +9,21 @@ const DETAIL_SCROLL_STEP: usize = 5;
 /// Visual rows scrolled per page-key press in the fix-prompt editor.
 const FIX_PAGE_STEP: isize = 10;
 
-/// Key handling for the full-screen PR comment-review pane.
+/// Key handling for the full-screen PR Triage pane.
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
-/// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `F` queue
-/// all marked fixes as separate prompts / `B` inject one combined prompt for all
-/// marked, `R`/`n` reply, `M` add to memory, `x` resolve/reopen the thread,
+/// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `B` inject
+/// one combined prompt for all marked comments, `R`/`n` reply, `M` add to
+/// memory, `x` resolve/reopen the thread,
 /// `m` mark done, `s` skip, `i` install syntax highlighting for the selected
-/// comment's file.
+/// comment's file, `A` run an AI review of the PR diff (Epic E — draft
+/// findings merge into this same list), `W` post the AI-review draft
+/// findings to GitHub as a real review.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // The AI-review harness picker is independent from the fix-session picker.
+    if app.pr_review_ai_harness_picking() {
+        return handle_ai_harness_pick_key(app, key);
+    }
     // The harness picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
         return handle_harness_pick_key(app, key);
@@ -34,6 +40,10 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if let Some(editing) = app.pr_review_memory_add_view() {
         return handle_memory_add_key(app, key, editing);
     }
+    // The AI-review post-to-GitHub confirm dialog, when open, captures all keys.
+    if let Some(editing) = app.pr_review_ai_review_post_view() {
+        return handle_ai_review_post_key(app, key, editing);
+    }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -49,7 +59,6 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('f') => app.pr_review_open_fix_confirm(),
         KeyCode::Char('P') => app.pr_review_toggle_to_session()?,
         KeyCode::Char(' ') => app.pr_review_toggle_mark(),
-        KeyCode::Char('F') => app.pr_review_queue_marked_fixes()?,
         KeyCode::Char('B') => app.pr_review_open_batch_confirm(),
         KeyCode::Char('R') => app.pr_review_open_reply_done(),
         KeyCode::Char('n') => app.pr_review_open_reply_not_needed(),
@@ -61,6 +70,21 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('r') => app.refresh_pr_review(),
         KeyCode::Char('i') => app.open_syntax_language_picker_for_selected_diff_file(),
         KeyCode::Char('g') => app.open_pr_picker_from_pane(),
+        KeyCode::Char('A') => app.start_ai_pr_review(),
+        KeyCode::Char('W') => app.pr_review_open_ai_review_post_confirm(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Pick the harness for the paid `A` review pass. Confirm validates the CLI
+/// before any diff is fetched or agent tokens are spent; failures stay inline.
+fn handle_ai_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_ai_harness_pick_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_ai_harness_pick_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_ai_harness_pick_move(-1),
+        KeyCode::Enter => app.pr_review_ai_harness_pick_confirm(),
         _ => {}
     }
     Ok(())
@@ -111,6 +135,17 @@ pub fn handle_review_memory_bootstrap_running_key(app: &mut App, key: KeyEvent) 
     Ok(())
 }
 
+/// Key handling while the AI PR review's background pass is running:
+/// `Esc`/`q` returns to the review pane without aborting the background
+/// thread (it keeps running — a real side effect, tokens spent — and
+/// [`App::poll_ai_pr_review_bg`] still surfaces the result whenever it lands).
+pub fn handle_ai_pr_review_running_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        app.cancel_ai_pr_review();
+    }
+    Ok(())
+}
+
 /// Key handling while the reply dialog is open.
 ///
 /// Confirm view: `⏎` posts, `e` edits, `esc`/`q` cancels. Edit mode: keystrokes
@@ -129,6 +164,30 @@ fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
         KeyCode::Enter => app.pr_review_post_reply()?,
         KeyCode::Char('e') => app.pr_review_reply_edit(),
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_reply(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the AI-review post-to-GitHub confirm dialog is open.
+///
+/// Confirm view: `⏎` posts, `e` edits the summary, `esc`/`q` cancels. Edit
+/// mode: keystrokes flow to the summary editor; `esc` returns to the confirm
+/// view. Only the summary is editable — inline finding bodies are vetted by
+/// skipping (`s`), not hand-edited here.
+fn handle_ai_review_post_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
+    if editing {
+        match key.code {
+            KeyCode::Esc => app.pr_review_ai_review_post_stop_edit(),
+            _ => app.pr_review_ai_review_post_editor_key(key),
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Enter => app.pr_review_post_ai_review()?,
+        KeyCode::Char('e') => app.pr_review_ai_review_post_edit(),
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_ai_review_post(),
         _ => {}
     }
     Ok(())

@@ -41,6 +41,39 @@ The agent harness starts after AMF creates the tmux window.
 The shell input stops partway through the environment setup, around
 `AMF_TMUX_WINDOW='claude' AMF_FEAT...`, and Claude never starts.
 
+## ~~Claude hook commands fail under macOS Application Support~~ (Fixed)
+
+- **Status:** Fixed (2026-07-13)
+- **Reported:** 2026-07-13
+- **Relates to:** Claude hook setup (`src/app/setup.rs`)
+- **Root cause:** AMF wrote Claude hook commands as bare script paths. On
+  fresh macOS installs, the AMF config directory can live under
+  `~/Library/Application Support/amf`, and Claude executes hook commands
+  through `/bin/sh`. The unquoted space after `Application` made the shell
+  split the path before the helper script could run. Older unquoted hook
+  entries also stayed in existing `.claude/settings.local.json` files.
+- **Fix:** Quote AMF-managed Claude hook command paths, force one more hook
+  refresh, and treat older unquoted `Library/Application Support/amf` helper
+  entries as managed so AMF removes and replaces them automatically. AMF also
+  checks stored Claude feature workdirs during startup and immediately repairs
+  stale unquoted local hook settings, even if the global hook refresh stamp is
+  already current.
+
+### Repro
+
+1. On a fresh macOS install that stores AMF config under
+   `~/Library/Application Support/amf`, create or start a Claude feature.
+2. Submit a prompt or stop the session so Claude runs AMF's local hooks.
+
+### Expected
+
+Claude hooks run without shell path errors.
+
+### Actual
+
+Claude reports a non-blocking hook error like
+`/bin/sh: /Users/.../Library/Application: no such file or directory`.
+
 ## ~~macOS build fails in tmux PTY setup~~ (Fixed)
 
 - **Status:** Fixed (2026-07-09)

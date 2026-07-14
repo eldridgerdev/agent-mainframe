@@ -15,6 +15,7 @@ mod navigation;
 mod notifications;
 mod opencode;
 pub(crate) mod opencode_storage;
+mod plan_interview;
 pub(crate) mod pr_review;
 mod project_ops;
 mod prompt_library;
@@ -108,6 +109,18 @@ pub const VIEW_BURST_DURATION: Duration = Duration::from_millis(175);
 pub const VIEW_BURST_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(16);
 pub const VIEW_BURST_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(40);
 pub const VIEW_BACKGROUND_SYNC_DEFER_INTERVAL: Duration = Duration::from_millis(1500);
+
+/// Cached dashboard metadata for an open pull request associated with a
+/// feature's branch. The branch and head SHA travel with the badge so a
+/// background result can never be applied after the feature changes branches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActivePrStatus {
+    pub branch: String,
+    pub head_sha: String,
+    pub number: u32,
+    /// `None` means the PR resolved but its thread metadata could not be read.
+    pub unresolved_threads: Option<usize>,
+}
 
 /// Minimum spacing between control-mode streaming snapshots (keystroke
 /// bursts bypass this); each snapshot costs a full-frame redraw on the
@@ -420,6 +433,14 @@ pub struct AppConfig {
     /// [`review_memory::DEFAULT_REVIEW_MEMORY_PATH`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_memory_path: Option<String>,
+    /// Name of an existing Claude Code skill/command (without the leading `/`,
+    /// e.g. `"review"`) to lead the AI PR-review prompt (`A` in the PR-review
+    /// pane, Epic E of `pr-comment-review-plan.md`) with, so its review
+    /// methodology runs before AMF's own structured-findings instructions.
+    /// `None` (default) skips this — AMF ships no bundled skill for reviewing a
+    /// PR diff, so the feature must work without assuming one is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_review_skill: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -476,6 +497,7 @@ impl Default for AppConfig {
             final_review_submit_prompt: true,
             final_review_post_to_pr: false,
             review_memory_path: None,
+            ai_review_skill: None,
         }
     }
 }
@@ -587,6 +609,7 @@ pub struct App {
     /// Unsent compose drafts keyed by tmux "session:window" target.
     pub compose_drafts: HashMap<String, ComposeDraft>,
     compose_clipboard_paste: Option<ComposeClipboardPaste>,
+    compose_submit: Option<ComposeSubmit>,
     next_compose_clipboard_paste_id: u64,
     pub latest_prompt_cache: HashMap<String, String>,
     pub sidebar_model_cache: HashMap<String, String>,
@@ -607,15 +630,38 @@ pub struct App {
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
+    /// Background refresh and last-known values for the dashboard's open-PR
+    /// badges. Rendering only reads `active_prs`; all `gh` calls happen on the
+    /// worker behind `active_pr_bg`.
+    pub(crate) active_pr_bg: Option<Receiver<Vec<sync::ActivePrUpdate>>>,
+    pub(crate) active_prs: HashMap<String, ActivePrStatus>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
-    /// A review pane stashed by `pr_review_toggle_to_session` (`P`) while the
+    /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
     pub pr_review_return: Option<PrReviewReturn>,
     /// Receiver for the background review-memory lookback bootstrap (fetch +
     /// distill pass). See `app::pr_review::run_review_memory_bootstrap`.
     pub review_memory_bootstrap_bg: Option<Receiver<pr_review::BootstrapProgress>>,
+    /// Receiver for the background AI code review of the current PR's diff
+    /// (the `A` action). See `app::pr_review::run_ai_pr_review`.
+    pub ai_review_bg: Option<Receiver<pr_review::AiReviewProgress>>,
+    /// The review-pane snapshot a background AI review ([`Self::ai_review_bg`])
+    /// was started against, kept alive independent of `self.mode` — in
+    /// particular across `cancel_ai_pr_review` (`esc`), which restores
+    /// `self.mode` to `PrReview` well before the background pass finishes.
+    /// Without this, `Done` arriving after a cancel finds `self.mode` is no
+    /// longer `AiPrReviewRunning` and has nowhere to merge the findings.
+    /// `Some` exactly while `ai_review_bg` is `Some`; both are cleared
+    /// together once `Done` is processed. See
+    /// `app::pr_review::poll_ai_pr_review_bg`.
+    pub ai_review_pending: Option<PrReviewState>,
+    /// Memoized `GhCli::current_user` result for the session, so opening or
+    /// refreshing the PR picker doesn't repeat the `gh api user` call every
+    /// time. `None` = not yet resolved; `Some(None)` = resolution was
+    /// attempted and failed (e.g. `gh` unauthenticated).
+    pub gh_current_user: Option<Option<String>>,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -631,6 +677,13 @@ pub struct App {
     /// "fixes ready — re-review?" notification is raised.
     pub awaiting_review_fixes: HashMap<String, AwaitingReviewFix>,
     pub ipc_tool_sessions: std::collections::HashSet<String>,
+    /// Feature-session IDs currently reported as thinking by hook/plugin IPC.
+    /// Unlike `ipc_thinking_sessions`, this distinguishes agent windows that
+    /// share one feature-level tmux session.
+    pub ipc_thinking_feature_sessions: std::collections::HashSet<String>,
+    /// Feature-session IDs currently running a tool, kept separate from
+    /// thinking so either signal can independently keep a session working.
+    pub ipc_tool_feature_sessions: std::collections::HashSet<String>,
     pub summary_state: SummaryState,
     pub summary_rx: Option<std::sync::mpsc::Receiver<(String, Result<String, anyhow::Error>)>>,
     pub tmux: Box<dyn TmuxOps>,
@@ -680,6 +733,11 @@ struct ComposeClipboardPaste {
     id: u64,
     target: String,
     rx: Receiver<Result<util::ClipboardContent, String>>,
+}
+
+struct ComposeSubmit {
+    target: String,
+    rx: Receiver<Result<(), String>>,
 }
 
 struct SidebarLoadResult {
@@ -803,6 +861,20 @@ impl App {
                 .harnesses
                 .iter()
                 .any(|h| h.status == HarnessCheckStatus::Checking),
+            // The AI review keeps running in the background after `esc`
+            // returns here; animate the header's throbber for as long as it
+            // is in flight (see `ui::dialogs::draw_pr_review`).
+            AppMode::PrReview(_) => self.ai_review_bg.is_some(),
+            // Full-screen loading/running views: `redraw_signature()` only
+            // hashes the mode's discriminant, not its stage, so without this
+            // the throbber only advances on the rare frame something else
+            // (a progress message, `Done`) forces a redraw — for the long
+            // stretch in between (the blocking `gh`/`claude` call) it just
+            // sits frozen, reading as "nothing is happening" even though the
+            // background thread is working.
+            AppMode::PrReviewLoading(_)
+            | AppMode::ReviewMemoryBootstrapRunning(_)
+            | AppMode::AiPrReviewRunning(_) => true,
             _ => false,
         };
         base || self.has_active_toasts()
@@ -878,6 +950,7 @@ impl App {
             state.scroll_offset.hash(&mut hasher);
             state.images.len().hash(&mut hasher);
             state.clipboard_paste_id.hash(&mut hasher);
+            state.submit_in_progress.hash(&mut hasher);
         }
 
         hasher.finish()
@@ -1833,6 +1906,7 @@ impl App {
         setup::ensure_notify_scripts();
         let db = crate::db::AmfDb::open_or_seed(&db_path, &crate::project::global_db_path())?;
         let store = db.load_store()?;
+        setup::repair_unquoted_claude_hooks_for_store(&store);
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         // These caches are populated by the background sidebar-load tasks
         // scheduled in startup task 7 (schedule_sidebar_loads_for_all_features).
@@ -1900,6 +1974,7 @@ impl App {
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
             compose_clipboard_paste: None,
+            compose_submit: None,
             next_compose_clipboard_paste_id: 1,
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
@@ -1920,9 +1995,14 @@ impl App {
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
+            active_pr_bg: None,
+            active_prs: HashMap::new(),
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
+            ai_review_bg: None,
+            ai_review_pending: None,
+            gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -1931,6 +2011,8 @@ impl App {
             ipc_thinking_sessions: std::collections::HashSet::new(),
             awaiting_review_fixes: HashMap::new(),
             ipc_tool_sessions: std::collections::HashSet::new(),
+            ipc_thinking_feature_sessions: std::collections::HashSet::new(),
+            ipc_tool_feature_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux: Box::new(TmuxManager),
@@ -2088,6 +2170,7 @@ impl App {
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
             compose_clipboard_paste: None,
+            compose_submit: None,
             next_compose_clipboard_paste_id: 1,
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
@@ -2108,9 +2191,14 @@ impl App {
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
+            active_pr_bg: None,
+            active_prs: HashMap::new(),
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
+            ai_review_bg: None,
+            ai_review_pending: None,
+            gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -2119,6 +2207,8 @@ impl App {
             ipc_thinking_sessions: std::collections::HashSet::new(),
             awaiting_review_fixes: HashMap::new(),
             ipc_tool_sessions: std::collections::HashSet::new(),
+            ipc_thinking_feature_sessions: std::collections::HashSet::new(),
+            ipc_tool_feature_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux,
@@ -2246,7 +2336,18 @@ impl App {
             return;
         };
 
-        let request = SidebarLoadRequest::from_feature(feature);
+        let dedicated_opencode_session = match &self.mode {
+            AppMode::PrReview(state) if state.workdir == feature.workdir => {
+                pr_review::pr_triage_session_index(feature, pr_review::FixTarget::DedicatedReview)
+                    .map(|si| &feature.sessions[si])
+                    .filter(|session| session.kind == SessionKind::Opencode)
+            }
+            _ => None,
+        };
+        let request = dedicated_opencode_session.map_or_else(
+            || SidebarLoadRequest::from_feature(feature),
+            |session| SidebarLoadRequest::from_opencode_session(feature, session),
+        );
         if !self
             .pending_sidebar_loads
             .insert(request.tmux_session.clone())
@@ -2974,6 +3075,20 @@ impl SidebarLoadRequest {
             tmux_session: feature.tmux_session.clone(),
             workdir: feature.workdir.clone(),
             preferred_session_kind,
+            preferred_session_id,
+        }
+    }
+
+    fn from_opencode_session(feature: &Feature, session: &FeatureSession) -> Self {
+        let preferred_session_id = session
+            .token_usage_source
+            .as_ref()
+            .filter(|source| source.provider == crate::token_tracking::TokenUsageProvider::Opencode)
+            .map(|source| source.id.clone());
+        Self {
+            tmux_session: feature.tmux_session.clone(),
+            workdir: feature.workdir.clone(),
+            preferred_session_kind: Some(SessionKind::Opencode),
             preferred_session_id,
         }
     }

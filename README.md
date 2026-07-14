@@ -32,7 +32,7 @@ is waiting for input.
   with line and multi-line comments and concrete suggested changes;
   optionally let Claude draft a first pass of comments, and post the
   result to the branch's GitHub PR.
-- **PR comment review** — triage GitHub PR review comments in a
+- **PR Triage** — triage GitHub PR review comments in a
   dedicated pane: reply, resolve threads, and inject scoped fix
   prompts into an agent session one at a time or in batches.
 - **Per-project TODO lists** — a native full-screen checklist per
@@ -250,8 +250,10 @@ Create-project and batch-feature templates, examples, and the JSON response form
 3. Press `n` to add a feature. Enter a branch name, choose your agent
    (Claude, Codex, Opencode, or Pi), and pick a vibe mode. A git worktree
    is created automatically when needed, and features auto-start on
-   creation. Codex supports `Vibe` and `SuperVibe`; `Vibeless` is only
-   available for agents with diff-review hook support.
+   creation. With plan mode enabled, AMF first runs a guided interview and
+   writes the answers to the feature's `.claude/plan.md`; the agent starts
+   after the interview completes. Codex supports `Vibe` and `SuperVibe`;
+   `Vibeless` is only available for agents with diff-review hook support.
 
 <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/328be46c-b8db-4150-9955-436377c03295" />
 
@@ -282,7 +284,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `B` | Batch-create features for a workspace |
 | `O` | Open the `~/.config/amf` settings project |
 | `A` | Manage agent harnesses (the first-run wizard) |
-| `G` | Review PR comments |
+| `G` | Open PR Triage |
 | `s` | Open session picker / add a session |
 | `S` | Resume a Claude or Opencode session |
 | `r` | Rename selected feature or session |
@@ -305,6 +307,22 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `Ctrl+Space` `c` | Open the config wizard |
 | `?` | Toggle help |
 | `q` / `Esc` | Quit |
+
+### Plan Interview
+
+When plan mode is enabled during feature creation, AMF collects a required
+feature brief followed by optional built-in discovery questions before the
+agent launches.
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Save the current answer or selection and continue |
+| `Alt+Enter` | Insert a newline in a free-text answer |
+| `j` / `k` / `↑` / `↓` | Navigate select-option answers |
+| `Ctrl+B` | Return to the previous question |
+| `Ctrl+S` | Skip an optional question |
+| `Ctrl+F` | Finish early and write the answers collected so far |
+| `Esc` | Cancel, then choose whether to launch without a plan or cancel the feature |
 
 ### Viewing Mode (Embedded tmux)
 
@@ -507,22 +525,21 @@ it:
 - Re-reviewing the same feature marks files changed since your last
   pass with `Δ` and narrows the file list to just those files.
 
-### PR Comment Review
+### PR Triage
 
-Press `G` on a feature to review its GitHub pull-request comments
+Press `G` on a feature to triage its GitHub pull-request comments
 inside AMF (requires an authenticated `gh` CLI). If the branch has no
 detectable PR, a picker lists the repo's pull requests.
 
-In the review pane:
+In the PR Triage pane:
 
 - `j`/`k` navigate comments; bodies render as Markdown and diff hunks
   are colored and syntax-highlighted (press `i` to install a missing
   language parser without leaving the pane).
 - `f` injects a scoped fix prompt for the selected comment into an
   agent session — the first fix asks which harness the dedicated
-  review session should run. Mark several comments with `Space`, then
-  `F` queues an individual fix per mark, or `B` sends one combined
-  prompt for all of them.
+  triage session should run. Mark several comments with `Space`, then
+  `B` opens one combined, editable prompt for all of them.
 - `R` replies "Done in `<sha>`" from your latest commit, `n` replies
   why a fix isn't needed, and `x` resolves or reopens the GitHub
   thread.
@@ -612,6 +629,8 @@ To customize input-request startup waiting, edit
 The `extension` block can be set globally in
 `~/.config/amf/config.json` or per-project in `.amf/config.json` at
 the repo root. Project-level settings are merged on top of global ones.
+Press `Ctrl+Space`, then `c`, from a feature view to edit the supported
+extension settings with AMF's config wizard, including plan questions.
 
 #### `custom_sessions`
 
@@ -758,7 +777,7 @@ pre-filling the vibe mode, agent, and other settings.
 | `mode` | string | Vibe mode: `"vibeless"`, `"vibe"`, or `"supervibe"`. |
 | `agent` | string | Agent to use: `"claude"`, `"codex"`, `"opencode"`, or `"pi"`. |
 | `review` | bool | Whether to enable the diff-review hook. |
-| `plan_mode` | bool | Start the agent in plan mode. |
+| `plan_mode` | bool | Run the guided plan interview before starting the agent. |
 | `enable_chrome` | bool | Enable browser/Chrome integration. |
 | `remote_control` | bool | Enable Remote Control for the feature (Claude only, subject to availability). |
 
@@ -775,6 +794,44 @@ Valid values are `"claude"`, `"codex"`, `"opencode"`, and `"pi"`
 (lowercase).
 
 An empty array means "allow all agents".
+
+#### `plan_questions`
+
+Add questions to the guided interview that runs before a plan-mode
+feature starts. Questions configured globally are followed by
+project questions; a project question whose trimmed `id` matches a
+global question replaces it. Set `skip_builtin_questions` to `true`
+to use only configured questions.
+
+```json
+"plan_questions": [
+  {
+    "id": "ui-surface",
+    "text": "Where should this feature appear?",
+    "options": ["Dashboard", "Session view", "Both"],
+    "optional": true
+  },
+  {
+    "id": "constraints",
+    "text": "What constraints must the implementation preserve?",
+    "optional": false
+  }
+],
+"skip_builtin_questions": false
+```
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `id` | string | Stable merge key. IDs must be non-empty; project entries override global entries with the same trimmed ID. |
+| `text` | string | Question shown in the plan interview. |
+| `options` | string[] | Optional choices. Omit or leave empty for a free-text answer. |
+| `optional` | bool | Whether the user may skip the question. Defaults to `true`. |
+
+For the global file, place these keys inside `extension`. In a
+project's `.amf/config.json`, place them at the top level. The config
+wizard's **Plan Questions** category supports both scopes; press `b`
+in its question list to include or exclude AMF's built-in question
+bank.
 
 ## Themes
 

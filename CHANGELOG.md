@@ -10,8 +10,30 @@ are tagged.
 
 ## [Unreleased]
 
+### Backlog
+
+- Scheduled comprehensive keymap audit for PR triage pane. Current bindings
+  are too numerous and make the feature hard to use. Audit will evaluate each
+  binding's necessity and explore workflow simplifications (e.g., merging
+  `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
+- AI review result visibility: surface outcome (N findings / error / "no findings")
+  when re-entering the pane after running a review, so users know what happened.
+  Results are cached but not discoverable.
+- "Done in `<commit>`" reply needs AI attribution and smarter commit detection.
+  Should reference a commit that actually addressed the issue, not blindly use HEAD.
+  Consider `git log -L` or blame to find matching commits for the comment's file/line.
+- Model selection independent of agent harness: allow per-action model selection
+  (e.g. powerful model for AI review, cheaper model for reply drafts) via config
+  map that falls back to harness default.
+
+### Removed
+
+- Removed the PR Triage `F` shortcut that queued marked fixes immediately.
+  Use `B` to review and edit one combined prompt before sending the batch.
+
 ### Added
 
+<<<<<<< HEAD
 - **File-level PR comments for whole-file rejections.** When posting a
   finished final review to its GitHub PR, a file you rejected without
   anchoring feedback to a specific line now posts as its own comment
@@ -23,6 +45,128 @@ are tagged.
   you polling the pane to see if it's done. Selecting the notification jumps
   straight back into the review, pre-filtered to just the files that
   changed since your last pass.
+=======
+- **PR Triage shows whether its dedicated fix session is working.** Once the
+  session exists, the pane header shows `[dedicated ● working]` while that
+  exact agent session is thinking or running a tool, and `[dedicated idle]`
+  when it is waiting or finished. This now follows the dedicated session
+  correctly whether it uses Claude, Codex, OpenCode, or Pi—even when the
+  feature's primary session uses a different harness. Activity in another
+  agent window no longer affects this status. No setup or migration is
+  required.
+- A design doc for the planned **plan-mode guided discovery interview**
+  in `docs/backlog/plan-mode-interview-plan.md`, viewable in AMF's
+  in-app Markdown viewer alongside the other plans. It captures where
+  plan mode is headed — AMF interviews you about a feature (curated and
+  per-project questions plus AI follow-ups from your feature's own
+  agent harness), synthesizes a structured plan you review and edit,
+  and only then launches the agent seeded with it — including the
+  decision to replace the current shared repo-root `PLAN.md` with a
+  per-feature `.claude/plan.md`. Plan-mode feature creation now opens a
+  native guided interview before the feature or agent launches. The flow
+  collects a required brief and curated follow-up answers, supports
+  multi-line input, back navigation, optional-question skipping, and
+  finishing early, then continues the deferred launch. Cancelling offers a
+  clear choice to resume, launch without a plan, or cancel feature creation
+  while preserving any worktree that was already created. No setup or
+  migration is required. Completing the interview now saves the brief and
+  answers to the feature's gitignored `.claude/plan.md` before launch, so the
+  resulting plan stays isolated to that feature and is ready for the agent and
+  AMF's plan preview. This also applies to the first feature that runs directly
+  in the project repository: the agent and sidebar use the same
+  `.claude/plan.md`, without creating a second root-level plan. Plan
+  instructions now follow the feature's selected harness: Claude reads them
+  from its local instruction file, while Codex, OpenCode, and Pi receive them
+  through `AGENTS.md`. AMF removes its managed instructions when the feature
+  stops or is deleted and moves them when the harness changes. It no longer
+  creates or updates the old shared repo-root `PLAN.md`; existing copies are
+  left untouched and can be deleted if they are no longer needed. The `?`
+  help overlay and README now document every interview shortcut, including
+  multi-line answers, back navigation, skipping, finishing early, and cancel.
+- **Plan-mode interviews support custom questions.** Add `plan_questions` to
+  global or project AMF config to append free-text questions, offer selectable
+  answers with an `options` list, or replace a built-in question by reusing its
+  ID. Project questions override global questions with the same ID, and
+  `skip_builtin_questions` can run an interview using only configured
+  questions. The config wizard now manages these questions at either scope:
+  add free-text or select questions, mark them optional, and toggle the built-in
+  question bank without editing JSON by hand. IDs are normalized before global
+  and project questions are merged, so surrounding whitespace cannot prevent a
+  project override. The interview also labels global and project templates with
+  their actual scope. Existing configs keep the built-in interview unchanged,
+  so no migration is required.
+- **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
+  branch PR, or `g` inside the review pane) now bolds your `@login` and tags
+  it `you` when a row is one of your own PRs, so you don't have to read every
+  author to find your work in a shared repo's PR list.
+- **Open PRs are visible directly on the dashboard.** Feature rows now show the
+  PR number and unresolved review-thread count (for example,
+  `[PR #321 · 4 open]`), so you can see which branches need triage before
+  opening the PR pane. The badge refreshes in the background and keeps its
+  last known value through temporary GitHub errors. No setup or migration is
+  required.
+- **PR triage shows what the current visit costs.** After a fix uses the
+  dedicated or existing-live agent session, the PR-review header now shows the
+  tokens and estimated cost added during this visit alongside the session's
+  lifetime usage. Earlier work in a reused session is excluded, and the tally
+  survives refreshing comments or jumping into the fix session and back. No
+  setup or migration is required.
+- **AI-authored PR review comments are attributed.** When you post an AI
+  review (`W` in the PR-review pane), each inline comment now carries a
+  small `— drafted by AI via AMF` footer, so a reviewer looking at just
+  that comment — without the review summary in view — can still tell it's
+  AI-authored rather than mistake it for your own words. Your own typed
+  replies (the "not needed" explanation, a "done in `<sha>`" note) are
+  never touched.
+- **Choose the harness that generates an AI PR review.** The first time you
+  press `A` in a PR Triage pane, AMF now offers the project's enabled Claude,
+  Codex, OpenCode, and Pi harnesses, defaults to the project's preference, and
+  remembers the choice for later reviews in that pane. This choice is separate
+  from the harness used for `f`/`B` fixes, so a rate limit or outage on one
+  provider no longer blocks review generation when another is available. AMF
+  validates the selected CLI before fetching the diff or spending tokens, and
+  provider-specific failures remain visible in PR Triage. No setup or migration
+  is required.
+- **AI review of the PR diff (draft findings).** Press `A` in the PR-review
+  pane to have AMF review the PR's diff itself and surface findings as draft
+  items in the same list, triaged with the verbs already there (`f` inject-fix
+  · `s` skip · `M` add to memory). The review-memory doc is injected as
+  context so it checks the team's known recurring issues first; an optional
+  `ai_review_skill` config setting (e.g. `"review"`) leads the prompt with an
+  existing review skill/command as the primary methodology, if you
+  have one installed. Draft findings persist in the PR's cache so re-opening
+  the pane at the same commit replays them without spending tokens again; a
+  manual refresh (`r`) carries them forward too, unless the PR has moved to a
+  new commit. This is an explicit, opt-in action — the running screen shows a
+  token estimate before the one paid pass, and `esc` lets it keep going in the
+  background. Once vetted (skip what you disagree with), `W` posts the
+  remaining findings to GitHub as a real review — anchored ones as inline
+  comments, everything else folded into an editable summary — always as a
+  `COMMENT` event (never auto-approve/request-changes). The running screen's
+  throbber now animates properly for the (potentially long) blocking `gh`/
+  agent call rather than sitting frozen, and `esc`-ing back to the pane
+  while it's still running shows a throbber + "AI review running…" in the
+  header, so neither screen reads as stuck or stalled. Success/warning/error
+  toasts (e.g. "AI review found N findings") now actually render while any of
+  the PR-review pane's full-screen modes are showing — they were being pushed
+  but silently swallowed before. A failed `A` run now uses that visible error
+  toast too, instead of putting the failure in a dashboard-only message that
+  cannot be seen after returning to PR Triage. Finding-parsing also tolerates
+  a model that doesn't hold the exact requested heading level or wraps its
+  whole reply in a code fence, and a `0 findings` result is now distinguished
+  (a warning toast + a debug-log dump of the raw response) from a quiet
+  success, so a parsing mismatch doesn't look identical to "the diff was just
+  clean". A
+  draft finding's role chip now reads `[ai]` instead of falling through to
+  `[human]`, its detail pane shows a small window of the actual diff around
+  its line (re-matched from the PR diff by `path:line`, same as a fetched
+  GitHub comment — capped to a few lines of context on each side rather than
+  the whole matched hunk, which for a large added block can otherwise read
+  as "the whole file") instead of nothing, and `esc`-ing back to the pane
+  before the background pass
+  finishes no longer silently drops the findings while still claiming
+  success — they now merge into wherever you actually are when it lands.
+>>>>>>> origin/main
 - **"Since last review" interdiff in the final review.** Press `I` on a
   file flagged `Δ` (changed since your last review round) to see just the
   diff between what you reviewed last time and what's there now, instead of
@@ -87,9 +231,8 @@ are tagged.
 - **Combined batch fix in the interactive PR review — "fix all of these, then
   I'll come back."** Mark a set of comments with `space`, then press `B` to
   build **one** numbered prompt covering all of them and inject it into the
-  dedicated review session in a single shot. Where `F` queues each marked
-  comment as its own prompt to watch through one at a time, `B` is
-  send-and-leave: one shared preamble plus a `Comment N:` entry per comment —
+  dedicated review session in a single shot. It uses one shared preamble plus
+  a `Comment N:` entry per comment —
   each with its `file:line` pointer, comment text, and diff hunk, and (as with
   a single fix) no file contents — so a big set is the cheapest path in tokens
   and the agent works the whole list while you're away. It reuses the familiar
@@ -144,6 +287,17 @@ are tagged.
 
 ### Changed
 
+- **Codex-powered headless analysis is now isolated and disposable.** AI PR
+  reviews and other one-shot Codex tasks run with a read-only sandbox, accept
+  work outside a Git repository, and no longer leave temporary sessions in
+  Codex history. AMF now checks that the installed Codex version supports the
+  required headless flags and asks you to upgrade instead of failing after the
+  task starts. No setup or migration is required.
+- **PR Comment Review is now PR Triage.** Dashboard help, pickers, pane titles,
+  status text, and documentation now use the outcome-focused name for the
+  workflow where you triage, fix, reply to, and resolve pull-request feedback.
+  New dedicated fix sessions are named `PR Triage`; existing `PR Review`
+  sessions continue to be found and reused.
 - **The dashboard session filter is temporarily disabled.** Pressing `f` on
   the dashboard no longer cycles session types, and the filter hint is hidden
   from the footer and help overlay. All sessions remain visible while the
@@ -194,6 +348,41 @@ are tagged.
 
 ### Fixed
 
+- **Posted AI-review findings stay actionable in PR Triage.** After posting an
+  AI review with `W`, its findings now remain available for the normal
+  mark-done, reply, not-needed, and thread-resolution workflow instead of
+  remaining trapped as local drafts. Refreshing or reopening the PR preserves
+  that state without duplicating the posted comments, and a temporary refresh
+  failure cannot cause a second `W` to post the same review again. No migration
+  is required.
+- **Reusing a feature branch now opens its current PR.** When the same branch
+  has an older closed or merged PR and a newer open one, PR Triage and the
+  dashboard badge now follow the open PR instead of restoring the closed
+  predecessor. Returning from a linked triage session also cannot reopen stale
+  state from the earlier PR. Closed PRs remain available through explicit
+  selection, and their saved triage history is preserved. No migration is
+  required.
+- **A failed `W` post no longer boots you out of the PR-review pane.**
+  An AI finding whose reported line does not actually exist in the PR diff is
+  now included in the review summary instead of being sent as an invalid
+  inline comment that makes GitHub reject the entire review. If posting still
+  fails — for example, because the PR changed after the review was generated —
+  the post-confirm dialog stays open with the failure shown inline instead of
+  silently kicking you back to the dashboard, and a rejected-review (422)
+  failure gets an actionable message instead of GitHub's raw status line.
+- **Headless Claude calls no longer fail on large prompts.** `ClaudeLauncher`
+  passed the prompt as a `-p <prompt>` command-line argument; Linux caps a
+  single argument at 128 KiB (`MAX_ARG_STRLEN`), well under what a real PR
+  diff or file review routinely runs to, so any prompt past that failed the
+  whole spawn with `E2BIG` ("claude headless command failed") before Claude
+  ever saw the request. The prompt is now piped over stdin instead, which has
+  no comparable ceiling. Affects every headless caller — the PR-review AI
+  review (`A`), the review-memory lookback bootstrap, final review's diff
+  walkthrough/co-review/changeset overview, and session summaries.
+- **Sending pasted images from Windows/WSL now shows progress.** The composer
+  stays visible with `[Pasting...]` while AMF moves an attached image through
+  the Windows clipboard and waits for the agent harness to ingest it, so the
+  app no longer appears frozen during the slower PowerShell handoff.
 - **Claude sidebar TODOs stay tied to the selected session.** When another
   Claude session has a newer task list, AMF no longer shows that unrelated
   checklist in the current session's sidebar. The sidebar still uses the
@@ -217,6 +406,12 @@ are tagged.
   those stale entries and reinstalls the current local hooks on startup. This
   clears repeated `PostToolUse:Bash hook error` messages without requiring
   manual edits to `.claude/settings.local.json`.
+- **Claude hook paths with spaces work on macOS.** AMF now quotes its Claude
+  hook commands and cleans up older unquoted macOS hook entries, so paths under
+  `~/Library/Application Support/amf` no longer fail with `/bin/sh` errors
+  such as `Library/Application: no such file or directory`. Existing features
+  with stale local Claude settings are repaired during AMF startup, even if the
+  normal hook refresh already ran.
 - **File-level PR review comments no longer inject the whole file as a diff
   hunk.** A comment left on the file as a whole (GitHub's `subject_type:
   "file"`) carries the entire file diff as its `diff_hunk` — fixing it used to
@@ -281,9 +476,19 @@ are tagged.
   the visible rows used to scroll the selection out of view with no way to
   see it again. The list now auto-scrolls to keep the selected worktree
   visible, like every other picker in AMF.
+- **Inline PR comments now show the code they actually reference.** GitHub can
+  attach an entire newly-added function to a comment on one line, making the
+  relevant code hard to find and bloating fix prompts. AMF now centers the
+  displayed and injected diff on the referenced line with three surrounding
+  lines of context on each side, including for outdated and cached comments.
 
 ### Migration
 
+- No migration is required for the PR Triage rename. Existing dedicated
+  `PR Review` sessions continue to work and are reused automatically.
+- No migration is required for focused PR-comment diff context; cached reviews
+  adopt it automatically when displayed.
+- No migration is required for the Windows/WSL image-paste progress indicator.
 - No action required for comment re-anchoring. A review you paused before
   upgrading still resumes; its comments simply can't follow moved code until you
   re-add them, and any that no longer match are flagged rather than dropped.
@@ -362,15 +567,6 @@ are tagged.
   you're in: from a session view, leader → `N` opens a one-line input that
   appends to the project's list (auto-creating the list if there isn't one yet).
   The list is saved per checkout, so it survives restarts.
-- **Fix several PR comments in one pass.** While reviewing PR comments, press
-  `space` to mark comments (a `●` flags them, and the footer shows how many),
-  then `F` to queue a scoped fix for every marked comment into the review
-  session at once — without leaving the pane. The harness works through them
-  one after another while you keep triaging, sharing the session's warm file
-  context, and each marked comment is flagged `fixing`. Already-resolved marks
-  are skipped. Start the review session first with a single `f` (the batch
-  queues into that warm session rather than spinning up a cold one).
-
 ### Fixed
 
 - **Notification hook scripts are written atomically.** AMF rewrites its

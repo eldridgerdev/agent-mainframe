@@ -7,8 +7,12 @@ use std::time::{Duration, Instant};
 
 use super::PromptAnalysis;
 use crate::editor::TextEditor;
-use crate::extension::{CustomSessionConfig, FeaturePreset, LifecycleHooks};
+use crate::extension::{
+    ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
+};
+use crate::plan_interview::{PlanQuestion, PlanQuestionKind};
 use crate::project::{AgentKind, SessionKind, VibeMode};
+use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 use crate::worktree::WorktreeInfo;
 
 pub const STARTUP_MASK_MAX_DURATION: Duration = Duration::from_secs(8);
@@ -1058,6 +1062,9 @@ pub struct ComposeState {
     pub images: Vec<ComposeImage>,
     /// Background clipboard read currently feeding this compose box.
     pub clipboard_paste_id: Option<u64>,
+    /// The compose buffer is being delivered to the harness in a
+    /// background worker. This is used for the slower WSL image path.
+    pub submit_in_progress: bool,
 }
 
 impl ComposeState {
@@ -1078,6 +1085,7 @@ impl ComposeState {
             suggestion_index: 0,
             images: Vec::new(),
             clipboard_paste_id: None,
+            submit_in_progress: false,
         };
         state.refresh_suggestions();
         state
@@ -1100,7 +1108,7 @@ impl ComposeState {
     }
 
     pub fn paste_in_progress(&self) -> bool {
-        self.clipboard_paste_id.is_some()
+        self.clipboard_paste_id.is_some() || self.submit_in_progress
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
@@ -1481,6 +1489,9 @@ pub struct PrReviewLoadState {
     pub workdir: PathBuf,
     /// The resolved PR being loaded.
     pub pr: crate::github::PrRef,
+    /// Usage snapshots carried through a manual refresh so refreshing comments
+    /// does not restart the current triage-visit tally.
+    pub usage_baselines: HashMap<TokenUsageSource, SessionTokenUsage>,
 }
 
 /// Manual PR-number override prompt: shown when the branch has no detectable
@@ -1498,7 +1509,7 @@ pub struct PrNumberPromptState {
 
 /// PR picker: a selectable list of the repo's pull requests, so the user can
 /// open a PR for review without knowing its number. Reached when the branch has
-/// no auto-detectable PR, or on demand from the review pane to switch PRs. The
+/// no auto-detectable PR, or on demand from PR Triage to switch PRs. The
 /// manual number prompt stays one keypress away (`#`).
 #[derive(Debug, Clone)]
 pub struct PrPickerState {
@@ -1516,6 +1527,9 @@ pub struct PrPickerState {
     /// When `Some`, the lookback-bootstrap depth picker (`b`) is open over the
     /// picker.
     pub bootstrap_pick: Option<BootstrapPickState>,
+    /// The logged-in `gh` user's login, when resolvable — used to highlight
+    /// the user's own PRs in the row rendering. `None` if unresolved/failed.
+    pub current_user: Option<String>,
 }
 
 /// Depth picker for the review-memory lookback bootstrap (`b` in the PR
@@ -1537,7 +1551,17 @@ pub struct BootstrapRunState {
     pub stage: crate::app::pr_review::BootstrapStage,
 }
 
-/// State for the full-screen PR comment-review pane.
+/// Full-screen progress view for the AI PR review's background diff-fetch +
+/// review pass (Epic E `A`), entered from the review pane.
+#[derive(Debug, Clone)]
+pub struct AiReviewRunState {
+    /// The review pane to return to on completion or cancel (dialogs cleared
+    /// before stashing, matching the `P`/`f` stash convention).
+    pub origin: PrReviewState,
+    pub stage: crate::app::pr_review::AiReviewStage,
+}
+
+/// State for the full-screen PR Triage pane.
 #[derive(Debug, Clone)]
 pub struct PrReviewState {
     /// Working directory of the feature whose PR we're reviewing. Used by the
@@ -1561,14 +1585,24 @@ pub struct PrReviewState {
     pub sort_mode: crate::app::pr_review::PrSortMode,
     /// Which agent session "fix" prompts are injected into (toggle with `t`).
     pub fix_target: crate::app::pr_review::FixTarget,
-    /// Harness chosen for the dedicated review session, picked once before the
+    /// Token totals already present when each fix-target session joined this
+    /// visit to the PR pane. Current totals minus these snapshots are the live
+    /// "this visit" tally; a target created after the pane opened has no
+    /// baseline, so all of its usage belongs to the visit.
+    pub usage_baselines: HashMap<TokenUsageSource, SessionTokenUsage>,
+    /// Harness chosen for the dedicated triage session, picked once before the
     /// first fix is injected and reused for the rest of the PR. `None` until the
     /// user picks (or when the dedicated session already exists / isn't the
     /// target). Lets PR triage run on a different harness than the feature's
     /// working session.
     pub review_harness: Option<AgentKind>,
+    /// Harness used to generate AI review drafts with `A`. Independent from
+    /// `review_harness`, which only controls the dedicated fix session.
+    pub ai_review_harness: Option<AgentKind>,
+    /// Single-select picker shown before the first AI-review run in this pane.
+    pub ai_harness_pick: Option<AiHarnessPickState>,
     /// When `Some`, the harness picker is open over the pane: the user is
-    /// choosing which agent harness the dedicated review session will run before
+    /// choosing which agent harness the dedicated triage session will run before
     /// the first fix is injected.
     pub harness_pick: Option<HarnessPickState>,
     /// When `Some`, the fix confirm/edit dialog is open over the pane, holding
@@ -1587,20 +1621,47 @@ pub struct PrReviewState {
     /// selected comment's finding, editable, awaiting the user's approval
     /// before it's appended to the review-memory doc.
     pub memory_add: Option<MemoryAddState>,
-    /// Comment ids marked (with `space`) for a batch fix. `F` queues every
-    /// marked comment's fix prompt into the dedicated review session in one
-    /// pass. Keyed by id (not index) so marks survive the hide-resolved filter
-    /// shifting the visible rows. Cleared once the batch is queued.
+    /// Comment ids marked (with `space`) for a combined batch fix via `B`.
+    /// Keyed by id (not index) so marks survive the hide-resolved filter
+    /// shifting the visible rows. Cleared once the batch is injected.
     pub marked: std::collections::HashSet<u64>,
     /// Set while the combined-batch flow (`B`) is waiting on the harness picker:
     /// after the user picks the review harness, the continuation opens the
     /// combined-batch confirm dialog instead of the single-comment one. Cleared
     /// when the picker is confirmed or cancelled.
     pub pending_batch: bool,
+    /// When `Some`, the AI-review post-to-GitHub confirm dialog is open over
+    /// the pane: a preview of the review that will post (Epic E `W`),
+    /// awaiting the user's approval.
+    pub ai_review_post: Option<AiReviewPostConfirmState>,
+}
+
+/// Confirm/edit dialog for posting the AI-review draft findings to GitHub as
+/// a real review (Epic E `W`). Built once when opened from the findings
+/// eligible to post (`ai_generated`, not skipped, not already posted); `⏎`
+/// posts as-is. Only the summary body is editable — the per-finding inline
+/// comment bodies are the AI's own text, vetted by skipping (`s`) rather than
+/// hand-edited here.
+#[derive(Debug, Clone)]
+pub struct AiReviewPostConfirmState {
+    /// Ids of every included finding (inline-anchored and summary-folded), so
+    /// a successful post can mark them all `Replied` in one pass.
+    pub comment_ids: Vec<u64>,
+    /// Inline review comments built from the anchored findings.
+    pub inline: Vec<crate::github::PrReviewComment>,
+    pub editor: TextEditor,
+    pub editing: bool,
+    /// Last post failure, shown inline so a recoverable error (e.g. GitHub
+    /// rejecting the review because a finding no longer matches the current
+    /// diff) doesn't require leaving the dialog to notice — `show_error`
+    /// unconditionally resets `self.mode` to `Normal` outside of
+    /// `Normal`/`Help`/`Viewing`, so the pane is restored with this set
+    /// rather than losing the dialog entirely.
+    pub error: Option<String>,
 }
 
 /// A [`PrReviewState`] stashed while the user is watching the linked fix
-/// session (`P` from the review pane), so `leader+P` can jump straight back
+/// session (`P` from PR Triage), so `leader+P` can jump straight back
 /// to the exact comment/scroll/dialog state without re-fetching. `session`
 /// and `window` identify the tmux target the stash was jumped *to*, so the
 /// restore only fires from that same session's view — a stash left behind
@@ -1612,7 +1673,7 @@ pub struct PrReviewReturn {
     pub state: PrReviewState,
 }
 
-/// Single-select harness picker shown before the dedicated PR-review session is
+/// Single-select harness picker shown before the dedicated PR-triage session is
 /// spun up, so the user can run triage fixes on a different harness than the
 /// feature's working session. Highlights the project's preferred agent by
 /// default.
@@ -1622,6 +1683,15 @@ pub struct HarnessPickState {
     pub agents: Vec<AgentKind>,
     /// Index into `agents` of the highlighted choice.
     pub selected: usize,
+}
+
+/// Harness picker for the paid, headless `A` review pass. An unavailable CLI
+/// leaves the picker open and records an actionable inline error.
+#[derive(Debug, Clone)]
+pub struct AiHarnessPickState {
+    pub agents: Vec<AgentKind>,
+    pub selected: usize,
+    pub error: Option<String>,
 }
 
 /// Reply dialog for one comment. Replies are contextual, not free-form: either
@@ -1837,6 +1907,8 @@ pub enum AppMode {
     TodosHostReassign(TodosHostReassignState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
+    #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
+    PlanInterview(PlanInterviewState),
     DeletingProject(String),
     DeletingFeature(String, String),
     DeletingFeatureInProgress(DeletingFeatureState),
@@ -1876,11 +1948,14 @@ pub enum AppMode {
     PrPicker(PrPickerState),
     /// Fetching a PR's comments off the UI thread; shows a loading frame.
     PrReviewLoading(PrReviewLoadState),
-    /// Triaging a PR's comments in the full-screen review pane.
+    /// Triaging a PR's comments in the full-screen PR Triage pane.
     PrReview(PrReviewState),
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.
     ReviewMemoryBootstrapRunning(BootstrapRunState),
+    /// Running the AI PR review's diff-fetch + review pass off the UI thread
+    /// (Epic E `A`); shows a loading frame with the current stage.
+    AiPrReviewRunning(AiReviewRunState),
     SteeringPrompt(SteeringPromptState),
     Compose(ComposeState),
     SessionPicker(SessionPickerState),
@@ -1983,6 +2058,7 @@ impl HarnessSetupState {
 pub enum ConfigCategory {
     CustomSessions,
     FeaturePresets,
+    PlanQuestions,
     LifecycleHooks,
     Keybindings,
     AllowedAgents,
@@ -2012,6 +2088,8 @@ pub struct ConfigWizardState {
     pub input_mode: bool,
     pub sessions: Vec<CustomSessionConfig>,
     pub presets: Vec<FeaturePreset>,
+    pub plan_questions: Vec<ConfiguredPlanQuestion>,
+    pub skip_builtin_questions: Option<bool>,
     pub hooks: LifecycleHooks,
     pub keybindings: HashMap<String, char>,
     pub allowed_agents: Option<Vec<AgentKind>>,
@@ -2608,6 +2686,247 @@ pub struct PreparedFeatureLaunch {
     pub startup_prompt: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanInterviewPhase {
+    Brief,
+    StaticQuestions,
+    Done,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanInterviewAdvanceError {
+    BriefRequired,
+    AnswerRequired,
+}
+
+/// In-memory state for the static-question interview delivered in Epic 1.
+///
+/// Draft persistence and AI-generated phases are intentionally layered onto
+/// this state in later epics. `pending_launch` is optional so the same state
+/// can also support on-demand interviews for existing features.
+pub struct PlanInterviewState {
+    pub feature_name: String,
+    pub phase: PlanInterviewPhase,
+    pub questions: Vec<PlanQuestion>,
+    pub question_index: usize,
+    pub brief: String,
+    pub answers: Vec<Option<String>>,
+    pub editor: TextEditor,
+    pub selected_option: usize,
+    pub pending_launch: Option<PreparedFeatureLaunch>,
+    pub abort_confirmation: bool,
+}
+
+impl PlanInterviewState {
+    pub fn for_feature_creation(
+        pending_launch: PreparedFeatureLaunch,
+        questions: Vec<PlanQuestion>,
+    ) -> Self {
+        let feature_name = pending_launch.branch.clone();
+        Self::new(feature_name, questions, Some(pending_launch))
+    }
+
+    pub fn new(
+        feature_name: String,
+        questions: Vec<PlanQuestion>,
+        pending_launch: Option<PreparedFeatureLaunch>,
+    ) -> Self {
+        let answer_count = questions.len();
+        Self {
+            feature_name,
+            phase: PlanInterviewPhase::Brief,
+            questions,
+            question_index: 0,
+            brief: String::new(),
+            answers: vec![None; answer_count],
+            editor: TextEditor::new(String::new()),
+            selected_option: 0,
+            pending_launch,
+            abort_confirmation: false,
+        }
+    }
+
+    pub fn current_question(&self) -> Option<&PlanQuestion> {
+        if self.phase == PlanInterviewPhase::StaticQuestions {
+            self.questions.get(self.question_index)
+        } else {
+            None
+        }
+    }
+
+    pub fn select_previous_option(&mut self) {
+        let option_count = self
+            .current_question()
+            .and_then(|question| match &question.kind {
+                PlanQuestionKind::Select(options) => Some(options.len()),
+                PlanQuestionKind::FreeText => None,
+            })
+            .unwrap_or(0);
+        if option_count > 0 {
+            self.selected_option = self
+                .selected_option
+                .checked_sub(1)
+                .unwrap_or(option_count - 1);
+        }
+    }
+
+    pub fn select_next_option(&mut self) {
+        let option_count = self
+            .current_question()
+            .and_then(|question| match &question.kind {
+                PlanQuestionKind::Select(options) => Some(options.len()),
+                PlanQuestionKind::FreeText => None,
+            })
+            .unwrap_or(0);
+        if option_count > 0 {
+            self.selected_option = (self.selected_option + 1) % option_count;
+        }
+    }
+
+    /// Save the current input and move to the next interview step.
+    pub fn advance(&mut self) -> Result<(), PlanInterviewAdvanceError> {
+        match self.phase {
+            PlanInterviewPhase::Brief => {
+                if self.editor.text().trim().is_empty() {
+                    return Err(PlanInterviewAdvanceError::BriefRequired);
+                }
+                self.brief = self.editor.text().to_string();
+                if self.questions.is_empty() {
+                    self.phase = PlanInterviewPhase::Done;
+                } else {
+                    self.phase = PlanInterviewPhase::StaticQuestions;
+                    self.question_index = 0;
+                    self.load_current_answer();
+                }
+            }
+            PlanInterviewPhase::StaticQuestions => {
+                self.save_current_answer(false)?;
+                self.move_after_current_question();
+            }
+            PlanInterviewPhase::Done => {}
+        }
+        Ok(())
+    }
+
+    /// Skip an optional question and move forward without recording an answer.
+    pub fn skip(&mut self) -> Result<(), PlanInterviewAdvanceError> {
+        let Some(question) = self.current_question() else {
+            return Ok(());
+        };
+        if !question.optional {
+            return Err(PlanInterviewAdvanceError::AnswerRequired);
+        }
+        self.answers[self.question_index] = None;
+        self.move_after_current_question();
+        Ok(())
+    }
+
+    /// Return to the previous step, restoring its draft answer into the editor.
+    pub fn back(&mut self) -> bool {
+        match self.phase {
+            PlanInterviewPhase::Brief => false,
+            PlanInterviewPhase::StaticQuestions if self.question_index == 0 => {
+                self.save_current_draft();
+                self.phase = PlanInterviewPhase::Brief;
+                self.editor = TextEditor::new(self.brief.clone());
+                self.selected_option = 0;
+                true
+            }
+            PlanInterviewPhase::StaticQuestions => {
+                self.save_current_draft();
+                self.question_index -= 1;
+                self.load_current_answer();
+                true
+            }
+            PlanInterviewPhase::Done if !self.questions.is_empty() => {
+                self.phase = PlanInterviewPhase::StaticQuestions;
+                self.question_index = self.questions.len() - 1;
+                self.load_current_answer();
+                true
+            }
+            PlanInterviewPhase::Done => {
+                self.phase = PlanInterviewPhase::Brief;
+                self.editor = TextEditor::new(self.brief.clone());
+                true
+            }
+        }
+    }
+
+    /// End questioning with the answers collected so far.
+    pub fn finish_early(&mut self) -> Result<(), PlanInterviewAdvanceError> {
+        match self.phase {
+            PlanInterviewPhase::Brief => {
+                if self.editor.text().trim().is_empty() {
+                    return Err(PlanInterviewAdvanceError::BriefRequired);
+                }
+                self.brief = self.editor.text().to_string();
+            }
+            PlanInterviewPhase::StaticQuestions => self.save_current_draft(),
+            PlanInterviewPhase::Done => {}
+        }
+        self.phase = PlanInterviewPhase::Done;
+        Ok(())
+    }
+
+    fn save_current_answer(
+        &mut self,
+        allow_empty_optional: bool,
+    ) -> Result<(), PlanInterviewAdvanceError> {
+        let Some(question) = self.questions.get(self.question_index) else {
+            return Ok(());
+        };
+        let answer = match &question.kind {
+            PlanQuestionKind::FreeText => {
+                let text = self.editor.text();
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(text.to_string())
+                }
+            }
+            PlanQuestionKind::Select(options) => options.get(self.selected_option).cloned(),
+        };
+        if answer.is_none() && !question.optional && !allow_empty_optional {
+            return Err(PlanInterviewAdvanceError::AnswerRequired);
+        }
+        self.answers[self.question_index] = answer;
+        Ok(())
+    }
+
+    fn save_current_draft(&mut self) {
+        let _ = self.save_current_answer(true);
+    }
+
+    fn move_after_current_question(&mut self) {
+        if self.question_index + 1 >= self.questions.len() {
+            self.phase = PlanInterviewPhase::Done;
+        } else {
+            self.question_index += 1;
+            self.load_current_answer();
+        }
+    }
+
+    fn load_current_answer(&mut self) {
+        let existing = self
+            .answers
+            .get(self.question_index)
+            .and_then(|answer| answer.as_deref());
+        match self.questions.get(self.question_index).map(|q| &q.kind) {
+            Some(PlanQuestionKind::FreeText) => {
+                self.editor = TextEditor::new(existing.unwrap_or_default().to_string());
+                self.selected_option = 0;
+            }
+            Some(PlanQuestionKind::Select(options)) => {
+                self.editor = TextEditor::new(String::new());
+                self.selected_option = existing
+                    .and_then(|answer| options.iter().position(|option| option == answer))
+                    .unwrap_or(0);
+            }
+            None => {}
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct CreateBatchFeaturesState {
     pub workspace_path: String,
@@ -2752,5 +3071,94 @@ mod tests {
     #[test]
     fn session_filter_all_has_seven_variants() {
         assert_eq!(SessionFilter::ALL.len(), 7);
+    }
+
+    #[test]
+    fn plan_interview_requires_a_brief_before_questions() {
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            crate::plan_interview::builtin_questions(),
+            None,
+        );
+
+        assert_eq!(
+            state.advance(),
+            Err(PlanInterviewAdvanceError::BriefRequired)
+        );
+        assert_eq!(state.phase, PlanInterviewPhase::Brief);
+
+        state.editor = TextEditor::new("Build the feature\nwith care".into());
+        state.advance().unwrap();
+
+        assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+        assert_eq!(state.brief, "Build the feature\nwith care");
+        assert_eq!(state.current_question().unwrap().id, "scope");
+    }
+
+    #[test]
+    fn plan_interview_retains_answers_when_navigating_back() {
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            crate::plan_interview::builtin_questions(),
+            None,
+        );
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+        state.editor = TextEditor::new("In: interviews. Out: AI.".into());
+        state.advance().unwrap();
+
+        assert_eq!(state.question_index, 1);
+        assert!(state.back());
+        assert_eq!(state.question_index, 0);
+        assert_eq!(state.editor.text(), "In: interviews. Out: AI.");
+
+        assert!(state.back());
+        assert_eq!(state.phase, PlanInterviewPhase::Brief);
+        assert_eq!(state.editor.text(), "A useful feature");
+    }
+
+    #[test]
+    fn plan_interview_skip_and_finish_early_preserve_progress() {
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            crate::plan_interview::builtin_questions(),
+            None,
+        );
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+        state.skip().unwrap();
+        state.editor = TextEditor::new("Developers use it from the dashboard".into());
+        state.finish_early().unwrap();
+
+        assert_eq!(state.phase, PlanInterviewPhase::Done);
+        assert_eq!(state.answers[0], None);
+        assert_eq!(
+            state.answers[1].as_deref(),
+            Some("Developers use it from the dashboard")
+        );
+    }
+
+    #[test]
+    fn plan_interview_select_options_wrap_and_restore_the_answer() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state = PlanInterviewState::new("feature".into(), vec![question], None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        state.select_previous_option();
+        assert_eq!(state.selected_option, 1);
+        state.advance().unwrap();
+        assert_eq!(state.answers[0].as_deref(), Some("Session"));
+
+        assert!(state.back());
+        assert_eq!(state.selected_option, 1);
+        state.select_next_option();
+        assert_eq!(state.selected_option, 0);
     }
 }

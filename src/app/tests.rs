@@ -1,5 +1,6 @@
 use super::setup::{
-    cleanup_agent_injected_files, ensure_notification_hooks, strip_between_markers,
+    cleanup_agent_injected_files, ensure_notification_hooks, ensure_plan_mode_instructions,
+    strip_between_markers,
 };
 use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
@@ -643,6 +644,93 @@ fn strip_between_markers_adjacent_markers() {
     assert_eq!(result, "");
 }
 
+#[test]
+fn strip_between_markers_handles_unicode_before_marker() {
+    let result = strip_between_markers(
+        "café\n\n<!-- BEGIN -->\nmanaged\n<!-- END -->\n",
+        "<!-- BEGIN -->",
+        "<!-- END -->",
+    );
+    assert_eq!(result, "café\n");
+}
+
+#[test]
+fn plan_mode_instructions_use_claude_local_and_per_workdir_plan() {
+    let workdir = tempfile::TempDir::new().unwrap();
+    std::fs::write(workdir.path().join("CLAUDE.local.md"), "# Existing\n").unwrap();
+
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Claude, true);
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Claude, true);
+
+    let instructions = std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap();
+    assert!(instructions.starts_with("# Existing\n"));
+    assert!(instructions.contains("`.claude/plan.md`"));
+    assert_eq!(
+        instructions
+            .matches("<!-- AMF:plan-instructions:begin -->")
+            .count(),
+        1,
+        "instruction injection should be idempotent"
+    );
+    assert!(
+        std::fs::read_to_string(workdir.path().join(".gitignore"))
+            .unwrap()
+            .lines()
+            .any(|line| line == "CLAUDE.local.md")
+    );
+    assert!(!workdir.path().join("PLAN.md").exists());
+
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Claude, false);
+    assert_eq!(
+        std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap(),
+        "# Existing\n"
+    );
+}
+
+#[test]
+fn plan_mode_instructions_use_agents_for_non_claude_harnesses() {
+    for agent in [AgentKind::Codex, AgentKind::Opencode, AgentKind::Pi] {
+        let workdir = tempfile::TempDir::new().unwrap();
+
+        ensure_plan_mode_instructions(workdir.path(), &agent, true);
+
+        let instructions = std::fs::read_to_string(workdir.path().join("AGENTS.md")).unwrap();
+        assert!(instructions.contains("`.claude/plan.md`"));
+        assert!(!workdir.path().join("CLAUDE.local.md").exists());
+        let ignore = std::fs::read_to_string(workdir.path().join(".gitignore")).unwrap();
+        assert!(ignore.lines().any(|line| line == "AGENTS.md"));
+
+        ensure_plan_mode_instructions(workdir.path(), &agent, false);
+        assert!(!workdir.path().join("AGENTS.md").exists());
+        assert!(
+            !workdir.path().join(".gitignore").exists(),
+            "AMF-owned AGENTS.md ignore entry should be cleaned up"
+        );
+    }
+}
+
+#[test]
+fn plan_mode_instructions_preserve_user_agents_file_and_ignore_rules() {
+    let workdir = tempfile::TempDir::new().unwrap();
+    std::fs::write(workdir.path().join("AGENTS.md"), "# User instructions\n").unwrap();
+    std::fs::write(workdir.path().join(".gitignore"), "target/\n").unwrap();
+
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Codex, true);
+
+    let ignore = std::fs::read_to_string(workdir.path().join(".gitignore")).unwrap();
+    assert_eq!(ignore, "target/\n", "a user's AGENTS.md must stay tracked");
+
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Codex, false);
+    assert_eq!(
+        std::fs::read_to_string(workdir.path().join("AGENTS.md")).unwrap(),
+        "# User instructions\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workdir.path().join(".gitignore")).unwrap(),
+        "target/\n"
+    );
+}
+
 // ── thinking hint parsing ─────────────────────────────────
 
 #[test]
@@ -986,6 +1074,302 @@ fn sync_statuses_idle_stays_idle_when_session_live() {
 }
 
 #[test]
+fn active_pr_updates_cache_current_branch_and_remove_confirmed_absence() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+
+    assert!(app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "abc123".to_string(),
+            number: 321,
+            unresolved_threads: Some(4),
+        }),
+    }]));
+    assert_eq!(app.active_pr_for_feature(&feature_id).unwrap().number, 321);
+    assert_eq!(
+        app.active_pr_for_feature(&feature_id)
+            .unwrap()
+            .unresolved_threads,
+        Some(4)
+    );
+
+    // A result started for an old branch cannot overwrite the current badge.
+    assert!(!app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: "old-branch".to_string(),
+        lookup: ActivePrLookup::NoPr,
+    }]));
+    assert!(app.active_pr_for_feature(&feature_id).is_some());
+
+    assert!(app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch,
+        lookup: ActivePrLookup::NoPr,
+    }]));
+    assert!(app.active_pr_for_feature(&feature_id).is_none());
+}
+
+#[test]
+fn failed_active_pr_refresh_preserves_last_known_badge() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "abc123".to_string(),
+            number: 321,
+            unresolved_threads: Some(1),
+        },
+    );
+
+    assert!(!app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch,
+        lookup: ActivePrLookup::Failed("network unavailable".to_string()),
+    }]));
+    assert_eq!(app.active_pr_for_feature(&feature_id).unwrap().number, 321);
+}
+
+#[test]
+fn active_pr_successor_replaces_badge_and_invalidates_old_pr_targets() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    let old_state = match &mut app.mode {
+        AppMode::PrReview(state) => {
+            state.review.pr.number = 449;
+            state.clone()
+        }
+        _ => unreachable!(),
+    };
+    app.pr_review_return = Some(PrReviewReturn {
+        session: "amf-my-feat".to_string(),
+        window: "pr-triage".to_string(),
+        state: old_state.clone(),
+    });
+    app.ai_review_pending = Some(old_state);
+
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "old-head".to_string(),
+            number: 449,
+            unresolved_threads: Some(0),
+        },
+    );
+    assert!(app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch,
+            head_sha: "new-head".to_string(),
+            number: 450,
+            unresolved_threads: Some(2),
+        }),
+    }]));
+
+    assert_eq!(app.active_pr_for_feature(&feature_id).unwrap().number, 450);
+    assert!(app.pr_review_return.is_none());
+    assert!(app.ai_review_pending.is_none());
+    // Explicitly opened closed PRs remain viewable; only implicit restore
+    // targets are invalidated by discovering the current open successor.
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state) if state.review.pr.number == 449
+    ));
+}
+
+#[test]
+fn active_pr_successor_prevents_returning_to_stashed_predecessor() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    let old_state = match &mut app.mode {
+        AppMode::PrReview(state) => {
+            state.review.pr.number = 449;
+            state.clone()
+        }
+        _ => unreachable!(),
+    };
+    app.pr_review_return = Some(PrReviewReturn {
+        session: "amf-my-feat".to_string(),
+        window: "pr-triage".to_string(),
+        state: old_state,
+    });
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "pr-triage".to_string(),
+        "PR Triage".to_string(),
+        SessionKind::Claude,
+        VibeMode::default(),
+        false,
+    ));
+
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "old-head".to_string(),
+            number: 449,
+            unresolved_threads: Some(0),
+        },
+    );
+    app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id,
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch,
+            head_sha: "new-head".to_string(),
+            number: 450,
+            unresolved_threads: Some(0),
+        }),
+    }]);
+    app.pr_review_return_to_pane();
+
+    assert!(matches!(&app.mode, AppMode::Viewing(_)));
+    assert!(app.pr_review_return.is_none());
+}
+
+#[test]
+fn unchanged_active_pr_badge_does_not_cancel_explicit_closed_pr_fetch() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "open-head".to_string(),
+            number: 450,
+            unresolved_threads: Some(0),
+        },
+    );
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.pr_review_bg = Some(rx);
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: feature.workdir.clone(),
+        pr: crate::github::PrRef {
+            number: 449,
+            head_sha: "closed-head".to_string(),
+            url: "https://github.com/o/r/pull/449".to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+        },
+        usage_baselines: std::collections::HashMap::new(),
+    });
+
+    assert!(!app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id,
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch,
+            head_sha: "open-head".to_string(),
+            number: 450,
+            unresolved_threads: Some(0),
+        }),
+    }]));
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReviewLoading(state) if state.pr.number == 449
+    ));
+    assert!(app.pr_review_bg.is_some());
+}
+
+#[test]
+fn predecessor_invalidation_preserves_live_successor_ai_review() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    let successor = match &mut app.mode {
+        AppMode::PrReview(state) => {
+            state.review.pr.number = 450;
+            state.clone()
+        }
+        _ => unreachable!(),
+    };
+    app.pr_review_return = Some(PrReviewReturn {
+        session: "amf-my-feat".to_string(),
+        window: "pr-triage".to_string(),
+        state: successor.clone(),
+    });
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(successor.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin: successor,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    assert!(
+        !app.invalidate_pr_context_for_transition(std::path::Path::new("/tmp/test-workdir"), 449,)
+    );
+
+    assert!(app.pr_review_return.is_some());
+    assert!(app.ai_review_pending.is_some());
+    assert!(app.ai_review_bg.is_some());
+    assert!(matches!(
+        &app.mode,
+        AppMode::AiPrReviewRunning(state) if state.origin.review.pr.number == 450
+    ));
+}
+
+#[test]
 fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
     let repo = TempDir::new().unwrap();
     let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Idle);
@@ -1159,6 +1543,67 @@ fn visible_animation_is_enabled_for_dashboard_summary_generation() {
     app.summary_state
         .generating
         .insert("amf-my-feat".to_string());
+    assert!(app.has_visible_animation());
+}
+
+#[test]
+fn visible_animation_is_enabled_while_ai_pr_review_runs_in_the_background() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    assert!(!app.has_visible_animation());
+
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    assert!(app.has_visible_animation());
+
+    app.ai_review_bg = None;
+    assert!(!app.has_visible_animation());
+}
+
+#[test]
+fn visible_animation_is_enabled_for_pr_review_running_screens() {
+    // Regression: `redraw_signature()` only hashes the mode's discriminant,
+    // not its stage, so these full-screen loading/running views need an
+    // unconditional `has_visible_animation` arm — otherwise the throbber only
+    // advances on the rare frame something else forces a redraw, and just
+    // sits frozen for the (potentially long) blocking `gh`/`claude` call in
+    // between, reading as "nothing is happening".
+    let mut app = pr_review_test_app();
+
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    assert!(app.has_visible_animation());
+
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        pr: crate::github::PrRef {
+            number: 1,
+            head_sha: "sha".to_string(),
+            url: "https://github.com/o/r/pull/1".to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+        },
+        usage_baselines: std::collections::HashMap::new(),
+    });
+    assert!(app.has_visible_animation());
+
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        origin,
+        depth: crate::app::pr_review::BootstrapDepth::default(),
+        stage: crate::app::pr_review::BootstrapStage::FetchingComments,
+    });
     assert!(app.has_visible_animation());
 }
 
@@ -1603,6 +2048,107 @@ fn app_in_creating_feature_mode(
     );
     app.mode = AppMode::CreatingFeature(state);
     app
+}
+
+#[test]
+fn create_feature_with_plan_mode_defers_launch_into_interview() {
+    let repo = TempDir::new().unwrap();
+    let now = Utc::now();
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![Project {
+            id: "proj-1".into(),
+            name: "my-project".into(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: vec![],
+        extra: HashMap::new(),
+    };
+    let mut state = CreateFeatureState::new(
+        "my-project".into(),
+        repo.path().to_path_buf(),
+        Vec::new(),
+        true,
+    );
+    state.branch = "planned-feature".into();
+    state.plan_mode = true;
+    state.use_worktree = false;
+    state.session_name = "Claude 1".into();
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::CreatingFeature(state);
+    app.create_feature().unwrap();
+
+    assert!(app.store.projects[0].features.is_empty());
+    match &app.mode {
+        AppMode::PlanInterview(interview) => {
+            assert_eq!(interview.feature_name, "planned-feature");
+            assert_eq!(interview.phase, PlanInterviewPhase::Brief);
+            let pending = interview.pending_launch.as_ref().unwrap();
+            assert_eq!(pending.branch, "planned-feature");
+            assert!(pending.plan_mode);
+            assert_eq!(pending.workdir, repo.path());
+        }
+        _ => panic!("expected plan interview before feature launch"),
+    }
+}
+
+#[test]
+fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
+    let repo = TempDir::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+    app.finish_feature_launch(PreparedFeatureLaunch {
+        project_name: "my-project".into(),
+        branch: "planned-feature".into(),
+        workdir: repo.path().join(".worktrees/planned-feature"),
+        is_worktree: true,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: true,
+        agent: AgentKind::Claude,
+        create_terminal: false,
+        session_name: "Claude 1".into(),
+        enable_chrome: false,
+        remote_control: false,
+        steering_enabled: false,
+        hook_succeeded: None,
+        startup_prompt: None,
+    })
+    .unwrap();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if !state.abort_confirmation));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("worktree kept")
+    );
+    assert_eq!(app.store.projects[0].features.len(), 1);
 }
 
 #[test]
@@ -2698,6 +3244,38 @@ fn submit_compose_rejects_empty_buffer() {
     app.submit_compose().unwrap();
 
     assert!(matches!(&app.mode, AppMode::Compose(_)));
+}
+
+#[test]
+fn poll_compose_submit_keeps_pasting_indicator_until_delivery_finishes() {
+    let repo = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let mut state = ComposeState::new(
+        compose_test_view(),
+        repo.path().to_path_buf(),
+        "Describe [Image 1]".to_string(),
+        Vec::new(),
+    );
+    state.submit_in_progress = true;
+    assert!(state.paste_in_progress());
+    app.mode = AppMode::Compose(state);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.compose_submit = Some(ComposeSubmit {
+        target: "amf-my-feat:claude".to_string(),
+        rx,
+    });
+
+    assert!(!app.poll_compose_submit());
+    assert!(matches!(&app.mode, AppMode::Compose(state) if state.paste_in_progress()));
+
+    tx.send(Ok(())).unwrap();
+    assert!(app.poll_compose_submit());
+    assert!(matches!(&app.mode, AppMode::Viewing(view) if view.session == "amf-my-feat"));
 }
 
 #[test]
@@ -3983,6 +4561,166 @@ fn claude_hooks_preserve_existing_user_hooks() {
 }
 
 #[test]
+fn claude_hook_commands_are_shell_quoted_for_paths_with_spaces() {
+    let path = PathBuf::from("/Users/me/Library/Application Support/amf/save-prompt.sh");
+    let command = crate::app::setup::claude_hook_command(&path);
+
+    assert_eq!(
+        command,
+        "'/Users/me/Library/Application Support/amf/save-prompt.sh'"
+    );
+}
+
+#[test]
+fn cleanup_recognizes_quoted_managed_claude_hooks() {
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let managed = crate::project::amf_config_dir().join("save-prompt.sh");
+    let quoted = crate::app::setup::claude_hook_command(&managed);
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        format!(
+            r#"{{
+              "hooks": {{
+                "UserPromptSubmit": [{{
+                  "matcher": "",
+                  "hooks": [{{
+                    "type": "command",
+                    "command": {quoted:?}
+                  }}]
+                }}]
+              }}
+            }}"#
+        ),
+    )
+    .unwrap();
+
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "UserPromptSubmit");
+    assert_eq!(
+        cmds.iter()
+            .filter(|cmd| cmd.contains("save-prompt.sh"))
+            .count(),
+        1,
+        "quoted managed hook should be replaced, not duplicated: {cmds:?}"
+    );
+}
+
+#[test]
+fn cleanup_recognizes_unquoted_macos_managed_claude_hooks() {
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        r#"{
+          "hooks": {
+            "Stop": [{
+              "matcher": "",
+              "hooks": [{
+                "type": "command",
+                "command": "/Users/me/Library/Application Support/amf/thinking-stop.sh"
+              }]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "Stop");
+    assert!(
+        cmds.iter()
+            .all(|cmd| !cmd.starts_with("/Users/me/Library/Application Support/amf/")),
+        "unquoted macOS AMF hooks should be removed, got: {cmds:?}"
+    );
+    assert_eq!(
+        cmds.iter()
+            .filter(|cmd| cmd.contains("thinking-stop.sh"))
+            .count(),
+        1,
+        "current quoted Stop hook should be the only thinking-stop hook: {cmds:?}"
+    );
+}
+
+#[test]
+fn repair_unquoted_claude_hooks_refreshes_stale_stored_features() {
+    let repo = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        r#"{
+          "hooks": {
+            "Stop": [{
+              "matcher": "",
+              "hooks": [{
+                "type": "command",
+                "command": "/Users/me/Library/Application Support/amf/thinking-stop.sh"
+              }]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    let now = Utc::now();
+    let mut feature = Feature::new(
+        "feat-1".to_string(),
+        "feat-1".to_string(),
+        workdir.path().to_path_buf(),
+        true,
+        VibeMode::Vibe,
+        false,
+        false,
+        AgentKind::Claude,
+        false,
+        false,
+    );
+    feature.status = ProjectStatus::Active;
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![Project {
+            id: "proj-1".to_string(),
+            name: "project".to_string(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+
+    let repaired = super::setup::repair_unquoted_claude_hooks_for_store(&store);
+
+    assert_eq!(repaired, 1);
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "Stop");
+    assert!(
+        cmds.iter()
+            .all(|cmd| !cmd.starts_with("/Users/me/Library/Application Support/amf/")),
+        "stale unquoted hook should be repaired, got: {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|cmd| cmd.starts_with('\'')
+            && cmd.ends_with('\'')
+            && cmd.contains("thinking-stop.sh")),
+        "repaired hook should be quoted, got: {cmds:?}"
+    );
+}
+
+#[test]
 fn vibeless_pre_tool_use_includes_custom_diff_review_when_script_present_by_default() {
     let workdir = TempDir::new().unwrap();
     // Create the custom diff-review script so it gets picked up.
@@ -4135,7 +4873,9 @@ fn ensure_hooks_removes_stale_temp_home_amf_hooks() {
     assert_eq!(
         post_cmds
             .iter()
-            .filter(|cmd| cmd.ends_with("/.config/amf/tool-stop.sh"))
+            .filter(|cmd| cmd
+                .trim_matches('\'')
+                .ends_with("/.config/amf/tool-stop.sh"))
             .count(),
         1,
         "only the current AMF PostToolUse hook should remain"
@@ -5398,6 +6138,24 @@ fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
         app.pending_inputs.is_empty(),
         "prompt submit should clear stale input-request notifications"
     );
+}
+
+#[test]
+fn note_codex_prompt_submit_marks_codex_session_in_non_codex_feature_thinking() {
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_codex_session(workdir.path(), false);
+    store.projects[0].features[0].agent = AgentKind::Claude;
+    store.projects[0].features[0].sessions[0].label = "PR triage".to_string();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.note_codex_prompt_submit("amf-my-feat", "codex");
+
+    assert!(app.ipc_thinking_sessions.contains("amf-my-feat"));
+    assert!(app.ipc_thinking_feature_sessions.contains("codex-sess"));
 }
 
 #[test]
@@ -7712,6 +8470,7 @@ fn pr_review_with_comments(n: u64) -> crate::app::pr_review::PrReview {
             path: Some(format!("src/file{id}.rs")),
             line: Some(id as u32),
             original_line: Some(id as u32),
+            side: Some("RIGHT".into()),
             subject_type: None,
             diff_hunk: Some("@@".to_string()),
             body: format!("comment {id}"),
@@ -7743,7 +8502,10 @@ fn enter_pr_review(app: &mut App, n: u64) {
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        ai_review_harness: None,
+        ai_harness_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -7751,6 +8513,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -7791,7 +8554,7 @@ fn pr_review_close_returns_to_dashboard() {
 
 #[test]
 fn pr_review_toggle_to_session_requires_existing_session() {
-    // `store_with_feature` has no sessions, so there's no dedicated review
+    // `store_with_feature` has no sessions, so there's no dedicated triage
     // session to jump to yet — the toggle must hint rather than create one
     // as a side effect of a quick peek.
     let store = store_with_feature(ProjectStatus::Active);
@@ -7811,7 +8574,7 @@ fn pr_review_toggle_to_session_requires_existing_session() {
 #[test]
 fn pr_review_toggle_to_session_jumps_and_stashes_state() {
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
@@ -7828,7 +8591,7 @@ fn pr_review_toggle_to_session_jumps_and_stashes_state() {
     match &app.mode {
         AppMode::Viewing(view) => {
             assert_eq!(view.session, "amf-my-feat");
-            assert_eq!(view.session_label, "PR Review");
+            assert_eq!(view.session_label, "PR Triage");
         }
         other => panic!("expected Viewing, got {:?}", std::mem::discriminant(other)),
     }
@@ -7844,7 +8607,7 @@ fn pr_review_toggle_to_session_jumps_and_stashes_state() {
 #[test]
 fn pr_review_return_to_pane_restores_stashed_state() {
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
@@ -7871,7 +8634,7 @@ fn pr_review_return_to_pane_restores_stashed_state() {
 #[test]
 fn pr_review_return_to_pane_ignores_mismatched_session() {
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
@@ -7921,7 +8684,7 @@ fn pr_review_inject_fix_also_stashes_return_state() {
     // even though `f` is the far more common way into that session (`P` is
     // just a peek). `f` must stash exactly like `P` does.
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
@@ -8019,7 +8782,10 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        ai_review_harness: None,
+        ai_harness_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -8027,6 +8793,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -8041,6 +8808,7 @@ fn enter_pr_picker_for_test(app: &mut App) {
         include_closed: false,
         error: None,
         bootstrap_pick: None,
+        current_user: None,
     });
 }
 
@@ -8262,11 +9030,637 @@ fn cancel_review_memory_bootstrap_returns_to_picker_without_dropping_the_bg_resu
 }
 
 #[test]
+fn start_ai_pr_review_stashes_origin_with_dialogs_cleared_and_enters_running_mode() {
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.memory_add.is_some()),
+        _ => panic!("expected PrReview"),
+    }
+    // The harness picker is covered separately; seed the remembered choice to
+    // exercise the background lifecycle this regression test owns.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Claude);
+    }
+
+    app.start_ai_pr_review();
+    assert!(app.ai_review_bg.is_some());
+    match &app.mode {
+        AppMode::AiPrReviewRunning(state) => {
+            assert_eq!(
+                state.stage,
+                crate::app::pr_review::AiReviewStage::PreparingDiff
+            );
+            // Any dialog open on the pane is cleared before stashing — the
+            // same precaution as the `f`/`P` stash.
+            assert!(state.origin.memory_add.is_none());
+            assert_eq!(state.origin.ai_review_harness, Some(AgentKind::Claude));
+        }
+        other => panic!(
+            "expected AiPrReviewRunning, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+    assert!(app.ai_review_pending.is_some());
+}
+
+#[test]
+fn first_ai_review_opens_harness_picker_on_project_preference() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].preferred_agent = AgentKind::Codex;
+    store.available_harnesses = vec![AgentKind::Claude, AgentKind::Codex];
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.workdir = PathBuf::from("/tmp/test-workdir");
+    }
+
+    app.start_ai_pr_review();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let pick = state
+                .ai_harness_pick
+                .as_ref()
+                .expect("first A should open the AI harness picker");
+            assert_eq!(pick.agents, [AgentKind::Claude, AgentKind::Codex]);
+            assert_eq!(pick.agents[pick.selected], AgentKind::Codex);
+            assert!(state.ai_review_harness.is_none());
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(
+        app.ai_review_bg.is_none(),
+        "picker must pause before token spend"
+    );
+}
+
+#[test]
+fn cancelling_ai_review_harness_picker_spends_nothing_and_keeps_choice_unset() {
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|path| Ok(path.to_path_buf()));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review(&mut app, 1);
+    app.start_ai_pr_review();
+    assert!(app.pr_review_ai_harness_picking());
+
+    app.pr_review_ai_harness_pick_cancel();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.ai_harness_pick.is_none());
+            assert!(state.ai_review_harness.is_none());
+        }
+        _ => panic!("expected PrReview"),
+    }
+    assert!(app.ai_review_bg.is_none());
+}
+
+#[test]
+fn start_ai_pr_review_refuses_to_start_a_second_review_while_one_is_running() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+
+    // Cancel back to the pane (as if the first review is still running in
+    // the background) and try to start a second one — it must not spawn a
+    // new background job or clobber `ai_review_pending`'s claim on the first.
+    app.start_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert!(app.ai_review_pending.is_none());
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("already running"))
+    );
+}
+
+#[test]
+fn poll_ai_pr_review_bg_surfaces_findings_and_returns_to_pane() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    tx.send(crate::app::pr_review::AiReviewProgress::Reviewing {
+        token_estimate: 123,
+    })
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::AiPrReviewRunning(state) => assert_eq!(
+            state.stage,
+            crate::app::pr_review::AiReviewStage::Reviewing {
+                token_estimate: 123
+            }
+        ),
+        other => panic!(
+            "expected AiPrReviewRunning, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![crate::app::pr_review::AiFinding {
+                path: Some("src/x.rs".into()),
+                line: Some(1),
+                body: "Do this differently.".into(),
+                diff_hunk: None,
+            }],
+            raw_output: "### src/x.rs:1\nDo this differently.\n".into(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.review.comments.len(), 3);
+            assert!(state.review.comments.iter().any(|c| c.ai_generated));
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn poll_ai_pr_review_bg_done_replaces_prior_ai_draft_set() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    // Seed a stale AI draft left over from a prior `A` run.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let stale =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: None,
+                line: None,
+                body: "stale".into(),
+                diff_hunk: None,
+            }]);
+        state.review.comments.extend(stale);
+    }
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        origin
+            .review
+            .comments
+            .iter()
+            .filter(|c| c.ai_generated)
+            .count(),
+        1
+    );
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![crate::app::pr_review::AiFinding {
+                path: None,
+                line: None,
+                body: "fresh".into(),
+                diff_hunk: None,
+            }],
+            raw_output: "### General\nfresh\n".into(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let ai_drafts: Vec<_> = state
+                .review
+                .comments
+                .iter()
+                .filter(|c| c.ai_generated)
+                .collect();
+            assert_eq!(ai_drafts.len(), 1);
+            assert_eq!(ai_drafts[0].body, "fresh");
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn poll_ai_pr_review_bg_error_still_returns_to_pane() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Err(
+        anyhow::anyhow!("gh pr diff failed"),
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert_eq!(
+        app.toasts.last().map(|toast| toast.message.as_str()),
+        Some("AI review failed: gh pr diff failed")
+    );
+    assert!(
+        app.message.is_none(),
+        "AI-review failures should use a visible pane toast, not the hidden dashboard message"
+    );
+}
+
+#[test]
+fn poll_ai_pr_review_bg_disconnect_returns_to_pane_with_error_toast() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    drop(tx);
+
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert_eq!(
+        app.toasts.last().map(|toast| toast.message.as_str()),
+        Some("AI review failed unexpectedly")
+    );
+    assert!(app.message.is_none());
+}
+
+#[test]
+fn cancel_ai_pr_review_returns_to_pane_without_dropping_the_bg_result() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    app.cancel_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![],
+            raw_output: String::new(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+}
+
+#[test]
+fn poll_ai_pr_review_bg_merges_into_the_pane_after_cancel_instead_of_dropping_findings() {
+    // Regression: `cancel_ai_pr_review` (`esc`) restores `self.mode` to
+    // `PrReview` well before the background pass finishes. `Done` used to
+    // look for `AppMode::AiPrReviewRunning` to find where to merge; once the
+    // user had cancelled, that match failed, so the findings were computed
+    // and logged but never merged into any comment list — while the
+    // success/warning toast still fired unconditionally, falsely announcing
+    // results that were actually thrown away. `ai_review_pending` (kept
+    // alive independent of `self.mode`, surviving the cancel) fixes this.
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    // The user gives up watching and backs out...
+    app.cancel_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    // ...and keeps triaging in the meantime (marks the first comment done) —
+    // this change must survive the merge below, not get clobbered by the
+    // stale pre-`A` snapshot.
+    app.pr_review_mark_done();
+
+    // ...then the background pass finishes.
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![crate::app::pr_review::AiFinding {
+                path: Some("src/x.rs".into()),
+                line: Some(1),
+                body: "A real finding.".into(),
+                diff_hunk: None,
+            }],
+            raw_output: "### src/x.rs:1\nA real finding.\n".into(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(app.ai_review_pending.is_none());
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(
+                state.review.comments.iter().any(|c| c.ai_generated),
+                "the finding must be merged, not silently dropped"
+            );
+            assert_eq!(
+                state.review.comments[0].triage,
+                crate::app::pr_review::TriageState::Done,
+                "triage done while cancelled must survive the merge"
+            );
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("1 finding"))
+    );
+}
+
+#[test]
+fn refresh_carries_forward_ai_drafts_at_the_same_head_sha() {
+    let db_dir = TempDir::new().unwrap();
+    let db = crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap();
+
+    let pr = crate::github::PrRef {
+        number: 42,
+        head_sha: "sha1".to_string(),
+        url: "https://github.com/o/r/pull/42".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+    };
+    let mut ai_drafts =
+        crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+            path: Some("src/x.rs".into()),
+            line: Some(3),
+            body: "AI finding".into(),
+            diff_hunk: None,
+        }]);
+    let cached = crate::app::pr_review::PrReview {
+        pr: pr.clone(),
+        comments: vec![ai_drafts.remove(0)],
+        fetched_at: chrono::Local::now(),
+    };
+    db.save_pr_review_cache(&cached).unwrap();
+
+    let mut app = pr_review_test_app();
+    app.db = Some(db);
+
+    let fresh = crate::app::pr_review::PrReview {
+        pr: pr.clone(),
+        comments: vec![],
+        fetched_at: chrono::Local::now(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_review_bg = Some(rx);
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        pr: pr.clone(),
+        usage_baselines: std::collections::HashMap::new(),
+    });
+    tx.send(Ok(fresh)).unwrap();
+    assert!(app.poll_pr_review_bg());
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.review.comments.iter().any(|c| c.ai_generated));
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn refresh_reconciles_published_ai_findings_without_duplicate_github_entries() {
+    use crate::app::pr_review::{CommentKind, TriageState};
+
+    let db_dir = TempDir::new().unwrap();
+    let db = crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap();
+    let pr = crate::github::PrRef {
+        number: 42,
+        head_sha: "sha1".into(),
+        url: "https://github.com/o/r/pull/42".into(),
+        owner: "o".into(),
+        repo: "r".into(),
+    };
+    let mut cached = crate::app::pr_review::findings_to_comments(&[
+        crate::app::pr_review::AiFinding {
+            path: Some("src/x.rs".into()),
+            line: Some(3),
+            body: "Inline finding".into(),
+            diff_hunk: Some("@@ -3 +3 @@".into()),
+        },
+        crate::app::pr_review::AiFinding {
+            path: None,
+            line: None,
+            body: "General finding".into(),
+            diff_hunk: None,
+        },
+    ]);
+    cached[0].ai_published = true;
+    cached[0].github_id = Some(900);
+    cached[0].github_review_id = Some(800);
+    cached[0].thread_id = Some("T900".into());
+    cached[1].ai_published = true;
+    cached[1].github_id = Some(800);
+    cached[1].github_review_id = Some(800);
+    cached[1].kind = CommentKind::ReviewSummary {
+        state: "COMMENTED".into(),
+    };
+    db.save_pr_review_cache(&crate::app::pr_review::PrReview {
+        pr: pr.clone(),
+        comments: cached,
+        fetched_at: chrono::Local::now(),
+    })
+    .unwrap();
+
+    let mut fresh = crate::app::pr_review::findings_to_comments(&[
+        crate::app::pr_review::AiFinding {
+            path: Some("src/x.rs".into()),
+            line: Some(3),
+            body: "Inline finding\n\n— drafted by AI via AMF".into(),
+            diff_hunk: Some("@@ -3 +3 @@".into()),
+        },
+        crate::app::pr_review::AiFinding {
+            path: None,
+            line: None,
+            body: "AI review, via AMF.\n\n- General finding".into(),
+            diff_hunk: None,
+        },
+    ]);
+    fresh[0].id = 900;
+    fresh[0].ai_generated = false;
+    fresh[0].github_review_id = Some(800);
+    fresh[0].thread_id = Some("T900".into());
+    fresh[1].id = 800;
+    fresh[1].kind = CommentKind::ReviewSummary {
+        state: "COMMENTED".into(),
+    };
+    fresh[1].ai_generated = false;
+    fresh[1].github_review_id = Some(800);
+
+    let mut app = pr_review_test_app();
+    app.db = Some(db);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_review_bg = Some(rx);
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: "/tmp/wd".into(),
+        pr: pr.clone(),
+        usage_baselines: std::collections::HashMap::new(),
+    });
+    tx.send(Ok(crate::app::pr_review::PrReview {
+        pr,
+        comments: fresh,
+        fetched_at: chrono::Local::now(),
+    }))
+    .unwrap();
+    assert!(app.poll_pr_review_bg());
+
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review");
+    };
+    assert_eq!(state.review.comments.len(), 2);
+    assert!(state.review.comments.iter().all(|c| c.ai_generated));
+    assert!(state.review.comments.iter().all(|c| c.ai_published));
+    assert!(
+        state
+            .review
+            .comments
+            .iter()
+            .all(|c| c.triage == TriageState::Untriaged)
+    );
+}
+
+#[test]
+fn refresh_drops_ai_drafts_when_the_head_sha_changes() {
+    let db_dir = TempDir::new().unwrap();
+    let db = crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap();
+
+    let old_pr = crate::github::PrRef {
+        number: 42,
+        head_sha: "sha1".to_string(),
+        url: "https://github.com/o/r/pull/42".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+    };
+    let mut ai_drafts =
+        crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+            path: None,
+            line: None,
+            body: "stale finding".into(),
+            diff_hunk: None,
+        }]);
+    let cached = crate::app::pr_review::PrReview {
+        pr: old_pr.clone(),
+        comments: vec![ai_drafts.remove(0)],
+        fetched_at: chrono::Local::now(),
+    };
+    db.save_pr_review_cache(&cached).unwrap();
+
+    let mut app = pr_review_test_app();
+    app.db = Some(db);
+
+    let new_pr = crate::github::PrRef {
+        head_sha: "sha2".to_string(),
+        ..old_pr.clone()
+    };
+    let fresh = crate::app::pr_review::PrReview {
+        pr: new_pr.clone(),
+        comments: vec![],
+        fetched_at: chrono::Local::now(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_review_bg = Some(rx);
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        pr: new_pr.clone(),
+        usage_baselines: std::collections::HashMap::new(),
+    });
+    tx.send(Ok(fresh)).unwrap();
+    assert!(app.poll_pr_review_bg());
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(!state.review.comments.iter().any(|c| c.ai_generated));
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
 fn pr_review_fix_session_usage_reads_the_target_sessions_tokens() {
     let mut store = store_with_feature(ProjectStatus::Active);
     let session = store.projects[0].features[0].add_session_named(
         SessionKind::Claude,
-        crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
     );
     session.token_usage = Some(SessionTokenUsage {
         source: TokenUsageSource {
@@ -8305,6 +9699,298 @@ fn pr_review_fix_session_usage_none_before_session_exists() {
     enter_pr_review_for_feature(&mut app, 2);
 
     assert!(app.pr_review_fix_session_usage().is_none());
+}
+
+#[test]
+fn pr_review_dedicated_session_status_is_scoped_to_its_session() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let other_session_id = store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Working session".to_string())
+        .id
+        .clone();
+    let dedicated_session_id = store.projects[0].features[0]
+        .add_session_named(
+            SessionKind::Claude,
+            crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+        )
+        .id
+        .clone();
+    let tmux_session = store.projects[0].features[0].tmux_session.clone();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(false));
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-start",
+        "session_id": tmux_session,
+        "amf_feature_session_id": other_session_id,
+    }));
+    assert_eq!(
+        app.pr_review_dedicated_session_working(),
+        Some(false),
+        "another agent window in the feature must not light the badge"
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-start",
+        "session_id": tmux_session,
+        "amf_feature_session_id": dedicated_session_id,
+    }));
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(true));
+
+    // Either activity signal independently keeps the exact session working.
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "tool-start",
+        "session_id": tmux_session,
+        "amf_feature_session_id": dedicated_session_id,
+    }));
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-stop",
+        "session_id": tmux_session,
+        "amf_feature_session_id": dedicated_session_id,
+    }));
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(true));
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "tool-stop",
+        "session_id": tmux_session,
+        "amf_feature_session_id": dedicated_session_id,
+    }));
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(false));
+}
+
+#[test]
+fn pr_review_dedicated_opencode_session_uses_sidebar_activity() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Opencode,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    session.set_token_usage_source_exact(TokenUsageSource {
+        provider: TokenUsageProvider::Opencode,
+        id: "opencode-triage".to_string(),
+    });
+    let tmux_session = store.projects[0].features[0].tmux_session.clone();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.opencode_sidebar_cache.insert(
+        tmux_session,
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "opencode-triage".to_string(),
+            status: Some("busy".to_string()),
+            ..Default::default()
+        },
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(true));
+}
+
+#[test]
+fn pr_review_schedules_sidebar_load_for_dedicated_opencode_session() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Opencode,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    session.set_token_usage_source_exact(TokenUsageSource {
+        provider: TokenUsageProvider::Opencode,
+        id: "opencode-triage".to_string(),
+    });
+    let si = store.projects[0].features[0].sessions.len() - 1;
+    let expected_signature = SidebarLoadRequest::from_opencode_session(
+        &store.projects[0].features[0],
+        &store.projects[0].features[0].sessions[si],
+    )
+    .signature();
+    let tmux_session = store.projects[0].features[0].tmux_session.clone();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    app.schedule_sidebar_load_for_feature(0, 0);
+    for _ in 0..20 {
+        app.poll_sidebar_load_results();
+        if !app.pending_sidebar_loads.contains(&tmux_session) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert_eq!(
+        app.sidebar_load_signatures.get(&tmux_session),
+        Some(&expected_signature)
+    );
+}
+
+#[test]
+fn pr_review_dedicated_pi_session_uses_thinking_marker() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(
+        SessionKind::Pi,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    let tmux_session = format!("amf-pi-triage-test-{}", uuid::Uuid::new_v4());
+    store.projects[0].features[0].tmux_session = tmux_session.clone();
+    let marker = PathBuf::from("/tmp/amf-thinking").join(&tmux_session);
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, "").unwrap();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(true));
+
+    std::fs::remove_file(marker).unwrap();
+}
+
+#[test]
+fn pr_review_dedicated_session_status_is_absent_before_creation() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    assert_eq!(app.pr_review_dedicated_session_working(), None);
+}
+
+#[test]
+fn pr_review_triage_session_usage_reports_only_growth_since_baseline() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Claude,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    let source = TokenUsageSource {
+        provider: TokenUsageProvider::Claude,
+        id: "triage-session".to_string(),
+    };
+    session.token_usage = Some(SessionTokenUsage {
+        source: source.clone(),
+        input_tokens: 1400,
+        output_tokens: 300,
+        cache_read_tokens: 200,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1900,
+    });
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+    let AppMode::PrReview(state) = &mut app.mode else {
+        panic!("expected PR review pane");
+    };
+    state.usage_baselines.insert(
+        source.clone(),
+        SessionTokenUsage {
+            source,
+            input_tokens: 1000,
+            output_tokens: 200,
+            cache_read_tokens: 100,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            total_tokens: 1300,
+        },
+    );
+
+    let usage = app.pr_review_triage_session_usage().unwrap();
+    assert_eq!(usage.input_tokens, 400);
+    assert_eq!(usage.output_tokens, 100);
+    assert_eq!(usage.cache_read_tokens, 100);
+    assert_eq!(usage.total_tokens, 600);
+}
+
+#[test]
+fn pr_review_triage_session_usage_hides_an_unchanged_baseline() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Claude,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    let usage = SessionTokenUsage {
+        source: TokenUsageSource {
+            provider: TokenUsageProvider::Claude,
+            id: "unchanged".to_string(),
+        },
+        input_tokens: 1000,
+        output_tokens: 200,
+        cache_read_tokens: 100,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1300,
+    };
+    session.token_usage = Some(usage.clone());
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+    let AppMode::PrReview(state) = &mut app.mode else {
+        panic!("expected PR review pane");
+    };
+    state.usage_baselines.insert(usage.source.clone(), usage);
+
+    assert!(app.pr_review_triage_session_usage().is_none());
+}
+
+#[test]
+fn pr_review_switching_to_live_target_ignores_its_earlier_usage() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let usage = SessionTokenUsage {
+        source: TokenUsageSource {
+            provider: TokenUsageProvider::Claude,
+            id: "live-session".to_string(),
+        },
+        input_tokens: 800,
+        output_tokens: 200,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1000,
+    };
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Working".to_string())
+        .token_usage = Some(usage.clone());
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+    app.pr_review_toggle_fix_target();
+
+    assert!(app.pr_review_triage_session_usage().is_none());
+
+    let session = &mut app.store.projects[0].features[0].sessions[0];
+    session.token_usage.as_mut().unwrap().input_tokens += 250;
+    session.token_usage.as_mut().unwrap().total_tokens += 250;
+    let delta = app.pr_review_triage_session_usage().unwrap();
+    assert_eq!(delta.input_tokens, 250);
+    assert_eq!(delta.total_tokens, 250);
 }
 
 #[test]
@@ -8559,97 +10245,6 @@ fn pr_review_batch_routes_through_harness_pick_then_opens_combined() {
 }
 
 #[test]
-fn pr_review_queue_marked_with_nothing_marked_hints() {
-    let mut app = pr_review_test_app();
-    enter_pr_review(&mut app, 2);
-
-    app.pr_review_queue_marked_fixes().unwrap();
-    assert!(
-        app.message.as_deref().unwrap_or("").contains("press space"),
-        "expected a hint to mark comments, got {:?}",
-        app.message
-    );
-}
-
-#[test]
-fn pr_review_queue_marked_without_session_hints() {
-    // `store_with_feature` has no sessions, so the dedicated review session
-    // doesn't exist yet — the batch must refuse rather than cold-start one.
-    let store = store_with_feature(ProjectStatus::Active);
-    let mut app = App::new_for_test(
-        store,
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    );
-    enter_pr_review_for_feature(&mut app, 2);
-    if let AppMode::PrReview(state) = &mut app.mode {
-        state.marked.insert(1);
-    }
-
-    app.pr_review_queue_marked_fixes().unwrap();
-    assert!(
-        app.message
-            .as_deref()
-            .unwrap_or("")
-            .contains("No review session yet"),
-        "expected a hint to start the review session, got {:?}",
-        app.message
-    );
-}
-
-#[test]
-fn pr_review_queue_marked_sends_and_marks_fixing() {
-    // A feature with an existing dedicated "PR Review" session to queue into.
-    let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
-
-    let mut tmux = MockTmuxOps::new();
-    // Two marked comments → two submissions, each: clear input, paste, Enter.
-    tmux.expect_send_key_name()
-        .withf(|_, _, key| key == "C-u")
-        .times(2)
-        .returning(|_, _, _| Ok(()));
-    tmux.expect_paste_text()
-        .times(2)
-        .returning(|_, _, _| Ok(()));
-    tmux.expect_send_key_name()
-        .withf(|_, _, key| key == "Enter")
-        .times(2)
-        .returning(|_, _, _| Ok(()));
-
-    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
-    enter_pr_review_for_feature(&mut app, 3);
-    if let AppMode::PrReview(state) = &mut app.mode {
-        state.marked.insert(1);
-        state.marked.insert(2);
-    }
-
-    app.pr_review_queue_marked_fixes().unwrap();
-
-    match &app.mode {
-        AppMode::PrReview(state) => {
-            // Marks cleared; queued comments now Fixing; unmarked one untouched.
-            assert!(state.marked.is_empty(), "marks should clear after queuing");
-            assert_eq!(
-                state.review.comments[0].triage,
-                crate::app::pr_review::TriageState::Fixing
-            );
-            assert_eq!(
-                state.review.comments[1].triage,
-                crate::app::pr_review::TriageState::Fixing
-            );
-            assert_eq!(
-                state.review.comments[2].triage,
-                crate::app::pr_review::TriageState::Untriaged
-            );
-        }
-        _ => unreachable!(),
-    }
-    // Stays in the review pane (no switch into the session).
-    assert!(matches!(app.mode, AppMode::PrReview(_)));
-}
-
-#[test]
 fn pr_review_cancel_harness_picker_aborts_fix() {
     let store = store_with_feature(ProjectStatus::Stopped);
     let mut worktree = MockWorktreeOps::new();
@@ -8703,6 +10298,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
             path: Some(path.to_string()),
             line: Some(id as u32),
             original_line: Some(id as u32),
+            side: Some("RIGHT".into()),
             subject_type: None,
             diff_hunk: Some("@@".to_string()),
             body: format!("comment {id}"),
@@ -8735,7 +10331,10 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        ai_review_harness: None,
+        ai_harness_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -8743,6 +10342,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -8894,6 +10494,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
             path: Some(format!("src/file{id}.rs")),
             line: Some(id as u32),
             original_line: Some(id as u32),
+            side: Some("RIGHT".into()),
             subject_type: None,
             diff_hunk: Some("@@".to_string()),
             body: format!("comment {id}"),
@@ -8930,7 +10531,10 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        ai_review_harness: None,
+        ai_harness_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -8938,6 +10542,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -9198,6 +10803,161 @@ fn pr_review_post_empty_reply_is_rejected() {
     app.pr_review_post_reply().unwrap();
     assert_eq!(app.pr_review_reply_view(), Some(true));
     assert!(app.message.is_some());
+}
+
+#[test]
+fn published_ai_finding_can_open_done_reply() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut findings =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("src/x.rs".into()),
+                line: Some(3),
+                body: "Fix the race".into(),
+                diff_hunk: Some("@@ -3 +3 @@\n-old\n+new".into()),
+            }]);
+        findings[0].ai_published = true;
+        findings[0].github_id = Some(900);
+        findings[0].github_review_id = Some(800);
+        state.review.comments.append(&mut findings);
+        state.selected = state.review.comments.len() - 1;
+    }
+
+    app.pr_review_open_reply_done();
+    assert_eq!(app.pr_review_reply_view(), Some(false));
+}
+
+#[test]
+fn pr_review_open_ai_review_post_confirm_gathers_eligible_findings_only() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut untriaged =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("a.rs".into()),
+                line: Some(1),
+                body: "eligible".into(),
+                diff_hunk: Some("@@ -1,2 +1,2 @@".into()),
+            }]);
+        let mut skipped =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("b.rs".into()),
+                line: Some(2),
+                body: "skipped, excluded".into(),
+                diff_hunk: None,
+            }]);
+        skipped[0].triage = crate::app::pr_review::TriageState::Skipped;
+        let mut replied =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("c.rs".into()),
+                line: Some(3),
+                body: "already posted, excluded".into(),
+                diff_hunk: None,
+            }]);
+        replied[0].triage = crate::app::pr_review::TriageState::Replied;
+        state.review.comments.append(&mut untriaged);
+        state.review.comments.append(&mut skipped);
+        state.review.comments.append(&mut replied);
+    }
+
+    app.pr_review_open_ai_review_post_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let post = state.ai_review_post.as_ref().expect("dialog should open");
+            assert_eq!(post.comment_ids.len(), 1);
+            assert_eq!(post.inline.len(), 1);
+            assert_eq!(post.inline[0].path, "a.rs");
+            assert!(!post.editing);
+        }
+        _ => panic!("expected PrReview"),
+    }
+}
+
+#[test]
+fn pr_review_open_ai_review_post_confirm_warns_when_nothing_eligible() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1); // no ai_generated comments at all
+
+    app.pr_review_open_ai_review_post_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.ai_review_post.is_none()),
+        _ => panic!("expected PrReview"),
+    }
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("No AI findings to post"))
+    );
+}
+
+#[test]
+fn ai_review_post_failure_keeps_the_dialog_open_with_an_inline_error() {
+    // Regression test for a real-use bug: `W` failing (e.g. GitHub's 422 when
+    // an inline comment no longer matches the diff) used to silently boot the
+    // user out of the review pane entirely, because `show_error` resets
+    // `self.mode` to `Normal` for any non-Normal/Help/Viewing mode.
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut untriaged =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("a.rs".into()),
+                line: Some(1),
+                body: "eligible".into(),
+                diff_hunk: None,
+            }]);
+        state.review.comments.append(&mut untriaged);
+    }
+    app.pr_review_open_ai_review_post_confirm();
+    assert!(matches!(&app.mode, AppMode::PrReview(state) if state.ai_review_post.is_some()));
+
+    app.fail_ai_review_post(anyhow::anyhow!("gh: Unprocessable Entity (HTTP 422)"));
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let post = state
+                .ai_review_post
+                .as_ref()
+                .expect("post-confirm dialog should stay open, not get booted to the dashboard");
+            assert_eq!(
+                post.error.as_deref(),
+                Some("gh: Unprocessable Entity (HTTP 422)")
+            );
+        }
+        _ => panic!("expected to stay in PrReview, not get booted to the dashboard"),
+    }
+}
+
+#[test]
+fn pr_review_ai_review_post_edit_cancel_flow() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut findings =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: None,
+                line: None,
+                body: "general finding".into(),
+                diff_hunk: None,
+            }]);
+        state.review.comments.append(&mut findings);
+    }
+
+    app.pr_review_open_ai_review_post_confirm();
+    assert_eq!(app.pr_review_ai_review_post_view(), Some(false));
+
+    app.pr_review_ai_review_post_edit();
+    assert_eq!(app.pr_review_ai_review_post_view(), Some(true));
+    app.pr_review_ai_review_post_editor_key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('!'),
+    ));
+
+    app.pr_review_ai_review_post_stop_edit();
+    assert_eq!(app.pr_review_ai_review_post_view(), Some(false));
+
+    app.pr_review_cancel_ai_review_post();
+    assert_eq!(app.pr_review_ai_review_post_view(), None);
 }
 
 fn memory_add_editor_text(app: &App) -> String {

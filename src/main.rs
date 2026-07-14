@@ -11,12 +11,14 @@ mod extension;
 mod fswatch;
 mod github;
 mod handlers;
+mod headless;
 mod highlight;
 mod http_client;
 mod ipc;
 mod markdown;
 mod perf;
 mod pi;
+mod plan_interview;
 mod project;
 mod prompt_library;
 mod summary;
@@ -786,11 +788,19 @@ fn run_loop<B: Backend>(
             }
         }
 
+        if app.active_pr_bg.is_some() && app.poll_active_pr_bg() {
+            force_redraw = true;
+        }
+
         if app.pr_review_bg.is_some() && app.poll_pr_review_bg() {
             force_redraw = true;
         }
 
         if app.review_memory_bootstrap_bg.is_some() && app.poll_review_memory_bootstrap_bg() {
+            force_redraw = true;
+        }
+
+        if app.ai_review_bg.is_some() && app.poll_ai_pr_review_bg() {
             force_redraw = true;
         }
 
@@ -1104,6 +1114,7 @@ fn run_loop<B: Backend>(
         {
             let started_at = Instant::now();
             app.sync_statuses();
+            app.sync_active_prs_background();
             app.perf
                 .record_duration("sync.statuses", started_at.elapsed());
             last_statuses_sync = Instant::now();
@@ -1225,6 +1236,7 @@ fn run_loop<B: Backend>(
         }
 
         force_redraw |= app.poll_compose_clipboard_paste();
+        force_redraw |= app.poll_compose_submit();
 
         if app.has_active_sidebar() {
             force_redraw |= app.poll_sidebar_load_results();
@@ -1257,6 +1269,7 @@ fn run_loop<B: Backend>(
             if startup_sync_statuses_pending {
                 let started_at = Instant::now();
                 app.sync_statuses();
+                app.sync_active_prs_background();
                 app.perf
                     .record_duration("startup.sync_statuses", started_at.elapsed());
                 startup_sync_statuses_pending = false;

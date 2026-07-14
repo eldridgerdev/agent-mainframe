@@ -10,7 +10,7 @@ use crate::extension::merge_project_extension_config;
 
 /// Label (and de-facto identity) of the dedicated final-review agent session.
 /// Found-or-created by this label so re-running the review reuses the same
-/// window. Kept distinct from PR review's "PR Review" session so the two
+/// window. Kept distinct from PR Triage's "PR Triage" session so the two
 /// dedicated targets never collide on one feature.
 pub(crate) const FINAL_REVIEW_SESSION_LABEL: &str = "Final Review";
 
@@ -2663,13 +2663,10 @@ impl App {
                 format!("PR review event: {event} (PR #{})", pr.number),
             );
         }
-        let review_ok = match GhCli::create_review(workdir, &pr, &body, event, &comments) {
-            Ok(()) => true,
-            Err(err) => {
-                self.log_warn("review", format!("PR review post failed: {err}"));
-                return format!(" — couldn't post to PR #{}: {err}", pr.number);
-            }
-        };
+        if let Err(err) = GhCli::create_review(workdir, &pr, &body, event, &comments) {
+            self.log_warn("review", format!("PR review post failed: {err}"));
+            return format!(" — couldn't post to PR #{}: {err}", pr.number);
+        }
         let what = if comments.is_empty() {
             "review summary".to_string()
         } else {
@@ -2681,7 +2678,7 @@ impl App {
         // support), so post each as its own `subject_type: file` comment.
         // Only attempted once the review itself is confirmed posted, and
         // best-effort per file so one failure doesn't drop the rest.
-        if review_ok && !file_comments.is_empty() {
+        if !file_comments.is_empty() {
             let mut posted = 0usize;
             let mut failed = 0usize;
             for fc in &file_comments {

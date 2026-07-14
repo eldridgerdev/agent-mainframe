@@ -13,14 +13,17 @@ use unicode_width::UnicodeWidthStr;
 use std::path::Path;
 
 use crate::{
-    app::pr_review::{BootstrapDepth, BootstrapStage, CommentKind, PrComment},
+    app::pr_review::{AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, PrComment},
     app::{
-        BootstrapPickState, BootstrapRunState, PrNumberPromptState, PrPickerState,
-        PrReviewLoadState, PrReviewState,
+        AiReviewRunState, BootstrapPickState, BootstrapRunState, PrNumberPromptState,
+        PrPickerState, PrReviewLoadState, PrReviewState,
     },
     editor::VimMode,
     theme::Theme,
-    token_tracking::{SessionTokenUsage, TokenPricingConfig, format_feature_token_usage},
+    token_tracking::{
+        SessionTokenUsage, TokenPricingConfig, format_feature_token_usage,
+        format_token_usage_summary,
+    },
 };
 
 /// Modal prompt for a manual PR number, shown when the branch has no
@@ -30,7 +33,7 @@ pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, the
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
-        .title(" Review PR by number (experimental) ")
+        .title(" PR Triage by number (experimental) ")
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -70,13 +73,13 @@ pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, the
 }
 
 /// Full-screen PR picker: a scrollable list of the repo's PRs to open for
-/// review. `⏎` opens the highlighted one, `a` toggles closed/merged, `#` drops
+/// triage. `⏎` opens the highlighted one, `a` toggles closed/merged, `#` drops
 /// to the manual number prompt, `b` opens the review-memory lookback
 /// bootstrap. `memory_path` is the resolved review-memory doc path, shown in
 /// the bootstrap depth picker.
 pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, memory_path: &Path) {
     let area = frame.area();
-    let block = pane_block(theme).title(" Pick a PR to review (experimental) ");
+    let block = pane_block(theme).title(" Pick a PR to triage (experimental) ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -118,7 +121,7 @@ pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, m
         let items: Vec<ListItem> = state
             .entries
             .iter()
-            .map(|entry| ListItem::new(pr_picker_row(entry, theme)))
+            .map(|entry| ListItem::new(pr_picker_row(entry, state.current_user.as_deref(), theme)))
             .collect();
         let list = List::new(items)
             .highlight_style(
@@ -299,9 +302,84 @@ pub fn draw_review_memory_bootstrap_running(
     frame.render_widget(body, inner);
 }
 
+/// Full-screen progress view for the AI PR review's background diff-fetch +
+/// review pass (Epic E `A`). Mirrors [`draw_review_memory_bootstrap_running`].
+pub fn draw_ai_pr_review_running(
+    frame: &mut Frame,
+    state: &AiReviewRunState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let area = frame.area();
+    let block = pane_block(theme).title(format!(
+        " AI review of PR #{} with {} (experimental) ",
+        state.origin.review.pr.number,
+        state
+            .origin
+            .ai_review_harness
+            .as_ref()
+            .map(|agent| agent.display_name())
+            .unwrap_or("agent")
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+
+    let status_line = match state.stage {
+        AiReviewStage::PreparingDiff => Line::from(vec![
+            spinner,
+            Span::styled(
+                " Fetching PR diff...",
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        AiReviewStage::Reviewing { token_estimate } => Line::from(vec![
+            spinner,
+            Span::styled(
+                format!(" Reviewing diff (~{token_estimate} tokens)..."),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    };
+
+    let body = Paragraph::new(vec![
+        Line::from(""),
+        status_line,
+        Line::from(""),
+        Line::from(Span::styled(
+            "esc to return to PR Triage (the run keeps going in the background)",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+    frame.render_widget(body, inner);
+}
+
 /// One PR row: `#123  title  · @author · branch` plus a state chip for anything
-/// that isn't a plain open PR (draft / merged / closed).
-fn pr_picker_row(entry: &crate::github::PrListEntry, theme: &Theme) -> Line<'static> {
+/// that isn't a plain open PR (draft / merged / closed). When `current_user`
+/// resolves and matches the entry's author, the author is highlighted and
+/// tagged `(you)` so the user's own PRs stand out without reading every
+/// `@author` in the list.
+fn pr_picker_row(
+    entry: &crate::github::PrListEntry,
+    current_user: Option<&str>,
+    theme: &Theme,
+) -> Line<'static> {
+    let is_mine = current_user.is_some_and(|me| entry.author.eq_ignore_ascii_case(me));
+    let author_style = if is_mine {
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.text_muted.to_color())
+    };
     let mut spans = vec![
         Span::styled(
             format!("#{} ", entry.number),
@@ -311,11 +389,15 @@ fn pr_picker_row(entry: &crate::github::PrListEntry, theme: &Theme) -> Line<'sta
             entry.title.clone(),
             Style::default().fg(theme.text.to_color()),
         ),
+        Span::styled(format!("  · @{}", entry.author), author_style),
         Span::styled(
-            format!("  · @{} · {}", entry.author, entry.head_ref),
+            format!(" · {}", entry.head_ref),
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ];
+    if is_mine {
+        spans.push(chip("you", theme.primary.to_color()));
+    }
     if entry.is_draft {
         spans.push(chip("draft", theme.text_muted.to_color()));
     }
@@ -335,7 +417,8 @@ pub fn draw_pr_review_loading(
     theme: &Theme,
 ) {
     let area = frame.area();
-    let block = pane_block(theme).title(format!(" PR #{} (experimental) ", state.pr.number));
+    let block =
+        pane_block(theme).title(format!(" PR Triage · #{} (experimental) ", state.pr.number));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -348,7 +431,7 @@ pub fn draw_pr_review_loading(
         Line::from(vec![
             spinner,
             Span::styled(
-                " Fetching PR comments (experimental)...",
+                " Loading PR Triage comments (experimental)...",
                 Style::default()
                     .fg(theme.text.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -368,14 +451,22 @@ pub fn draw_pr_review_loading(
     frame.render_widget(body, inner);
 }
 
-/// Full-screen PR comment-review pane: comment list on the left, detail on the
+/// Full-screen PR-triage pane: comment list on the left, detail on the
 /// right.
+pub struct PrReviewUsage<'a> {
+    pub cumulative: Option<&'a SessionTokenUsage>,
+    pub visit: Option<&'a SessionTokenUsage>,
+    pub pricing: &'a TokenPricingConfig,
+}
+
 pub fn draw_pr_review(
     frame: &mut Frame,
     state: &mut PrReviewState,
     theme: &Theme,
-    fix_session_usage: Option<&SessionTokenUsage>,
-    token_pricing: &TokenPricingConfig,
+    usage: PrReviewUsage<'_>,
+    dedicated_session_working: Option<bool>,
+    ai_review_running: bool,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
     let area = frame.area();
     let review = &state.review;
@@ -392,7 +483,7 @@ pub fn draw_pr_review(
     // Header.
     let mut header_spans = vec![
         Span::styled(
-            format!(" PR #{} (experimental) ", review.pr.number),
+            format!(" PR Triage · #{} (experimental) ", review.pr.number),
             Style::default()
                 .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD),
@@ -406,21 +497,62 @@ pub fn draw_pr_review(
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ];
+    if let Some(working) = dedicated_session_working {
+        let (label, color) = if working {
+            ("  [dedicated ● working]", theme.warning.to_color())
+        } else {
+            ("  [dedicated idle]", theme.status_detail.to_color())
+        };
+        header_spans.push(Span::styled(label, Style::default().fg(color)));
+    }
+    // The AI review (`A`) keeps running in the background after `esc` returns
+    // here — without this, nothing in the pane hints that it's still working,
+    // so the header gets a throbber + label for as long as it's in flight.
+    if ai_review_running {
+        header_spans.push(Span::raw("  "));
+        header_spans.push(
+            throbber_widgets_tui::Throbber::default()
+                .style(Style::default().fg(theme.warning.to_color()))
+                .to_symbol_span(throbber_state),
+        );
+        header_spans.push(Span::styled(
+            " AI review running…",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+    }
     // Once the fix-target session exists, show what triage has spent on it —
     // the "only pay for what you asked for" constraint made visible in-pane.
     // The header row is a single unwrapped line, so on a narrow terminal this
     // span is dropped rather than left to be silently clipped mid-text.
-    if let Some(usage) = fix_session_usage {
-        let usage_text = format!(
+    if let Some(cumulative) = usage.cumulative {
+        let cumulative_text = format!(
             "  · {} {}",
             state.fix_target.tag(),
-            format_feature_token_usage(usage, token_pricing)
+            format_feature_token_usage(cumulative, usage.pricing)
         );
         let used_width: usize = header_spans
             .iter()
             .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
             .sum();
-        if used_width + UnicodeWidthStr::width(usage_text.as_str()) <= outer[0].width as usize {
+        let visit_text = usage.visit.map(|visit_usage| {
+            format!(
+                "  · this visit {}",
+                format_token_usage_summary(visit_usage, usage.pricing)
+            )
+        });
+        // Prefer both totals. If the terminal is too narrow, keep the new
+        // visit-specific tally visible before falling back to the cumulative
+        // target-session total.
+        let usage_text = visit_text
+            .as_ref()
+            .map(|visit| format!("{cumulative_text} {}", visit.trim_start()))
+            .into_iter()
+            .chain(visit_text)
+            .chain(std::iter::once(cumulative_text))
+            .find(|text| {
+                used_width + UnicodeWidthStr::width(text.as_str()) <= outer[0].width as usize
+            });
+        if let Some(usage_text) = usage_text {
             header_spans.push(Span::styled(
                 usage_text,
                 Style::default().fg(theme.status_detail.to_color()),
@@ -454,15 +586,19 @@ pub fn draw_pr_review(
     } else {
         "h hide-resolved"
     };
-    // The batch hint shows the marked count so the user knows `F`/`B` have a set.
-    // `F` queues each marked comment as its own prompt; `B` combines them into one.
+    // The batch hint shows the marked count so the user knows what `B` combines.
     let batch_hint = match state.marked.len() {
         0 => "space mark".to_string(),
-        n => format!("space mark · F fix-each({n}) · B combine({n})"),
+        n => format!("space mark · B combine({n})"),
     };
+    let ai_harness = state
+        .ai_review_harness
+        .as_ref()
+        .map(|agent| agent.display_name())
+        .unwrap_or("pick");
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review→{ai_harness}   W post-review   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
         ),
@@ -475,7 +611,10 @@ pub fn draw_pr_review(
     frame.render_widget(keys, footer[0]);
     frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);
 
-    // Harness picker overlays the pane on the first fix of a dedicated review.
+    // Harness picker overlays the pane on the first fix of a dedicated triage.
+    if let Some(pick) = &state.ai_harness_pick {
+        draw_ai_harness_pick(frame, pick, theme);
+    }
     if let Some(pick) = &state.harness_pick {
         draw_harness_pick(frame, pick, theme);
     }
@@ -506,6 +645,70 @@ pub fn draw_pr_review(
             .unwrap_or("reviewer");
         draw_memory_add_dialog(frame, memory_add, author, theme);
     }
+    // AI-review post-to-GitHub confirm dialog overlays the pane when open.
+    if let Some(post) = &state.ai_review_post {
+        draw_ai_review_post_dialog(frame, post, theme);
+    }
+}
+
+fn draw_ai_harness_pick(frame: &mut Frame, pick: &crate::app::AiHarnessPickState, theme: &Theme) {
+    let area = super::super::dashboard::centered_rect(54, 44, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Harness for AI review ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(if pick.error.is_some() { 2 } else { 0 }),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new("  Generate this PR's AI review with:")
+            .style(Style::default().fg(theme.text_muted.to_color())),
+        chunks[0],
+    );
+    let lines = pick.agents.iter().enumerate().map(|(index, agent)| {
+        let selected = index == pick.selected;
+        let style = if selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        Line::from(vec![
+            Span::styled(
+                if selected { "  > " } else { "    " },
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(agent.display_name().to_string(), style),
+        ])
+    });
+    frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()), chunks[1]);
+    if let Some(error) = &pick.error {
+        frame.render_widget(
+            Paragraph::new(format!("  {error}"))
+                .style(Style::default().fg(theme.danger.to_color()))
+                .wrap(Wrap { trim: true }),
+            chunks[2],
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("  [j/k] choose   [⏎] run review   [esc] cancel")
+            .style(Style::default().fg(theme.primary.to_color())),
+        chunks[3],
+    );
 }
 
 /// Reply dialog: a contextual, editable reply (a "done in `<sha>`." report or a
@@ -553,6 +756,96 @@ fn draw_reply_dialog(
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[1],
+    );
+}
+
+/// AI-review post-to-GitHub confirm dialog (Epic E `W`): a preview of the
+/// review that will post — inline comment count, and the editable summary
+/// body — awaiting approval before [`GhCli::create_review`] runs.
+///
+/// [`GhCli::create_review`]: crate::github::GhCli::create_review
+fn draw_ai_review_post_dialog(
+    frame: &mut Frame,
+    post: &crate::app::AiReviewPostConfirmState,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(70, 55, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Post AI review to GitHub ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // A prior post attempt's failure gets its own row rather than only being
+    // logged/toasted — `pr_review_post_ai_review` restores this dialog (with
+    // `error` set) specifically so a rejected post is recoverable in-place.
+    let mut constraints = vec![Constraint::Length(2)]; // preview counts
+    if post.error.is_some() {
+        constraints.push(Constraint::Length(2)); // error message
+    }
+    constraints.push(Constraint::Min(1)); // summary body
+    constraints.push(Constraint::Length(1)); // key hints
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+    let mut row = 0;
+
+    let n = post.comment_ids.len();
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(
+                    "{n} finding{} · {} inline comment{}, rest folded into the summary",
+                    if n == 1 { "" } else { "s" },
+                    post.inline.len(),
+                    if post.inline.len() == 1 { "" } else { "s" },
+                ),
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+            Line::from(Span::styled(
+                "Summary (edit freely):",
+                Style::default().fg(theme.text.to_color()),
+            )),
+        ]),
+        chunks[row],
+    );
+    row += 1;
+
+    if let Some(error) = &post.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("Post failed: {error}"),
+                Style::default().fg(theme.danger.to_color()),
+            )))
+            .wrap(Wrap { trim: false }),
+            chunks[row],
+        );
+        row += 1;
+    }
+
+    let body_lines = super::editor_view::editor_lines(&post.editor, theme, "(summary body)");
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[row],
+    );
+    row += 1;
+
+    let hints = if post.editing {
+        "[esc] done editing"
+    } else {
+        "[⏎] post to GitHub   [e] edit summary   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[row],
     );
 }
 
@@ -736,7 +1029,7 @@ fn draw_fix_confirm(
     );
 }
 
-/// Single-select harness picker for the dedicated review session, shown on the
+/// Single-select harness picker for the dedicated triage session, shown on the
 /// first fix of a PR. The chosen harness is remembered for the rest of the PR
 /// (the session is created once and reused).
 fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, theme: &Theme) {
@@ -744,7 +1037,7 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
-        .title(" Harness for the review session ")
+        .title(" Harness for the triage session ")
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -969,6 +1262,9 @@ fn draw_comment_detail(
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
     )];
+    if c.ai_generated {
+        header_spans.push(chip("AI", theme.info.to_color()));
+    }
     if c.outdated {
         header_spans.push(chip("outdated", theme.warning.to_color()));
     }
@@ -980,11 +1276,19 @@ fn draw_comment_detail(
     }
     lines.push(Line::from(header_spans));
 
-    // Author / role / kind chips.
+    // Author / role / kind chips. An AI-review draft is neither a bot nor a
+    // human GitHub account — label it distinctly rather than falling through
+    // to "human" (the `is_bot` false-default a draft finding is built with).
     lines.push(Line::from(vec![
         chip(&format!("@{}", c.author), theme.secondary.to_color()),
         chip(
-            if c.is_bot { "bot" } else { "human" },
+            if c.ai_generated {
+                "ai"
+            } else if c.is_bot {
+                "bot"
+            } else {
+                "human"
+            },
             theme.text_muted.to_color(),
         ),
         chip(kind_label(&c.kind), theme.text_muted.to_color()),
@@ -1005,7 +1309,7 @@ fn draw_comment_detail(
                 Style::default().fg(theme.warning.to_color()),
             )));
         }
-        lines.extend(diff_hunk_lines(hunk, c.path.as_deref(), theme));
+        lines.extend(diff_hunk_lines(&hunk, c.path.as_deref(), theme));
     } else if c.hunk_suppressed() {
         lines.push(divider(width, theme));
         lines.push(Line::from(Span::styled(
@@ -1247,7 +1551,7 @@ fn marker_legend(theme: &Theme) -> Line<'static> {
             "   [outdated] line moved",
             Style::default().fg(theme.warning.to_color()),
         ),
-        Span::styled("   bot/human", muted),
+        Span::styled("   bot/human/ai", muted),
         Span::styled("   triage: ", muted),
         Span::styled("[ ] untriaged ", muted),
         Span::styled("[~] fixing ", Style::default().fg(theme.warning.to_color())),
@@ -1330,5 +1634,49 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(line_text(&lines[0]), "-old line");
         assert_eq!(line_text(&lines[1]), "+new line");
+    }
+
+    fn sample_entry(author: &str) -> crate::github::PrListEntry {
+        crate::github::PrListEntry {
+            number: 1,
+            title: "Sample PR".to_string(),
+            author: author.to_string(),
+            head_ref: "feature-branch".to_string(),
+            updated_at: String::new(),
+            is_draft: false,
+            state: "OPEN".to_string(),
+        }
+    }
+
+    #[test]
+    fn pr_picker_row_tags_the_current_users_own_pr() {
+        let theme = Theme::default();
+        let entry = sample_entry("alice");
+        let line = pr_picker_row(&entry, Some("alice"), &theme);
+        assert!(line_text(&line).contains("you"));
+    }
+
+    #[test]
+    fn pr_picker_row_matches_current_user_case_insensitively() {
+        let theme = Theme::default();
+        let entry = sample_entry("Alice");
+        let line = pr_picker_row(&entry, Some("alice"), &theme);
+        assert!(line_text(&line).contains("you"));
+    }
+
+    #[test]
+    fn pr_picker_row_does_not_tag_other_authors() {
+        let theme = Theme::default();
+        let entry = sample_entry("bob");
+        let line = pr_picker_row(&entry, Some("alice"), &theme);
+        assert!(!line_text(&line).contains("you"));
+    }
+
+    #[test]
+    fn pr_picker_row_does_not_tag_when_current_user_unresolved() {
+        let theme = Theme::default();
+        let entry = sample_entry("alice");
+        let line = pr_picker_row(&entry, None, &theme);
+        assert!(!line_text(&line).contains("you"));
     }
 }

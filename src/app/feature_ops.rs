@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use super::setup::{
-    ensure_notification_hooks, ensure_plan_mode_claude_md, ensure_review_claude_md,
+    ensure_notification_hooks, ensure_plan_mode_instructions, ensure_review_claude_md,
 };
 use super::*;
 use crate::app::util::read_latest_prompt;
@@ -370,6 +370,17 @@ impl App {
     }
 
     pub(crate) fn finish_feature_launch(&mut self, prepared: PreparedFeatureLaunch) -> Result<()> {
+        if prepared.plan_mode {
+            self.start_plan_interview(prepared);
+            return Ok(());
+        }
+        self.finish_feature_launch_without_interview(prepared)
+    }
+
+    pub(crate) fn finish_feature_launch_without_interview(
+        &mut self,
+        prepared: PreparedFeatureLaunch,
+    ) -> Result<()> {
         let existing_pending = self
             .store
             .projects
@@ -671,7 +682,7 @@ impl App {
             feature.is_worktree,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
-        ensure_plan_mode_claude_md(&feature.workdir, &repo, feature.plan_mode);
+        ensure_plan_mode_instructions(&feature.workdir, &feature.agent, feature.plan_mode);
 
         Self::initialize_feature_sessions(feature, false, None);
 
@@ -1019,12 +1030,14 @@ impl App {
             Self::run_custom_session_on_stop(feature, self.db.as_ref());
         }
 
-        let tmux_session = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
-            Some(f) => f.tmux_session.clone(),
-            None => return Ok(()),
-        };
+        let (tmux_session, workdir, agent) =
+            match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
+                Some(f) => (f.tmux_session.clone(), f.workdir.clone(), f.agent.clone()),
+                None => return Ok(()),
+            };
 
         self.tmux.kill_session(&tmux_session)?;
+        ensure_plan_mode_instructions(&workdir, &agent, false);
 
         let feature = match self
             .store
@@ -1079,7 +1092,7 @@ impl App {
             _ => return Ok(()),
         };
 
-        let (tmux_session, is_worktree, repo, workdir, audit_details) = if let Some(project) =
+        let (tmux_session, is_worktree, repo, workdir, agent, audit_details) = if let Some(project) =
             self.store.find_project(&project_name)
             && let Some(feature) = project.features.iter().find(|f| f.name == feature_name)
         {
@@ -1090,6 +1103,7 @@ impl App {
                 feature.is_worktree,
                 project.repo.clone(),
                 feature.workdir.clone(),
+                feature.agent.clone(),
                 Self::feature_audit_details(&project_name, feature),
             )
         } else {
@@ -1100,6 +1114,7 @@ impl App {
             "feature_delete",
             format!("Delete requested: {}", audit_details),
         );
+        ensure_plan_mode_instructions(&workdir, &agent, false);
 
         let spawned = TmuxManager::spawn_kill_session(&tmux_session)?;
         let (child, output_rx) = match spawned {

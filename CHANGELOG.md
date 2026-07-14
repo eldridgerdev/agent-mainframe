@@ -16,6 +16,15 @@ are tagged.
   are too numerous and make the feature hard to use. Audit will evaluate each
   binding's necessity and explore workflow simplifications (e.g., merging
   `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
+- AI review result visibility: surface outcome (N findings / error / "no findings")
+  when re-entering the pane after running a review, so users know what happened.
+  Results are cached but not discoverable.
+- "Done in `<commit>`" reply needs AI attribution and smarter commit detection.
+  Should reference a commit that actually addressed the issue, not blindly use HEAD.
+  Consider `git log -L` or blame to find matching commits for the comment's file/line.
+- Model selection independent of agent harness: allow per-action model selection
+  (e.g. powerful model for AI review, cheaper model for reply drafts) via config
+  map that falls back to harness default.
 
 ### Removed
 

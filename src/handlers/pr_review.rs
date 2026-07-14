@@ -12,9 +12,9 @@ const FIX_PAGE_STEP: isize = 10;
 /// Key handling for the full-screen PR Triage pane.
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
-/// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `F` queue
-/// all marked fixes as separate prompts / `B` inject one combined prompt for all
-/// marked, `R`/`n` reply, `M` add to memory, `x` resolve/reopen the thread,
+/// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `B` inject
+/// one combined prompt for all marked comments, `R`/`n` reply, `M` add to
+/// memory, `x` resolve/reopen the thread,
 /// `m` mark done, `s` skip, `i` install syntax highlighting for the selected
 /// comment's file, `A` run an AI review of the PR diff (Epic E — draft
 /// findings merge into this same list), `W` post the AI-review draft
@@ -59,7 +59,6 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('f') => app.pr_review_open_fix_confirm(),
         KeyCode::Char('P') => app.pr_review_toggle_to_session()?,
         KeyCode::Char(' ') => app.pr_review_toggle_mark(),
-        KeyCode::Char('F') => app.pr_review_queue_marked_fixes()?,
         KeyCode::Char('B') => app.pr_review_open_batch_confirm(),
         KeyCode::Char('R') => app.pr_review_open_reply_done(),
         KeyCode::Char('n') => app.pr_review_open_reply_not_needed(),

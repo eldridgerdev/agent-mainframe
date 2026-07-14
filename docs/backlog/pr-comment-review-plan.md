@@ -623,8 +623,10 @@ from the last *N* PRs) is reached from the PR entry flow:
       `src/app/state.rs` (`FixConfirmState`, `PrReviewState`),
       `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
-- [x] **Fix several comments in one pass against the same dedicated session.**
-      The throughput loop. `space` toggles a **batch mark** on the selected
+- [~] **Queue marked comments as separate prompts — removed.** This earlier
+      throughput loop was superseded by the safer combined-prompt workflow
+      below and removed in the later keymap-simplification backlog item.
+      Previously, `space` toggled a **batch mark** on the selected
       comment (`PrReviewState::marked`, a `HashSet<u64>` keyed by comment id so
       marks survive the hide-resolved filter), shown as a leading `●` in the list
       and a marked-count in the footer (`F fix-marked(N)`). `F` then **queues
@@ -656,8 +658,7 @@ from the last *N* PRs) is reached from the PR entry flow:
       that flags the combined case (the dialog title becomes "Inject combined fix
       for N comments"). On inject it delivers the one prompt into the dedicated
       review session via the shared compose seam and switches the user in to
-      launch-and-leave (send-and-leave, distinct from `F`'s N separate
-      auto-submitted prompts): **every included comment is marked `Fixing` and
+      launch-and-leave: **every included comment is marked `Fixing` and
       persisted, and the marked set is cleared**, so the next refresh reconciles
       what got resolved. First fix of a dedicated-review PR still picks the
       harness first — the batch flow stashes a `pending_batch` flag so the
@@ -1604,16 +1605,20 @@ first), and the reviewer's output (plus comments triaged in the pane)
 
 ## Backlog
 
-- **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queues
+- [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit
   each). `B` opens a confirm dialog before combining them into one prompt and
   launching. Both advance a batch of marked items, but `B` lets the user
   review/edit before committing, while `F` is fire-and-forget with no
   visibility. Real use found `F` not useful — users prefer the confirm
-  visibility of `B`. Remove `F` to simplify the keymap.
+  visibility of `B`. Removed the handler, queueing implementation, help/footer
+  hints, README guidance, and obsolete tests; `Space` + `B` is now the only
+  marked-comment batch workflow. → `src/handlers/pr_review.rs`,
+  `src/app/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+  `src/ui/dialogs/help.rs`, `src/app/tests.rs`, `README.md`, `CHANGELOG.md`.
 
 - **Keymap audit — too many bindings.** The PR triage pane has accumulated
-  many keybinds (`f`, `F`, `B`, `r`, `n`, `R`, `x`, `o`, `P`, `M`, `W`, `A`,
+  many keybinds (`f`, `B`, `r`, `n`, `R`, `x`, `o`, `P`, `M`, `W`, `A`,
   `i`, `space`, `#`, `g`, `a`, `G`, `h`, `j/k`, etc.). Real use reports the
   pane is hard to use and overwhelming. Audit every binding: is it needed? Can
   it be removed or merged with another? Can the workflow be simplified to

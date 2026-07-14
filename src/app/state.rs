@@ -1604,10 +1604,9 @@ pub struct PrReviewState {
     /// selected comment's finding, editable, awaiting the user's approval
     /// before it's appended to the review-memory doc.
     pub memory_add: Option<MemoryAddState>,
-    /// Comment ids marked (with `space`) for a batch fix. `F` queues every
-    /// marked comment's fix prompt into the dedicated triage session in one
-    /// pass. Keyed by id (not index) so marks survive the hide-resolved filter
-    /// shifting the visible rows. Cleared once the batch is queued.
+    /// Comment ids marked (with `space`) for a combined batch fix via `B`.
+    /// Keyed by id (not index) so marks survive the hide-resolved filter
+    /// shifting the visible rows. Cleared once the batch is injected.
     pub marked: std::collections::HashSet<u64>,
     /// Set while the combined-batch flow (`B`) is waiting on the harness picker:
     /// after the user picks the review harness, the continuation opens the

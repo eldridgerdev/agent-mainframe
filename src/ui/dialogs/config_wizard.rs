@@ -752,7 +752,7 @@ fn plan_question_field_help(field_focus: usize) -> (&'static str, &'static str, 
         3 => (
             "Optional",
             "Optional questions may be skipped during the interview.",
-            "Use Enter to toggle.",
+            "Press Space to toggle.",
         ),
         4 => (
             "Save",

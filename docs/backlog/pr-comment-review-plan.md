@@ -1612,6 +1612,16 @@ first), and the reviewer's output (plus comments triaged in the pane)
   visibility. Real use found `F` not useful — users prefer the confirm
   visibility of `B`. Remove `F` to simplify the keymap.
 
+- **Keymap audit — too many bindings.** The PR triage pane has accumulated
+  many keybinds (`f`, `F`, `B`, `r`, `n`, `R`, `x`, `o`, `P`, `M`, `W`, `A`,
+  `i`, `space`, `#`, `g`, `a`, `G`, `h`, `j/k`, etc.). Real use reports the
+  pane is hard to use and overwhelming. Audit every binding: is it needed? Can
+  it be removed or merged with another? Can the workflow be simplified to
+  require fewer keys and fewer modes/dialogs? Example: can `r`/`n` be merged
+  into a single "reply" key that prompts for the reply kind (fix/not-needed)?
+  Can `A`/`W` (AI review) be deferred or simplified? Prioritize discoverability
+  and lean keymaps over feature breadth.
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

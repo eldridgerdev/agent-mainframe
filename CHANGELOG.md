@@ -10,6 +10,16 @@ are tagged.
 
 ## [Unreleased]
 
+### Backlog
+
+- Identified `F` keybind (queue-marked fixes) as redundant with `B`
+  (combine-and-confirm). `B` provides visibility with a confirm dialog; `F`
+  is fire-and-forget. Marked for removal to simplify the keymap.
+- Scheduled comprehensive keymap audit for PR triage pane. Current bindings
+  are too numerous and make the feature hard to use. Audit will evaluate each
+  binding's necessity and explore workflow simplifications (e.g., merging
+  `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
+
 ### Added
 
 - **PR Triage shows whether its dedicated fix session is working.** Once the

@@ -306,6 +306,13 @@ are tagged.
 
 ### Fixed
 
+- **Reusing a feature branch now opens its current PR.** When the same branch
+  has an older closed or merged PR and a newer open one, PR Triage and the
+  dashboard badge now follow the open PR instead of restoring the closed
+  predecessor. Returning from a linked triage session also cannot reopen stale
+  state from the earlier PR. Closed PRs remain available through explicit
+  selection, and their saved triage history is preserved. No migration is
+  required.
 - **A failed `W` post no longer boots you out of the PR-review pane.**
   An AI finding whose reported line does not actually exist in the PR diff is
   now included in the review summary instead of being sent as an invalid

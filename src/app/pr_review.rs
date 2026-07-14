@@ -1487,6 +1487,7 @@ impl App {
     /// fetch. Either path spends zero agent tokens. Manual refresh
     /// ([`refresh_pr_review`](Self::refresh_pr_review)) bypasses the cache.
     fn enter_pr_review(&mut self, workdir: PathBuf, pr: PrRef) {
+        self.invalidate_pr_context_for_transition(&workdir, pr.number);
         if let Some(mut review) = self.load_cached_pr_review(&pr) {
             self.log_info(
                 "pr_review",
@@ -1519,6 +1520,62 @@ impl App {
             return;
         }
         self.start_pr_review_fetch(workdir, pr);
+    }
+
+    /// Drop in-memory state that belongs to an older PR on the same feature.
+    /// SQLite cache and triage rows are intentionally untouched: they remain
+    /// keyed by PR number and are still available when the user explicitly
+    /// chooses a closed PR from the picker.
+    ///
+    /// This is called both when `G` resolves a PR and when dashboard badge sync
+    /// observes a PR-number transition. It prevents `leader+P`, a late AI
+    /// review result, or an old comment-fetch result from silently restoring a
+    /// closed predecessor after the branch has been reused.
+    pub(crate) fn invalidate_pr_context_for_transition(
+        &mut self,
+        workdir: &Path,
+        current_pr_number: u32,
+    ) -> bool {
+        let mut changed = false;
+
+        if self.pr_review_return.as_ref().is_some_and(|stash| {
+            stash.state.workdir == workdir && stash.state.review.pr.number != current_pr_number
+        }) {
+            self.pr_review_return = None;
+            changed = true;
+        }
+
+        if self.ai_review_pending.as_ref().is_some_and(|pending| {
+            pending.workdir == workdir && pending.review.pr.number != current_pr_number
+        }) {
+            self.ai_review_pending = None;
+            self.ai_review_bg = None;
+            changed = true;
+        }
+
+        let stale_loading = matches!(
+            &self.mode,
+            AppMode::PrReviewLoading(state)
+                if state.workdir == workdir && state.pr.number != current_pr_number
+        );
+        let stale_ai_run = matches!(
+            &self.mode,
+            AppMode::AiPrReviewRunning(state)
+                if state.origin.workdir == workdir
+                    && state.origin.review.pr.number != current_pr_number
+        );
+        if stale_loading {
+            self.pr_review_bg = None;
+            self.mode = AppMode::Normal;
+            changed = true;
+        } else if stale_ai_run {
+            self.ai_review_bg = None;
+            self.ai_review_pending = None;
+            self.mode = AppMode::Normal;
+            changed = true;
+        }
+
+        changed
     }
 
     /// Look up a cached, normalized review for this PR's head SHA. Returns `None`

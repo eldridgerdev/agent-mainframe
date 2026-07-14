@@ -464,6 +464,17 @@ impl App {
 
             match update.lookup {
                 ActivePrLookup::Found(status) => {
+                    let workdir = self.store.projects.iter().find_map(|project| {
+                        project
+                            .features
+                            .iter()
+                            .find(|feature| feature.id == update.feature_id)
+                            .map(|feature| feature.workdir.clone())
+                    });
+                    if let Some(workdir) = workdir {
+                        changed |=
+                            self.invalidate_pr_context_for_transition(&workdir, status.number);
+                    }
                     if self.active_prs.get(&update.feature_id) != Some(&status) {
                         self.active_prs.insert(update.feature_id, status);
                         changed = true;

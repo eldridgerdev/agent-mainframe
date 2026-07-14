@@ -1342,7 +1342,7 @@ first), and the reviewer's output (plus comments triaged in the pane)
 
 ## Nice to have
 
-- [ ] **BUG — support sequential/multiple PRs for the same feature branch.**
+- [x] **BUG — support sequential/multiple PRs for the same feature branch.**
       When a feature branch is reused for another PR, AMF can keep showing the
       previous closed PR instead of the current open one (observed here: the
       feature still reports closed PR #449 while work has moved to PR #450).
@@ -1357,7 +1357,16 @@ first), and the reviewer's output (plus comments triaged in the pane)
       closed PR in the picker must remain possible and explicit. Add regression
       coverage for closed `#N` + open `#N+1` on one branch, including dashboard
       badge refresh, `G` auto-entry, and returning from the linked triage
-      session.
+      session. Shipped by replacing bare `gh pr view` auto-detection with a
+      branch-scoped all-state query that explicitly selects the newest open PR.
+      A PR-number transition now replaces the active badge and invalidates old
+      in-memory return/loading/AI-review targets without deleting either PR's
+      SQLite cache or triage history; an explicitly selected closed PR can stay
+      open, but can no longer be restored implicitly after its open successor is
+      detected. Regression tests cover closed-to-open selection, multiple-open
+      tie-breaking, badge replacement, stale target invalidation, and the linked
+      triage-session return path. → `src/github.rs`, `src/app/pr_review.rs`,
+      `src/app/sync.rs`, `src/app/tests.rs`.
 
 - [ ] **BUG — posted AI-review findings remain trapped as drafts after `W`.**
       After generating findings with `A` and successfully posting them as a

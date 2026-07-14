@@ -1627,16 +1627,28 @@ first), and the reviewer's output (plus comments triaged in the pane)
   Can `A`/`W` (AI review) be deferred or simplified? Prioritize discoverability
   and lean keymaps over feature breadth.
 
-- **AI review result persistence (UX — visibility).** When running an AI review
-  (`A`), the user can escape back to the pane, navigate away, or close AMF
-  entirely. When they return to the PR later, there's no indication of what
-  happened: no visual marker that a review ran, no indication of success/error,
-  no message if it found zero findings ("all good, no issues"). The review result
-  is cached (persisted in `pr_review_cache`), so the findings are there — but
-  there's no discovery mechanism. The UI should surface whether an AI review has
-  been run on the current head SHA and what the outcome was, possibly as a small
-  badge/note in the pane header or a toast on re-entry that summarizes the
-  result (N findings / error / "no findings").
+- [x] **AI review result persistence (UX — visibility).** When running an AI
+      review (`A`), the user could escape back to the pane, navigate away, or
+      close AMF entirely; returning to the PR later showed no indication of
+      what happened — no visual marker that a review ran, no success/error
+      signal, no "zero findings" message. The result was already cached in
+      `pr_review_cache`, but nothing surfaced it. A new `PrReview::last_ai_review:
+      Option<AiReviewRun>` field (`ran_at` + an `AiReviewRunOutcome::Findings(n)`
+      / `Error(String)` outcome) is set by `poll_ai_pr_review_bg` on **both** the
+      success and error paths (previously only success touched the cache) and
+      cached via the existing `cache_pr_review` write, so it round-trips through
+      `pr_review_cache` like the rest of the review and needs no new table
+      (`#[serde(default)]` for backward-compat with pre-existing cache rows).
+      `carry_forward_ai_drafts` — already the mechanism that keeps AI drafts
+      alive across a same-head-SHA manual refresh — now also carries the
+      record forward, since its cache lookup is already keyed by the same
+      `PR# + head SHA`; a genuinely new SHA (the PR moved) naturally starts
+      with no record, matching the existing findings going stale at the same
+      point. The pane header shows a badge whenever the running screen isn't
+      already covering it: `AI review: N findings (5m)`, `AI review: no
+      findings (2h)`, or `AI review failed (1h): <truncated error>` in the
+      danger color. → `src/app/pr_review.rs`, `src/db/pr_review_cache.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`, `CHANGELOG.md`.
 
 - **"Done in `<commit>`" reply needs AI attribution and smarter commit detection
   (honesty + UX).** The `R` keybind seeds a "Done in `<sha>`" reply from the
@@ -1660,6 +1672,31 @@ first), and the reviewer's output (plus comments triaged in the pane)
   `ai_models` map to `AppConfig` (e.g. `review_model`, `reply_draft_model`,
   `triage_model`) so each AI action can select its own model independently of
   the feature's working harness. Fall back to harness default if not configured.
+
+- **Open PR Triage from inside the agent harness session, with an ambient
+  status indicator (discoverability).** Today `G` (open PR Triage) is
+  dashboard-only. From inside a live session (`AppMode::Viewing`) there's no
+  direct way in — `leader+P` only works as the second half of a round trip
+  that started by leaving the pane via `f`/`P` (Epic D "Quick toggle"; it
+  restores a stash, it doesn't open a PR fresh). Add a leader-key entry point,
+  peer to `leader p` (prompt library) in `LEADER_COMMANDS`
+  (`src/ui/pane.rs`), that resolves the feature's branch to its PR the same
+  way `G` does and opens the pane directly from inside the session — no prior
+  visit required. Pair it with an always-visible indicator so triage state is
+  legible without leaving the session: PR number, whether the dedicated
+  triage session is currently working, and whether an AI review (`A`) is in
+  flight. Likely surfaces either in the agent sidebar (peer to the existing
+  `latest prompt` line) or the Viewing-mode top-right badge row that already
+  shows `[Ctrl+Space P: back to PR Triage]` — and can probably reuse two
+  pieces of state that already exist rather than inventing a new data source:
+  the dashboard's active-PR indicator sync (`[PR #321 · 4 open]`, feeds off
+  `GhCli::resolve_pr` / `GhCli::review_threads` on the existing sync cadence)
+  and the dedicated-session working badge
+  (`pr_review_dedicated_session_working`, driven by per-feature-session
+  thinking/tool IPC). Needs design thought on exactly where the indicator
+  lives and how busy the Viewing-mode header gets if both this and the
+  existing remote-control/direct-input/back-to-triage badges are visible at
+  once.
 
 ## Reasoning / when to build
 

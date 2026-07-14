@@ -214,6 +214,27 @@ pub struct AiReviewOutcome {
     pub raw_output: String,
 }
 
+/// Record of the most recent `A` run on a [`PrReview`], persisted alongside it
+/// in `pr_review_cache` so the outcome survives leaving the pane, closing AMF,
+/// or a same-head-SHA cache-hit reopen. Without this, a review that already
+/// ran (found nothing, or errored) looks identical to one that never ran —
+/// the only way to tell was to press `A` again and pay for another pass.
+/// Cleared implicitly on a new head SHA: [`normalize`] builds a fresh
+/// [`PrReview`] with no record, and only a same-SHA refresh carries the
+/// previous one forward ([`App::carry_forward_ai_drafts`]), which matches the
+/// findings themselves going stale at the same point.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiReviewRun {
+    pub ran_at: DateTime<Local>,
+    pub outcome: AiReviewRunOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AiReviewRunOutcome {
+    Findings(usize),
+    Error(String),
+}
+
 /// Assemble the AI code-review prompt: the PR diff, the review-memory doc's
 /// content as context (so the agent checks the team's known recurring
 /// findings first), and a fixed-format output instruction so the response
@@ -1147,6 +1168,11 @@ pub struct PrReview {
     pub pr: PrRef,
     pub comments: Vec<PrComment>,
     pub fetched_at: DateTime<Local>,
+    /// The most recent `A` run's outcome, if any. `#[serde(default)]`: cached
+    /// `pr_review_cache` rows written before this field existed still
+    /// deserialize, just with no record (matching "review never ran here").
+    #[serde(default)]
+    pub last_ai_review: Option<AiReviewRun>,
 }
 
 impl PrReview {
@@ -1291,6 +1317,7 @@ pub fn normalize(
         pr,
         comments,
         fetched_at: Local::now(),
+        last_ai_review: None,
     }
 }
 
@@ -2128,20 +2155,25 @@ impl App {
     }
 
     /// Before overwriting the cache with a freshly-fetched review, carry
-    /// forward AI-review findings ([`findings_to_comments`]) from the previous
-    /// cache row at the *same* `PR# + head SHA`. Unposted drafts remain local;
-    /// published findings are reconciled with and replace their freshly
-    /// fetched GitHub representation so provenance and stable local triage ids
-    /// survive without duplicate list entries. A
+    /// forward AI-review findings ([`findings_to_comments`]) and the
+    /// [`PrReview::last_ai_review`] record from the previous cache row at the
+    /// *same* `PR# + head SHA`. Unposted drafts remain local; published
+    /// findings are reconciled with and replace their freshly fetched GitHub
+    /// representation so provenance and stable local triage ids survive
+    /// without duplicate list entries. A
     /// different head SHA (the PR moved, e.g. after a push) means the old
-    /// drafts reviewed code that's since changed, so they're intentionally
-    /// left behind — re-run the AI review (`A`) against the new diff instead.
+    /// drafts reviewed code that's since changed, so they (and the stale
+    /// last-review record) are intentionally left behind — re-run the AI
+    /// review (`A`) against the new diff instead.
     ///
     /// [`refresh_pr_review`]: Self::refresh_pr_review
     fn carry_forward_ai_drafts(&self, review: &mut PrReview) {
         let Some(previous) = self.load_cached_pr_review(&review.pr) else {
             return;
         };
+        // Same `PR# + head SHA` as `previous` (the cache lookup's key), so its
+        // last-review record is still describing this exact diff.
+        review.last_ai_review = previous.last_ai_review.clone();
         let mut ai_findings: Vec<_> = previous
             .comments
             .into_iter()
@@ -2453,6 +2485,10 @@ impl App {
                                 finding.id = next_id.saturating_add(offset as u64);
                             }
                             base.review.comments.extend(fresh);
+                            base.review.last_ai_review = Some(AiReviewRun {
+                                ran_at: Local::now(),
+                                outcome: AiReviewRunOutcome::Findings(count),
+                            });
                             self.cache_pr_review(&base.review);
                             self.apply_persisted_triage(&mut base.review);
 
@@ -2479,21 +2515,39 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            landed = match &target {
+                            // Record the failure the same way a successful run is
+                            // recorded, so returning to the pane (or reopening AMF)
+                            // shows *that* the review ran and failed rather than
+                            // looking identical to never having run at all.
+                            let mut base = match &target {
                                 Target::Running => {
                                     let AppMode::AiPrReviewRunning(state) = &self.mode else {
                                         unreachable!()
                                     };
-                                    Some(state.origin.clone())
+                                    state.origin.clone()
                                 }
-                                Target::Pane(state) => Some((**state).clone()),
-                                Target::Elsewhere => None,
+                                Target::Pane(state) => (**state).clone(),
+                                Target::Elsewhere => pending.clone(),
                             };
+                            base.review.last_ai_review = Some(AiReviewRun {
+                                ran_at: Local::now(),
+                                outcome: AiReviewRunOutcome::Error(e.to_string()),
+                            });
+                            self.cache_pr_review(&base.review);
+
+                            let elsewhere = matches!(target, Target::Elsewhere);
+                            landed = if elsewhere { None } else { Some(base) };
+
                             self.log_error(
                                 "pr_review",
                                 format!("AI review of PR #{pr_number} failed: {e}"),
                             );
-                            self.push_toast_error(format!("AI review failed: {e}"));
+                            let note = if elsewhere {
+                                format!(" for PR #{pr_number} (re-open to see it)")
+                            } else {
+                                String::new()
+                            };
+                            self.push_toast_error(format!("AI review failed{note}: {e}"));
                         }
                     }
                     if let Some(state) = landed {
@@ -3487,6 +3541,7 @@ impl App {
                     pr: pr.clone(),
                     comments: Vec::new(),
                     fetched_at: Local::now(),
+                    last_ai_review: None,
                 }
             }
         };
@@ -4967,6 +5022,7 @@ mod tests {
                 },
             ]),
             fetched_at: Local::now(),
+            last_ai_review: None,
         };
         let ids: Vec<_> = local.comments.iter().map(|c| c.id).collect();
 
@@ -4998,6 +5054,7 @@ mod tests {
             pr: pr(),
             comments: posted_comments,
             fetched_at: Local::now(),
+            last_ai_review: None,
         };
 
         assert_eq!(reconcile_ai_publication(&mut local, &ids, &posted, 800), 0);

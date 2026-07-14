@@ -87,6 +87,7 @@ mod tests {
                 github_review_id: None,
             }],
             fetched_at: Local::now(),
+            last_ai_review: None,
         }
     }
 

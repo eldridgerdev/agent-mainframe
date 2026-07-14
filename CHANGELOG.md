@@ -16,15 +16,16 @@ are tagged.
   are too numerous and make the feature hard to use. Audit will evaluate each
   binding's necessity and explore workflow simplifications (e.g., merging
   `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
-- AI review result visibility: surface outcome (N findings / error / "no findings")
-  when re-entering the pane after running a review, so users know what happened.
-  Results are cached but not discoverable.
 - "Done in `<commit>`" reply needs AI attribution and smarter commit detection.
   Should reference a commit that actually addressed the issue, not blindly use HEAD.
   Consider `git log -L` or blame to find matching commits for the comment's file/line.
 - Model selection independent of agent harness: allow per-action model selection
   (e.g. powerful model for AI review, cheaper model for reply drafts) via config
   map that falls back to harness default.
+- Open PR Triage directly from inside an agent harness session (a leader-key
+  entry point, not just from the dashboard), with an ambient indicator —
+  PR number, dedicated triage session working, AI review in flight — visible
+  without leaving the session.
 
 ### Removed
 
@@ -33,7 +34,17 @@ are tagged.
 
 ### Added
 
-<<<<<<< HEAD
+- **PR Triage surfaces the last AI review's outcome, not just while it's
+  running.** Previously, pressing `A` and then leaving the pane (or closing
+  and reopening AMF) left no trace of what happened — the findings were
+  cached, but nothing showed whether a review had even run. The pane header
+  now shows a badge for the most recent `A` run on the current head SHA: "AI
+  review: N findings (5m)", "AI review: no findings (2h)", or "AI review
+  failed (1h): `<error>`" — colored as a warning for a failure. The badge
+  persists across a same-head-SHA cache-hit reopen and survives an AMF
+  restart; it clears automatically once the PR's head SHA moves (a push
+  means the record no longer describes the current diff). No setup or
+  migration required.
 - **File-level PR comments for whole-file rejections.** When posting a
   finished final review to its GitHub PR, a file you rejected without
   anchoring feedback to a specific line now posts as its own comment
@@ -45,7 +56,6 @@ are tagged.
   you polling the pane to see if it's done. Selecting the notification jumps
   straight back into the review, pre-filtered to just the files that
   changed since your last pass.
-=======
 - **PR Triage shows whether its dedicated fix session is working.** Once the
   session exists, the pane header shows `[dedicated ● working]` while that
   exact agent session is thinking or running a tool, and `[dedicated idle]`
@@ -171,7 +181,6 @@ are tagged.
   before the background pass
   finishes no longer silently drops the findings while still claiming
   success — they now merge into wherever you actually are when it lands.
->>>>>>> origin/main
 - **"Since last review" interdiff in the final review.** Press `I` on a
   file flagged `Δ` (changed since your last review round) to see just the
   diff between what you reviewed last time and what's there now, instead of

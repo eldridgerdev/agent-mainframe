@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use super::PromptAnalysis;
 use crate::editor::TextEditor;
-use crate::extension::{CustomSessionConfig, FeaturePreset, LifecycleHooks};
+use crate::extension::{
+    ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
+};
 use crate::plan_interview::{PlanQuestion, PlanQuestionKind};
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
@@ -2042,6 +2044,7 @@ impl HarnessSetupState {
 pub enum ConfigCategory {
     CustomSessions,
     FeaturePresets,
+    PlanQuestions,
     LifecycleHooks,
     Keybindings,
     AllowedAgents,
@@ -2071,6 +2074,8 @@ pub struct ConfigWizardState {
     pub input_mode: bool,
     pub sessions: Vec<CustomSessionConfig>,
     pub presets: Vec<FeaturePreset>,
+    pub plan_questions: Vec<ConfiguredPlanQuestion>,
+    pub skip_builtin_questions: Option<bool>,
     pub hooks: LifecycleHooks,
     pub keybindings: HashMap<String, char>,
     pub allowed_agents: Option<Vec<AgentKind>>,

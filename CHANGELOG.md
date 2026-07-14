@@ -64,11 +64,13 @@ are tagged.
   answers with an `options` list, or replace a built-in question by reusing its
   ID. Project questions override global questions with the same ID, and
   `skip_builtin_questions` can run an interview using only configured
-  questions. IDs are normalized before global and project questions are
-  merged, so surrounding whitespace cannot prevent a project override. The
-  interview also labels global and project templates with their actual scope.
-  Existing configs keep the built-in interview unchanged, so no migration is
-  required.
+  questions. The config wizard now manages these questions at either scope:
+  add free-text or select questions, mark them optional, and toggle the built-in
+  question bank without editing JSON by hand. IDs are normalized before global
+  and project questions are merged, so surrounding whitespace cannot prevent a
+  project override. The interview also labels global and project templates with
+  their actual scope. Existing configs keep the built-in interview unchanged,
+  so no migration is required.
 - **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every

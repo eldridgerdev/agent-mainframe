@@ -630,6 +630,8 @@ To customize input-request startup waiting, edit
 The `extension` block can be set globally in
 `~/.config/amf/config.json` or per-project in `.amf/config.json` at
 the repo root. Project-level settings are merged on top of global ones.
+Press `Ctrl+Space`, then `c`, from a feature view to edit the supported
+extension settings with AMF's config wizard, including plan questions.
 
 #### `custom_sessions`
 
@@ -793,6 +795,44 @@ Valid values are `"claude"`, `"codex"`, `"opencode"`, and `"pi"`
 (lowercase).
 
 An empty array means "allow all agents".
+
+#### `plan_questions`
+
+Add questions to the guided interview that runs before a plan-mode
+feature starts. Questions configured globally are followed by
+project questions; a project question whose trimmed `id` matches a
+global question replaces it. Set `skip_builtin_questions` to `true`
+to use only configured questions.
+
+```json
+"plan_questions": [
+  {
+    "id": "ui-surface",
+    "text": "Where should this feature appear?",
+    "options": ["Dashboard", "Session view", "Both"],
+    "optional": true
+  },
+  {
+    "id": "constraints",
+    "text": "What constraints must the implementation preserve?",
+    "optional": false
+  }
+],
+"skip_builtin_questions": false
+```
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `id` | string | Stable merge key. IDs must be non-empty; project entries override global entries with the same trimmed ID. |
+| `text` | string | Question shown in the plan interview. |
+| `options` | string[] | Optional choices. Omit or leave empty for a free-text answer. |
+| `optional` | bool | Whether the user may skip the question. Defaults to `true`. |
+
+For the global file, place these keys inside `extension`. In a
+project's `.amf/config.json`, place them at the top level. The config
+wizard's **Plan Questions** category supports both scopes; press `b`
+in its question list to include or exclude AMF's built-in question
+bank.
 
 ## Themes
 

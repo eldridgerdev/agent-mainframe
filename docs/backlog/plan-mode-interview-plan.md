@@ -361,8 +361,8 @@ interview shows them merged with (or replacing) the built-in bank.
       merge by `id` (project wins), `skip_builtin_questions` flag
 - [x] Select-option questions authored in config (HookPrompt-style)
 - [x] Normalized ID overrides and accurate Global/Project template labels
-- [ ] Config-wizard / docs coverage; `amf-add-plan-question` skill
-      (optional, mirrors `amf-add-prompt`)
+- [x] Config-wizard / docs coverage (`amf-add-plan-question` remains an
+      optional follow-up, mirroring `amf-add-prompt`)
 - [x] Merge + parse unit tests
 
 ### Epic 3 — AI adaptive questioning

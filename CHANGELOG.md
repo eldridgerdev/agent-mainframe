@@ -16,9 +16,6 @@ are tagged.
   are too numerous and make the feature hard to use. Audit will evaluate each
   binding's necessity and explore workflow simplifications (e.g., merging
   `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
-- AI review result visibility: surface outcome (N findings / error / "no findings")
-  when re-entering the pane after running a review, so users know what happened.
-  Results are cached but not discoverable.
 - "Done in `<commit>`" reply needs AI attribution and smarter commit detection.
   Should reference a commit that actually addressed the issue, not blindly use HEAD.
   Consider `git log -L` or blame to find matching commits for the comment's file/line.
@@ -33,6 +30,17 @@ are tagged.
 
 ### Added
 
+- **PR Triage surfaces the last AI review's outcome, not just while it's
+  running.** Previously, pressing `A` and then leaving the pane (or closing
+  and reopening AMF) left no trace of what happened — the findings were
+  cached, but nothing showed whether a review had even run. The pane header
+  now shows a badge for the most recent `A` run on the current head SHA: "AI
+  review: N findings (5m)", "AI review: no findings (2h)", or "AI review
+  failed (1h): `<error>`" — colored as a warning for a failure. The badge
+  persists across a same-head-SHA cache-hit reopen and survives an AMF
+  restart; it clears automatically once the PR's head SHA moves (a push
+  means the record no longer describes the current diff). No setup or
+  migration required.
 - **PR Triage shows whether its dedicated fix session is working.** Once the
   session exists, the pane header shows `[dedicated ● working]` while that
   exact agent session is thinking or running a tool, and `[dedicated idle]`

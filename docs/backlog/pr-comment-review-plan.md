@@ -1627,16 +1627,28 @@ first), and the reviewer's output (plus comments triaged in the pane)
   Can `A`/`W` (AI review) be deferred or simplified? Prioritize discoverability
   and lean keymaps over feature breadth.
 
-- **AI review result persistence (UX — visibility).** When running an AI review
-  (`A`), the user can escape back to the pane, navigate away, or close AMF
-  entirely. When they return to the PR later, there's no indication of what
-  happened: no visual marker that a review ran, no indication of success/error,
-  no message if it found zero findings ("all good, no issues"). The review result
-  is cached (persisted in `pr_review_cache`), so the findings are there — but
-  there's no discovery mechanism. The UI should surface whether an AI review has
-  been run on the current head SHA and what the outcome was, possibly as a small
-  badge/note in the pane header or a toast on re-entry that summarizes the
-  result (N findings / error / "no findings").
+- [x] **AI review result persistence (UX — visibility).** When running an AI
+      review (`A`), the user could escape back to the pane, navigate away, or
+      close AMF entirely; returning to the PR later showed no indication of
+      what happened — no visual marker that a review ran, no success/error
+      signal, no "zero findings" message. The result was already cached in
+      `pr_review_cache`, but nothing surfaced it. A new `PrReview::last_ai_review:
+      Option<AiReviewRun>` field (`ran_at` + an `AiReviewRunOutcome::Findings(n)`
+      / `Error(String)` outcome) is set by `poll_ai_pr_review_bg` on **both** the
+      success and error paths (previously only success touched the cache) and
+      cached via the existing `cache_pr_review` write, so it round-trips through
+      `pr_review_cache` like the rest of the review and needs no new table
+      (`#[serde(default)]` for backward-compat with pre-existing cache rows).
+      `carry_forward_ai_drafts` — already the mechanism that keeps AI drafts
+      alive across a same-head-SHA manual refresh — now also carries the
+      record forward, since its cache lookup is already keyed by the same
+      `PR# + head SHA`; a genuinely new SHA (the PR moved) naturally starts
+      with no record, matching the existing findings going stale at the same
+      point. The pane header shows a badge whenever the running screen isn't
+      already covering it: `AI review: N findings (5m)`, `AI review: no
+      findings (2h)`, or `AI review failed (1h): <truncated error>` in the
+      danger color. → `src/app/pr_review.rs`, `src/db/pr_review_cache.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`, `CHANGELOG.md`.
 
 - **"Done in `<commit>`" reply needs AI attribution and smarter commit detection
   (honesty + UX).** The `R` keybind seeds a "Done in `<sha>`" reply from the

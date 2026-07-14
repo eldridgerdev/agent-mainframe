@@ -8,12 +8,15 @@ use ratatui::{
         ScrollbarState, Wrap,
     },
 };
+use chrono::{DateTime, Local};
 use unicode_width::UnicodeWidthStr;
 
 use std::path::Path;
 
 use crate::{
-    app::pr_review::{AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, PrComment},
+    app::pr_review::{
+        AiReviewRunOutcome, AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, PrComment,
+    },
     app::{
         AiReviewRunState, BootstrapPickState, BootstrapRunState, PrNumberPromptState,
         PrPickerState, PrReviewLoadState, PrReviewState,
@@ -518,6 +521,19 @@ pub fn draw_pr_review(
         header_spans.push(Span::styled(
             " AI review running…",
             Style::default().fg(theme.warning.to_color()),
+        ));
+    } else if let Some(run) = &review.last_ai_review {
+        // The result of the last `A` run is cached and would otherwise be
+        // invisible until the user pressed `A` again to find out — this is the
+        // discovery mechanism for "did a review already happen here."
+        let (text, is_error) = ai_review_last_run_badge(run);
+        header_spans.push(Span::styled(
+            text,
+            Style::default().fg(if is_error {
+                theme.danger.to_color()
+            } else {
+                theme.status_detail.to_color()
+            }),
         ));
     }
     // Once the fix-target session exists, show what triage has spent on it —
@@ -1207,6 +1223,60 @@ fn comment_list_line<'a>(
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ])
+}
+
+/// Header text (plus whether it should render as an error) for the persisted
+/// outcome of the last `A` run, shown once the running screen isn't already
+/// covering it — see [`AiReviewRun`](crate::app::pr_review::AiReviewRun).
+fn ai_review_last_run_badge(run: &crate::app::pr_review::AiReviewRun) -> (String, bool) {
+    let age = format_relative_time(run.ran_at);
+    match &run.outcome {
+        AiReviewRunOutcome::Findings(0) => (format!("  AI review: no findings ({age})"), false),
+        AiReviewRunOutcome::Findings(n) => (
+            format!(
+                "  AI review: {n} finding{} ({age})",
+                if *n == 1 { "" } else { "s" }
+            ),
+            false,
+        ),
+        AiReviewRunOutcome::Error(e) => (
+            format!("  AI review failed ({age}): {}", truncate_right(e, 60)),
+            true,
+        ),
+    }
+}
+
+/// Coarse relative age (`"now"`, `"5m"`, `"3h"`, `"2d"`, or a bare date past a
+/// week) for a header badge — mirrors [`ui::picker::format_session_age`]'s
+/// buckets but takes a `DateTime` directly rather than a raw unix timestamp.
+fn format_relative_time(at: DateTime<Local>) -> String {
+    let delta = Local::now().signed_duration_since(at);
+    if delta.num_minutes() < 1 {
+        "now".to_string()
+    } else if delta.num_hours() < 1 {
+        format!("{}m", delta.num_minutes())
+    } else if delta.num_days() < 1 {
+        format!("{}h", delta.num_hours())
+    } else if delta.num_days() < 7 {
+        format!("{}d", delta.num_days())
+    } else {
+        at.format("%b %-d").to_string()
+    }
+}
+
+/// Truncate `s` to at most `max` display columns, keeping the head and marking
+/// the elision with a trailing `…`. Used for error text in the header badge, so
+/// a long `gh`/agent error doesn't blow out the single-line header.
+fn truncate_right(s: &str, max: usize) -> String {
+    let len = s.chars().count();
+    if len <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return "…".to_string();
+    }
+    let head: String = s.chars().take(max - 1).collect();
+    format!("{head}…")
 }
 
 /// Truncate `s` to at most `max` display columns, keeping the tail and marking

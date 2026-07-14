@@ -9148,6 +9148,10 @@ fn poll_ai_pr_review_bg_surfaces_findings_and_returns_to_pane() {
         AppMode::PrReview(state) => {
             assert_eq!(state.review.comments.len(), 3);
             assert!(state.review.comments.iter().any(|c| c.ai_generated));
+            assert_eq!(
+                state.review.last_ai_review.as_ref().map(|run| &run.outcome),
+                Some(&crate::app::pr_review::AiReviewRunOutcome::Findings(1))
+            );
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
@@ -9247,6 +9251,18 @@ fn poll_ai_pr_review_bg_error_still_returns_to_pane() {
         app.message.is_none(),
         "AI-review failures should use a visible pane toast, not the hidden dashboard message"
     );
+    match &app.mode {
+        AppMode::PrReview(state) => match &state.review.last_ai_review {
+            Some(run) => assert_eq!(
+                run.outcome,
+                crate::app::pr_review::AiReviewRunOutcome::Error(
+                    "gh pr diff failed".to_string()
+                )
+            ),
+            None => panic!("expected a persisted last_ai_review record after a failed run"),
+        },
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
 }
 
 #[test]
@@ -9400,6 +9416,7 @@ fn refresh_carries_forward_ai_drafts_at_the_same_head_sha() {
         pr: pr.clone(),
         comments: vec![ai_drafts.remove(0)],
         fetched_at: chrono::Local::now(),
+        last_ai_review: None,
     };
     db.save_pr_review_cache(&cached).unwrap();
 
@@ -9410,6 +9427,7 @@ fn refresh_carries_forward_ai_drafts_at_the_same_head_sha() {
         pr: pr.clone(),
         comments: vec![],
         fetched_at: chrono::Local::now(),
+        last_ai_review: None,
     };
     let (tx, rx) = std::sync::mpsc::channel();
     app.pr_review_bg = Some(rx);
@@ -9470,6 +9488,7 @@ fn refresh_reconciles_published_ai_findings_without_duplicate_github_entries() {
         pr: pr.clone(),
         comments: cached,
         fetched_at: chrono::Local::now(),
+        last_ai_review: None,
     })
     .unwrap();
 
@@ -9511,6 +9530,7 @@ fn refresh_reconciles_published_ai_findings_without_duplicate_github_entries() {
         pr,
         comments: fresh,
         fetched_at: chrono::Local::now(),
+        last_ai_review: None,
     }))
     .unwrap();
     assert!(app.poll_pr_review_bg());
@@ -9553,6 +9573,10 @@ fn refresh_drops_ai_drafts_when_the_head_sha_changes() {
         pr: old_pr.clone(),
         comments: vec![ai_drafts.remove(0)],
         fetched_at: chrono::Local::now(),
+        last_ai_review: Some(crate::app::pr_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::pr_review::AiReviewRunOutcome::Findings(1),
+        }),
     };
     db.save_pr_review_cache(&cached).unwrap();
 
@@ -9567,6 +9591,7 @@ fn refresh_drops_ai_drafts_when_the_head_sha_changes() {
         pr: new_pr.clone(),
         comments: vec![],
         fetched_at: chrono::Local::now(),
+        last_ai_review: None,
     };
     let (tx, rx) = std::sync::mpsc::channel();
     app.pr_review_bg = Some(rx);
@@ -9581,6 +9606,67 @@ fn refresh_drops_ai_drafts_when_the_head_sha_changes() {
     match &app.mode {
         AppMode::PrReview(state) => {
             assert!(!state.review.comments.iter().any(|c| c.ai_generated));
+            assert!(
+                state.review.last_ai_review.is_none(),
+                "a new head SHA means the previous review's outcome no longer \
+                 describes the current diff"
+            );
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn refresh_carries_forward_last_ai_review_outcome_at_the_same_head_sha() {
+    let db_dir = TempDir::new().unwrap();
+    let db = crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap();
+    let pr = crate::github::PrRef {
+        number: 42,
+        head_sha: "sha1".to_string(),
+        url: "https://github.com/o/r/pull/42".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+    };
+    let cached = crate::app::pr_review::PrReview {
+        pr: pr.clone(),
+        comments: vec![],
+        fetched_at: chrono::Local::now(),
+        last_ai_review: Some(crate::app::pr_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::pr_review::AiReviewRunOutcome::Findings(3),
+        }),
+    };
+    db.save_pr_review_cache(&cached).unwrap();
+
+    let mut app = pr_review_test_app();
+    app.db = Some(db);
+
+    // A manual refresh (`r`) re-resolves the PR and fetches fresh, but the
+    // head SHA hasn't moved, so the background fetch itself has no idea about
+    // the previous AI-review record — `carry_forward_ai_drafts` is what pulls
+    // it back in.
+    let fresh = crate::app::pr_review::PrReview {
+        pr: pr.clone(),
+        comments: vec![],
+        fetched_at: chrono::Local::now(),
+        last_ai_review: None,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_review_bg = Some(rx);
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        pr: pr.clone(),
+        usage_baselines: std::collections::HashMap::new(),
+    });
+    tx.send(Ok(fresh)).unwrap();
+    assert!(app.poll_pr_review_bg());
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(
+                state.review.last_ai_review.as_ref().map(|run| &run.outcome),
+                Some(&crate::app::pr_review::AiReviewRunOutcome::Findings(3))
+            );
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }

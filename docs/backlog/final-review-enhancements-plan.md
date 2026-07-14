@@ -1,16 +1,12 @@
 # Final Review Enhancements
 
-- **Status:** Core shipped; Rounds 2–3 in backlog — every item under
-  **Progress → Round 1** is implemented and merged, and Round 2's AI
-  co-reviewer, suggested-change blocks, jump-by-hunk navigation,
-  comment-implied rejections, severity tags, agent replies-back,
-  in-diff search, comment re-anchoring, resolve/unresolve thread
-  state, the changeset overview + diff stats, and the build/test gate
-  before approve have shipped. The remaining Round 2 item (file-level
-  PR comments) is still open. **Round 3** (captured 2026-07-01) has
-  started: its first item, interdiff on re-review, has shipped; the
-  rest of the loop-closing, viewer-ergonomics, AI co-review, and
-  workflow items are not yet started.
+- **Status:** Rounds 1–2 shipped; Round 3 in backlog — every item under
+  **Progress → Round 1** and **Round 2** is implemented and merged
+  (most recently Round 2's file-level PR comments). **Round 3** (captured
+  2026-07-01) has started: interdiff on re-review and the "fixes ready —
+  re-review?" notification have shipped; the rest of the loop-closing,
+  viewer-ergonomics, AI co-review, and workflow items are not yet
+  started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -219,6 +215,31 @@ particular, feedback-resolution tracking is already covered by
 **Round 2 → resolve/unresolve thread state** + **re-anchor comments**,
 and outcome-driven PR review events by **Round 2 → severity tags**.
 
+#### Comment model
+
+- **File-level comments (the missing third anchor).** Feedback has exactly two
+  scopes today: **general** (the whole review) and **line** (a `LineComment` on a
+  `DiffLineLocation` or span). A file has no comment of its own — the only way to
+  say something about a file as a whole is to *reject* it, because file-scoped
+  prose and the needs-work verdict are the same act
+  (`ReviewDecision::Reject { feedback }`). So a reviewer can't leave a
+  verdict-free observation ("fine, but this module wants splitting") without
+  marking the file as needing work, and can't reject a file without inventing
+  prose when the line comments already said it. Add a first-class file comment:
+  a `file_comments` map on `DiffViewerState` beside `line_comments`, carrying the
+  same `Severity` (so a `[nit]` file comment doesn't imply a blocker) and the same
+  resolved/thread state, attachable independently of the verdict. It renders as a
+  `### src/foo.rs` section (no line number) in
+  `.claude/final-review-feedback.md`, gets its own file-list marker + `F` filter
+  step, and posts to the PR through the **already-shipped**
+  `GhCli::create_file_comment` / `subject_type: file` path — note this is *not* a
+  duplicate of **Round 2 → file-level PR comments**, which only changed how an
+  existing whole-file *rejection* is transported to GitHub and added no new
+  comment kind. That transport being done is what makes this item cheap: it needs
+  the model, the editor entry point, and the renderer, not the GitHub plumbing.
+  Decide how it interacts with **Round 2 → line comment auto-rejects its file**
+  (a file comment probably should *not* auto-reject — that's the point of it).
+
 #### Closing the review→fix→re-review loop
 
 - **Interdiff on re-review.** `final-review-snapshot.json` stores only
@@ -322,6 +343,21 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
   feature, plus a "review pending" badge on features whose agent went
   idle since the last review snapshot — making reviews visible as a
   queue instead of a hop through the feature view.
+- **Reviewer-experience-level review notes.** Let the reviewer declare
+  how familiar they are with the language/codebase — e.g. "experienced
+  engineer familiar with the language" vs. "student who's never used
+  this language before" — and calibrate how in-depth the agent's
+  `.claude/review-notes.md` explanations end up being: skip
+  language-idiom asides and boilerplate context for an expert, spell out
+  *why* a pattern is used and define unfamiliar terms for a beginner. The
+  natural landing spot is a new `final_review_notes_level` (or similar)
+  config value woven into the REVIEW MODE block
+  `ensure_review_claude_md` injects into `CLAUDE.local.md`
+  (`src/app/setup.rs`) — an extra instruction line telling the agent who
+  it's writing notes for. Likely wants a per-project setting (a
+  student's familiarity doesn't change per feature) rather than global,
+  and should default to today's level-agnostic wording so existing
+  projects are unaffected.
 
 ## Progress
 
@@ -558,8 +594,19 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       even with zero rejections, which is the concrete answer to "block an
       all-approve on failure". `complete_final_review` in
       `src/app/review.rs`.
-- [ ] File-level PR comments instead of body-dumping whole-file
-      rejections (`subject_type: file`)
+- [x] File-level PR comments instead of body-dumping whole-file
+      rejections — a rejected file with no line comments now posts as its
+      own `subject_type: file` review comment attached to that file,
+      instead of a paragraph in the review's summary body. GitHub's batch
+      `create_review` endpoint has no file-level comment support in its
+      `comments` array (checked the REST docs: `subject_type` only exists
+      on the single-comment endpoint, and there's no way to attach a
+      standalone comment to an already-created review), so this is a
+      second round of best-effort `gh api` calls — one per rejected file —
+      made only after the batch review itself posts successfully.
+      `GhCli::create_file_comment` / `PrFileComment` (`src/github.rs`);
+      `build_pr_review` returns the new file-comment list alongside the
+      existing summary body and inline comments (`src/app/review.rs`).
 - [x] Jump-by-hunk navigation in the diff — press `]` / `[` in the final
       review to jump the line cursor to the next / previous hunk's first
       line (activating the cursor if it's off; `]` lands on the first
@@ -600,6 +647,14 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
 
 ### Round 3 (planned)
 
+Comments:
+
+- [ ] File-level comments — a verdict-free comment anchored to a whole file,
+      alongside the existing general and line comments (severity + thread
+      state, own file-list marker / `F` filter step, `### src/foo.rs` section
+      in the feedback file, posted via the already-shipped `subject_type: file`
+      PR path)
+
 Loop:
 
 - [x] Interdiff on re-review — `.claude/final-review-snapshot.json` gained a
@@ -623,8 +678,25 @@ Loop:
       mirroring the changeset-overview modal exactly (`j`/`k`/PageUp/
       PageDown/`g`/`G` scroll, `q`/`Esc` close). `App::open_interdiff` /
       `close_interdiff` / `interdiff_scroll_*` in `src/app/review.rs`.
-- [ ] "Fixes ready — re-review?" notification (watch the fix session's
-      idle status; one-key jump back into the review)
+- [x] "Fixes ready — re-review?" notification — dispatching the feedback
+      prompt (either target: the feature's existing agent pane or a
+      dedicated review session) now registers the tmux session in
+      `App::awaiting_review_fixes`, only once the prompt is actually
+      submitted (a paste-only, not-yet-sent prompt has nothing to watch
+      for). The existing agent-agnostic thinking-status sync
+      (`sync_thinking_status`) flips a `started_thinking` flag on that entry
+      the next time it observes the session thinking, then — the next time
+      it goes idle — raises a distinctly-labeled `review-ready` pending
+      input ("Fixes ready — re-review?") instead of the generic "waiting for
+      input" one, and clears the watch. Requiring an observed
+      thinking-then-idle round trip (rather than just "went idle") avoids
+      firing immediately off whatever idle/thinking state happened to
+      precede the dispatch. Selecting the notification (`handle_notification_select`
+      in `src/app/notifications.rs`) jumps into the feature view and calls
+      `trigger_final_review` directly — landing in the diff viewer rather
+      than just the pane — where the existing re-review snapshot machinery
+      auto-filters to `Changed` files, so this composes with **interdiff**
+      above for free. `AwaitingReviewFix` in `src/app/state.rs`.
 - [ ] Apply suggestions locally (patch the worktree directly from
       suggestion blocks; per-comment and apply-all-at-finish)
 - [ ] Finish summary screen (editable overview of all verdicts /
@@ -656,6 +728,12 @@ AI co-review:
 Workflow:
 
 - [ ] Start a review from the dashboard + "review pending" badge
+- [ ] Customizable review-notes depth by reviewer experience level (e.g.
+      "experienced engineer familiar with the language" vs. "student
+      who's never used this language before") — a config setting woven
+      into the REVIEW MODE block `ensure_review_claude_md` writes to
+      `CLAUDE.local.md`, calibrating how in-depth the agent's
+      `.claude/review-notes.md` explanations are
 
 ## Open questions
 

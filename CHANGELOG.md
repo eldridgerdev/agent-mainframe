@@ -45,6 +45,17 @@ are tagged.
   restart; it clears automatically once the PR's head SHA moves (a push
   means the record no longer describes the current diff). No setup or
   migration required.
+- **File-level PR comments for whole-file rejections.** When posting a
+  finished final review to its GitHub PR, a file you rejected without
+  anchoring feedback to a specific line now posts as its own comment
+  attached to that file — instead of being dumped as a paragraph in the
+  review's summary body alongside every other whole-file rejection.
+- **"Fixes ready — re-review?" notification.** After you finish a review
+  and it dispatches feedback to an agent, AMF now watches that session and
+  notifies you once the agent has finished working through it — instead of
+  you polling the pane to see if it's done. Selecting the notification jumps
+  straight back into the review, pre-filtered to just the files that
+  changed since your last pass.
 - **PR Triage shows whether its dedicated fix session is working.** Once the
   session exists, the pane header shows `[dedicated ● working]` while that
   exact agent session is thinking or running a tool, and `[dedicated idle]`
@@ -94,6 +105,11 @@ are tagged.
   project override. The interview also labels global and project templates with
   their actual scope. Existing configs keep the built-in interview unchanged,
   so no migration is required.
+- **AI follow-up groundwork for plan-mode interviews.** AMF now prepares
+  harness-neutral follow-up requests from the feature brief, prior answers, and
+  a bounded snapshot of the repository's README, top-level layout, and project
+  instructions. Adaptive questions are not shown in the interview UI yet; this
+  prepares the next plan-mode milestone. No setup or migration is required.
 - **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every

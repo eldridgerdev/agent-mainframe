@@ -670,6 +670,12 @@ pub struct App {
     /// 500ms thinking tick must not spawn a subprocess per feature.
     pub(crate) opencode_thinking_pane_cache: HashMap<String, (Instant, Option<bool>)>,
     pub ipc_thinking_sessions: std::collections::HashSet<String>,
+    /// Features whose dispatched review-fix prompt is being watched, keyed by
+    /// `feature.tmux_session`. Populated when a finished review pastes the
+    /// feedback prompt into an agent session; drained by `sync_thinking_status`
+    /// once that session is observed thinking-then-idle, at which point a
+    /// "fixes ready — re-review?" notification is raised.
+    pub awaiting_review_fixes: HashMap<String, AwaitingReviewFix>,
     pub ipc_tool_sessions: std::collections::HashSet<String>,
     /// Feature-session IDs currently reported as thinking by hook/plugin IPC.
     /// Unlike `ipc_thinking_sessions`, this distinguishes agent windows that
@@ -2003,6 +2009,7 @@ impl App {
             thinking_features: std::collections::HashSet::new(),
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
+            awaiting_review_fixes: HashMap::new(),
             ipc_tool_sessions: std::collections::HashSet::new(),
             ipc_thinking_feature_sessions: std::collections::HashSet::new(),
             ipc_tool_feature_sessions: std::collections::HashSet::new(),
@@ -2198,6 +2205,7 @@ impl App {
             thinking_features: std::collections::HashSet::new(),
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
+            awaiting_review_fixes: HashMap::new(),
             ipc_tool_sessions: std::collections::HashSet::new(),
             ipc_thinking_feature_sessions: std::collections::HashSet::new(),
             ipc_tool_feature_sessions: std::collections::HashSet::new(),

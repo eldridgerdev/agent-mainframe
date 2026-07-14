@@ -403,6 +403,8 @@ seeded kickoff composer), or abort.
       composer kickoff prompt via `open_compose_seeded`
 - [ ] Replace Epic 1's raw-Q&A plan-file write with synthesized doc
       (raw Q&A kept as fallback when synthesis fails)
+- [ ] Omit skipped and unanswered questions from both synthesis input
+      and the raw-Q&A fallback plan so they do not add irrelevant context
 
 ### Epic 5 — On-demand interviews + persistence
 

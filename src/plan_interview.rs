@@ -132,13 +132,13 @@ fn gather_top_level_entries(workdir: &Path) -> Vec<String> {
     let mut used_chars = 0;
     entries
         .into_iter()
-        .filter_map(|entry| {
+        .take_while(|entry| {
             let entry_chars = entry.chars().count();
             if used_chars + entry_chars > DIRECTORY_CONTEXT_MAX_CHARS {
-                return None;
+                return false;
             }
             used_chars += entry_chars;
-            Some(entry)
+            true
         })
         .collect()
 }

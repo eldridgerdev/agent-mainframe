@@ -10,6 +10,16 @@ are tagged.
 
 ## [Unreleased]
 
+### Backlog
+
+- Identified `F` keybind (queue-marked fixes) as redundant with `B`
+  (combine-and-confirm). `B` provides visibility with a confirm dialog; `F`
+  is fire-and-forget. Marked for removal to simplify the keymap.
+- Scheduled comprehensive keymap audit for PR triage pane. Current bindings
+  are too numerous and make the feature hard to use. Audit will evaluate each
+  binding's necessity and explore workflow simplifications (e.g., merging
+  `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
+
 ### Added
 
 - **PR Triage shows whether its dedicated fix session is working.** Once the
@@ -312,6 +322,13 @@ are tagged.
 
 ### Fixed
 
+- **Posted AI-review findings stay actionable in PR Triage.** After posting an
+  AI review with `W`, its findings now remain available for the normal
+  mark-done, reply, not-needed, and thread-resolution workflow instead of
+  remaining trapped as local drafts. Refreshing or reopening the PR preserves
+  that state without duplicating the posted comments, and a temporary refresh
+  failure cannot cause a second `W` to post the same review again. No migration
+  is required.
 - **Reusing a feature branch now opens its current PR.** When the same branch
   has an older closed or merged PR and a newer open one, PR Triage and the
   dashboard badge now follow the open PR instead of restoring the closed

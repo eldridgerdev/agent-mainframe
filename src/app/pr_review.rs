@@ -389,6 +389,9 @@ pub fn findings_to_comments(findings: &[AiFinding]) -> Vec<PrComment> {
                 triage: TriageState::default(),
                 local_note: None,
                 ai_generated: true,
+                ai_published: false,
+                github_id: None,
+                github_review_id: None,
             }
         })
         .collect()
@@ -576,6 +579,66 @@ fn build_ai_review(findings: &[&PrComment]) -> (String, Vec<GhPrReviewComment>) 
         body.push_str(&general.join("\n"));
     }
     (body, inline)
+}
+
+/// Attach the real GitHub identities created by `W` to the local AI findings.
+/// The synthetic local id remains stable for SQLite triage state; replies and
+/// thread resolution use `github_id`/`thread_id` after this reconciliation.
+/// Returns the number of inline findings whose concrete comment could not yet
+/// be found (the publication itself is still recorded and a refresh can retry).
+fn reconcile_ai_publication(
+    review: &mut PrReview,
+    comment_ids: &[u64],
+    posted: &PrReview,
+    github_review_id: u64,
+) -> usize {
+    let mut used = std::collections::HashSet::new();
+    let mut unmatched = 0;
+
+    for id in comment_ids {
+        let Some(local) = review.comments.iter_mut().find(|c| c.id == *id) else {
+            continue;
+        };
+        local.ai_published = true;
+        local.github_review_id = Some(github_review_id);
+
+        let is_inline = local.path.is_some()
+            && local.line.is_some()
+            && !local.file_level
+            && local.diff_hunk.is_some();
+        let matched = posted.comments.iter().find(|candidate| {
+            candidate.github_review_id == Some(github_review_id)
+                && !used.contains(&candidate.id)
+                && if is_inline {
+                    matches!(candidate.kind, CommentKind::Inline)
+                        && candidate.path == local.path
+                        && candidate.line == local.line
+                        && candidate.body.trim() == append_ai_attribution(&local.body).trim()
+                } else {
+                    matches!(candidate.kind, CommentKind::ReviewSummary { .. })
+                }
+        });
+
+        if let Some(real) = matched {
+            used.insert(real.id);
+            local.github_id = Some(real.id);
+            local.kind = real.kind.clone();
+            local.in_reply_to = real.in_reply_to;
+            local.thread_id = real.thread_id.clone();
+            local.is_resolved = real.is_resolved;
+        } else if is_inline {
+            unmatched += 1;
+        } else {
+            // A general finding is represented by the review summary itself.
+            // Even if the follow-up fetch omitted it, the create response gave
+            // us that stable review id and conversation replies remain valid.
+            local.github_id = Some(github_review_id);
+            local.kind = CommentKind::ReviewSummary {
+                state: "COMMENTED".to_string(),
+            };
+        }
+    }
+    unmatched
 }
 
 /// Which agent session a "fix" prompt is injected into.
@@ -803,6 +866,19 @@ pub struct PrComment {
     /// field existed still deserialize (as `false`, i.e. a real comment).
     #[serde(default)]
     pub ai_generated: bool,
+    /// Whether an AI-generated finding has been published to GitHub. Kept
+    /// separate from `ai_generated`, which is provenance and remains true
+    /// after publication.
+    #[serde(default)]
+    pub ai_published: bool,
+    /// Real GitHub comment/review id for a published AI finding. The local
+    /// synthetic `id` remains stable for cache and triage persistence.
+    #[serde(default)]
+    pub github_id: Option<u64>,
+    /// GitHub review containing this finding. This lets a later refresh finish
+    /// identity reconciliation if the immediate post-write fetch failed.
+    #[serde(default)]
+    pub github_review_id: Option<u64>,
 }
 
 /// A hunk without a usable line anchor longer than this is treated as
@@ -961,7 +1037,9 @@ impl PrComment {
     pub fn reply_target(&self) -> ReplyTarget {
         match self.kind {
             CommentKind::Inline => ReplyTarget::InlineThread {
-                root_comment_id: self.in_reply_to.unwrap_or(self.id),
+                root_comment_id: self
+                    .in_reply_to
+                    .unwrap_or(self.github_id.unwrap_or(self.id)),
             },
             CommentKind::Conversation | CommentKind::ReviewSummary { .. } => {
                 ReplyTarget::Conversation
@@ -1147,6 +1225,9 @@ pub fn normalize(
             triage: TriageState::default(),
             local_note: None,
             ai_generated: false,
+            ai_published: false,
+            github_id: None,
+            github_review_id: c.pull_request_review_id,
         });
     }
 
@@ -1177,6 +1258,9 @@ pub fn normalize(
             triage: TriageState::default(),
             local_note: None,
             ai_generated: false,
+            ai_published: false,
+            github_id: None,
+            github_review_id: Some(r.id),
         });
     }
 
@@ -1202,6 +1286,9 @@ pub fn normalize(
             triage: TriageState::default(),
             local_note: None,
             ai_generated: false,
+            ai_published: false,
+            github_id: None,
+            github_review_id: None,
         });
     }
 
@@ -1487,7 +1574,6 @@ impl App {
     /// fetch. Either path spends zero agent tokens. Manual refresh
     /// ([`refresh_pr_review`](Self::refresh_pr_review)) bypasses the cache.
     fn enter_pr_review(&mut self, workdir: PathBuf, pr: PrRef) {
-        self.invalidate_pr_context_for_transition(&workdir, pr.number);
         if let Some(mut review) = self.load_cached_pr_review(&pr) {
             self.log_info(
                 "pr_review",
@@ -1522,31 +1608,34 @@ impl App {
         self.start_pr_review_fetch(workdir, pr);
     }
 
-    /// Drop in-memory state that belongs to an older PR on the same feature.
+    /// Drop in-memory state that belongs to a known predecessor PR on the same
+    /// feature.
     /// SQLite cache and triage rows are intentionally untouched: they remain
     /// keyed by PR number and are still available when the user explicitly
     /// chooses a closed PR from the picker.
     ///
-    /// This is called both when `G` resolves a PR and when dashboard badge sync
-    /// observes a PR-number transition. It prevents `leader+P`, a late AI
-    /// review result, or an old comment-fetch result from silently restoring a
-    /// closed predecessor after the branch has been reused.
+    /// This is called when dashboard badge sync observes a PR-number transition.
+    /// Naming the predecessor explicitly keeps an older PR chosen from the picker
+    /// from invalidating live work that belongs to the current successor. It
+    /// prevents `leader+P`, a late AI review result, or an old comment-fetch
+    /// result from silently restoring the closed predecessor after the branch
+    /// has been reused.
     pub(crate) fn invalidate_pr_context_for_transition(
         &mut self,
         workdir: &Path,
-        current_pr_number: u32,
+        predecessor_pr_number: u32,
     ) -> bool {
         let mut changed = false;
 
         if self.pr_review_return.as_ref().is_some_and(|stash| {
-            stash.state.workdir == workdir && stash.state.review.pr.number != current_pr_number
+            stash.state.workdir == workdir && stash.state.review.pr.number == predecessor_pr_number
         }) {
             self.pr_review_return = None;
             changed = true;
         }
 
         if self.ai_review_pending.as_ref().is_some_and(|pending| {
-            pending.workdir == workdir && pending.review.pr.number != current_pr_number
+            pending.workdir == workdir && pending.review.pr.number == predecessor_pr_number
         }) {
             self.ai_review_pending = None;
             self.ai_review_bg = None;
@@ -1556,13 +1645,13 @@ impl App {
         let stale_loading = matches!(
             &self.mode,
             AppMode::PrReviewLoading(state)
-                if state.workdir == workdir && state.pr.number != current_pr_number
+                if state.workdir == workdir && state.pr.number == predecessor_pr_number
         );
         let stale_ai_run = matches!(
             &self.mode,
             AppMode::AiPrReviewRunning(state)
                 if state.origin.workdir == workdir
-                    && state.origin.review.pr.number != current_pr_number
+                    && state.origin.review.pr.number == predecessor_pr_number
         );
         if stale_loading {
             self.pr_review_bg = None;
@@ -2131,10 +2220,11 @@ impl App {
     }
 
     /// Before overwriting the cache with a freshly-fetched review, carry
-    /// forward any AI-review draft findings ([`findings_to_comments`]) from
-    /// the previous cache row at the *same* `PR# + head SHA` — a manual
-    /// refresh ([`refresh_pr_review`]) re-fetches from GitHub but shouldn't
-    /// silently drop unposted AI drafts the user hasn't triaged yet. A
+    /// forward AI-review findings ([`findings_to_comments`]) from the previous
+    /// cache row at the *same* `PR# + head SHA`. Unposted drafts remain local;
+    /// published findings are reconciled with and replace their freshly
+    /// fetched GitHub representation so provenance and stable local triage ids
+    /// survive without duplicate list entries. A
     /// different head SHA (the PR moved, e.g. after a push) means the old
     /// drafts reviewed code that's since changed, so they're intentionally
     /// left behind — re-run the AI review (`A`) against the new diff instead.
@@ -2144,8 +2234,43 @@ impl App {
         let Some(previous) = self.load_cached_pr_review(&review.pr) else {
             return;
         };
-        let drafts = previous.comments.into_iter().filter(|c| c.ai_generated);
-        review.comments.extend(drafts);
+        let mut ai_findings: Vec<_> = previous
+            .comments
+            .into_iter()
+            .filter(|c| c.ai_generated)
+            .collect();
+        for finding in &mut ai_findings {
+            if !finding.ai_published {
+                continue;
+            }
+            let review_id = finding.github_review_id;
+            let real = review.comments.iter().find(|candidate| {
+                if let Some(github_id) = finding.github_id {
+                    candidate.id == github_id
+                } else {
+                    candidate.github_review_id == review_id
+                        && matches!(candidate.kind, CommentKind::Inline)
+                        && candidate.path == finding.path
+                        && candidate.line == finding.line
+                        && candidate.body.trim() == append_ai_attribution(&finding.body).trim()
+                }
+            });
+            if let Some(real) = real {
+                finding.github_id = Some(real.id);
+                finding.kind = real.kind.clone();
+                finding.in_reply_to = real.in_reply_to;
+                finding.thread_id = real.thread_id.clone();
+                finding.is_resolved = real.is_resolved;
+            }
+        }
+
+        let represented_ids: std::collections::HashSet<u64> = ai_findings
+            .iter()
+            .filter(|c| c.ai_published)
+            .filter_map(|c| c.github_id)
+            .collect();
+        review.comments.retain(|c| !represented_ids.contains(&c.id));
+        review.comments.extend(ai_findings);
     }
 
     /// Kick off the AI PR review (`A` in the review pane, Epic E): resolve the
@@ -2399,10 +2524,27 @@ impl App {
                                 Target::Pane(state) => (**state).clone(),
                                 Target::Elsewhere => pending.clone(),
                             };
-                            base.review.comments.retain(|c| !c.ai_generated);
+                            // A new pass replaces only still-local drafts.
+                            // Published AI findings are real review history and
+                            // remain actionable in the pane. Allocate new
+                            // synthetic ids above those retained findings.
                             base.review
                                 .comments
-                                .extend(findings_to_comments(&outcome.findings));
+                                .retain(|c| !c.ai_generated || c.ai_published);
+                            let next_id = base
+                                .review
+                                .comments
+                                .iter()
+                                .filter(|c| c.ai_generated)
+                                .map(|c| c.id)
+                                .max()
+                                .unwrap_or(AI_FINDING_ID_BASE - 1)
+                                .saturating_add(1);
+                            let mut fresh = findings_to_comments(&outcome.findings);
+                            for (offset, finding) in fresh.iter_mut().enumerate() {
+                                finding.id = next_id.saturating_add(offset as u64);
+                            }
+                            base.review.comments.extend(fresh);
                             self.cache_pr_review(&base.review);
                             self.apply_persisted_triage(&mut base.review);
 
@@ -3132,20 +3274,27 @@ impl App {
             self.message = Some("No comment selected".into());
             return;
         };
-        // An AI-review draft finding has no real GitHub thread to reply into
-        // until it's posted (Epic E's "post as GitHub review" action) — bail
+        // An unposted AI-review finding has no real GitHub thread to reply into
+        // until `W` publishes and reconciles it — bail
         // with a clear message instead of a confusing GitHub 404/422.
         if let AppMode::PrReview(state) = &self.mode
-            && state
-                .review
-                .comments
-                .iter()
-                .any(|c| c.id == comment_id && c.ai_generated)
+            && let Some(comment) = state.review.comments.iter().find(|c| c.id == comment_id)
         {
-            self.push_toast_warning(
-                "This is an unposted AI-review draft — post it first, or skip/add to memory instead",
-            );
-            return;
+            if comment.ai_generated && !comment.ai_published {
+                self.push_toast_warning(
+                    "This is an unposted AI-review draft — post it first, or skip/add to memory instead",
+                );
+                return;
+            }
+            if comment.ai_generated
+                && matches!(comment.kind, CommentKind::Inline)
+                && comment.github_id.is_none()
+            {
+                self.push_toast_warning(
+                    "This posted finding is still syncing its GitHub thread — refresh and try again",
+                );
+                return;
+            }
         }
         // Not-needed replies start in edit mode (the user must type a reason);
         // the done template is post-ready, so it opens in the confirm view.
@@ -3309,6 +3458,7 @@ impl App {
                     .iter()
                     .filter(|c| {
                         c.ai_generated
+                            && !c.ai_published
                             && !matches!(c.triage, TriageState::Skipped | TriageState::Replied)
                     })
                     .cloned()
@@ -3379,8 +3529,10 @@ impl App {
     }
 
     /// Post the AI review to GitHub (`event: "COMMENT"` — never
-    /// auto-approve/request-changes) and, on success, mark every included
-    /// finding `Replied` so a re-post doesn't duplicate them. GitHub rejects
+    /// auto-approve/request-changes) and, on success, reconcile each local
+    /// finding with its real GitHub comment/review identity. Publication is
+    /// independent of triage: the findings remain open and can use the normal
+    /// done/reply/not-needed/resolve workflow. GitHub rejects
     /// the *entire* review if any inline comment points outside the diff
     /// (documented on [`GhCli::create_review`]); on that failure the drafts
     /// are left untouched so nothing triaged is lost, and the post-confirm
@@ -3405,28 +3557,50 @@ impl App {
             return Ok(());
         };
 
-        if let Err(e) = GhCli::create_review(&workdir, &pr, &body, "COMMENT", &inline) {
-            self.fail_ai_review_post(e);
-            return Ok(());
-        }
+        let created = match GhCli::create_review(&workdir, &pr, &body, "COMMENT", &inline) {
+            Ok(created) => created,
+            Err(e) => {
+                self.fail_ai_review_post(e);
+                return Ok(());
+            }
+        };
 
-        if let AppMode::PrReview(state) = &mut self.mode {
-            for c in &mut state.review.comments {
-                if comment_ids.contains(&c.id) {
-                    c.triage = TriageState::Replied;
+        // Fetch immediately so inline findings gain their comment/thread ids.
+        // The write has already succeeded, so a follow-up read failure must not
+        // leave them eligible for another `W` and create duplicates.
+        let posted = match fetch_and_normalize(&workdir, pr.clone()) {
+            Ok(posted) => posted,
+            Err(e) => {
+                self.log_warn(
+                    "pr_review",
+                    format!("posted review but identity refresh failed: {e}"),
+                );
+                PrReview {
+                    pr: pr.clone(),
+                    comments: Vec::new(),
+                    fetched_at: Local::now(),
                 }
             }
+        };
+        let mut unmatched = 0;
+        if let AppMode::PrReview(state) = &mut self.mode {
+            unmatched =
+                reconcile_ai_publication(&mut state.review, &comment_ids, &posted, created.id);
             state.ai_review_post = None;
         }
-        for id in &comment_ids {
-            self.persist_triage(pr.number, &pr.head_sha, *id, TriageState::Replied, None);
-        }
         self.recache_current_review();
-        self.push_toast_success(format!(
-            "Posted AI review · {} comment{}",
-            comment_ids.len(),
-            if comment_ids.len() == 1 { "" } else { "s" }
-        ));
+        if unmatched == 0 {
+            self.push_toast_success(format!(
+                "Posted AI review · {} finding{} now actionable",
+                comment_ids.len(),
+                if comment_ids.len() == 1 { "" } else { "s" }
+            ));
+        } else {
+            self.push_toast_warning(format!(
+                "Posted AI review · {unmatched} inline finding{} will finish syncing on refresh",
+                if unmatched == 1 { "" } else { "s" }
+            ));
+        }
         Ok(())
     }
 
@@ -3648,7 +3822,8 @@ impl App {
         let index = index_threads(&threads);
         if let AppMode::PrReview(state) = &mut self.mode {
             for c in &mut state.review.comments {
-                if let Some((tid, resolved)) = index.get(&c.id) {
+                let github_id = c.github_id.unwrap_or(c.id);
+                if let Some((tid, resolved)) = index.get(&github_id) {
                     c.thread_id = Some(tid.clone());
                     c.is_resolved = *resolved;
                 }
@@ -4210,6 +4385,9 @@ mod tests {
             triage: TriageState::Untriaged,
             local_note: None,
             ai_generated: false,
+            ai_published: false,
+            github_id: None,
+            github_review_id: None,
         }
     }
 
@@ -4539,6 +4717,9 @@ mod tests {
             outdated: false,
             file_level: false,
             ai_generated: false,
+            ai_published: false,
+            github_id: None,
+            github_review_id: None,
             diff_hunk: None,
             body: "<details>keep?</details>plain".into(),
             snippet: String::new(),
@@ -4857,6 +5038,82 @@ mod tests {
         // The anchored finding's own text shouldn't be duplicated into the
         // summary — it already posts as its own inline comment.
         assert!(!summary.contains("Guard the lock here."));
+    }
+
+    #[test]
+    fn posted_ai_review_reconciles_inline_and_summary_findings() {
+        let mut local = PrReview {
+            pr: pr(),
+            comments: findings_to_comments(&[
+                AiFinding {
+                    path: Some("src/x.rs".into()),
+                    line: Some(3),
+                    body: "Guard the lock".into(),
+                    diff_hunk: Some("@@ -3 +3 @@".into()),
+                },
+                AiFinding {
+                    path: None,
+                    line: None,
+                    body: "Add a regression test".into(),
+                    diff_hunk: None,
+                },
+            ]),
+            fetched_at: Local::now(),
+        };
+        let ids: Vec<_> = local.comments.iter().map(|c| c.id).collect();
+
+        let mut posted_comments = findings_to_comments(&[
+            AiFinding {
+                path: Some("src/x.rs".into()),
+                line: Some(3),
+                body: append_ai_attribution("Guard the lock"),
+                diff_hunk: Some("@@ -3 +3 @@".into()),
+            },
+            AiFinding {
+                path: None,
+                line: None,
+                body: "AI review, via AMF.\n\n- Add a regression test".into(),
+                diff_hunk: None,
+            },
+        ]);
+        posted_comments[0].id = 901;
+        posted_comments[0].ai_generated = false;
+        posted_comments[0].github_review_id = Some(800);
+        posted_comments[0].thread_id = Some("T901".into());
+        posted_comments[1].id = 800;
+        posted_comments[1].ai_generated = false;
+        posted_comments[1].github_review_id = Some(800);
+        posted_comments[1].kind = CommentKind::ReviewSummary {
+            state: "COMMENTED".into(),
+        };
+        let posted = PrReview {
+            pr: pr(),
+            comments: posted_comments,
+            fetched_at: Local::now(),
+        };
+
+        assert_eq!(reconcile_ai_publication(&mut local, &ids, &posted, 800), 0);
+        assert!(local.comments.iter().all(|c| c.ai_generated));
+        assert!(local.comments.iter().all(|c| c.ai_published));
+        assert_eq!(local.comments[0].github_id, Some(901));
+        assert_eq!(local.comments[0].thread_id.as_deref(), Some("T901"));
+        assert_eq!(
+            local.comments[0].reply_target(),
+            ReplyTarget::InlineThread {
+                root_comment_id: 901,
+            }
+        );
+        assert_eq!(local.comments[1].github_id, Some(800));
+        assert!(matches!(
+            local.comments[1].kind,
+            CommentKind::ReviewSummary { .. }
+        ));
+        assert!(
+            local
+                .comments
+                .iter()
+                .all(|c| c.triage == TriageState::Untriaged)
+        );
     }
 
     #[test]

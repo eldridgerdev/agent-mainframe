@@ -2650,7 +2650,7 @@ impl App {
             );
         }
         match GhCli::create_review(workdir, &pr, &body, event, &comments) {
-            Ok(()) => {
+            Ok(_) => {
                 let what = if comments.is_empty() {
                     "review summary".to_string()
                 } else {

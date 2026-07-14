@@ -1368,7 +1368,7 @@ first), and the reviewer's output (plus comments triaged in the pane)
       triage-session return path. → `src/github.rs`, `src/app/pr_review.rs`,
       `src/app/sync.rs`, `src/app/tests.rs`.
 
-- [ ] **BUG — posted AI-review findings remain trapped as drafts after `W`.**
+- [x] **BUG — posted AI-review findings remain trapped as drafts after `W`.**
       After generating findings with `A` and successfully posting them as a
       GitHub review with `W`, the pane still treats each finding as an
       unposted synthetic AI draft. The user cannot use the normal follow-up
@@ -1383,7 +1383,21 @@ first), and the reviewer's output (plus comments triaged in the pane)
       recreate a duplicate draft; failed or cancelled `W` must leave findings
       as local drafts. Add regression coverage for `A` → `W` → mark done →
       reply, including inline and summary-folded findings and a reopen after
-      posting.
+      posting. Shipped by separating AI provenance (`ai_generated`) from
+      publication (`ai_published`) and retaining the created review id plus
+      each real inline comment id/thread id. A successful `W` now re-fetches
+      the posted review, reconciles inline and summary-folded findings without
+      changing their local triage state, and enables the normal
+      done/reply/not-needed/resolve actions. Cache refresh carries those mapped
+      findings forward while removing duplicate freshly-fetched GitHub
+      representations; if the immediate identity fetch fails, publication is
+      still recorded so retrying `W` cannot double-post and refresh can finish
+      the mapping. New `A` runs replace only unposted drafts and allocate fresh
+      synthetic ids above retained published findings. Regression tests cover
+      inline + summary reconciliation, entering the Done reply flow, and a
+      cache-backed refresh/reopen without duplicates. → `src/github.rs`,
+      `src/app/pr_review.rs`, `src/app/tests.rs`,
+      `src/db/pr_review_cache.rs`.
 
 - [x] **Triage-session token/cost tracker.** The pane now snapshots the
       selected fix target's usage when a PR-triage visit begins and shows the
@@ -1587,6 +1601,26 @@ first), and the reviewer's output (plus comments triaged in the pane)
 - **Posting AI-review findings (Epic E):** when posting as a real GitHub
   review, tag AMF-generated comments for honesty (subtle footer), same
   open question as AI-drafted replies above?
+
+## Backlog
+
+- **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queues
+  every marked comment's fix into the review session immediately (auto-submit
+  each). `B` opens a confirm dialog before combining them into one prompt and
+  launching. Both advance a batch of marked items, but `B` lets the user
+  review/edit before committing, while `F` is fire-and-forget with no
+  visibility. Real use found `F` not useful — users prefer the confirm
+  visibility of `B`. Remove `F` to simplify the keymap.
+
+- **Keymap audit — too many bindings.** The PR triage pane has accumulated
+  many keybinds (`f`, `F`, `B`, `r`, `n`, `R`, `x`, `o`, `P`, `M`, `W`, `A`,
+  `i`, `space`, `#`, `g`, `a`, `G`, `h`, `j/k`, etc.). Real use reports the
+  pane is hard to use and overwhelming. Audit every binding: is it needed? Can
+  it be removed or merged with another? Can the workflow be simplified to
+  require fewer keys and fewer modes/dialogs? Example: can `r`/`n` be merged
+  into a single "reply" key that prompts for the reply kind (fix/not-needed)?
+  Can `A`/`W` (AI review) be deferred or simplified? Prioritize discoverability
+  and lean keymaps over feature breadth.
 
 ## Reasoning / when to build
 

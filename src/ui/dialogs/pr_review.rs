@@ -1,3 +1,4 @@
+use chrono::{DateTime, Local};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -8,7 +9,6 @@ use ratatui::{
         ScrollbarState, Wrap,
     },
 };
-use chrono::{DateTime, Local};
 use unicode_width::UnicodeWidthStr;
 
 use std::path::Path;

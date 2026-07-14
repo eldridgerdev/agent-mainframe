@@ -9324,9 +9324,7 @@ fn poll_ai_pr_review_bg_error_still_returns_to_pane() {
         AppMode::PrReview(state) => match &state.review.last_ai_review {
             Some(run) => assert_eq!(
                 run.outcome,
-                crate::app::pr_review::AiReviewRunOutcome::Error(
-                    "gh pr diff failed".to_string()
-                )
+                crate::app::pr_review::AiReviewRunOutcome::Error("gh pr diff failed".to_string())
             ),
             None => panic!("expected a persisted last_ai_review record after a failed run"),
         },

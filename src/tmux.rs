@@ -1081,7 +1081,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
@@ -1176,7 +1176,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())

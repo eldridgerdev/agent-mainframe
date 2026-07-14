@@ -27,6 +27,8 @@ are tagged.
   PR number, dedicated triage session working, AI review in flight — visible
   without leaving the session.
 
+## [v0.30.0] - 2026-07-14
+
 ### Removed
 
 - Removed the PR Triage `F` shortcut that queued marked fixes immediately.

@@ -59,6 +59,7 @@ pub(crate) struct AgentSidebarData {
     pub work_text: Option<String>,
     pub todos_text: Option<String>,
     pub summary_text: String,
+    pub pr_triage_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -537,6 +538,7 @@ fn draw_agent_sidebar(
         work_text: None,
         todos_text: None,
         summary_text: String::new(),
+        pr_triage_text: None,
     };
     let data = data.unwrap_or(&fallback);
     let sections_with_content = sidebar_sections(data, inner.width);
@@ -567,6 +569,15 @@ fn draw_agent_sidebar(
                 .alignment(Alignment::Right),
             );
         }
+        if sidebar_section.title == "PR Triage" {
+            block = block.title_top(
+                Line::from(Span::styled(
+                    " <leader G> ",
+                    Style::default().fg(theme.text_muted.to_color()),
+                ))
+                .alignment(Alignment::Right),
+            );
+        }
         let paragraph = Paragraph::new(styled_sidebar_lines(
             sidebar_section.title,
             sidebar_section.body,
@@ -587,6 +598,23 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
             title: "Status",
             body: data.status_text.as_str(),
             constraint: Constraint::Length(status_section_height(&data.status_text, section_width)),
+        });
+    }
+
+    if let Some(pr_triage_text) = data
+        .pr_triage_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        sections.push(SidebarSection {
+            title: "PR Triage",
+            body: pr_triage_text,
+            constraint: Constraint::Length(sidebar_section_height(
+                pr_triage_text,
+                section_width,
+                2,
+                6,
+            )),
         });
     }
 
@@ -658,6 +686,7 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
         "Work" => theme.primary.to_color(),
         "Todos" => theme.success.to_color(),
         "Summary" => theme.info.to_color(),
+        "PR Triage" => theme.info.to_color(),
         _ => theme.border.to_color(),
     }
 }
@@ -786,6 +815,8 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.status_waiting.to_color()
     } else if lower.contains("thinking") || lower.contains("running tool") {
         theme.info.to_color()
+    } else if title == "PR Triage" && (lower.contains("working") || lower.contains("running")) {
+        theme.warning.to_color()
     } else if lower.contains("ready") {
         theme.success.to_color()
     } else if lower.contains("generating") {
@@ -812,6 +843,7 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         || lower.contains("ready")
         || lower.contains("generating")
         || label == "Hint"
+        || (title == "PR Triage" && (lower.contains("working") || lower.contains("running")))
     {
         style = style.add_modifier(Modifier::BOLD);
     }
@@ -1288,6 +1320,7 @@ mod tests {
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
         };
 
         let sections = sidebar_sections(&sidebar, 30);
@@ -1312,6 +1345,7 @@ mod tests {
             ),
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
         };
 
         let sections = sidebar_sections(&sidebar, 30);
@@ -1357,6 +1391,7 @@ mod tests {
             work_text: None,
             todos_text: None,
             summary_text: "Sidebar ready.".into(),
+            pr_triage_text: None,
         };
 
         terminal
@@ -1387,6 +1422,90 @@ mod tests {
     }
 
     #[test]
+    fn pr_triage_section_renders_in_sidebar_when_present() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Claude);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Waiting for input".into(),
+            model_text: None,
+            prompt_text: "Preview: Resume the task.".into(),
+            work_text: None,
+            todos_text: None,
+            summary_text: "Sidebar ready.".into(),
+            pr_triage_text: Some("PR: #321 · 4 open\nStatus: Working".into()),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    None,
+                    (None, None),
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("PR Triage"));
+        assert!(rendered.contains("PR: #321"));
+        assert!(rendered.contains("4 open"));
+        assert!(rendered.contains("Working"));
+        assert!(rendered.contains("<leader G>"));
+    }
+
+    #[test]
+    fn pr_triage_section_is_absent_from_sidebar_without_an_active_pr() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Claude);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Waiting for input".into(),
+            model_text: None,
+            prompt_text: "Preview: Resume the task.".into(),
+            work_text: None,
+            todos_text: None,
+            summary_text: "Sidebar ready.".into(),
+            pr_triage_text: None,
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    None,
+                    (None, None),
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(!rendered.contains("PR Triage"));
+    }
+
+    #[test]
     fn codex_sidebar_shell_renders_in_view() {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1400,6 +1519,7 @@ mod tests {
             work_text: None,
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
         };
 
         terminal
@@ -1441,6 +1561,7 @@ mod tests {
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
         };
 
         terminal
@@ -1560,6 +1681,7 @@ mod tests {
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
         };
 
         terminal
@@ -1604,6 +1726,7 @@ mod tests {
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
         };
 
         terminal
@@ -1652,6 +1775,7 @@ mod tests {
             ),
             todos_text: None,
             summary_text: "Small summary.".into(),
+            pr_triage_text: None,
         };
 
         terminal
@@ -1693,6 +1817,7 @@ mod tests {
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
         };
 
         terminal
@@ -1734,6 +1859,7 @@ mod tests {
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
             summary_text: String::new(),
+            pr_triage_text: None,
         };
 
         terminal
@@ -1775,6 +1901,7 @@ mod tests {
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
         };
 
         terminal

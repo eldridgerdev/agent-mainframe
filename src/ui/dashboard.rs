@@ -32,6 +32,87 @@ const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("r", "Refresh statuses"),
 ];
 
+/// The ambient `[PR #N · M open]` badge span shown in the top-right corner
+/// of a live session — shared by both `AppMode::Viewing` and
+/// `AppMode::Compose` (composing is just Viewing plus an input overlay; the
+/// session underneath, and its PR, don't change). Shown as a sidebar box
+/// instead (`pr_triage_sidebar_text`) once the sidebar is visible, so the
+/// two never compete for the same header space.
+fn pr_triage_badge_span(app: &App, view: &crate::app::ViewState) -> Option<Span<'static>> {
+    if view.sidebar_visible {
+        return None;
+    }
+    let feature = app.feature_for_view(view)?;
+    let pr = app.active_pr_for_feature(&feature.id)?;
+    let working = app
+        .dedicated_review_session_working_for_workdir(&feature.workdir)
+        .unwrap_or(false);
+    let ai_review_running = app.ai_review_running_for_workdir(&feature.workdir);
+    let mut label = match pr.unresolved_threads {
+        Some(0) => format!(" [PR #{} · 0 open", pr.number),
+        Some(count) => format!(" [PR #{} · {} open", pr.number, count),
+        None => format!(" [PR #{}", pr.number),
+    };
+    if working {
+        label.push_str(" · ● working");
+    }
+    if ai_review_running {
+        label.push_str(" · AI review");
+    }
+    label.push_str("] ");
+    let color = if working || ai_review_running {
+        app.theme.warning.to_color()
+    } else if pr.unresolved_threads == Some(0) {
+        app.theme.success.to_color()
+    } else {
+        app.theme.info.to_color()
+    };
+    Some(Span::styled(
+        label,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// Render a right-aligned row of badge spans flush with the top of `area`.
+fn draw_badge_row(frame: &mut Frame, area: Rect, badge_spans: Vec<Span<'static>>) {
+    if badge_spans.is_empty() {
+        return;
+    }
+    let total: u16 = badge_spans
+        .iter()
+        .map(|s| s.content.chars().count() as u16)
+        .sum();
+    let label_width = total.min(area.width);
+    let badge_area = Rect::new(
+        area.x + area.width.saturating_sub(label_width),
+        area.y,
+        label_width,
+        1,
+    );
+    frame.render_widget(Paragraph::new(Line::from(badge_spans)), badge_area);
+}
+
+/// Sidebar-box counterpart of the ambient Viewing-mode PR badge (see
+/// `draw()`'s `AppMode::Viewing` arm) — shown instead of the badge when the
+/// sidebar is visible, so the two never compete for the same header space.
+fn pr_triage_sidebar_text(app: &App, feature: &Feature) -> Option<String> {
+    let pr = app.active_pr_for_feature(&feature.id)?;
+    let mut lines = vec![match pr.unresolved_threads {
+        Some(count) => format!("PR: #{} · {count} open", pr.number),
+        None => format!("PR: #{}", pr.number),
+    }];
+    if app
+        .dedicated_review_session_working_for_workdir(&feature.workdir)
+        .unwrap_or(false)
+    {
+        lines.push("Status: Working".to_string());
+    }
+    if app.ai_review_running_for_workdir(&feature.workdir) {
+        lines.push("AI review: Running".to_string());
+    }
+    Some(lines.join("\n"))
+}
+
 fn build_agent_sidebar_data(
     app: &App,
     view: &crate::app::ViewState,
@@ -140,6 +221,7 @@ fn build_opencode_sidebar_data(
             .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
         todos_text,
         summary_text,
+        pr_triage_text: pr_triage_sidebar_text(app, feature),
     })
 }
 
@@ -183,6 +265,7 @@ fn build_claude_sidebar_data(
         work_text,
         todos_text,
         summary_text,
+        pr_triage_text: pr_triage_sidebar_text(app, feature),
     })
 }
 
@@ -235,6 +318,7 @@ fn build_codex_sidebar_data(
         work_text,
         todos_text: None,
         summary_text,
+        pr_triage_text: pr_triage_sidebar_text(app, feature),
     })
 }
 
@@ -976,7 +1060,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // Claude-only; the direct-input hint applies to every harness.
         if view.session_kind.is_agent_harness() {
             use ratatui::style::{Modifier, Style};
-            use ratatui::text::{Line, Span};
+            use ratatui::text::Span;
             let mut badge_spans: Vec<Span> = Vec::new();
             if view.session_kind == SessionKind::Claude
                 && crate::app::remote_control::detect_remote_control(&app.pane_content).active
@@ -1007,54 +1091,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-            if let Some(feature) = app.feature_for_view(view)
-                && let Some(pr) = app.active_pr_for_feature(&feature.id)
-            {
-                let working = app
-                    .dedicated_review_session_working_for_workdir(&feature.workdir)
-                    .unwrap_or(false);
-                let ai_review_running = app.ai_review_running_for_workdir(&feature.workdir);
-                let mut label = match pr.unresolved_threads {
-                    Some(0) => format!(" [PR #{} · 0 open", pr.number),
-                    Some(count) => format!(" [PR #{} · {} open", pr.number, count),
-                    None => format!(" [PR #{}", pr.number),
-                };
-                if working {
-                    label.push_str(" · ● working");
-                }
-                if ai_review_running {
-                    label.push_str(" · AI review");
-                }
-                label.push_str("] ");
-                let color = if working || ai_review_running {
-                    app.theme.warning.to_color()
-                } else if pr.unresolved_threads == Some(0) {
-                    app.theme.success.to_color()
-                } else {
-                    app.theme.info.to_color()
-                };
-                badge_spans.push(Span::styled(
-                    label,
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ));
+            if let Some(span) = pr_triage_badge_span(app, view) {
+                badge_spans.push(span);
             }
-            if !badge_spans.is_empty() {
-                let total: u16 = badge_spans
-                    .iter()
-                    .map(|s| s.content.chars().count() as u16)
-                    .sum();
-                let label_width = total.min(area.width);
-                let badge_area = Rect::new(
-                    area.x + area.width.saturating_sub(label_width),
-                    area.y,
-                    label_width,
-                    1,
-                );
-                frame.render_widget(
-                    ratatui::widgets::Paragraph::new(Line::from(badge_spans)),
-                    badge_area,
-                );
-            }
+            draw_badge_row(frame, area, badge_spans);
         }
         // Show transient message (e.g. "Copied N chars") on the bottom line
         if let Some(ref msg) = app.message {
@@ -1188,6 +1228,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::Compose(state) = &mut app.mode {
         super::dialogs::draw_compose_dialog(frame, state, &app.theme);
         draw_mode_context_bar(frame, &app.mode, &app.theme);
+        // `draw_mode_context_bar` clears and redraws the whole top row for
+        // its breadcrumb, so the ambient PR badge — the compose box itself
+        // lives at the bottom of the frame, leaving the top-right corner
+        // free — has to be drawn after it, not before, or it gets wiped.
+        // Composing doesn't change which session (or PR) is underneath, so
+        // reuse the same badge `Viewing` shows.
+        if let Some(view) = compose_from_view.as_ref()
+            && view.session_kind.is_agent_harness()
+            && let Some(span) = pr_triage_badge_span(app, view)
+        {
+            draw_badge_row(frame, frame.area(), vec![span]);
+        }
         return;
     }
 
@@ -1939,6 +1991,290 @@ mod tests {
             format_codex_usage_source_confidence(&SessionKind::Codex, Some(&session)),
             Some("Usage source: inferred workdir match".to_string())
         );
+    }
+
+    fn store_with_claude_feature() -> (ProjectStore, Feature) {
+        let now = chrono::Utc::now();
+        let mut feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Claude,
+            enable_chrome: false,
+            remote_control: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Active,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        feature.add_session_named(SessionKind::Claude, "Claude 1".to_string());
+        let project = Project {
+            id: "proj-1".into(),
+            name: "demo".into(),
+            repo: PathBuf::from("/tmp/demo"),
+            collapsed: false,
+            features: vec![feature.clone()],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: false,
+        };
+        (
+            ProjectStore {
+                version: 5,
+                projects: vec![project],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                prompt_templates: Vec::new(),
+                extra: HashMap::new(),
+            },
+            feature,
+        )
+    }
+
+    #[test]
+    fn pr_triage_sidebar_text_is_none_without_an_active_pr() {
+        let (store, feature) = store_with_claude_feature();
+        let app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        assert!(pr_triage_sidebar_text(&app, &feature).is_none());
+    }
+
+    #[test]
+    fn pr_triage_sidebar_text_reports_pr_open_count_and_no_line_without_a_count() {
+        let (store, feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.active_prs.insert(
+            feature.id.clone(),
+            crate::app::ActivePrStatus {
+                branch: "feature".to_string(),
+                head_sha: "abc123".to_string(),
+                number: 321,
+                unresolved_threads: Some(4),
+            },
+        );
+
+        assert_eq!(
+            pr_triage_sidebar_text(&app, &feature),
+            Some("PR: #321 · 4 open".to_string())
+        );
+
+        app.active_prs
+            .get_mut(&feature.id)
+            .unwrap()
+            .unresolved_threads = None;
+        assert_eq!(
+            pr_triage_sidebar_text(&app, &feature),
+            Some("PR: #321".to_string())
+        );
+    }
+
+    #[test]
+    fn pr_triage_sidebar_text_adds_working_and_ai_review_lines() {
+        let (mut store, _) = store_with_claude_feature();
+        let dedicated_id = store.projects[0].features[0]
+            .add_session_named(
+                SessionKind::Claude,
+                crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+            )
+            .id
+            .clone();
+        let feature = store.projects[0].features[0].clone();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.active_prs.insert(
+            feature.id.clone(),
+            crate::app::ActivePrStatus {
+                branch: "feature".to_string(),
+                head_sha: "abc123".to_string(),
+                number: 321,
+                unresolved_threads: Some(4),
+            },
+        );
+
+        app.handle_ipc_message_value(serde_json::json!({
+            "type": "thinking-start",
+            "session_id": feature.tmux_session,
+            "amf_feature_session_id": dedicated_id,
+        }));
+        assert_eq!(
+            pr_triage_sidebar_text(&app, &feature),
+            Some("PR: #321 · 4 open\nStatus: Working".to_string())
+        );
+
+        let pr = crate::github::PrRef {
+            number: 321,
+            head_sha: "abc123".to_string(),
+            url: "https://github.com/o/r/pull/321".to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+        };
+        let review = crate::app::pr_review::normalize(pr, vec![], vec![], vec![], vec![]);
+        let origin = crate::app::PrReviewState {
+            workdir: feature.workdir.clone(),
+            review,
+            selected: 0,
+            detail_scroll: 0,
+            detail_content_lines: 0,
+            hide_resolved: false,
+            sort_mode: crate::app::pr_review::PrSortMode::default(),
+            fix_target: crate::app::pr_review::FixTarget::default(),
+            usage_baselines: HashMap::new(),
+            review_harness: None,
+            ai_review_harness: None,
+            ai_harness_pick: None,
+            harness_pick: None,
+            fix_confirm: None,
+            fix_vim_enabled: false,
+            reply: None,
+            memory_add: None,
+            marked: std::collections::HashSet::new(),
+            pending_batch: false,
+            ai_review_post: None,
+        };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        app.ai_review_bg = Some(rx);
+        app.ai_review_pending = Some(origin);
+        assert_eq!(
+            pr_triage_sidebar_text(&app, &feature),
+            Some("PR: #321 · 4 open\nStatus: Working\nAI review: Running".to_string())
+        );
+    }
+
+    fn render_viewing_mode_with_active_pr(sidebar_visible: bool) -> String {
+        let (store, feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.active_prs.insert(
+            feature.id.clone(),
+            crate::app::ActivePrStatus {
+                branch: "feature".to_string(),
+                head_sha: "abc123".to_string(),
+                number: 321,
+                unresolved_threads: Some(4),
+            },
+        );
+        let mut view = ViewState::new(
+            "demo".to_string(),
+            "feature".to_string(),
+            feature.tmux_session.clone(),
+            "claude".to_string(),
+            "Claude".to_string(),
+            SessionKind::Claude,
+            VibeMode::default(),
+            false,
+        );
+        view.sidebar_visible = sidebar_visible;
+        app.mode = crate::app::AppMode::Viewing(view);
+
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn viewing_mode_shows_ambient_pr_badge_when_sidebar_is_hidden() {
+        let rendered = render_viewing_mode_with_active_pr(false);
+
+        assert!(rendered.contains("PR #321"));
+        assert!(rendered.contains("4 open"));
+        assert!(!rendered.contains("PR Triage"));
+    }
+
+    #[test]
+    fn viewing_mode_shows_pr_triage_sidebar_box_instead_of_badge_when_sidebar_is_visible() {
+        let rendered = render_viewing_mode_with_active_pr(true);
+
+        assert!(rendered.contains("PR Triage"));
+        assert!(rendered.contains("PR: #321"));
+        assert!(rendered.contains("4 open"));
+        assert!(!rendered.contains("[PR #321"));
+    }
+
+    #[test]
+    fn compose_mode_still_shows_the_ambient_pr_badge_with_sidebar_hidden() {
+        let (store, feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.active_prs.insert(
+            feature.id.clone(),
+            crate::app::ActivePrStatus {
+                branch: "feature".to_string(),
+                head_sha: "abc123".to_string(),
+                number: 321,
+                unresolved_threads: Some(4),
+            },
+        );
+        let mut view = ViewState::new(
+            "demo".to_string(),
+            "feature".to_string(),
+            feature.tmux_session.clone(),
+            "claude".to_string(),
+            "Claude".to_string(),
+            SessionKind::Claude,
+            VibeMode::default(),
+            false,
+        );
+        view.sidebar_visible = false;
+        assert!(
+            pr_triage_badge_span(&app, &view).is_some(),
+            "expected a badge span before entering Compose mode"
+        );
+        app.mode = crate::app::AppMode::Compose(crate::app::ComposeState::new(
+            view,
+            feature.workdir.clone(),
+            String::new(),
+            Vec::new(),
+        ));
+
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("PR #321"));
+        assert!(rendered.contains("4 open"));
     }
 
     #[test]

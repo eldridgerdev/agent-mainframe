@@ -1673,6 +1673,47 @@ first), and the reviewer's output (plus comments triaged in the pane)
   `triage_model`) so each AI action can select its own model independently of
   the feature's working harness. Fall back to harness default if not configured.
 
+- **BUG (potential) — fix injection can silently target the wrong checked-out
+  branch when triaging a manually-picked PR (correctness).** `G`'s picker (and
+  `g`/`#` inside the pane) let the user open *any* PR from the repo, not just
+  the one for the feature's own checked-out branch — confirmed by design and
+  by the "sequential/multiple PRs for the same feature branch" fix above.
+  Checked what this means for the two pieces of the pane that touch real code:
+  - **`A` (AI review generation) is unaffected.** `run_ai_pr_review` feeds the
+    agent the diff as inline text from `GhCli::pr_diff` (`gh pr diff <number>`,
+    `src/github.rs`), which resolves by PR number against the GitHub API
+    regardless of what's checked out locally. `ai_review_prompt` asks the
+    model to review that pasted diff directly — it never instructs or needs
+    the agent to open files from the working tree. So AI review runs correctly
+    against the selected PR's actual diff even when the workdir is on a
+    completely unrelated branch.
+  - **`f`/`B` (fix injection) is not.** The fix-prompt design deliberately
+    omits file contents "since the checked-out repo" already gives the agent
+    that context (token principle #3, `PrComment::fix_prompt`/`fix_prompt_body`)
+    — the agent is expected to open the referenced file itself. `resolve_fix_session`
+    targets the feature's own `state.workdir` unconditionally; neither it nor
+    `open_pr_review`/`enter_pr_review`/the picker check whether that workdir's
+    checked-out branch actually matches the PR being reviewed. If it doesn't,
+    the dedicated (or existing-live) session opens files from the *wrong*
+    branch, and any resulting fix/commit lands on the wrong branch entirely —
+    silently, with no warning anywhere in the flow. `PrRef` doesn't even carry
+    `headRefName` today (only `head_sha`); `PrListEntry` does, but it's dropped
+    once a PR is resolved into a `PrRef`/`PrReview`.
+  - **Fix shape:** thread `headRefName` through PR resolution into `PrReview`
+    (or a lightweight side field), compare it against
+    `WorktreeManager::current_branch(workdir)` when entering the pane (and/or
+    on each `f`), and surface a clear, hard-to-miss warning — a pane-header
+    banner and/or a confirm gate on `f`/`B` — when the feature's checked-out
+    branch doesn't match the PR's branch: "reviewing PR for branch `X`, but
+    this worktree is on `Y` — fixes will be applied to `Y`, not `X`." Decide
+    whether to block the fix outright or just force an explicit acknowledge;
+    either is better than the current silent mismatch. Confirmed live: opened
+    PR #343 (branch `pr-review-test-fixture`) manually from a feature checked
+    out on an unrelated branch (`path`) via the picker — the pane loaded and
+    triaged the correct PR's comments with no indication anywhere that
+    pressing `f` would hand the agent the wrong branch's copy of every file it
+    opens.
+
 - [x] **Open PR Triage from inside the agent harness session, with an ambient
       status indicator (discoverability).** `leader G` — peer to `leader p`
       (prompt library) in `LEADER_COMMANDS` — now opens PR Triage directly
@@ -1714,6 +1755,65 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `src/app/navigation.rs`, `src/app/pr_review.rs`, `src/ui/pane.rs`,
       `src/handlers/view.rs`, `src/ui/dashboard.rs`, `src/ui/dialogs/help.rs`,
       `src/app/tests.rs`, `CHANGELOG.md`.
+
+      **Follow-up, same day — route the badge into the sidebar box when one's
+      showing.** The top-right badge and the `Claude`/`Codex`/`Opencode`
+      sidebar (`leader b`) both fight for the same header real estate; asked
+      for directly, so the ambient indicator now picks whichever surface
+      isn't already spoken for. A new `AgentSidebarData::pr_triage_text`
+      field (`src/ui/pane.rs`) renders as a "PR Triage" sidebar section —
+      same `Label: value` line convention as `Status`/`Work` (`sidebar_value_style`
+      bolds `working`/`running` values) — built by a new
+      `pr_triage_sidebar_text(app, feature)` (`src/ui/dashboard.rs`) that
+      composes the exact same three primitives the badge already used
+      (`active_pr_for_feature`, `dedicated_review_session_working_for_workdir`,
+      `ai_review_running_for_workdir`), so the two surfaces can never drift
+      out of sync — only their layout differs. The top-right badge block
+      gained a `!view.sidebar_visible` guard so it only renders when the
+      sidebar is hidden; toggling `leader b` mid-session flips which one is
+      showing. Unit-tested (`pr_triage_sidebar_text` composition incl. the
+      open-count/no-count and working/AI-review line variants; the "PR
+      Triage" section renders in `pane::draw` when present and is absent
+      when not; a full `dashboard::draw()` render in `AppMode::Viewing`
+      proves the badge and the sidebar box are mutually exclusive on
+      `sidebar_visible`). Confirmed live: sidebar toggled cleanly with
+      `leader b` in a real Claude session with no regressions (verified
+      against a feature with no active PR — the render-test suite covers the
+      active-PR content itself). → `src/ui/pane.rs`, `src/ui/dashboard.rs`,
+      `CHANGELOG.md`.
+
+      **Second follow-up, same day — two real-use bugs: the badge vanished
+      while composing, and the underlying data could go stale (or never
+      populate) inside a session at all.** (1) Compose interception is on by
+      default, so entering a session normally lands straight in
+      `AppMode::Compose`, not `AppMode::Viewing` — and the badge code lived
+      only in the `Viewing` arm of `draw()`, so it silently never ran while
+      composing (the common case). Fixed by extracting `pr_triage_badge_span`
+      / `draw_badge_row` (`src/ui/dashboard.rs`) and calling them from both
+      arms — in `Compose`, after `draw_mode_context_bar` rather than before
+      it, since that call clears and redraws the whole top row for its
+      breadcrumb and would otherwise wipe a badge drawn earlier in the same
+      frame (caught by a new `compose_mode_still_shows_the_ambient_pr_badge_with_sidebar_hidden`
+      render test, which failed against the naive before-context-bar
+      placement). (2) Root cause of the emptier bug: `App::sync_active_prs_background`
+      — the job that populates `active_prs`, the data both the badge and the
+      sidebar box read — was only invoked from `main.rs`'s `!is_viewing`
+      branch, bundled with tmux status reconciliation. Opening a PR for a
+      feature while already inside its session (or simply staying in one)
+      meant the indicator's data source never ran again, so it stayed empty
+      or stale indefinitely — directly defeating the point of an ambient
+      indicator meant to be read *without leaving the session*. Fixed by
+      giving it an independent cadence/timer (`last_active_pr_sync`) with no
+      `is_viewing` gate, reusing the same reentrancy guard
+      (`active_pr_bg.is_some()`) so it stays a cheap, non-blocking background
+      kick-off regardless of how often the check runs. → `src/ui/dashboard.rs`,
+      `src/main.rs`, `CHANGELOG.md`.
+
+      **Third follow-up, same day — sidebar box title hint.** The "PR
+      Triage" section's border now carries a `<leader G>` hint (right-aligned
+      in its top border), matching the existing `<leader l>` hint on the
+      "Prompt" section — the same discoverability pattern, just pointing at
+      the shortcut that opens the pane this box is a preview of. → `src/ui/pane.rs`.
 
 ## Reasoning / when to build
 

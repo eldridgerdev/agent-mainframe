@@ -39,6 +39,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("C", "Toggle Remote Control (/rc)"),
     ("O", "Open Remote Control URL"),
     ("f", "Final review"),
+    ("G", "PR Triage"),
     ("D", "Debug log"),
     ("?", "Help"),
 ];

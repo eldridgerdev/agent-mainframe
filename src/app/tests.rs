@@ -10570,6 +10570,143 @@ fn pr_review_open_without_selection_shows_message() {
     assert!(app.message.is_some());
 }
 
+fn view_state_for(project_name: &str, feature_name: &str) -> ViewState {
+    ViewState::new(
+        project_name.to_string(),
+        feature_name.to_string(),
+        "amf-my-feat".to_string(),
+        "claude".to_string(),
+        "Claude".to_string(),
+        SessionKind::Claude,
+        VibeMode::default(),
+        false,
+    )
+}
+
+#[test]
+fn feature_for_view_resolves_by_project_and_feature_name() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let view = view_state_for("my-project", "my-feat");
+
+    let feature = app.feature_for_view(&view).expect("feature should resolve");
+    assert_eq!(feature.id, "feat-1");
+}
+
+#[test]
+fn feature_for_view_returns_none_for_unknown_feature() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let view = view_state_for("my-project", "does-not-exist");
+
+    assert!(app.feature_for_view(&view).is_none());
+}
+
+#[test]
+fn open_pr_review_from_view_is_noop_outside_viewing_mode() {
+    // Leader commands only fire while `Viewing`, but guard the entry point
+    // itself in case something else ever calls it from another mode.
+    let mut app = pr_review_test_app();
+    app.mode = AppMode::Normal;
+
+    app.open_pr_review_from_view();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.message.is_none());
+}
+
+#[test]
+fn open_pr_review_from_view_shows_message_for_unresolvable_feature() {
+    // The session view names a project/feature that no longer exists in the
+    // store — resolve must fail gracefully rather than panicking or spending
+    // a `gh` call on a bogus workdir.
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Viewing(view_state_for("my-project", "does-not-exist"));
+
+    app.open_pr_review_from_view();
+
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    assert_eq!(app.message.as_deref(), Some("No active feature to review"));
+}
+
+#[test]
+fn dedicated_review_session_working_for_workdir_reads_outside_pr_review_mode() {
+    // The ambient Viewing-mode badge calls this while `self.mode` is
+    // `Viewing`, not `PrReview` — unlike `pr_review_dedicated_session_working`,
+    // it must not depend on the pane being open.
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let dedicated_session_id = store.projects[0].features[0]
+        .add_session_named(
+            SessionKind::Claude,
+            crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+        )
+        .id
+        .clone();
+    let tmux_session = store.projects[0].features[0].tmux_session.clone();
+    let workdir = store.projects[0].features[0].workdir.clone();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Viewing(view_state_for("my-project", "my-feat"));
+
+    assert_eq!(
+        app.dedicated_review_session_working_for_workdir(&workdir),
+        Some(false)
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-start",
+        "session_id": tmux_session,
+        "amf_feature_session_id": dedicated_session_id,
+    }));
+    assert_eq!(
+        app.dedicated_review_session_working_for_workdir(&workdir),
+        Some(true)
+    );
+}
+
+#[test]
+fn ai_review_running_for_workdir_matches_the_pending_reviews_workdir() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let workdir = origin.workdir.clone();
+    let other_workdir = PathBuf::from("/tmp/other-workdir");
+
+    // No background job yet.
+    assert!(!app.ai_review_running_for_workdir(&workdir));
+
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin);
+
+    assert!(app.ai_review_running_for_workdir(&workdir));
+    assert!(!app.ai_review_running_for_workdir(&other_workdir));
+}
+
 /// Enter the review pane with comments 1..=n where the given ids are resolved.
 fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
     let comments: Vec<crate::github::ReviewComment> = (1..=n)

@@ -1007,6 +1007,37 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
+            if let Some(feature) = app.feature_for_view(view)
+                && let Some(pr) = app.active_pr_for_feature(&feature.id)
+            {
+                let working = app
+                    .dedicated_review_session_working_for_workdir(&feature.workdir)
+                    .unwrap_or(false);
+                let ai_review_running = app.ai_review_running_for_workdir(&feature.workdir);
+                let mut label = match pr.unresolved_threads {
+                    Some(0) => format!(" [PR #{} · 0 open", pr.number),
+                    Some(count) => format!(" [PR #{} · {} open", pr.number, count),
+                    None => format!(" [PR #{}", pr.number),
+                };
+                if working {
+                    label.push_str(" · ● working");
+                }
+                if ai_review_running {
+                    label.push_str(" · AI review");
+                }
+                label.push_str("] ");
+                let color = if working || ai_review_running {
+                    app.theme.warning.to_color()
+                } else if pr.unresolved_threads == Some(0) {
+                    app.theme.success.to_color()
+                } else {
+                    app.theme.info.to_color()
+                };
+                badge_spans.push(Span::styled(
+                    label,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            }
             if !badge_spans.is_empty() {
                 let total: u16 = badge_spans
                     .iter()

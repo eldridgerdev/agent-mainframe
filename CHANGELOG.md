@@ -22,10 +22,6 @@ are tagged.
 - Model selection independent of agent harness: allow per-action model selection
   (e.g. powerful model for AI review, cheaper model for reply drafts) via config
   map that falls back to harness default.
-- Open PR Triage directly from inside an agent harness session (a leader-key
-  entry point, not just from the dashboard), with an ambient indicator —
-  PR number, dedicated triage session working, AI review in flight — visible
-  without leaving the session.
 
 ## [v0.30.1] - 2026-07-14
 
@@ -45,6 +41,18 @@ are tagged.
 
 ### Added
 
+- **Open PR Triage from inside the agent session, with an ambient status
+  badge.** Previously `G` only worked from the dashboard; getting to PR
+  Triage from a live session meant exiting the view first. `leader G` now
+  resolves the current session's feature to its PR the same way the
+  dashboard's `G` does and opens the pane directly — falling through to the
+  PR picker when the branch has no open PR, same as before. Sessions whose
+  feature has an active PR also show an ambient `[PR #N · M open]` badge in
+  the top-right corner (alongside the existing remote-control / direct-input
+  / back-to-triage badges), with `● working` appended while the dedicated
+  triage session is thinking or running a tool and `· AI review` appended
+  while an `A` review is running in the background — so triage state stays
+  visible without leaving the session. No setup or migration required.
 - **PR Triage surfaces the last AI review's outcome, not just while it's
   running.** Previously, pressing `A` and then leaving the pane (or closing
   and reopening AMF) left no trace of what happened — the findings were

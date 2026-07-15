@@ -1569,7 +1569,25 @@ impl App {
             return;
         };
         let workdir = feature.workdir.clone();
+        self.open_pr_review_for_workdir(workdir);
+    }
 
+    /// Open PR Triage for the feature behind the current `Viewing` session —
+    /// the leader-key entry point (`leader+G`), peer to the dashboard's `G`.
+    /// Lets the user jump straight into triage without first exiting to the
+    /// dashboard and re-entering.
+    pub fn open_pr_review_from_view(&mut self) {
+        let AppMode::Viewing(view) = &self.mode else {
+            return;
+        };
+        let Some(workdir) = self.feature_for_view(view).map(|f| f.workdir.clone()) else {
+            self.message = Some("No active feature to review".to_string());
+            return;
+        };
+        self.open_pr_review_for_workdir(workdir);
+    }
+
+    fn open_pr_review_for_workdir(&mut self, workdir: PathBuf) {
         if let Err(e) = GhCli::check_available() {
             self.show_error(e);
             return;
@@ -3896,7 +3914,18 @@ impl App {
         let AppMode::PrReview(state) = &self.mode else {
             return None;
         };
-        let (pi, fi) = self.feature_indices_for_workdir(&state.workdir)?;
+        self.dedicated_review_session_working_for_workdir(&state.workdir)
+    }
+
+    /// Same as [`Self::pr_review_dedicated_session_working`] but for an
+    /// arbitrary feature workdir rather than the currently open PR Triage
+    /// pane — used by the ambient status badge shown while `Viewing` a
+    /// session whose feature has an active PR.
+    pub(crate) fn dedicated_review_session_working_for_workdir(
+        &self,
+        workdir: &Path,
+    ) -> Option<bool> {
+        let (pi, fi) = self.feature_indices_for_workdir(workdir)?;
         let feature = &self.store.projects[pi].features[fi];
         let si = pr_triage_session_index(feature, FixTarget::DedicatedReview)?;
         let session = &feature.sessions[si];
@@ -3921,6 +3950,20 @@ impl App {
                     || self.ipc_tool_feature_sessions.contains(&session.id)
             }
         })
+    }
+
+    /// Whether an `A` AI-review background pass is currently running for the
+    /// given feature workdir's PR. The background job can outlive the pane it
+    /// was started from (the user can `esc` back to triage, or navigate away
+    /// entirely — see [`Self::ai_review_pending`]), so this checks the
+    /// pending-review snapshot's own workdir rather than assuming `self.mode`
+    /// still points at the pane that kicked it off.
+    pub(crate) fn ai_review_running_for_workdir(&self, workdir: &Path) -> bool {
+        self.ai_review_bg.is_some()
+            && self
+                .ai_review_pending
+                .as_ref()
+                .is_some_and(|pending| pending.workdir == workdir)
     }
 
     /// Usage added to the selected fix target since this visit to the PR pane

@@ -145,6 +145,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("D", "Debug log"),
         ("A", "Manage agent harnesses"),
         ("P", "Back to PR Triage (if one is stashed)"),
+        ("G", "Open PR Triage for this feature"),
     ];
 
     for (key, desc) in &view_keybinds {

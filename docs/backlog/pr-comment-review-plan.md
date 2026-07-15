@@ -1502,106 +1502,55 @@ first), and the reviewer's output (plus comments triaged in the pane)
 
 ## Open questions
 
-- **Does "AI review of the PR diff" (`A`/`W`) actually belong in this pane? —
-  RECONSIDER.** Real use surfaced a cluster of friction that all traces back
-  to the same seam: this pane's data model and state machine were built for
-  *triaging comments other people/bots already left on GitHub* — every
-  `PrComment` was assumed to have a real GitHub identity, resolution state,
-  and (for inline ones) a `diff_hunk` GitHub hands over for free. Bolting
-  "the AI generates its own draft comments" onto that model meant fighting
-  the fit at nearly every step so far:
-  - Draft findings need a synthetic id range clear of real GitHub ids, and
-    `reply_target()`/`x` resolve had to be specially guarded or degrade
-    silently for a comment with no real thread.
-  - The author/role chip defaulted a draft to `is_bot: false`, which read as
-    "human" until special-cased — a symptom of forcing a third kind
-    (AI-authored, not-yet-posted) through a two-value bot/human model.
-  - `diff_hunk` isn't free the way it is for a GitHub comment — it had to be
-    reverse-engineered by re-parsing the whole PR diff
-    (`crate::diff::parse_unified_diff`) and matched back to each finding's
-    `path:line` after the fact, because nothing in the "generate findings"
-    path naturally produces one.
-  - The background-job lifecycle (start → running screen → cancel → done)
-    doesn't compose cleanly with "merge results into whichever pane state
-    the user is looking at by the time it finishes," which is a different
-    shape of problem than triage's request/response actions and caused a
-    real bug (findings silently dropped, with a false success toast, when
-    `Done` arrived after the user had already `esc`-ed back to the pane —
-    see the fourth follow-up below).
+- [ ] **Does "AI review of the PR diff" (`A`/`W`) belong in this pane, or
+  should it be its own workflow? — RECONSIDER.** Real use surfaced a
+  cluster of friction that traces back to one seam: this pane's data model
+  was built for *triaging comments other people/bots already left on
+  GitHub* (every `PrComment` was assumed to have a real GitHub identity,
+  resolution state, and a free `diff_hunk`), and bolting "the AI generates
+  its own draft comments" onto that model meant fighting the fit
+  repeatedly — a synthetic id range to avoid colliding with real GitHub
+  ids, a bot/human chip that had to special-case a third "AI-authored,
+  not-yet-posted" kind, a `diff_hunk` that has to be reverse-engineered
+  from the full PR diff instead of coming for free, and a background-job
+  lifecycle that doesn't compose cleanly with "merge results into
+  whichever pane state the user is looking at by the time it finishes"
+  (this last one caused a real bug — findings silently dropped after an
+  `esc`). None of this is unfixable — each has landed a patch — but decide
+  whether a dedicated "AI code review" workflow (its own view/state,
+  first-class findings, its own generate-then-review lifecycle) is the
+  better shape, keeping this pane focused on triaging what reviewers
+  *actually said*.
+- [ ] **Tag AMF-templated (non-AI) replies with a light "posted via AMF"
+  marker.** The AI-attribution footer (Epic D) only covers genuinely
+  AI-generated content (Epic E review findings). The "Done in `<sha>`" and
+  "not-needed" reply templates are deterministic, not AI-drafted, and
+  currently post with no marker at all — decide whether they should carry
+  a lighter "posted via AMF" tag (distinct from the AI-attribution footer)
+  so a reader can tell the reply came through tooling, or stay unmarked as
+  genuinely the user's own words.
+- [ ] **Group conversation comments into their own section.** Conversation
+  comments have no `path`/resolution and currently interleave with
+  inline/review comments in the list. Add a separate "Conversation"
+  section (or a sort-mode grouping, following the existing `PrSortMode`
+  pattern) so they're visually distinct from comments anchored to code.
+- [ ] **Make the review-memory path configurable (Epic E).** Default stays
+  `.amf/review-memory.md` committed in the repo, but the path should be
+  configurable per project. Decide whether to also add an optional
+  *global* layer (cross-project lessons) merged in on top of the per-repo
+  file, or keep it strictly per-repo.
+- [ ] **Prevent review-memory rot (Epic E).** Appends already dedup against
+  existing entries, but the doc will still drift/bloat over time. Add a
+  periodic agent-assisted "compaction" pass that merges near-duplicate
+  entries and prunes stale rules, or decide curation stays fully manual.
 
-  None of this is unfixable — each has landed a patch — but the accumulation
-  is a signal, not noise. Worth stepping back before adding anything more to
-  `A`/`W` specifically: is a dedicated "AI code review" workflow (its own
-  view/state, findings that are first-class rather than synthetic
-  `PrComment`s wearing a disguise, its own lifecycle for a background
-  generate-then-review pass) the better shape, with this pane staying
-  focused on triaging what reviewers *actually said*? Needs more
-  investigation and thought before deciding — not resolved here, just
-  flagged from real use.
-- **Which agent session runs the fixes? — DECIDED.** Default to spinning
-  up (and reusing) one **dedicated review session** for all of the PR's
-  fixes; offer **reuse-the-existing-live-session** as an option; never
-  one session per comment. Rationale and the options considered:
-  - **Reuse the existing feature session (current plan).** Warm: the
-    agent already has codebase context, and the cached prompt prefix
-    (Anthropic prompt cache, ~5-min TTL) makes continuing cheap. But the
-    session may already carry a long, unrelated conversation, so every
-    fix turn pays for that bloated context, and review work can pollute /
-    disrupt the user's in-progress work.
-  - **One dedicated review session for *all* fixes.** A single fresh
-    harness session used only for this PR's fixes, sequentially. Pays the
-    fixed per-session overhead (system prompt, tool definitions, any
-    skill injection) **once**, and amortizes file reads across comments —
-    especially valuable when several comments touch the same file. Grows
-    over a long PR, but compaction/caching handle that.
-  - **A new session per fix.** Cleanest isolation, smallest context per
-    fix — but **worst for tokens**: it repeats the fixed per-session
-    overhead N times and re-reads the same files cold for every comment.
-  - **Decision:** the **dedicated review session is the default** — the
-    pane spins one up the first time the user fixes a comment and reuses
-    it for the rest of the PR (overhead paid once, file context reused,
-    cache-friendly, and it keeps review work out of the user's working
-    session). **Reusing the feature's existing live session is an opt-in
-    choice** for when warm in-progress context is wanted. One-per-fix is
-    rejected. Relates to token principles #4 (one persistent session) and
-    #8 (opt-in batch). _Still open:_ exactly how the user toggles the
-    choice (per-PR setting vs. a key in the pane vs. config default), and
-    how the dedicated session's lifecycle/cleanup is surfaced.
-- **Reply identity — DECIDED (attribute AI-authored content).** Replies
-  post as the user's `gh` auth. Real use confirmed we **do** want a subtle
-  footer attributing **AI-authored** content to the agent harness via AMF
-  (now the Epic D "AI attribution" item). _Still open:_ whether
-  *user-typed* content posted through AMF (the not-needed reason, a
-  hand-edited template) should also carry a lighter "posted via AMF" tag,
-  or stay unmarked as genuinely the user's words.
-- **Drafting model:** dedicated small/fast model for reply drafts vs.
-  the feature's configured harness — config knob?
-- **Resolution without reply:** GitHub lets you resolve without
-  commenting; keep `R` independent of `r` (current design) or always
-  prompt to leave a note?
-- **Multi-line / outdated comments:** comments on lines that have since
-  changed (`line: null`, outdated). Show with a clear "outdated" badge;
-  diff_hunk still gives context.
-- **Non-GitHub remotes:** GitLab/Bitbucket explicitly out of scope for
-  v1 (GitHub `gh` only).
-- **Conversation vs. review threads:** conversation comments have no
-  `path`/resolution — group them in a separate "Conversation" section
-  of the list?
-- **Review-memory path & scope (Epic E):** default `.amf/review-memory.md`
-  committed in the repo — but should the path be configurable per project,
-  and should there be an optional *global* layer (cross-project lessons)
-  merged in on top of the per-repo file?
-- **Memory growth without rot (Epic E):** appends dedup against existing
-  entries, but the doc will still drift/bloat. Periodic agent "compaction"
-  pass to merge near-duplicates and prune stale rules, or leave curation
-  fully manual?
-- **AI-review model & cost (Epic E):** the diff review and the lookback
-  distill are the token-heavy steps. Same harness as fixes, or a
-  dedicated review model? And how big a diff do we send before chunking /
-  refusing (context-window ceiling, like the batch-prompt cap)?
-- **Posting AI-review findings (Epic E):** when posting as a real GitHub
-  review, tag AMF-generated comments for honesty (subtle footer), same
-  open question as AI-drafted replies above?
+Resolved and no longer tracked here (see the linked Epic item for the
+decision and implementation): which agent session runs fixes (Epic B,
+dedicated-session default), AI-authored content attribution (Epic D "AI
+attribution on AMF-posted comments"), resolve-without-reply behavior
+(shipped as-is — `R` stays independent of `r`), and outdated-comment
+badging (shipped in Epic D's pane-clarity item). GitLab/Bitbucket support
+is an explicit non-goal for v1 (GitHub `gh` only), not an open question.
 
 ## Backlog
 
@@ -1617,7 +1566,7 @@ first), and the reviewer's output (plus comments triaged in the pane)
   `src/app/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
   `src/ui/dialogs/help.rs`, `src/app/tests.rs`, `README.md`, `CHANGELOG.md`.
 
-- **Keymap audit — too many bindings.** The PR triage pane has accumulated
+- [ ] **Keymap audit — too many bindings.** The PR triage pane has accumulated
   many keybinds (`f`, `B`, `r`, `n`, `R`, `x`, `o`, `P`, `M`, `W`, `A`,
   `i`, `space`, `#`, `g`, `a`, `G`, `h`, `j/k`, etc.). Real use reports the
   pane is hard to use and overwhelming. Audit every binding: is it needed? Can
@@ -1650,69 +1599,60 @@ first), and the reviewer's output (plus comments triaged in the pane)
       danger color. → `src/app/pr_review.rs`, `src/db/pr_review_cache.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`, `CHANGELOG.md`.
 
-- **"Done in `<commit>`" reply needs AI attribution and smarter commit detection
-  (honesty + UX).** The `R` keybind seeds a "Done in `<sha>`" reply from the
-  latest commit, but two issues: (1) the template is currently posted with no AI
-  attribution unlike other AI-authored content (inconsistent honesty), and (2)
-  there's no detection whether that commit actually addresses the specific
-  comment being replied to — it just uses HEAD blindly. Smarter detection could
-  parse the comment's file/line context and search recent commits for ones that
-  touched that same file/line (e.g. via `git log -L` or blame), so the reply
-  references a commit that actually fixed the issue rather than whatever
-  happened to be pushed most recently. If no matching commit is found, either
-  fall back to HEAD with a caveat hint ("latest commit") or prompt the user to
-  pick from recent commits that touched the file.
+- [ ] **"Done in `<sha>`" reply: smarter commit detection (UX).** The `R`
+  keybind seeds a "Done in `<sha>`" reply from `HEAD` blindly, with no check
+  that the commit actually addresses the comment being replied to. Parse the
+  comment's file/line and search recent commits that touched that same
+  file/line (e.g. `git log -L` or blame) so the reply references a commit
+  that plausibly fixed the issue. Fall back to `HEAD` with a caveat hint
+  ("latest commit") when no match is found, or let the user pick from recent
+  matching commits. (Whether the template should also carry a "posted via
+  AMF" marker is tracked separately under Open questions.)
 
-- **Model selection independent of agent harness (flexibility).** Currently, AI
-  generation features in the PR triage pane (AI review `A`, reply drafting, etc.)
-  are tied to the configured harness or a fixed small/fast model hardcoded in
-  the prompt. Real use wants finer control: run an AI review with a powerful,
-  slower model (to catch subtleties), but use a cheaper/faster model for "not
-  needed" reply drafts or quick triage suggestions. Add a configurable
-  `ai_models` map to `AppConfig` (e.g. `review_model`, `reply_draft_model`,
-  `triage_model`) so each AI action can select its own model independently of
-  the feature's working harness. Fall back to harness default if not configured.
+- [ ] **Model selection for AI review, independent of the working harness
+  (flexibility).** AI review (`A`, and Epic E's lookback distill) currently
+  runs through the harness's `ClaudeLauncher::run_headless` with no way to
+  pick a different model — e.g. a stronger/slower model to catch
+  subtleties, independent of whatever the feature's working session uses.
+  Add a configurable model knob to `AppConfig` (e.g. `review_model`) so AI
+  review can select its own model, falling back to the harness default when
+  unset. Also decide how large a diff triggers chunking or an outright
+  refusal before sending it to the review model (mirroring the
+  batch-prompt token ceiling already used for combined fix prompts). Note:
+  reply drafting was dropped in favor of deterministic templates (Epic C),
+  so this only applies to AI review, not replies.
 
-- **BUG (potential) — fix injection can silently target the wrong checked-out
+- [x] **BUG — fix injection can silently target the wrong checked-out
   branch when triaging a manually-picked PR (correctness).** `G`'s picker (and
   `g`/`#` inside the pane) let the user open *any* PR from the repo, not just
-  the one for the feature's own checked-out branch — confirmed by design and
-  by the "sequential/multiple PRs for the same feature branch" fix above.
-  Checked what this means for the two pieces of the pane that touch real code:
-  - **`A` (AI review generation) is unaffected.** `run_ai_pr_review` feeds the
-    agent the diff as inline text from `GhCli::pr_diff` (`gh pr diff <number>`,
-    `src/github.rs`), which resolves by PR number against the GitHub API
-    regardless of what's checked out locally. `ai_review_prompt` asks the
-    model to review that pasted diff directly — it never instructs or needs
-    the agent to open files from the working tree. So AI review runs correctly
-    against the selected PR's actual diff even when the workdir is on a
-    completely unrelated branch.
-  - **`f`/`B` (fix injection) is not.** The fix-prompt design deliberately
-    omits file contents "since the checked-out repo" already gives the agent
-    that context (token principle #3, `PrComment::fix_prompt`/`fix_prompt_body`)
-    — the agent is expected to open the referenced file itself. `resolve_fix_session`
-    targets the feature's own `state.workdir` unconditionally; neither it nor
-    `open_pr_review`/`enter_pr_review`/the picker check whether that workdir's
-    checked-out branch actually matches the PR being reviewed. If it doesn't,
-    the dedicated (or existing-live) session opens files from the *wrong*
-    branch, and any resulting fix/commit lands on the wrong branch entirely —
-    silently, with no warning anywhere in the flow. `PrRef` doesn't even carry
-    `headRefName` today (only `head_sha`); `PrListEntry` does, but it's dropped
-    once a PR is resolved into a `PrRef`/`PrReview`.
-  - **Fix shape:** thread `headRefName` through PR resolution into `PrReview`
-    (or a lightweight side field), compare it against
-    `WorktreeManager::current_branch(workdir)` when entering the pane (and/or
-    on each `f`), and surface a clear, hard-to-miss warning — a pane-header
-    banner and/or a confirm gate on `f`/`B` — when the feature's checked-out
-    branch doesn't match the PR's branch: "reviewing PR for branch `X`, but
-    this worktree is on `Y` — fixes will be applied to `Y`, not `X`." Decide
-    whether to block the fix outright or just force an explicit acknowledge;
-    either is better than the current silent mismatch. Confirmed live: opened
-    PR #343 (branch `pr-review-test-fixture`) manually from a feature checked
-    out on an unrelated branch (`path`) via the picker — the pane loaded and
-    triaged the correct PR's comments with no indication anywhere that
-    pressing `f` would hand the agent the wrong branch's copy of every file it
-    opens.
+  the one for the feature's own checked-out branch, and `f`/`B` fix injection
+  reads files from `state.workdir` regardless of which PR is loaded — a
+  mismatch meant a fix could silently land on the wrong branch. (`A`/AI
+  review was confirmed unaffected: it feeds the agent the diff as inline text
+  from `gh pr diff`, resolved by PR number against the GitHub API, never
+  touching the working tree.) Fixed by threading `headRefName` through PR
+  resolution: `PrRef` gained a `head_ref: String` field (`#[serde(default)]`
+  so pre-existing `pr_review_cache` rows still deserialize), populated by
+  `resolve_pr`, `fetch_pr_by_number`, and the branch-scoped `gh pr view`
+  query (`src/github.rs`). `PrReviewState` snapshots the workdir's actual
+  branch (`WorktreeManager::current_branch`) into a new
+  `checked_out_branch: Option<String>` field whenever the pane is
+  entered/refreshed (cache-hit and background-fetch paths), and a new
+  `PrReviewState::branch_mismatch()` (delegating to a pure, unit-tested free
+  function in `src/app/state.rs`) compares the two, `None` when they match or
+  either side is unknown. Surfaced two ways: an always-visible danger-colored
+  pane-header banner ("reviewing PR for branch `X`, but this worktree is on
+  `Y` — fixes will be applied to `Y`, not `X`") in `draw_pr_review`, and the
+  same warning inside the fix confirm/edit dialog (`draw_fix_confirm`,
+  repurposing its existing spacer line) — since `⏎` from that dialog is
+  already the explicit-acknowledge gate before anything is injected, no new
+  modal or blocking step was needed. Unit-tested (`head_ref` JSON
+  parsing/defaulting in `github.rs`; `branch_mismatch`'s match/differ/unknown
+  cases in `state.rs`; full-frame render tests proving the header banner and
+  the fix-confirm warning appear only on a mismatch, in `ui/dashboard.rs` and
+  `ui/dialogs/pr_review.rs`). → `src/github.rs`, `src/app/state.rs`,
+  `src/app/pr_review.rs`, `src/ui/dialogs/pr_review.rs`, `src/db/pr_review_cache.rs`,
+  `src/app/tests.rs`, `src/ui/dashboard.rs`.
 
 - [x] **Open PR Triage from inside the agent harness session, with an ambient
       status indicator (discoverability).** `leader G` — peer to `leader p`

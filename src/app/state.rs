@@ -1634,6 +1634,14 @@ pub struct PrReviewState {
     /// the pane: a preview of the review that will post (Epic E `W`),
     /// awaiting the user's approval.
     pub ai_review_post: Option<AiReviewPostConfirmState>,
+    /// The branch actually checked out in `workdir`, snapshotted when the pane
+    /// was entered/refreshed (`WorktreeManager::current_branch`). `f`/`B` fix
+    /// injection reads files from this workdir regardless of which PR is being
+    /// triaged (`G`/`g`/`#` allow picking *any* PR in the repo), so when this
+    /// doesn't match `review.pr.head_ref` a fix would silently land on the
+    /// wrong branch — see [`Self::branch_mismatch`]. `None` when the branch
+    /// couldn't be determined (e.g. detached HEAD).
+    pub checked_out_branch: Option<String>,
 }
 
 /// Confirm/edit dialog for posting the AI-review draft findings to GitHub as
@@ -1760,6 +1768,17 @@ impl PrReviewState {
         self.review.comments.get(self.selected)
     }
 
+    /// The checked-out branch when it's known and doesn't match the PR being
+    /// triaged — `None` when they match, or either side is unknown (an empty
+    /// `head_ref` means the PR was resolved before this field existed; a
+    /// `None` `checked_out_branch` means detached HEAD or the branch lookup
+    /// failed). Surfaced as a pane-header warning and inside the fix confirm
+    /// dialog, since fix injection reads files from `workdir` regardless of
+    /// which PR is loaded.
+    pub fn branch_mismatch(&self) -> Option<&str> {
+        branch_mismatch(&self.review.pr.head_ref, self.checked_out_branch.as_deref())
+    }
+
     /// Indices into `review.comments` that pass the current filter, ordered by
     /// `sort_mode`. With `hide_resolved` on, GitHub-resolved comments are
     /// dropped.
@@ -1819,6 +1838,19 @@ impl PrReviewState {
             .filter(|c| c.is_resolved)
             .count()
     }
+}
+
+/// Free function behind [`PrReviewState::branch_mismatch`] — pulled out so it's
+/// testable without constructing a full `PrReviewState`. `None` when the
+/// branches match, or when either side is unknown (empty `head_ref` from a
+/// pre-existing cache row, or no `checked_out_branch` — detached HEAD / lookup
+/// failure).
+fn branch_mismatch<'a>(pr_head_ref: &str, checked_out_branch: Option<&'a str>) -> Option<&'a str> {
+    let checked_out = checked_out_branch?;
+    if pr_head_ref.is_empty() || pr_head_ref == checked_out {
+        return None;
+    }
+    Some(checked_out)
 }
 
 /// What an active TODOs inline edit targets.
@@ -3071,6 +3103,33 @@ mod tests {
     #[test]
     fn session_filter_all_has_seven_variants() {
         assert_eq!(SessionFilter::ALL.len(), 7);
+    }
+
+    // ── branch_mismatch ───────────────────────────────────
+
+    #[test]
+    fn branch_mismatch_none_when_branches_match() {
+        assert_eq!(branch_mismatch("main", Some("main")), None);
+    }
+
+    #[test]
+    fn branch_mismatch_some_when_branches_differ() {
+        assert_eq!(
+            branch_mismatch("main", Some("other-branch")),
+            Some("other-branch")
+        );
+    }
+
+    #[test]
+    fn branch_mismatch_none_when_pr_head_ref_unknown() {
+        // Pre-existing cache row from before `head_ref` existed.
+        assert_eq!(branch_mismatch("", Some("other-branch")), None);
+    }
+
+    #[test]
+    fn branch_mismatch_none_when_checked_out_branch_unknown() {
+        // Detached HEAD or the `git branch --show-current` lookup failed.
+        assert_eq!(branch_mismatch("main", None), None);
     }
 
     #[test]

@@ -2130,6 +2130,7 @@ mod tests {
             url: "https://github.com/o/r/pull/321".to_string(),
             owner: "o".to_string(),
             repo: "r".to_string(),
+            head_ref: "main".to_string(),
         };
         let review = crate::app::pr_review::normalize(pr, vec![], vec![], vec![], vec![]);
         let origin = crate::app::PrReviewState {
@@ -2153,6 +2154,7 @@ mod tests {
             marked: std::collections::HashSet::new(),
             pending_batch: false,
             ai_review_post: None,
+            checked_out_branch: Some("main".to_string()),
         };
         let (_tx, rx) = std::sync::mpsc::channel();
         app.ai_review_bg = Some(rx);
@@ -2221,6 +2223,94 @@ mod tests {
         assert!(rendered.contains("PR: #321"));
         assert!(rendered.contains("4 open"));
         assert!(!rendered.contains("[PR #321"));
+    }
+
+    fn pr_review_state_with_branches(
+        pr_head_ref: &str,
+        checked_out: &str,
+    ) -> crate::app::PrReviewState {
+        let pr = crate::github::PrRef {
+            number: 321,
+            head_sha: "abc123".to_string(),
+            url: "https://github.com/o/r/pull/321".to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            head_ref: pr_head_ref.to_string(),
+        };
+        let review = crate::app::pr_review::normalize(pr, vec![], vec![], vec![], vec![]);
+        crate::app::PrReviewState {
+            workdir: PathBuf::from("/tmp/demo"),
+            review,
+            selected: 0,
+            detail_scroll: 0,
+            detail_content_lines: 0,
+            hide_resolved: false,
+            sort_mode: crate::app::pr_review::PrSortMode::default(),
+            fix_target: crate::app::pr_review::FixTarget::default(),
+            usage_baselines: HashMap::new(),
+            review_harness: None,
+            ai_review_harness: None,
+            ai_harness_pick: None,
+            harness_pick: None,
+            fix_confirm: None,
+            fix_vim_enabled: false,
+            reply: None,
+            memory_add: None,
+            marked: std::collections::HashSet::new(),
+            pending_batch: false,
+            ai_review_post: None,
+            checked_out_branch: Some(checked_out.to_string()),
+        }
+    }
+
+    #[test]
+    fn pr_review_pane_shows_branch_mismatch_banner_when_workdir_branch_differs() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode =
+            crate::app::AppMode::PrReview(pr_review_state_with_branches("main", "other-branch"));
+
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("reviewing PR for branch"));
+        assert!(rendered.contains("other-branch"));
+    }
+
+    #[test]
+    fn pr_review_pane_hides_branch_mismatch_banner_when_branches_match() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = crate::app::AppMode::PrReview(pr_review_state_with_branches("main", "main"));
+
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(!rendered.contains("reviewing PR for branch"));
     }
 
     #[test]

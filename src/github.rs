@@ -36,6 +36,14 @@ pub struct PrRef {
     pub url: String,
     pub owner: String,
     pub repo: String,
+    /// The PR's head branch name (GitHub's `headRefName`). Used to warn when
+    /// the feature's checked-out branch doesn't match the PR being triaged —
+    /// e.g. a manually-picked PR (`G`/`g`/`#`) unrelated to the current
+    /// worktree. `#[serde(default)]` so pre-existing `pr_review_cache` rows
+    /// (written before this field existed) still deserialize, just with an
+    /// empty string (treated as "unknown", never flagged as a mismatch).
+    #[serde(default)]
+    pub head_ref: String,
 }
 
 /// Outcome of trying to resolve the PR for a branch. We distinguish "no PR for
@@ -79,6 +87,8 @@ struct ResolvedPrCandidate {
     /// `OPEN`, `CLOSED`, or `MERGED`.
     #[serde(default)]
     state: String,
+    #[serde(default, rename = "headRefName")]
+    head_ref: String,
 }
 
 /// `gh pr list` nests the author under `{ "login": ... }`; flatten it to the
@@ -259,7 +269,12 @@ impl GhCli {
     /// an error for missing-remote / network / other failures.
     pub fn resolve_pr(workdir: &Path) -> Result<PrResolution> {
         let output = Command::new("gh")
-            .args(["pr", "view", "--json", "number,headRefOid,url,state"])
+            .args([
+                "pr",
+                "view",
+                "--json",
+                "number,headRefOid,url,state,headRefName",
+            ])
             .current_dir(workdir)
             .output()
             .context("Failed to run `gh pr view`.")?;
@@ -335,7 +350,7 @@ impl GhCli {
                 "view",
                 &number.to_string(),
                 "--json",
-                "number,headRefOid,url",
+                "number,headRefOid,url,headRefName",
             ])
             .current_dir(workdir)
             .output()
@@ -841,6 +856,11 @@ fn parse_pr_json(stdout: &[u8]) -> Result<PrRef> {
         .and_then(|s| s.as_str())
         .context("`gh pr view` output missing url.")?
         .to_string();
+    let head_ref = v
+        .get("headRefName")
+        .and_then(|s| s.as_str())
+        .unwrap_or_default()
+        .to_string();
 
     let (owner, repo) = parse_owner_repo(&url)
         .with_context(|| format!("Could not parse owner/repo from PR url: {url}"))?;
@@ -851,6 +871,7 @@ fn parse_pr_json(stdout: &[u8]) -> Result<PrRef> {
         url,
         owner,
         repo,
+        head_ref,
     })
 }
 
@@ -871,6 +892,7 @@ fn parse_open_resolved_pr(stdout: &[u8]) -> Result<Option<PrRef>> {
         url: candidate.url,
         owner,
         repo,
+        head_ref: candidate.head_ref,
     }))
 }
 
@@ -976,13 +998,24 @@ mod tests {
 
     #[test]
     fn parses_pr_json() {
-        let json =
-            br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321"}"#;
+        let json = br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321","headRefName":"feature-x"}"#;
         let pr = parse_pr_json(json).unwrap();
         assert_eq!(pr.number, 321);
         assert_eq!(pr.head_sha, "abc123");
         assert_eq!(pr.owner, "o");
         assert_eq!(pr.repo, "r");
+        assert_eq!(pr.head_ref, "feature-x");
+    }
+
+    #[test]
+    fn parses_pr_json_missing_head_ref_name_defaults_empty() {
+        // Older cached rows / defensive parsing: a response without
+        // `headRefName` shouldn't fail the whole parse, just leave the field
+        // empty (never flagged as a branch mismatch — see `branch_mismatch`).
+        let json =
+            br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321"}"#;
+        let pr = parse_pr_json(json).unwrap();
+        assert_eq!(pr.head_ref, "");
     }
 
     #[test]
@@ -1087,13 +1120,14 @@ mod tests {
     #[test]
     fn branch_pr_resolution_accepts_open_successor() {
         let json = br#"{"number":450,"headRefOid":"new",
-            "url":"https://github.com/acme/amf/pull/450","state":"OPEN"}"#;
+            "url":"https://github.com/acme/amf/pull/450","state":"OPEN","headRefName":"feat-b"}"#;
 
         let pr = parse_open_resolved_pr(json).unwrap().unwrap();
         assert_eq!(pr.number, 450);
         assert_eq!(pr.head_sha, "new");
         assert_eq!(pr.owner, "acme");
         assert_eq!(pr.repo, "amf");
+        assert_eq!(pr.head_ref, "feat-b");
     }
 
     #[test]

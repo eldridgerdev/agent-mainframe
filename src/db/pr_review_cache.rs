@@ -62,6 +62,7 @@ mod tests {
                 url: format!("https://github.com/o/r/pull/{number}"),
                 owner: "o".into(),
                 repo: "r".into(),
+                head_ref: "main".into(),
             },
             comments: vec![PrComment {
                 id: 1,

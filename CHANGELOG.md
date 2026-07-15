@@ -27,6 +27,17 @@ are tagged.
   PR number, dedicated triage session working, AI review in flight — visible
   without leaving the session.
 
+## [v0.30.1] - 2026-07-14
+
+### Fixed
+
+- **Builds work again on musl Linux and macOS.** A platform-specific type
+  mismatch in AMF's terminal-attach code broke `cargo build` — and the
+  downloadable release binaries built from it — on those targets. No
+  migration is required.
+
+## [v0.30.0] - 2026-07-14
+
 ### Removed
 
 - Removed the PR Triage `F` shortcut that queued marked fixes immediately.

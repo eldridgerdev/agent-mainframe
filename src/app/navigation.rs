@@ -263,4 +263,16 @@ impl App {
             _ => None,
         }
     }
+
+    /// The feature a live [`ViewState`] is showing, resolved by project/feature
+    /// name. Unlike [`App::selected_feature`] this doesn't depend on the
+    /// dashboard's tree selection, so it works while `self.mode` has already
+    /// moved on to `AppMode::Viewing`.
+    pub(crate) fn feature_for_view(&self, view: &ViewState) -> Option<&Feature> {
+        self.store
+            .projects
+            .iter()
+            .find(|p| p.name == view.project_name)
+            .and_then(|p| p.features.iter().find(|f| f.name == view.feature_name))
+    }
 }

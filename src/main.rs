@@ -684,6 +684,11 @@ fn run_loop<B: Backend>(
     let mut last_reanchor_bounce = Instant::now();
     let mut pending_reanchor_restore: Option<(String, String, u16, u16, Instant)> = None;
     let mut last_statuses_sync = std::time::Instant::now();
+    // Independent of `last_statuses_sync`/`is_viewing`: the ambient PR badge
+    // and PR Triage sidebar box are meant to stay live *while* the user is
+    // inside a session, so this cadence must not be gated on being back on
+    // the dashboard the way tmux status reconciliation is.
+    let mut last_active_pr_sync = std::time::Instant::now();
     let mut last_redraw_signature = app.redraw_signature();
 
     loop {
@@ -1114,11 +1119,20 @@ fn run_loop<B: Backend>(
         {
             let started_at = Instant::now();
             app.sync_statuses();
-            app.sync_active_prs_background();
             app.perf
                 .record_duration("sync.statuses", started_at.elapsed());
             last_statuses_sync = Instant::now();
             force_redraw = true;
+        }
+
+        // Unlike the block above, this runs while viewing/composing too —
+        // see `last_active_pr_sync`'s comment.
+        if !handled_user_events
+            && !startup_tasks_pending
+            && last_active_pr_sync.elapsed() >= statuses_fallback
+        {
+            app.sync_active_prs_background();
+            last_active_pr_sync = Instant::now();
         }
 
         if !handled_user_events

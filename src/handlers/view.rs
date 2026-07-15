@@ -450,6 +450,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('P') => {
             app.pr_review_return_to_pane();
         }
+        KeyCode::Char('G') => {
+            app.open_pr_review_from_view();
+        }
         _ => {}
     }
 

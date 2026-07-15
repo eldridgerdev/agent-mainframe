@@ -10,6 +10,39 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Open PR Triage from inside the agent session, with an ambient status
+  indicator.** Previously `G` only worked from the dashboard; getting to PR
+  Triage from a live session meant exiting the view first. `leader G` now
+  resolves the current session's feature to its PR the same way the
+  dashboard's `G` does and opens the pane directly — falling through to the
+  PR picker when the branch has no open PR, same as before. Sessions whose
+  feature has an active PR also show its triage state without leaving the
+  session: with the sidebar hidden, an ambient `[PR #N · M open]` badge
+  appears in the top-right corner (alongside the existing remote-control /
+  direct-input / back-to-triage badges); with the sidebar visible, the same
+  information renders as a "PR Triage" sidebar box instead, so the badge and
+  the box never compete for the same space. Either surface appends a
+  `working` line/suffix while the dedicated triage session is thinking or
+  running a tool and an `AI review` line/suffix while an `A` review is
+  running in the background. The sidebar box's title carries a `<leader G>`
+  hint, matching the existing `<leader l>` hint on the "Prompt" box. No setup
+  or migration required.
+
+### Fixed
+
+- **The ambient PR badge disappeared while composing.** The badge was only
+  wired into `AppMode::Viewing`'s draw path; since compose interception is on
+  by default, entering a session normally lands straight in `AppMode::Compose`,
+  where the badge never rendered at all. It's now shared by both modes.
+- **The ambient PR badge/sidebar box could go stale (or never populate)
+  while sitting inside a session.** The background job that refreshes
+  `active_prs` only ran from the dashboard (`!is_viewing`), bundled with tmux
+  status reconciliation — so opening a PR for a feature while already inside
+  its session, or leaving a session open, meant the indicator never updated.
+  It now runs on its own independent cadence regardless of `AppMode`.
+
 ### Backlog
 
 - Scheduled comprehensive keymap audit for PR triage pane. Current bindings
@@ -22,10 +55,6 @@ are tagged.
 - Model selection independent of agent harness: allow per-action model selection
   (e.g. powerful model for AI review, cheaper model for reply drafts) via config
   map that falls back to harness default.
-- Open PR Triage directly from inside an agent harness session (a leader-key
-  entry point, not just from the dashboard), with an ambient indicator —
-  PR number, dedicated triage session working, AI review in flight — visible
-  without leaving the session.
 
 ## [v0.30.1] - 2026-07-14
 

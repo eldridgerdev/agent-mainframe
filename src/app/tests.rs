@@ -1305,6 +1305,7 @@ fn unchanged_active_pr_badge_does_not_cancel_explicit_closed_pr_fetch() {
             url: "https://github.com/o/r/pull/449".to_string(),
             owner: "o".to_string(),
             repo: "r".to_string(),
+            head_ref: "main".to_string(),
         },
         usage_baselines: std::collections::HashMap::new(),
     });
@@ -1589,6 +1590,7 @@ fn visible_animation_is_enabled_for_pr_review_running_screens() {
             url: "https://github.com/o/r/pull/1".to_string(),
             owner: "o".to_string(),
             repo: "r".to_string(),
+            head_ref: "main".to_string(),
         },
         usage_baselines: std::collections::HashMap::new(),
     });
@@ -8488,6 +8490,7 @@ fn pr_review_with_comments(n: u64) -> crate::app::pr_review::PrReview {
         url: "https://github.com/o/r/pull/7".to_string(),
         owner: "o".to_string(),
         repo: "r".to_string(),
+        head_ref: "main".to_string(),
     };
     crate::app::pr_review::normalize(pr, comments, vec![], vec![], vec![])
 }
@@ -8514,6 +8517,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         marked: std::collections::HashSet::new(),
         pending_batch: false,
         ai_review_post: None,
+        checked_out_branch: Some("main".to_string()),
     });
 }
 
@@ -8794,6 +8798,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         marked: std::collections::HashSet::new(),
         pending_batch: false,
         ai_review_post: None,
+        checked_out_branch: Some("main".to_string()),
     });
 }
 
@@ -9471,6 +9476,7 @@ fn refresh_carries_forward_ai_drafts_at_the_same_head_sha() {
         url: "https://github.com/o/r/pull/42".to_string(),
         owner: "o".to_string(),
         repo: "r".to_string(),
+        head_ref: "main".to_string(),
     };
     let mut ai_drafts =
         crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
@@ -9526,6 +9532,7 @@ fn refresh_reconciles_published_ai_findings_without_duplicate_github_entries() {
         url: "https://github.com/o/r/pull/42".into(),
         owner: "o".into(),
         repo: "r".into(),
+        head_ref: "main".to_string(),
     };
     let mut cached = crate::app::pr_review::findings_to_comments(&[
         crate::app::pr_review::AiFinding {
@@ -9628,6 +9635,7 @@ fn refresh_drops_ai_drafts_when_the_head_sha_changes() {
         url: "https://github.com/o/r/pull/42".to_string(),
         owner: "o".to_string(),
         repo: "r".to_string(),
+        head_ref: "main".to_string(),
     };
     let mut ai_drafts =
         crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
@@ -9693,6 +9701,7 @@ fn refresh_carries_forward_last_ai_review_outcome_at_the_same_head_sha() {
         url: "https://github.com/o/r/pull/42".to_string(),
         owner: "o".to_string(),
         repo: "r".to_string(),
+        head_ref: "main".to_string(),
     };
     let cached = crate::app::pr_review::PrReview {
         pr: pr.clone(),
@@ -10404,6 +10413,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         url: "https://github.com/o/r/pull/7".to_string(),
         owner: "o".to_string(),
         repo: "r".to_string(),
+        head_ref: "main".to_string(),
     };
     let review = crate::app::pr_review::normalize(pr, comments, vec![], vec![], vec![]);
     app.mode = AppMode::PrReview(PrReviewState {
@@ -10427,6 +10437,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         marked: std::collections::HashSet::new(),
         pending_batch: false,
         ai_review_post: None,
+        checked_out_branch: Some("main".to_string()),
     });
 }
 
@@ -10741,6 +10752,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         url: "https://github.com/o/r/pull/7".to_string(),
         owner: "o".to_string(),
         repo: "r".to_string(),
+        head_ref: "main".to_string(),
     };
     let review = crate::app::pr_review::normalize(pr, comments, vec![], vec![], threads);
     app.mode = AppMode::PrReview(PrReviewState {
@@ -10764,6 +10776,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         marked: std::collections::HashSet::new(),
         pending_batch: false,
         ai_review_post: None,
+        checked_out_branch: Some("main".to_string()),
     });
 }
 

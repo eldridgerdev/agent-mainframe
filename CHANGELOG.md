@@ -42,6 +42,15 @@ are tagged.
   status reconciliation — so opening a PR for a feature while already inside
   its session, or leaving a session open, meant the indicator never updated.
   It now runs on its own independent cadence regardless of `AppMode`.
+- **Fix injection could silently target the wrong checked-out branch.**
+  PR Triage lets you open *any* PR in the repo (`G`'s picker, `g`/`#` inside
+  the pane), not just the one for the feature's own checked-out branch — but
+  `f`/`B` fix injection always read files from that feature's workdir
+  regardless of which PR was loaded, so a mismatch meant a fix could land on
+  the wrong branch with no warning. PR Triage now compares the PR's branch
+  against the workdir's actual checked-out branch and, on a mismatch, shows
+  a danger-colored banner in the pane header and repeats the warning inside
+  the fix confirm dialog before anything is injected.
 
 ### Backlog
 

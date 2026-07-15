@@ -473,12 +473,19 @@ pub fn draw_pr_review(
 ) {
     let area = frame.area();
     let review = &state.review;
+    // `f`/`B` fix injection reads files from `state.workdir` regardless of
+    // which PR is loaded (the picker lets the user open *any* PR in the
+    // repo), so a mismatch here means a fix would silently land on the wrong
+    // branch. This banner is the always-visible half of the guard; the fix
+    // confirm dialog repeats it as the explicit-acknowledge half.
+    let mismatch = state.branch_mismatch().map(|s| s.to_string());
 
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
-            Constraint::Min(1),    // body
+            Constraint::Length(1),                                      // header
+            Constraint::Length(if mismatch.is_some() { 1 } else { 0 }), // branch-mismatch banner
+            Constraint::Min(1),                                         // body
             Constraint::Length(2), // footer (keys + marker legend)
         ])
         .split(area);
@@ -578,11 +585,26 @@ pub fn draw_pr_review(
     let header = Line::from(header_spans);
     frame.render_widget(Paragraph::new(header), outer[0]);
 
+    if let Some(checked_out) = &mismatch {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(
+                    " ⚠ reviewing PR for branch `{}`, but this worktree is on `{checked_out}` — fixes will be applied to `{checked_out}`, not `{}`",
+                    review.pr.head_ref, review.pr.head_ref
+                ),
+                Style::default()
+                    .fg(theme.danger.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            outer[1],
+        );
+    }
+
     // Body: list | detail.
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-        .split(outer[1]);
+        .split(outer[2]);
 
     draw_comment_list(frame, body[0], state, theme);
     let detail_lines = draw_comment_detail(
@@ -623,7 +645,7 @@ pub fn draw_pr_review(
     let footer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(outer[2]);
+        .split(outer[3]);
     frame.render_widget(keys, footer[0]);
     frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);
 
@@ -637,7 +659,7 @@ pub fn draw_pr_review(
     // Fix confirm/edit dialog overlays the pane when open.
     let fix_target = state.fix_target;
     if let Some(confirm) = &mut state.fix_confirm {
-        draw_fix_confirm(frame, confirm, fix_target, theme);
+        draw_fix_confirm(frame, confirm, fix_target, mismatch.as_deref(), theme);
     }
     // Reply dialog overlays the pane when open.
     if let Some(reply) = &state.reply {
@@ -922,6 +944,7 @@ fn draw_fix_confirm(
     frame: &mut Frame,
     confirm: &mut crate::app::FixConfirmState,
     target: crate::app::pr_review::FixTarget,
+    branch_mismatch: Option<&str>,
     theme: &Theme,
 ) {
     let area = super::super::dashboard::centered_rect(70, 70, frame.area());
@@ -976,6 +999,22 @@ fn draw_fix_confirm(
         ])),
         chunks[0],
     );
+
+    // Repurpose the spacer line as an explicit-acknowledge warning when the
+    // workdir's checked-out branch doesn't match the PR being triaged — `⏎`
+    // injecting from here is the confirm gate the mismatch requires (paired
+    // with the always-visible pane-header banner).
+    if let Some(checked_out) = branch_mismatch {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("⚠ this worktree is on `{checked_out}`, not the PR's branch — fix will land on `{checked_out}`"),
+                Style::default()
+                    .fg(theme.danger.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            chunks[1],
+        );
+    }
 
     // Prompt body: a wrapped, scrollable editor view that follows the cursor
     // when editing and shows a scrollbar once the prompt overflows the dialog.
@@ -1748,5 +1787,51 @@ mod tests {
         let entry = sample_entry("alice");
         let line = pr_picker_row(&entry, None, &theme);
         assert!(!line_text(&line).contains("you"));
+    }
+
+    fn render_fix_confirm(branch_mismatch: Option<&str>) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut confirm = crate::app::FixConfirmState {
+            editor: crate::editor::TextEditor::new("fix this".to_string()),
+            editing: false,
+            scroll: 0,
+            sync_to_cursor: false,
+            batch: None,
+        };
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_fix_confirm(
+                    frame,
+                    &mut confirm,
+                    crate::app::pr_review::FixTarget::default(),
+                    branch_mismatch,
+                    &theme,
+                )
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn fix_confirm_shows_branch_mismatch_warning_when_present() {
+        let rendered = render_fix_confirm(Some("other-branch"));
+        assert!(rendered.contains("this worktree is on"));
+        assert!(rendered.contains("other-branch"));
+    }
+
+    #[test]
+    fn fix_confirm_hides_branch_mismatch_warning_when_absent() {
+        let rendered = render_fix_confirm(None);
+        assert!(!rendered.contains("this worktree is on"));
     }
 }

@@ -1621,6 +1621,8 @@ impl App {
             );
             self.apply_persisted_triage(&mut review);
             let usage_baselines = self.pr_review_initial_usage_baselines(&workdir);
+            let checked_out_branch =
+                crate::worktree::WorktreeManager::current_branch(&workdir).unwrap_or(None);
             self.mode = AppMode::PrReview(PrReviewState {
                 workdir,
                 review,
@@ -1642,6 +1644,7 @@ impl App {
                 marked: std::collections::HashSet::new(),
                 pending_batch: false,
                 ai_review_post: None,
+                checked_out_branch,
             });
             return;
         }
@@ -2123,6 +2126,9 @@ impl App {
                         self.carry_forward_ai_drafts(&mut review);
                         self.cache_pr_review(&review);
                         self.apply_persisted_triage(&mut review);
+                        let checked_out_branch =
+                            crate::worktree::WorktreeManager::current_branch(&workdir)
+                                .unwrap_or(None);
                         self.mode = AppMode::PrReview(PrReviewState {
                             workdir,
                             review,
@@ -2144,6 +2150,7 @@ impl App {
                             marked: std::collections::HashSet::new(),
                             pending_batch: false,
                             ai_review_post: None,
+                            checked_out_branch,
                         });
                     }
                     Err(e) => {
@@ -4204,6 +4211,7 @@ mod tests {
             url: "https://github.com/o/r/pull/1".into(),
             owner: "o".into(),
             repo: "r".into(),
+            head_ref: "main".into(),
         }
     }
 

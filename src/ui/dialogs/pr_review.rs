@@ -15,11 +15,12 @@ use std::path::Path;
 
 use crate::{
     app::pr_review::{
-        AiReviewRunOutcome, AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, PrComment,
+        AiReviewRunOutcome, AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, MarkAction,
+        PrComment, ReplyKind,
     },
     app::{
-        AiReviewRunState, BootstrapPickState, BootstrapRunState, ModelPickRow, PrNumberPromptState,
-        PrPickerState, PrReviewLoadState, PrReviewState,
+        AiReviewRunState, BootstrapPickState, BootstrapRunState, MarkPickState, ModelPickRow,
+        PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState, ReplyKindPickState,
     },
     editor::VimMode,
     theme::Theme,
@@ -636,7 +637,7 @@ pub fn draw_pr_review(
         .unwrap_or("pick");
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review→{ai_harness}   W post-review   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review→{ai_harness}   W post-review   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
         ),
@@ -659,6 +660,15 @@ pub fn draw_pr_review(
     }
     if let Some(pick) = &state.harness_pick {
         draw_harness_pick(frame, pick, theme);
+    }
+    // Reply-kind picker (`R`) overlays the pane before the reply dialog itself.
+    if let Some(pick) = &state.reply_kind_pick {
+        draw_reply_kind_pick(frame, pick, theme);
+    }
+    // "Mark" picker (`m`) overlays the pane: Done (local) / Skip (local) /
+    // Resolve on GitHub for the selected comment.
+    if let Some(pick) = &state.mark_pick {
+        draw_mark_pick(frame, pick, state.selected_comment(), theme);
     }
     // Fix confirm/edit dialog overlays the pane when open.
     let fix_target = state.fix_target;
@@ -1188,7 +1198,7 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
-        .title(" Harness for the triage session ")
+        .title(" Fix target ")
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -1199,7 +1209,7 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2), // header
-            Constraint::Min(1),    // harness list
+            Constraint::Min(1),    // row list
             Constraint::Length(1), // key hints
         ])
         .split(inner);
@@ -1214,7 +1224,7 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
     );
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, agent) in pick.agents.iter().enumerate() {
+    for (i, row) in pick.rows.iter().enumerate() {
         let is_selected = i == pick.selected;
         let marker = if is_selected { ">" } else { " " };
         let name_style = if is_selected {
@@ -1230,7 +1240,7 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
                 format!("  {marker} "),
                 Style::default().fg(theme.warning.to_color()),
             ),
-            Span::styled(agent.display_name().to_string(), name_style),
+            Span::styled(row.label(), name_style),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), chunks[1]);
@@ -1241,6 +1251,131 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[2],
+    );
+}
+
+/// Reply-kind picker (`R`): two rows, "Done" and "Not needed", shown before
+/// the actual reply dialog opens.
+fn draw_reply_kind_pick(frame: &mut Frame, pick: &ReplyKindPickState, theme: &Theme) {
+    let area = super::super::dashboard::centered_rect(50, 30, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Reply ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // row list
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    let lines: Vec<Line> = ReplyKind::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, kind)| {
+            let is_selected = i == pick.selected;
+            let marker = if is_selected { ">" } else { " " };
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .bg(theme.effective_selection_bg())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text.to_color())
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!("  {marker} "),
+                    Style::default().fg(theme.warning.to_color()),
+                ),
+                Span::styled(kind.menu_label().to_string(), name_style),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), chunks[0]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] choose   [j/k] move   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[1],
+    );
+}
+
+/// "Mark" picker (`m`): three rows — Done (local), Skip (local), Resolve on
+/// GitHub — reflecting the selected comment's current state. The GitHub row
+/// is deliberately styled apart from the two local ones (a distinct color)
+/// since it's the only one of the three that writes anywhere outside AMF.
+fn draw_mark_pick(
+    frame: &mut Frame,
+    pick: &MarkPickState,
+    comment: Option<&PrComment>,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(56, 34, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Mark ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // row list
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    let lines: Vec<Line> = MarkAction::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, action)| {
+            let is_selected = i == pick.selected;
+            let marker = if is_selected { ">" } else { " " };
+            let is_github = matches!(action, MarkAction::ResolveOnGitHub);
+            let base_color = if is_github {
+                theme.warning.to_color()
+            } else {
+                theme.text.to_color()
+            };
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(base_color)
+                    .bg(theme.effective_selection_bg())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(base_color)
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!("  {marker} "),
+                    Style::default().fg(theme.warning.to_color()),
+                ),
+                Span::styled(action.menu_label(comment), name_style),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), chunks[0]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] choose   [j/k] move   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[1],
     );
 }
 
@@ -2034,6 +2169,7 @@ mod tests {
             hide_resolved: false,
             sort_mode,
             fix_target: crate::app::pr_review::FixTarget::default(),
+            fix_target_picked: false,
             usage_baselines: std::collections::HashMap::new(),
             review_harness: None,
             ai_review_harness: None,
@@ -2044,6 +2180,8 @@ mod tests {
             harness_pick: None,
             fix_confirm: None,
             fix_vim_enabled: false,
+            mark_pick: None,
+            reply_kind_pick: None,
             reply: None,
             memory_add: None,
             marked: std::collections::HashSet::new(),

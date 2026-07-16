@@ -709,6 +709,30 @@ impl FixTarget {
     }
 }
 
+/// One row of the fix-target picker (`HarnessPickState`): either the
+/// feature's existing live session, or a dedicated triage session pinned to
+/// a specific harness. Choosing a row resolves both `FixTarget` and (for the
+/// dedicated case) `review_harness` in one step.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FixTargetPickRow {
+    /// Reuse the feature's existing live agent session.
+    ExistingLive,
+    /// Spin up (or reuse) the dedicated triage session on this harness.
+    Dedicated(AgentKind),
+}
+
+impl FixTargetPickRow {
+    /// Display label for the picker list.
+    pub fn label(&self) -> String {
+        match self {
+            FixTargetPickRow::ExistingLive => "Existing live session".to_string(),
+            FixTargetPickRow::Dedicated(agent) => {
+                format!("Dedicated triage session ({})", agent.display_name())
+            }
+        }
+    }
+}
+
 /// Order the comment list is shown in. Cycled with `o`; independent of the
 /// `hide_resolved` filter. Sorting is stable, so comments that tie on the sort
 /// key (e.g. same file, or all-human/all-bot) keep their original fetch order.
@@ -1114,11 +1138,65 @@ pub enum ReplyKind {
 }
 
 impl ReplyKind {
+    /// The two kinds, in the order the reply-kind picker (`R`) lists them.
+    pub const ALL: [ReplyKind; 2] = [ReplyKind::Done, ReplyKind::NotNeeded];
+
     /// Short label for the reply dialog title.
     pub fn title(self) -> &'static str {
         match self {
             ReplyKind::Done => "Reply · mark done",
             ReplyKind::NotNeeded => "Reply · not needed",
+        }
+    }
+
+    /// Row label for the reply-kind picker.
+    pub fn menu_label(self) -> &'static str {
+        match self {
+            ReplyKind::Done => "Done — report a completed fix",
+            ReplyKind::NotNeeded => "Not needed — explain why",
+        }
+    }
+}
+
+/// Which comment-state action the `m` "Mark" picker offers. `Done` and
+/// `Skip` are local-only triage bookkeeping (no GitHub write, no agent
+/// tokens); `ResolveOnGitHub` is the one row that actually writes to
+/// GitHub (the review thread's resolved state) — kept clearly labeled as
+/// such so it isn't mistaken for another local toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkAction {
+    /// Toggle local `Done` triage.
+    Done,
+    /// Toggle local `Skipped` triage.
+    Skip,
+    /// Toggle the GitHub review thread's resolved state.
+    ResolveOnGitHub,
+}
+
+impl MarkAction {
+    /// The three actions, in the order the `m` picker lists them.
+    pub const ALL: [MarkAction; 3] = [
+        MarkAction::Done,
+        MarkAction::Skip,
+        MarkAction::ResolveOnGitHub,
+    ];
+
+    /// Row label for the picker, reflecting the selected comment's current
+    /// state so the toggle direction is visible before pressing `⏎`.
+    pub fn menu_label(self, comment: Option<&PrComment>) -> String {
+        match self {
+            MarkAction::Done => match comment.map(|c| c.triage) {
+                Some(TriageState::Done) => "Done (local) — press to clear".to_string(),
+                _ => "Done (local)".to_string(),
+            },
+            MarkAction::Skip => match comment.map(|c| c.triage) {
+                Some(TriageState::Skipped) => "Skip (local) — press to clear".to_string(),
+                _ => "Skip (local)".to_string(),
+            },
+            MarkAction::ResolveOnGitHub => match comment.map(|c| c.is_resolved) {
+                Some(true) => "Reopen thread on GitHub (currently resolved)".to_string(),
+                _ => "Resolve thread on GitHub".to_string(),
+            },
         }
     }
 }
@@ -1756,6 +1834,7 @@ impl App {
                 hide_resolved: false,
                 sort_mode: PrSortMode::default(),
                 fix_target: FixTarget::default(),
+                fix_target_picked: false,
                 usage_baselines,
                 review_harness: None,
                 ai_review_harness: None,
@@ -1766,6 +1845,8 @@ impl App {
                 harness_pick: None,
                 fix_confirm: None,
                 fix_vim_enabled: false,
+                mark_pick: None,
+                reply_kind_pick: None,
                 reply: None,
                 memory_add: None,
                 marked: std::collections::HashSet::new(),
@@ -1927,9 +2008,84 @@ impl App {
         self.persist_triage(pr_number, &head_sha, comment_id, state, note.as_deref());
     }
 
+    /// Open the "Mark" picker (`m`): a three-row choice between local `Done`,
+    /// local `Skip`, and toggling the GitHub thread's resolved state.
+    /// Replaces the old separate `m`/`s`/`x` top-level keys with one entry
+    /// point. No-op (with a hint) if nothing is selected or another dialog
+    /// is already open.
+    pub fn pr_review_open_mark_pick(&mut self) {
+        let ready = match &self.mode {
+            AppMode::PrReview(state)
+                if state.reply.is_none()
+                    && state.fix_confirm.is_none()
+                    && state.reply_kind_pick.is_none()
+                    && state.mark_pick.is_none() =>
+            {
+                state.selected_comment().is_some()
+            }
+            _ => return,
+        };
+        if !ready {
+            self.message = Some("No comment selected".into());
+            return;
+        }
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.mark_pick = Some(MarkPickState { selected: 0 });
+        }
+    }
+
+    /// Whether the "Mark" picker is currently open over PR Triage.
+    pub fn pr_review_mark_pick_picking(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::PrReview(state) if state.mark_pick.is_some()
+        )
+    }
+
+    /// Move the "Mark"-picker highlight (`+1`/`-1`, wrapping).
+    pub fn pr_review_mark_pick_move(&mut self, delta: isize) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.mark_pick
+        {
+            let len = MarkAction::ALL.len() as isize;
+            pick.selected = ((pick.selected as isize + delta).rem_euclid(len)) as usize;
+        }
+    }
+
+    /// Confirm the "Mark" picker: close it and apply the chosen action
+    /// immediately (reusing the existing done/skip/resolve flows as-is) —
+    /// no further confirm step, matching the original single-key behavior.
+    pub fn pr_review_mark_pick_confirm(&mut self) {
+        let chosen = match &self.mode {
+            AppMode::PrReview(state) => state
+                .mark_pick
+                .as_ref()
+                .map(|pick| MarkAction::ALL[pick.selected]),
+            _ => return,
+        };
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.mark_pick = None;
+        }
+        match chosen {
+            Some(MarkAction::Done) => self.pr_review_mark_done(),
+            Some(MarkAction::Skip) => self.pr_review_skip(),
+            Some(MarkAction::ResolveOnGitHub) => self.pr_review_toggle_resolve(),
+            None => {}
+        }
+    }
+
+    /// Cancel the "Mark" picker without choosing.
+    pub fn pr_review_mark_pick_cancel(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.mark_pick = None;
+        }
+    }
+
     /// Mark the selected comment done (toggles back to untriaged if it already
     /// is). Manual, with **no auto-advance** — the user stays on the comment so
     /// they can review the agent's work before moving on (plan: Epic B).
+    /// Reached via the "Mark" picker (`m`), or called directly by
+    /// tests/internal flows.
     pub fn pr_review_mark_done(&mut self) {
         let next = match self.pr_review_selected_triage() {
             Some(TriageState::Done) => TriageState::Untriaged,
@@ -2265,6 +2421,7 @@ impl App {
                             hide_resolved: false,
                             sort_mode: PrSortMode::default(),
                             fix_target: FixTarget::default(),
+                            fix_target_picked: false,
                             usage_baselines,
                             review_harness: None,
                             ai_review_harness: None,
@@ -2275,6 +2432,8 @@ impl App {
                             harness_pick: None,
                             fix_confirm: None,
                             fix_vim_enabled: false,
+                            mark_pick: None,
+                            reply_kind_pick: None,
                             reply: None,
                             memory_add: None,
                             marked: std::collections::HashSet::new(),
@@ -3000,34 +3159,27 @@ impl App {
         self.push_toast_success(format!("Sort: {label}"));
     }
 
-    /// Toggle which agent session "fix" prompts are injected into: the default
-    /// dedicated triage session, or the feature's existing live session.
-    pub fn pr_review_toggle_fix_target(&mut self) {
-        let (workdir, target) = match &self.mode {
-            AppMode::PrReview(state) => (
-                state.workdir.clone(),
-                match state.fix_target {
-                    FixTarget::DedicatedReview => FixTarget::ExistingLive,
-                    FixTarget::ExistingLive => FixTarget::DedicatedReview,
-                },
-            ),
+    /// Set `fix_target`, marking the fix-target picker resolved for the rest
+    /// of this pane visit, and snapshot the newly-targeted session's current
+    /// usage as a baseline if it doesn't already have one — so the "this
+    /// visit" tally starts from zero for the just-selected target rather than
+    /// including whatever that session had accrued before this pane opened.
+    fn pr_review_set_fix_target(&mut self, target: FixTarget) {
+        let workdir = match &self.mode {
+            AppMode::PrReview(state) => state.workdir.clone(),
             _ => return,
         };
         let baseline = self.fix_session_usage_for(&workdir, target);
-        let label = {
-            let AppMode::PrReview(state) = &mut self.mode else {
-                return;
-            };
+        if let AppMode::PrReview(state) = &mut self.mode {
             state.fix_target = target;
+            state.fix_target_picked = true;
             if let Some(usage) = baseline {
                 state
                     .usage_baselines
                     .entry(usage.source.clone())
                     .or_insert(usage);
             }
-            state.fix_target.label()
-        };
-        self.push_toast_success(format!("Fixes target the {label}"));
+        }
     }
 
     /// Open the fix confirm/edit dialog for the selected comment. Assembles the
@@ -3035,10 +3187,11 @@ impl App {
     /// before anything reaches the agent — nothing is injected until the user
     /// confirms. Editing is opt-in (`e`) from the dialog.
     ///
-    /// For the dedicated-review target, the first fix of a PR first opens the
-    /// harness picker (which harness the triage session should run) — the fix
-    /// confirm follows once the user picks. Subsequent fixes (harness already
-    /// chosen, or a dedicated session already exists) go straight to the dialog.
+    /// The first fix/batch of a pane visit first opens the fix-target picker
+    /// (existing live session, or a dedicated session on a chosen harness) —
+    /// the fix confirm follows once the user picks. Subsequent fixes (target
+    /// already chosen, or a dedicated session already exists) go straight to
+    /// the dialog.
     pub fn pr_review_open_fix_confirm(&mut self) {
         if self.pr_review_needs_harness_pick() {
             if let AppMode::PrReview(state) = &mut self.mode {
@@ -3147,15 +3300,15 @@ impl App {
         }
     }
 
-    /// Whether the first `f` should pick a harness before injecting: only for
-    /// the dedicated-review target, when no harness has been chosen yet *and* no
-    /// dedicated session already exists (a cache re-open inherits the running
-    /// session's harness, so don't ask again).
+    /// Whether the first `f`/`B` of this pane visit should pick a fix target
+    /// before injecting: skipped once the target's already been picked (or a
+    /// dedicated session already exists — a cache re-open inherits the
+    /// running session's harness, so don't ask again).
     fn pr_review_needs_harness_pick(&self) -> bool {
         let AppMode::PrReview(state) = &self.mode else {
             return false;
         };
-        if state.fix_target != FixTarget::DedicatedReview || state.review_harness.is_some() {
+        if state.fix_target_picked || state.review_harness.is_some() {
             return false;
         }
         match self.feature_indices_for_workdir(&state.workdir) {
@@ -3168,9 +3321,13 @@ impl App {
         }
     }
 
-    /// Open the single-select harness picker for the dedicated triage session,
-    /// highlighting the project's preferred agent by default. No-op if a comment
-    /// isn't selected or no harnesses are available.
+    /// Open the single-select fix-target picker: an "existing live session"
+    /// row plus one "dedicated session" row per allowed harness, highlighting
+    /// the project's preferred agent's dedicated row by default (matching
+    /// `FixTarget::default()`). No-op if no harnesses are available for a
+    /// dedicated session — falls back to the existing-live-less default
+    /// (dedicated, no explicit harness) and skips straight to the confirm
+    /// dialog, since there'd be nothing to choose between anyway.
     fn pr_review_open_harness_pick(&mut self) {
         let workdir = match &self.mode {
             AppMode::PrReview(state) => state.workdir.clone(),
@@ -3178,33 +3335,39 @@ impl App {
         };
         let agents = self.allowed_agents_for_project_path(&workdir);
         if agents.is_empty() {
-            // Nothing to choose — fall back to the default and inject directly.
             return self.pr_review_skip_harness_pick();
         }
         let preferred = self
             .feature_indices_for_workdir(&workdir)
             .map(|(pi, _)| self.store.projects[pi].preferred_agent.clone());
-        let selected = preferred
+        let dedicated_default = preferred
             .and_then(|p| agents.iter().position(|a| *a == p))
             .unwrap_or(0);
+        let mut rows = vec![FixTargetPickRow::ExistingLive];
+        rows.extend(agents.into_iter().map(FixTargetPickRow::Dedicated));
+        // +1: rows[0] is the ExistingLive row, so the dedicated default shifts by one.
+        let selected = dedicated_default + 1;
         if let AppMode::PrReview(state) = &mut self.mode {
-            state.harness_pick = Some(HarnessPickState { agents, selected });
+            state.harness_pick = Some(HarnessPickState { rows, selected });
         }
     }
 
-    /// Skip harness selection (e.g. no choices available): continue straight to
-    /// the confirm dialog, leaving `review_harness` at its default fallback.
+    /// Skip the fix-target picker (e.g. no harnesses available): continue
+    /// straight to the confirm dialog, leaving `fix_target`/`review_harness`
+    /// at their defaults, but still marking the pick resolved so it isn't
+    /// re-offered on the next fix.
     fn pr_review_skip_harness_pick(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.harness_pick = None;
+            state.fix_target_picked = true;
         }
         self.pr_review_continue_after_harness();
     }
 
-    /// After the harness is chosen (or skipped), open the dialog the pending
-    /// action wanted: the combined-batch confirm for the `B` flow, otherwise the
-    /// single-comment fix confirm. Neither re-checks the harness pick, so this
-    /// can't loop back into the picker.
+    /// After the fix target is chosen (or skipped), open the dialog the
+    /// pending action wanted: the combined-batch confirm for the `B` flow,
+    /// otherwise the single-comment fix confirm. Neither re-checks the pick,
+    /// so this can't loop back into the picker.
     fn pr_review_continue_after_harness(&mut self) {
         let batch = matches!(&self.mode, AppMode::PrReview(state) if state.pending_batch);
         if batch {
@@ -3214,7 +3377,7 @@ impl App {
         }
     }
 
-    /// Whether the harness picker is currently open over PR Triage.
+    /// Whether the fix-target picker is currently open over PR Triage.
     pub fn pr_review_harness_picking(&self) -> bool {
         matches!(
             &self.mode,
@@ -3222,40 +3385,61 @@ impl App {
         )
     }
 
-    /// Move the harness-picker highlight (`+1`/`-1`, wrapping).
+    /// Move the fix-target-picker highlight (`+1`/`-1`, wrapping).
     pub fn pr_review_harness_pick_move(&mut self, delta: isize) {
         if let AppMode::PrReview(state) = &mut self.mode
             && let Some(pick) = &mut state.harness_pick
-            && !pick.agents.is_empty()
+            && !pick.rows.is_empty()
         {
-            let len = pick.agents.len() as isize;
+            let len = pick.rows.len() as isize;
             pick.selected = ((pick.selected as isize + delta).rem_euclid(len)) as usize;
         }
     }
 
-    /// Confirm the harness picker: remember the choice for the rest of the PR
-    /// and continue into the fix confirm dialog.
+    /// Confirm the fix-target picker: remember the choice (and, for a
+    /// dedicated row, the harness) for the rest of this pane visit, and
+    /// continue into the fix confirm dialog.
     pub fn pr_review_harness_pick_confirm(&mut self) {
         let chosen = match &self.mode {
             AppMode::PrReview(state) => state
                 .harness_pick
                 .as_ref()
-                .and_then(|p| p.agents.get(p.selected).cloned()),
+                .and_then(|p| p.rows.get(p.selected).cloned()),
             _ => return,
         };
-        if let AppMode::PrReview(state) = &mut self.mode {
-            state.harness_pick = None;
-            state.review_harness = chosen.clone();
-        }
-        if let Some(agent) = &chosen {
-            self.push_toast_success(format!("Triage session will run {}", agent.display_name()));
+        let Some(row) = chosen else {
+            if let AppMode::PrReview(state) = &mut self.mode {
+                state.harness_pick = None;
+            }
+            return;
+        };
+        match &row {
+            FixTargetPickRow::ExistingLive => {
+                self.pr_review_set_fix_target(FixTarget::ExistingLive);
+                if let AppMode::PrReview(state) = &mut self.mode {
+                    state.harness_pick = None;
+                    state.review_harness = None;
+                }
+                self.push_toast_success("Fixes target the existing live session".to_string());
+            }
+            FixTargetPickRow::Dedicated(agent) => {
+                self.pr_review_set_fix_target(FixTarget::DedicatedReview);
+                if let AppMode::PrReview(state) = &mut self.mode {
+                    state.harness_pick = None;
+                    state.review_harness = Some(agent.clone());
+                }
+                self.push_toast_success(format!(
+                    "Triage session will run {}",
+                    agent.display_name()
+                ));
+            }
         }
         // Continue into the dialog the pending action wanted (single or batch).
         self.pr_review_continue_after_harness();
     }
 
-    /// Cancel the harness picker without choosing — aborts this fix; the user
-    /// can press `f`/`B` again. `review_harness` stays unset so the picker
+    /// Cancel the fix-target picker without choosing — aborts this fix; the
+    /// user can press `f`/`B` again. Nothing is marked picked, so the picker
     /// reappears, and any pending batch is discarded.
     pub fn pr_review_harness_pick_cancel(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
@@ -3532,11 +3716,82 @@ impl App {
         }
     }
 
+    /// Open the reply-kind picker (`R`): a two-row choice between a "Done in
+    /// `<sha>`" report and a "not needed" explanation, shown before the
+    /// actual reply dialog. Replaces the old separate `R`/`n` top-level keys
+    /// with one entry point. No-op (with a hint) if nothing is selected or
+    /// another dialog is already open.
+    pub fn pr_review_open_reply_pick(&mut self) {
+        let ready = match &self.mode {
+            AppMode::PrReview(state)
+                if state.reply.is_none()
+                    && state.fix_confirm.is_none()
+                    && state.reply_kind_pick.is_none() =>
+            {
+                state.selected_comment().is_some()
+            }
+            _ => return,
+        };
+        if !ready {
+            self.message = Some("No comment selected".into());
+            return;
+        }
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.reply_kind_pick = Some(ReplyKindPickState { selected: 0 });
+        }
+    }
+
+    /// Whether the reply-kind picker is currently open over PR Triage.
+    pub fn pr_review_reply_pick_picking(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::PrReview(state) if state.reply_kind_pick.is_some()
+        )
+    }
+
+    /// Move the reply-kind-picker highlight (`+1`/`-1`, wrapping).
+    pub fn pr_review_reply_pick_move(&mut self, delta: isize) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.reply_kind_pick
+        {
+            let len = ReplyKind::ALL.len() as isize;
+            pick.selected = ((pick.selected as isize + delta).rem_euclid(len)) as usize;
+        }
+    }
+
+    /// Confirm the reply-kind picker: close it and open the corresponding
+    /// reply dialog (reusing the existing `Done`/`NotNeeded` flows as-is).
+    pub fn pr_review_reply_pick_confirm(&mut self) {
+        let chosen = match &self.mode {
+            AppMode::PrReview(state) => state
+                .reply_kind_pick
+                .as_ref()
+                .map(|pick| ReplyKind::ALL[pick.selected]),
+            _ => return,
+        };
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.reply_kind_pick = None;
+        }
+        match chosen {
+            Some(ReplyKind::Done) => self.pr_review_open_reply_done(),
+            Some(ReplyKind::NotNeeded) => self.pr_review_open_reply_not_needed(),
+            None => {}
+        }
+    }
+
+    /// Cancel the reply-kind picker without choosing.
+    pub fn pr_review_reply_pick_cancel(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.reply_kind_pick = None;
+        }
+    }
+
     /// Open a **"Done in `<sha>`"** reply for the selected comment, seeded from
     /// the most recent commit that plausibly fixed it — a commit touching the
     /// comment's file/line — falling back to bare `HEAD` (flagged "latest
     /// commit") when history search comes up empty. Editable before posting;
-    /// posting marks the comment `Done`.
+    /// posting marks the comment `Done`. Reached via the reply-kind picker
+    /// (`R`), or called directly by tests/internal flows.
     pub fn pr_review_open_reply_done(&mut self) {
         let (workdir, comment) = match &self.mode {
             AppMode::PrReview(state) if state.reply.is_none() && state.fix_confirm.is_none() => {
@@ -4548,6 +4803,32 @@ mod tests {
         }
     }
 
+    fn sample_comment(id: u64, author: &str, is_bot: bool) -> PrComment {
+        PrComment {
+            id,
+            kind: CommentKind::Inline,
+            author: author.to_string(),
+            is_bot,
+            path: Some("src/lib.rs".to_string()),
+            line: Some(10),
+            side: None,
+            outdated: false,
+            file_level: false,
+            diff_hunk: None,
+            body: "example".to_string(),
+            snippet: "example".to_string(),
+            in_reply_to: None,
+            thread_id: None,
+            is_resolved: false,
+            triage: TriageState::default(),
+            local_note: None,
+            ai_generated: false,
+            ai_published: false,
+            github_id: None,
+            github_review_id: None,
+        }
+    }
+
     #[test]
     fn strips_details_comments_and_images() {
         let body = "Real point here.\n\n<details>\n<summary>Prompt for AI agents</summary>\n\
@@ -5104,6 +5385,66 @@ mod tests {
         assert_eq!(FixTarget::default(), FixTarget::DedicatedReview);
         assert_eq!(FixTarget::DedicatedReview.tag(), "dedicated");
         assert_eq!(FixTarget::ExistingLive.tag(), "live");
+    }
+
+    #[test]
+    fn fix_target_pick_row_labels_existing_live_and_dedicated() {
+        assert_eq!(
+            FixTargetPickRow::ExistingLive.label(),
+            "Existing live session"
+        );
+        assert_eq!(
+            FixTargetPickRow::Dedicated(AgentKind::Claude).label(),
+            "Dedicated triage session (Claude)"
+        );
+    }
+
+    #[test]
+    fn reply_kind_menu_labels_are_distinct() {
+        assert_eq!(ReplyKind::ALL.len(), 2);
+        assert_eq!(
+            ReplyKind::Done.menu_label(),
+            "Done — report a completed fix"
+        );
+        assert_eq!(
+            ReplyKind::NotNeeded.menu_label(),
+            "Not needed — explain why"
+        );
+    }
+
+    #[test]
+    fn mark_action_menu_label_reflects_current_state() {
+        let mut comment = sample_comment(1, "alice", false);
+        comment.triage = TriageState::Untriaged;
+        comment.is_resolved = false;
+
+        assert_eq!(MarkAction::Done.menu_label(Some(&comment)), "Done (local)");
+        assert_eq!(MarkAction::Skip.menu_label(Some(&comment)), "Skip (local)");
+        assert_eq!(
+            MarkAction::ResolveOnGitHub.menu_label(Some(&comment)),
+            "Resolve thread on GitHub"
+        );
+
+        comment.triage = TriageState::Done;
+        assert_eq!(
+            MarkAction::Done.menu_label(Some(&comment)),
+            "Done (local) — press to clear"
+        );
+
+        comment.triage = TriageState::Skipped;
+        assert_eq!(
+            MarkAction::Skip.menu_label(Some(&comment)),
+            "Skip (local) — press to clear"
+        );
+
+        comment.is_resolved = true;
+        assert_eq!(
+            MarkAction::ResolveOnGitHub.menu_label(Some(&comment)),
+            "Reopen thread on GitHub (currently resolved)"
+        );
+
+        // No selection: falls back to the untoggled label rather than panicking.
+        assert_eq!(MarkAction::Done.menu_label(None), "Done (local)");
     }
 
     #[test]

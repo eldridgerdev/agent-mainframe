@@ -1626,7 +1626,7 @@ explicit non-goal for v1 (GitHub `gh` only), not an open question.
   `src/app/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
   `src/ui/dialogs/help.rs`, `src/app/tests.rs`, `README.md`, `CHANGELOG.md`.
 
-- [ ] **Keymap audit — too many bindings.** The PR triage pane has accumulated
+- [x] **Keymap audit — too many bindings.** The PR triage pane has accumulated
   many keybinds (`f`, `B`, `r`, `n`, `R`, `x`, `o`, `P`, `M`, `W`, `A`,
   `i`, `space`, `#`, `g`, `a`, `G`, `h`, `j/k`, etc.). Real use reports the
   pane is hard to use and overwhelming. Audit every binding: is it needed? Can
@@ -1635,6 +1635,104 @@ explicit non-goal for v1 (GitHub `gh` only), not an open question.
   into a single "reply" key that prompts for the reply kind (fix/not-needed)?
   Can `A`/`W` (AI review) be deferred or simplified? Prioritize discoverability
   and lean keymaps over feature breadth.
+
+  **Audit (proposal — no code changed yet, scope decision needed before
+  implementing).** Full inventory of the main pane's top-level keys, from
+  `handle_pr_review_key` (`src/handlers/pr_review.rs`), beyond the
+  unavoidable `j/k`/arrows/`Esc`/`q`/`Ctrl+d`/`Ctrl+u`/`PageUp`/`PageDown`:
+
+  | Key | Action | Needed? | Notes |
+  | --- | --- | --- | --- |
+  | `h` | hide/show resolved | Keep | Common triage filter, cheap toggle, no overlap. |
+  | `o` | cycle sort order | Keep | Distinct axis from `h`; five modes already justified by Epic D. |
+  | `f` | inject fix (single) | Keep | Core loop, can't be merged away. |
+  | `t` | toggle fix target (dedicated ↔ existing-live) | **Merge candidate** | A per-PR, set-once-then-forget choice (footer already shows the current target). Fits better as a step inside the harness/fix-confirm dialog than a standalone always-live key. |
+  | `P` | peek dedicated/live session, round-trip back | Keep | Core loop counterpart to `f`; this is the fix for the "stuck watching the agent" friction Epic D solved. |
+  | `space` | mark for batch | Keep | Required by `B`. |
+  | `B` | inject combined batch prompt | Keep | Core loop, the safer alternative to the removed `F`. |
+  | `R` | reply "Done in `<sha>`" | **Merge candidate** | See below. |
+  | `n` | reply "not needed" | **Merge candidate** | See below. |
+  | `M` | add selected comment to review-memory | Keep | Low-frequency but distinct destination (repo file, not GitHub) — folding into `R`/`n` would blur "reply to GitHub" with "note for next time." |
+  | `m` | mark done (local triage only) | Keep, but audit overlap with `R` | `m` is silent bookkeeping; `R` both posts to GitHub *and* marks done. In practice `R` supersedes `m` for the common "I fixed it" case — `m` is really for "handled some other way, no reply warranted." Rename/relabel for clarity rather than remove. |
+  | `x` | resolve/reopen GitHub thread | Keep | Different system (GraphQL thread state) from `m`/`R`; already explicitly independent of replying by design (Epic C). |
+  | `s` | skip (local only) | Keep | Distinct from `n` (skip leaves no GitHub trace; `n` posts an explanation). |
+  | `r` | refresh | Keep | Necessary escape hatch after a push; low collision risk once `R`/`n` merge frees a letter. |
+  | `i` | install syntax highlighting for selected file | **Move candidate** | Rare, one-time-per-language action; parity with the diff viewer doesn't require equal keymap prominence. Could live behind a secondary/help-only affordance instead of a top-level letter. |
+  | `g` | switch to a different PR (opens PR picker) | Keep | Not truly redundant with the dashboard's `G` — this is reachable without leaving the pane, which is the whole point of the ambient-indicator/leader-`G` work in Epic D's "Nice to have" section. |
+  | `A` | run AI review of diff | Keep, but gate behind `W`'s outcome more | Genuinely token-spending and optional per the original design (opt-in, token preview) — already about as minimal as the workflow allows. |
+  | `W` | post AI-review draft as GitHub review | Keep | Necessary second step after `A`; conflating generate+post would remove the "review before spending a write" gate that's core to the feature's design. |
+
+  **Concrete first-pass proposal (lowest risk, reversible):**
+  1. Drop `t` as a standalone key. Fold the dedicated/existing-live choice
+     into the harness-pick dialog (which already gates the *first* `f`/`B`
+     of a PR) as an explicit "fix target" row, so the choice is made once,
+     at the point it's needed, instead of living as an always-on toggle key
+     competing for attention with the 17 others.
+  2. Merge `R`/`n` into a single `R` ("reply") key. Pressing it opens the
+     existing reply dialog one level earlier: a two-item kind picker
+     ("Done in `<sha>`" / "Not needed"), reusing the same downstream
+     edit/confirm/post flow both templates already share
+     (`handle_reply_key`). This mirrors the plan's own original suggestion
+     for this exact pair and frees a letter (`n`) without losing either
+     template.
+  3. Leave `i` where it is for now (low priority, not part of the
+     "overwhelming" complaint's likely cause) — revisit only if the two
+     changes above don't feel sufficient in practice.
+
+  **Deliberately not proposed:** collapsing `m`/`s`/`x` (they span three
+  different systems: local triage, local skip, GitHub thread resolution —
+  merging them risks silently doing a GitHub write when the user only meant
+  local bookkeeping) or `A`/`W` (removing the generate/post split removes the
+  explicit-approval gate before any GitHub write, which is a deliberate
+  design constraint from the top of this doc, not incidental complexity).
+
+  Scope/priority for actually implementing this decided with the user
+  2026-07-16: write up the audit first (this entry), pick specific merges to
+  implement in a follow-up rather than doing a broad pass blind.
+
+  **Shipped, 2026-07-16 — all three merges, including the one marked
+  "deliberately not proposed" above.** After seeing the audit, the user
+  asked for `t` dropped and `R`/`n` merged as proposed, **and** for
+  `m`/`s`/`x` to get the same treatment (with the GitHub-write row
+  explicitly labeled as such) — overriding the audit's caution about mixing
+  local and remote state in one menu.
+  - **`t` removed.** `HarnessPickState` (`src/app/state.rs`) now carries
+    `rows: Vec<FixTargetPickRow>` (`ExistingLive` plus one `Dedicated(AgentKind)`
+    row per allowed harness) instead of a bare agent list, defaulting the
+    highlight to the dedicated row for the project's preferred agent — so the
+    first `f`/`B` of a pane visit always resolves the fix target, not just the
+    harness. A new `PrReviewState::fix_target_picked` flag (plus the existing
+    `review_harness.is_some()` check, kept for back-compat with tests/paths
+    that set it directly) gates re-asking; picking a row goes through a new
+    `App::pr_review_set_fix_target` that snapshots the newly-targeted
+    session's usage baseline the same way the old toggle did. →
+    `src/app/pr_review.rs`, `src/app/state.rs`, `src/ui/dialogs/pr_review.rs`.
+  - **`R`/`n` merged.** A new `ReplyKindPickState` + `ReplyKind::ALL`/`menu_label`
+    back a two-row picker opened by `R` (`App::pr_review_open_reply_pick`);
+    confirming it dispatches into the existing `pr_review_open_reply_done`/
+    `pr_review_open_reply_not_needed` unchanged, so the downstream edit/confirm/
+    post flow is untouched. → `src/app/pr_review.rs`, `src/app/state.rs`,
+    `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
+  - **`m`/`s`/`x` merged.** A new `MarkPickState` + `MarkAction::ALL`/`menu_label`
+    back a three-row picker opened by `m` (`App::pr_review_open_mark_pick`):
+    Done (local), Skip (local), and **"Resolve/Reopen thread on GitHub"** —
+    the label names GitHub explicitly and the row renders in the theme's
+    warning color, distinct from the two local-only rows above it, so the one
+    action that writes anywhere outside AMF doesn't read as just another local
+    toggle. Confirming dispatches into the existing `pr_review_mark_done`/
+    `pr_review_skip`/`pr_review_toggle_resolve` unchanged — applied immediately,
+    no further confirm step, matching the original single-key behavior since
+    none of the three need editable text. → `src/app/pr_review.rs`,
+    `src/app/state.rs`, `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
+  - Net: 6 top-level keys (`t`, `R`, `n`, `m`, `s`, `x`) become 2 (`R`, `m`),
+    each one keypress plus a single-selection picker away from the same
+    action as before — no workflow removed. Footer/help text
+    (`src/ui/dialogs/help.rs`, `README.md`, `CHANGELOG.md`) updated to match.
+    Unit-tested (picker open/move/confirm/cancel for both new pickers, the
+    fix-target row labels, and `MarkAction`/`ReplyKind` menu-label text
+    reflecting current triage/resolution state) — full suite green
+    (1133 tests) and `cargo clippy` clean. `i`/`A`/`W` left untouched per the
+    audit.
 
 - [x] **AI review result persistence (UX — visibility).** When running an AI
       review (`A`), the user could escape back to the pane, navigate away, or

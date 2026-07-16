@@ -72,6 +72,20 @@ are tagged.
 
 ### Changed
 
+- **PR Triage keymap simplified: three sets of top-level keys folded into
+  pickers.** Real use reported the pane as overwhelming (18+ top-level
+  action keys). First pass: (1) the standalone `t` fix-target toggle is
+  gone — the first `f`/`B` of a pane visit now opens a single picker
+  offering "existing live session" or a dedicated session on a chosen
+  harness, so the choice is made once, at the point it's needed. (2) `R`
+  and `n` (the two reply templates) are merged into one `R` that opens a
+  two-row picker ("Done" / "Not needed") before the existing reply dialog.
+  (3) `m`, `s`, and `x` (mark done, skip, resolve/reopen the GitHub thread)
+  are merged into one `m` "Mark" picker with three rows — the GitHub-write
+  row is explicitly labeled "Resolve/Reopen thread on GitHub" so it isn't
+  mistaken for the two local-only toggles next to it. No workflow was
+  removed; each action is still one keypress away, just reached through a
+  small picker instead of a dedicated letter.
 - **Review Mode uses noticeably fewer tokens.** Three independent cuts to
   the same feature: (1) the `.claude/review-notes.md` instruction injected
   into `CLAUDE.local.md` used to ask the agent to write a note before
@@ -125,10 +139,6 @@ are tagged.
 
 ### Backlog
 
-- Scheduled comprehensive keymap audit for PR triage pane. Current bindings
-  are too numerous and make the feature hard to use. Audit will evaluate each
-  binding's necessity and explore workflow simplifications (e.g., merging
-  `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
 - Model selection independent of agent harness: allow per-action model selection
   (e.g. powerful model for AI review, cheaper model for reply drafts) via config
   map that falls back to harness default. (Partial: final review's walkthrough /

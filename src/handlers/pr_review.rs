@@ -12,13 +12,13 @@ const FIX_PAGE_STEP: isize = 10;
 /// Key handling for the full-screen PR Triage pane.
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
-/// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `B` inject
-/// one combined prompt for all marked comments, `R`/`n` reply, `M` add to
-/// memory, `x` resolve/reopen the thread,
-/// `m` mark done, `s` skip, `i` install syntax highlighting for the selected
-/// comment's file, `A` run an AI review of the PR diff (Epic E — draft
-/// findings merge into this same list), `W` post the AI-review draft
-/// findings to GitHub as a real review.
+/// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `B`
+/// inject one combined prompt for all marked comments, `R` opens the
+/// reply-kind picker (Done / not-needed), `M` add to memory, `m` opens the
+/// "Mark" picker (Done (local) / Skip (local) / Resolve on GitHub), `i`
+/// install syntax highlighting for the selected comment's file, `A` run an AI
+/// review of the PR diff (Epic E — draft findings merge into this same
+/// list), `W` post the AI-review draft findings to GitHub as a real review.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The AI-review harness picker is independent from the fix-session picker.
     if app.pr_review_ai_harness_picking() {
@@ -28,9 +28,17 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if app.pr_review_ai_model_picking() {
         return handle_ai_model_pick_key(app, key);
     }
-    // The harness picker, when open, captures all keys.
+    // The fix-target picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
         return handle_harness_pick_key(app, key);
+    }
+    // The reply-kind picker (`R`), when open, captures all keys.
+    if app.pr_review_reply_pick_picking() {
+        return handle_reply_pick_key(app, key);
+    }
+    // The "Mark" picker (`m`), when open, captures all keys.
+    if app.pr_review_mark_pick_picking() {
+        return handle_mark_pick_key(app, key);
     }
     // The fix confirm/edit dialog, when open, captures all keys.
     if let Some(editing) = app.pr_review_fix_editing() {
@@ -64,18 +72,40 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('P') => app.pr_review_toggle_to_session()?,
         KeyCode::Char(' ') => app.pr_review_toggle_mark(),
         KeyCode::Char('B') => app.pr_review_open_batch_confirm(),
-        KeyCode::Char('R') => app.pr_review_open_reply_done(),
-        KeyCode::Char('n') => app.pr_review_open_reply_not_needed(),
+        KeyCode::Char('R') => app.pr_review_open_reply_pick(),
         KeyCode::Char('M') => app.pr_review_open_memory_add(),
-        KeyCode::Char('t') => app.pr_review_toggle_fix_target(),
-        KeyCode::Char('m') => app.pr_review_mark_done(),
-        KeyCode::Char('x') => app.pr_review_toggle_resolve(),
-        KeyCode::Char('s') => app.pr_review_skip(),
+        KeyCode::Char('m') => app.pr_review_open_mark_pick(),
         KeyCode::Char('r') => app.refresh_pr_review(),
         KeyCode::Char('i') => app.open_syntax_language_picker_for_selected_diff_file(),
         KeyCode::Char('g') => app.open_pr_picker_from_pane(),
         KeyCode::Char('A') => app.start_ai_pr_review(),
         KeyCode::Char('W') => app.pr_review_open_ai_review_post_confirm(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the reply-kind picker (`R`) is open: `j/k` move,
+/// `⏎` confirm (opens the corresponding reply dialog), `esc`/`q` cancel.
+fn handle_reply_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_reply_pick_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_reply_pick_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_reply_pick_move(-1),
+        KeyCode::Enter => app.pr_review_reply_pick_confirm(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the "Mark" picker (`m`) is open: `j/k` move, `⏎`
+/// confirm (applies the chosen action immediately), `esc`/`q` cancel.
+fn handle_mark_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_mark_pick_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_mark_pick_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_mark_pick_move(-1),
+        KeyCode::Enter => app.pr_review_mark_pick_confirm(),
         _ => {}
     }
     Ok(())

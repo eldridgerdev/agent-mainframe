@@ -462,6 +462,11 @@ fn load_project_extension_scope(repo: &Path) -> Result<ExtensionConfig> {
 }
 
 fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
+    // The wizard doesn't edit prompt templates, the final-review check
+    // command, or the review-memory path override; carry each through
+    // untouched from the loaded config so saving doesn't wipe them.
+    let loaded = serde_json::from_str::<ExtensionConfig>(&state.original_json).ok();
+
     ExtensionConfig {
         custom_sessions: state.sessions.clone(),
         lifecycle_hooks: state.hooks.clone(),
@@ -472,19 +477,16 @@ fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
         } else {
             state.allowed_agents.clone()
         },
-        // The wizard doesn't edit prompt templates; carry the existing
-        // ones through from the loaded config so saving doesn't wipe
-        // prompts exported via the prompt library.
-        prompt_templates: serde_json::from_str::<ExtensionConfig>(&state.original_json)
-            .map(|config| config.prompt_templates)
+        prompt_templates: loaded
+            .as_ref()
+            .map(|config| config.prompt_templates.clone())
             .unwrap_or_default(),
         plan_questions: state.plan_questions.clone(),
         skip_builtin_questions: state.skip_builtin_questions,
-        // Same reasoning: the wizard has no UI for the final-review check
-        // command, so carry the loaded value through untouched.
-        final_review_check_command: serde_json::from_str::<ExtensionConfig>(&state.original_json)
-            .ok()
-            .and_then(|config| config.final_review_check_command),
+        final_review_check_command: loaded
+            .as_ref()
+            .and_then(|config| config.final_review_check_command.clone()),
+        review_memory_path: loaded.and_then(|config| config.review_memory_path),
     }
 }
 

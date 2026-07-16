@@ -2133,6 +2133,13 @@ impl App {
         worktree: Box<dyn WorktreeOps>,
     ) -> Self {
         use crate::extension::ExtensionConfig;
+        // `extension_for_repo` (and anything it feeds, e.g.
+        // `configured_review_memory_path`) re-reads
+        // `~/.config/amf/config.json` from disk regardless of this
+        // constructor's in-memory setup, which would otherwise make tests
+        // depend on whatever happens to be in that file on the machine
+        // running them.
+        crate::extension::set_test_global_extension_config(Some(ExtensionConfig::default()));
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
@@ -2735,6 +2742,28 @@ impl App {
         self.worktree
             .repo_root(path)
             .unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    /// Resolve the configured review-memory path override for `repo`, in
+    /// precedence order:
+    ///
+    /// 1. `{repo}/.amf/config.json` `review_memory_path` (project scope).
+    /// 2. The `"extension"` block's `review_memory_path` in the global
+    ///    `~/.config/amf/config.json` (set via the config wizard's global
+    ///    scope).
+    /// 3. The top-level `review_memory_path` key in that same global
+    ///    `~/.config/amf/config.json` — an older setting
+    ///    (`AppConfig::review_memory_path`) that predates the `"extension"`
+    ///    block gaining this field. It has no wizard UI of its own, and a
+    ///    value set here is silently shadowed by #2 if both are present in
+    ///    the file.
+    ///
+    /// None of the above set means the caller should fall back to
+    /// [`review_memory::DEFAULT_REVIEW_MEMORY_PATH`].
+    pub(crate) fn configured_review_memory_path(&self, repo: &Path) -> Option<String> {
+        self.extension_for_repo(repo)
+            .review_memory_path
+            .or_else(|| self.config.review_memory_path.clone())
     }
 
     pub(crate) fn allowed_agents_for_project_path(&self, path: &Path) -> Vec<AgentKind> {

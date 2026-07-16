@@ -11869,6 +11869,54 @@ fn pr_review_append_memory_writes_and_dedups() {
 }
 
 #[test]
+fn pr_review_append_memory_honors_project_review_memory_path_override() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().to_path_buf();
+
+    // A project-level override in `{repo}/.amf/config.json` should redirect
+    // the append away from the default `.amf/review-memory.md`.
+    std::fs::create_dir_all(repo.join(".amf")).unwrap();
+    std::fs::write(
+        repo.join(".amf").join("config.json"),
+        r#"{"review_memory_path": ".amf/team-review-memory.md"}"#,
+    )
+    .unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_memory_add();
+    app.pr_review_append_memory().unwrap();
+
+    let default_path = repo.join(".amf").join("review-memory.md");
+    assert!(
+        !default_path.exists(),
+        "the default path should be untouched when a project override is set"
+    );
+    let overridden_path = repo.join(".amf").join("team-review-memory.md");
+    let contents = std::fs::read_to_string(&overridden_path).unwrap();
+    assert!(contents.contains("- comment 1 (src/file1.rs:1)"));
+}
+
+#[test]
 fn pr_review_open_fix_confirm_without_comments_shows_message() {
     let mut app = pr_review_test_app();
     enter_pr_review(&mut app, 0);
@@ -13283,4 +13331,42 @@ fn todos_record_spawned_session_updates_in_memory() {
         }
         _ => panic!("expected Todos overlay"),
     }
+}
+
+#[test]
+fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    tx.send(crate::app::pr_review::AiReviewProgress::Reviewing {
+        token_estimate: 50_000,
+    })
+    .unwrap();
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![],
+            raw_output: String::new(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.message.contains("Large diff") && t.message.contains("50000")),
+        "toasts: {:?}",
+        app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
+    );
 }

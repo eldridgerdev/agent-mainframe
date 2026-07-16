@@ -12,6 +12,19 @@ are tagged.
 
 ### Added
 
+- **The review-memory doc path can now be overridden per project, not just
+  globally.** `review_memory_path` was already a config setting, but one
+  value applied to every project. Set `review_memory_path` in a project's
+  `.amf/config.json` to point that repo's PR-review memory (AI review
+  context, the lookback bootstrap, and manual "add to memory") at its own
+  file, overriding the global default the same way `final_review_check_command`
+  already does. No setup or migration required — everything falls back to
+  the existing global setting, then `.amf/review-memory.md`, unchanged.
+  Note for anyone who already set the top-level `review_memory_path` in
+  `~/.config/amf/config.json`: this setting is also readable from the
+  config wizard's global scope, which writes it under that file's
+  `"extension"` block instead. If both are present, the `"extension"`
+  one wins.
 - **PR Triage's AI review can use a different model than the working
   session, picked from a new in-pane picker.** Right after choosing the `A`
   harness, a "Model for AI review" picker offers `Default` (the harness's

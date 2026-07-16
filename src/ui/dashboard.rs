@@ -1023,9 +1023,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
     if let AppMode::PrPicker(state) = &app.mode {
+        let repo = app.repo_for_project_path(&state.workdir);
         let memory_path = crate::app::review_memory::review_memory_path(
-            &app.repo_for_project_path(&state.workdir),
-            app.config.review_memory_path.as_deref(),
+            &repo,
+            app.configured_review_memory_path(&repo).as_deref(),
         );
         super::dialogs::draw_pr_picker(frame, state, &app.theme, &memory_path);
         super::draw_toasts(frame, &app.toasts, &app.theme);

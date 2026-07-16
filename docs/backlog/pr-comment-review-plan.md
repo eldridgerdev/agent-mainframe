@@ -1655,18 +1655,75 @@ explicit non-goal for v1 (GitHub `gh` only), not an open question.
       → `src/app/pr_review.rs`, `src/app/tests.rs`, `README.md`,
       `CHANGELOG.md`.
 
-- [ ] **Model selection for AI review, independent of the working harness
-  (flexibility).** AI review (`A`, and Epic E's lookback distill) currently
-  runs through the harness's `ClaudeLauncher::run_headless` with no way to
-  pick a different model — e.g. a stronger/slower model to catch
-  subtleties, independent of whatever the feature's working session uses.
-  Add a configurable model knob to `AppConfig` (e.g. `review_model`) so AI
-  review can select its own model, falling back to the harness default when
-  unset. Also decide how large a diff triggers chunking or an outright
-  refusal before sending it to the review model (mirroring the
-  batch-prompt token ceiling already used for combined fix prompts). Note:
-  reply drafting was dropped in favor of deterministic templates (Epic C),
-  so this only applies to AI review, not replies.
+- [x] **Model selection for AI review, independent of the working harness
+  (flexibility).** AI review (`A`, and Epic E's lookback distill) used to run
+  with no way to pick a different model — e.g. a stronger/slower model to
+  catch subtleties, independent of whatever the feature's working session
+  uses. A new `AppConfig::review_model: Option<String>` is passed as an
+  explicit `--model <name>` to the headless CLI for both `A` and the
+  lookback bootstrap, falling back to the harness's own default model when
+  unset (`None`, the default). `HeadlessRunner::run` (`src/headless.rs`)
+  gained the `model: Option<&str>` parameter — `HeadlessCommand` now splits
+  fixed `args` from a `trailing` tail (Codex's `-` stdin marker) so an
+  inserted `--model <name>` lands before it rather than after; a new
+  `supports_model_flag` gates this to Claude/Codex/Opencode, since Pi's
+  headless model flag isn't verified (mirrors the existing Pi caution in
+  `check_available`/`select_for_interview`) — a requested model is silently
+  not applied there rather than guessed at. The lookback bootstrap
+  (`run_review_memory_bootstrap`) previously bypassed `HeadlessRunner`
+  entirely, hardcoded to `ClaudeLauncher::run_headless` with no
+  harness-independent model support; it now routes through
+  `HeadlessRunner::run(&AgentKind::Claude, ...)` too, so `review_model`
+  covers both paid-pass call sites the item names. On the "how large a diff"
+  question: went with the same soft-ceiling pattern as the combined
+  fix-prompt batch rather than chunking or refusing — a new
+  `AI_REVIEW_PROMPT_TOKEN_WARN` (40k tokens) fires a one-time warning toast
+  once the assembled review prompt's token estimate is known, but the review
+  still runs; chunking isn't worth the complexity until real use shows it's
+  needed. Unit-tested (`assemble_args` ordering/omission per harness in
+  `headless.rs`; the toast fires above the ceiling and stays silent below
+  it, via the existing `poll_ai_pr_review_bg` `Reviewing`-stage test
+  fixture). Reply drafting was dropped in favor of deterministic templates
+  (Epic C), so this only ever applied to AI review, not replies. →
+  `src/headless.rs`, `src/app/mod.rs`, `src/app/pr_review.rs`,
+  `src/app/tests.rs`.
+
+  **Follow-up, same day — an in-pane picker, not just a config setting.**
+  A config-only knob turned out to be the wrong shape: real use expected a
+  picker like the existing `A` harness picker, not an edit-config.json step.
+  A new single-select `AiModelPickState`/`ModelPickRow` (`src/app/state.rs`)
+  opens automatically right after the harness is chosen (`start_ai_pr_review`
+  now checks a new `PrReviewState::ai_review_model_picked` flag the same way
+  it already checked `ai_review_harness`), offering `Default` (harness's own
+  model), verified presets (`model_pick_rows` — currently only Claude's
+  `sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude --help`; other
+  harnesses get just `Default`/`Custom` rather than guessed-at aliases), and
+  `Custom…` for a free-typed model name/id (`⏎` opens a text field, a second
+  `⏎` submits it — blank falls back to `Default`; `esc` while typing returns
+  to the list without losing what's typed, a second `esc` cancels the picker
+  outright with the harness still remembered). The choice is remembered on
+  `PrReviewState::ai_review_model` for the rest of the PR, same lifecycle as
+  `ai_review_harness`; `begin_ai_pr_review` prefers it over the `review_model`
+  config default (which now seeds the picker's initial highlight/selection
+  instead of being the only way to set it — matching an existing preset
+  exactly highlights that row, otherwise `Custom` opens pre-filled with it,
+  so an existing config value is never silently hidden). Pi skips the picker
+  entirely and proceeds straight to the review, since it has no verified
+  model flag to offer. The lookback bootstrap has no harness-picker step to
+  hang a model picker off of, so it's unchanged (still config-only). New
+  `AppMode`-level key handling in `handlers/pr_review.rs`
+  (`handle_ai_model_pick_key`) and a `draw_ai_model_pick` dialog in
+  `ui/dialogs/pr_review.rs`, mirroring the harness picker's shape. Unit- and
+  live-tested: 9 new tests cover the picker opening after the harness step,
+  Pi's skip, default/preset/custom selection, the custom row's two-step
+  confirm and blank-falls-back-to-default behavior, and esc's two levels
+  (back-to-list vs. full cancel); confirmed live by building the binary and
+  driving it in an isolated tmux server + isolated `HOME` against this
+  repo's own PR (`#466`) — the harness picker, the new model picker with all
+  six rows, custom text entry, both esc levels, and the harness-remembered
+  skip on a second `A` all matched the design. → `src/app/state.rs`,
+  `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
+  `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
 
 - [x] **BUG — fix injection can silently target the wrong checked-out
   branch when triaging a manually-picked PR (correctness).** `G`'s picker (and

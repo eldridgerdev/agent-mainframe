@@ -18,7 +18,7 @@ use crate::{
         AiReviewRunOutcome, AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, PrComment,
     },
     app::{
-        AiReviewRunState, BootstrapPickState, BootstrapRunState, PrNumberPromptState,
+        AiReviewRunState, BootstrapPickState, BootstrapRunState, ModelPickRow, PrNumberPromptState,
         PrPickerState, PrReviewLoadState, PrReviewState,
     },
     editor::VimMode,
@@ -653,6 +653,10 @@ pub fn draw_pr_review(
     if let Some(pick) = &state.ai_harness_pick {
         draw_ai_harness_pick(frame, pick, theme);
     }
+    // Model picker overlays the pane right after the harness is chosen.
+    if let Some(pick) = &state.ai_model_pick {
+        draw_ai_model_pick(frame, pick, theme);
+    }
     if let Some(pick) = &state.harness_pick {
         draw_harness_pick(frame, pick, theme);
     }
@@ -745,6 +749,85 @@ fn draw_ai_harness_pick(frame: &mut Frame, pick: &crate::app::AiHarnessPickState
     frame.render_widget(
         Paragraph::new("  [j/k] choose   [⏎] run review   [esc] cancel")
             .style(Style::default().fg(theme.primary.to_color())),
+        chunks[3],
+    );
+}
+
+/// Label shown for one [`ModelPickRow`] in the model picker's list.
+fn model_pick_row_label(row: &ModelPickRow) -> String {
+    match row {
+        ModelPickRow::Default => "Default (harness's own model)".to_string(),
+        ModelPickRow::Preset(name) => name.to_string(),
+        ModelPickRow::Custom => "Custom…".to_string(),
+    }
+}
+
+fn draw_ai_model_pick(frame: &mut Frame, pick: &crate::app::AiModelPickState, theme: &Theme) {
+    let area = super::super::dashboard::centered_rect(54, 46, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Model for AI review ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let custom_selected = matches!(pick.rows.get(pick.selected), Some(ModelPickRow::Custom));
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new("  Generate this PR's AI review using:")
+            .style(Style::default().fg(theme.text_muted.to_color())),
+        chunks[0],
+    );
+    let lines = pick.rows.iter().enumerate().map(|(index, row)| {
+        let selected = index == pick.selected;
+        let style = if selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        let mut label = model_pick_row_label(row);
+        if matches!(row, ModelPickRow::Custom) && !pick.custom_input.is_empty() {
+            label = format!("{label} ({})", pick.custom_input);
+        }
+        Line::from(vec![
+            Span::styled(
+                if selected { "  > " } else { "    " },
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(label, style),
+        ])
+    });
+    frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()), chunks[1]);
+    if pick.editing_custom {
+        frame.render_widget(
+            Paragraph::new(format!("  model: {}▏", pick.custom_input))
+                .style(Style::default().fg(theme.text.to_color())),
+            chunks[2],
+        );
+    }
+    let hints = if pick.editing_custom {
+        "  [⏎] use this model   [esc] back to list"
+    } else if custom_selected {
+        "  [j/k] choose   [⏎] type a model   [esc] cancel"
+    } else {
+        "  [j/k] choose   [⏎] confirm   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(hints).style(Style::default().fg(theme.primary.to_color())),
         chunks[3],
     );
 }
@@ -1955,6 +2038,9 @@ mod tests {
             review_harness: None,
             ai_review_harness: None,
             ai_harness_pick: None,
+            ai_review_model: None,
+            ai_review_model_picked: false,
+            ai_model_pick: None,
             harness_pick: None,
             fix_confirm: None,
             fix_vim_enabled: false,

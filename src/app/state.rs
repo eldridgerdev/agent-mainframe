@@ -1601,6 +1601,19 @@ pub struct PrReviewState {
     pub ai_review_harness: Option<AgentKind>,
     /// Single-select picker shown before the first AI-review run in this pane.
     pub ai_harness_pick: Option<AiHarnessPickState>,
+    /// Model chosen for this pane's AI reviews, picked once via
+    /// `ai_model_pick` right after the harness and remembered for the rest of
+    /// the PR. `None` means "use the default" — either because the picker
+    /// hasn't run yet (see `ai_review_model_picked`) or because the user
+    /// explicitly chose the "Default" row.
+    pub ai_review_model: Option<String>,
+    /// Whether the model has been picked (or auto-skipped, e.g. for Pi) yet
+    /// this pane visit. Distinct from `ai_review_model` being `None`, which
+    /// can also mean "picked Default".
+    pub ai_review_model_picked: bool,
+    /// Single-select picker shown once per pane, right after the harness is
+    /// chosen, before the first `A` run.
+    pub ai_model_pick: Option<AiModelPickState>,
     /// When `Some`, the harness picker is open over the pane: the user is
     /// choosing which agent harness the dedicated triage session will run before
     /// the first fix is injected.
@@ -1700,6 +1713,38 @@ pub struct AiHarnessPickState {
     pub agents: Vec<AgentKind>,
     pub selected: usize,
     pub error: Option<String>,
+}
+
+/// One row of the model picker: either "use the default", a known-good
+/// preset `--model` value, or "type your own".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelPickRow {
+    /// No explicit model — the harness's own default (or `AppConfig::review_model`
+    /// as an underlying override) applies.
+    Default,
+    /// A verified alias/name for the chosen harness (e.g. Claude's `"sonnet"`).
+    Preset(&'static str),
+    /// Free-text entry for anything not in the preset list.
+    Custom,
+}
+
+/// Single-select model picker for the `A` AI review, shown once per pane
+/// right after the harness is chosen. Presets are a best-effort, *verified*
+/// set of model aliases for the chosen harness — currently only Claude's
+/// (`sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude --help`).
+/// Other harnesses offer just `Default` and `Custom`, since their valid
+/// model strings aren't reliably enumerable here; guessing wrong presets
+/// would be worse than not offering any.
+#[derive(Debug, Clone)]
+pub struct AiModelPickState {
+    pub rows: Vec<ModelPickRow>,
+    /// Index into `rows` of the highlighted choice.
+    pub selected: usize,
+    /// Free-text buffer for the `Custom` row, live only while `editing_custom`.
+    pub custom_input: String,
+    /// True while keystrokes go to `custom_input` (opened by `⏎`/`e` on the
+    /// `Custom` row); false in the plain list-navigation view.
+    pub editing_custom: bool,
 }
 
 /// Reply dialog for one comment. Replies are contextual, not free-form: either

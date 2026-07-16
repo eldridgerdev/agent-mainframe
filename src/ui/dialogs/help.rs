@@ -208,7 +208,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("j/k", "Navigate comments"),
         ("Ctrl+D/U", "Scroll detail down/up"),
         ("h", "Hide/show resolved comments"),
-        ("o", "Cycle sort (fetch/file/author/humans-first)"),
+        (
+            "o",
+            "Cycle sort (fetch/file/author/humans-first/conversations-last)",
+        ),
         ("f", "Inject scoped fix into agent session"),
         ("", "(e edit · Tab inject · Ctrl+T vim)"),
         ("Space", "Mark comment for batch fix"),

@@ -745,6 +745,28 @@ from the last *N* PRs) is reached from the PR entry flow:
       order). → `src/app/pr_review.rs`, `src/app/state.rs`,
       `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
       `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
+- [x] **Group conversation comments into their own section (resolved open
+      question).** Conversation comments (no `path`/resolution) interleaved
+      with inline/review comments in every sort order, easy to lose in a
+      busy PR. A fifth `PrSortMode::Conversations` (cycled with `o`, after
+      `HumansFirst`) groups them after every code-anchored comment — stable,
+      so relative order within each group is unchanged — via the same
+      `sort_indices` mechanism the other modes use. Went with "a real
+      section," not just a silent reorder: a new
+      `PrReviewState::conversation_section_start()` reports where the
+      visible list's conversation group begins (`None` outside this mode, or
+      when the visible set has no conversation comments, or is *entirely*
+      conversation comments — nothing to separate either way), and
+      `draw_comment_list` inserts a "─ Conversation ─" divider row there,
+      shifting the highlight-index lookup by one past the divider. Footer/
+      keybinding-help updated to list the new mode. Unit-tested (cycling now
+      wraps through five modes; an already-grouped fetch order is a no-op;
+      an interleaved one reorders into two stable groups;
+      `conversation_section_start` in/outside the mode and with/without both
+      groups present; a render test for the divider showing only under this
+      mode). → `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`,
+      `src/app/tests.rs`.
 - [x] "Done in `<sha>`" reply template auto-filled from latest commit. Shipped
       with the Epic C reply work: `R` seeds a reply with the feature workdir's
       short `HEAD` (falling back to "Done." outside a git repo), editable before
@@ -1541,11 +1563,6 @@ first), and the reviewer's output (plus comments triaged in the pane)
   first-class findings, its own generate-then-review lifecycle) is the
   better shape, keeping this pane focused on triaging what reviewers
   *actually said*.
-- [ ] **Group conversation comments into their own section.** Conversation
-  comments have no `path`/resolution and currently interleave with
-  inline/review comments in the list. Add a separate "Conversation"
-  section (or a sort-mode grouping, following the existing `PrSortMode`
-  pattern) so they're visually distinct from comments anchored to code.
 - [ ] **Make the review-memory path configurable (Epic E).** Default stays
   `.amf/review-memory.md` committed in the repo, but the path should be
   configurable per project. Decide whether to also add an optional
@@ -1560,9 +1577,10 @@ Resolved and no longer tracked here (see the linked Epic item for the
 decision and implementation): which agent session runs fixes (Epic B,
 dedicated-session default), AI-authored content attribution (Epic D "AI
 attribution on AMF-posted comments"), templated-reply channel disclosure
-(Epic C "posted via AMF" footer), resolve-without-reply behavior (shipped
-as-is — `R` stays independent of `r`), and outdated-comment badging
-(shipped in Epic D's pane-clarity item). GitLab/Bitbucket support is an
+(Epic C "posted via AMF" footer), conversation-comment grouping (Epic D's
+`PrSortMode::Conversations`), resolve-without-reply behavior (shipped as-is
+— `R` stays independent of `r`), and outdated-comment badging (shipped in
+Epic D's pane-clarity item). GitLab/Bitbucket support is an
 explicit non-goal for v1 (GitHub `gh` only), not an open question.
 
 ## Backlog

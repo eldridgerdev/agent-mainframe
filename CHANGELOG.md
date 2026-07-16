@@ -34,6 +34,13 @@ are tagged.
   AI-generated — so they get a lighter `— posted via AMF` footer, distinct
   from the existing AI-attribution footer on AI-review findings. The reply
   dialog shows this will happen before you post.
+- **PR Triage can group conversation comments into their own section.**
+  Top-level PR discussion (no `path`/resolution) used to interleave with
+  inline/review comments in every sort order, easy to lose in a busy PR. `o`
+  now cycles through a fifth sort mode — "conversations last" — that groups
+  every conversation comment after the code-anchored ones and draws a
+  "─ Conversation ─" divider ahead of the group, so it reads as a real
+  section rather than a silent reorder.
 
 ### Fixed
 

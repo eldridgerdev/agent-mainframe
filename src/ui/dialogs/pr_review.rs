@@ -1187,14 +1187,29 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
 
     // Inner width available for row text (block borders take one column each side).
     let inner_width = area.width.saturating_sub(2) as usize;
-    let mut items: Vec<ListItem> = visible
-        .iter()
-        .map(|&i| {
-            let comment = &state.review.comments[i];
-            let is_marked = state.marked.contains(&comment.id);
-            ListItem::new(comment_list_line(comment, is_marked, theme, inner_width))
-        })
-        .collect();
+    // Under `PrSortMode::Conversations`, a divider row is inserted ahead of
+    // the conversation-comment group so it reads as a real section rather
+    // than a silent reorder — this shifts every row from that point on by
+    // one `items` slot relative to its position in `visible`, which the
+    // highlight lookup below accounts for.
+    let divider_at = state.conversation_section_start();
+    let mut items: Vec<ListItem> = Vec::with_capacity(visible.len() + 1);
+    for (pos, &i) in visible.iter().enumerate() {
+        if divider_at == Some(pos) {
+            items.push(ListItem::new(Line::from(Span::styled(
+                "  ─ Conversation ─",
+                Style::default().fg(theme.text_muted.to_color()),
+            ))));
+        }
+        let comment = &state.review.comments[i];
+        let is_marked = state.marked.contains(&comment.id);
+        items.push(ListItem::new(comment_list_line(
+            comment,
+            is_marked,
+            theme,
+            inner_width,
+        )));
+    }
 
     let hidden = state.hidden_resolved_count();
     if hidden > 0 {
@@ -1211,9 +1226,18 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
             .add_modifier(Modifier::BOLD),
     );
 
-    // The list renders only visible comments, so translate the absolute
-    // selection index into its position within the visible slice.
-    let highlight = visible.iter().position(|&i| i == state.selected);
+    // The list renders only visible comments (plus the divider), so translate
+    // the absolute selection index into its position within `items`.
+    let highlight = visible
+        .iter()
+        .position(|&i| i == state.selected)
+        .map(|pos| {
+            if divider_at.is_some_and(|d| d <= pos) {
+                pos + 1
+            } else {
+                pos
+            }
+        });
     let mut list_state = ListState::default();
     list_state.select(highlight);
     frame.render_stateful_widget(list, area, &mut list_state);
@@ -1873,5 +1897,117 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("posted via AMF"));
+    }
+
+    fn pr_comment_of_kind(id: u64, kind: CommentKind) -> PrComment {
+        PrComment {
+            id,
+            kind,
+            author: "someone".into(),
+            is_bot: false,
+            path: None,
+            line: None,
+            side: None,
+            outdated: false,
+            file_level: false,
+            diff_hunk: None,
+            body: format!("comment {id}"),
+            snippet: format!("comment {id}"),
+            in_reply_to: None,
+            thread_id: None,
+            is_resolved: false,
+            triage: crate::app::pr_review::TriageState::Untriaged,
+            local_note: None,
+            ai_generated: false,
+            ai_published: false,
+            github_id: None,
+            github_review_id: None,
+        }
+    }
+
+    fn pr_review_state_with_comments(
+        comments: Vec<PrComment>,
+        sort_mode: crate::app::pr_review::PrSortMode,
+    ) -> PrReviewState {
+        let pr = crate::github::PrRef {
+            number: 1,
+            head_sha: "sha".into(),
+            url: "https://github.com/o/r/pull/1".into(),
+            owner: "o".into(),
+            repo: "r".into(),
+            head_ref: "main".into(),
+        };
+        PrReviewState {
+            workdir: std::path::PathBuf::from("/tmp/wd"),
+            review: crate::app::pr_review::PrReview {
+                pr,
+                comments,
+                fetched_at: chrono::Local::now(),
+                last_ai_review: None,
+            },
+            selected: 0,
+            detail_scroll: 0,
+            detail_content_lines: 0,
+            hide_resolved: false,
+            sort_mode,
+            fix_target: crate::app::pr_review::FixTarget::default(),
+            usage_baselines: std::collections::HashMap::new(),
+            review_harness: None,
+            ai_review_harness: None,
+            ai_harness_pick: None,
+            harness_pick: None,
+            fix_confirm: None,
+            fix_vim_enabled: false,
+            reply: None,
+            memory_add: None,
+            marked: std::collections::HashSet::new(),
+            pending_batch: false,
+            ai_review_post: None,
+            checked_out_branch: Some("main".to_string()),
+        }
+    }
+
+    fn render_comment_list(state: &PrReviewState) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_comment_list(frame, frame.area(), state, &theme))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn comment_list_shows_conversation_divider_under_conversations_sort() {
+        let comments = vec![
+            pr_comment_of_kind(1, CommentKind::Inline),
+            pr_comment_of_kind(2, CommentKind::Conversation),
+        ];
+        let state = pr_review_state_with_comments(
+            comments,
+            crate::app::pr_review::PrSortMode::Conversations,
+        );
+        let rendered = render_comment_list(&state);
+        assert!(rendered.contains("Conversation"));
+    }
+
+    #[test]
+    fn comment_list_hides_conversation_divider_under_other_sort_modes() {
+        let comments = vec![
+            pr_comment_of_kind(1, CommentKind::Inline),
+            pr_comment_of_kind(2, CommentKind::Conversation),
+        ];
+        let state =
+            pr_review_state_with_comments(comments, crate::app::pr_review::PrSortMode::FetchOrder);
+        let rendered = render_comment_list(&state);
+        assert!(!rendered.contains("Conversation"));
     }
 }

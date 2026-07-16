@@ -718,6 +718,12 @@ pub enum PrSortMode {
     ByAuthor,
     /// Human-authored comments first, bot comments after.
     HumansFirst,
+    /// Conversation comments (no `path`/resolution, top-level PR discussion)
+    /// grouped into their own section after everything anchored to code —
+    /// resolves the "group conversation comments" open question. The list
+    /// draws a divider ahead of the group (`draw_comment_list`) so it reads
+    /// as a real section, not just a silent reorder.
+    Conversations,
 }
 
 impl PrSortMode {
@@ -727,7 +733,8 @@ impl PrSortMode {
             PrSortMode::FetchOrder => PrSortMode::ByFile,
             PrSortMode::ByFile => PrSortMode::ByAuthor,
             PrSortMode::ByAuthor => PrSortMode::HumansFirst,
-            PrSortMode::HumansFirst => PrSortMode::FetchOrder,
+            PrSortMode::HumansFirst => PrSortMode::Conversations,
+            PrSortMode::Conversations => PrSortMode::FetchOrder,
         }
     }
 
@@ -738,6 +745,7 @@ impl PrSortMode {
             PrSortMode::ByFile => "by file",
             PrSortMode::ByAuthor => "by author",
             PrSortMode::HumansFirst => "humans first",
+            PrSortMode::Conversations => "conversations last",
         }
     }
 }

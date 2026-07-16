@@ -540,9 +540,11 @@ In the PR Triage pane:
   agent session — the first fix asks which harness the dedicated
   triage session should run. Mark several comments with `Space`, then
   `B` opens one combined, editable prompt for all of them.
-- `R` replies "Done in `<sha>`" from your latest commit, `n` replies
-  why a fix isn't needed, and `x` resolves or reopens the GitHub
-  thread.
+- `R` replies "Done in `<sha>`", seeded from the most recent commit
+  that touched the comment's file/line (falling back to your latest
+  commit, flagged "latest commit", when no matching history is
+  found); `n` replies why a fix isn't needed, and `x` resolves or
+  reopens the GitHub thread.
 - `m` / `s` mark a comment done / skipped locally. Triage state is
   stored in SQLite and survives restarts, re-opens, and new pushes.
 

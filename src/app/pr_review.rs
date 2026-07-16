@@ -1117,8 +1117,9 @@ impl ReplyKind {
     }
 }
 
-/// Short HEAD commit hash of `workdir`, used to seed a "Done in `<sha>`." reply.
-/// `None` when the directory isn't a git repo or has no commits yet.
+/// Short HEAD commit hash of `workdir`, used as the last-resort seed for a
+/// "Done in `<sha>`." reply. `None` when the directory isn't a git repo or has
+/// no commits yet.
 fn latest_commit_short_sha(workdir: &Path) -> Option<String> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -1130,6 +1131,75 @@ fn latest_commit_short_sha(workdir: &Path) -> Option<String> {
     }
     let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!sha.is_empty()).then_some(sha)
+}
+
+/// Short hash of the most recent commit that touched `path` at `line`, via
+/// `git log -L` (line-history search). `None` when the line has no history
+/// (e.g. it predates the repo, or the lookup fails for any reason — an
+/// outdated/shifted line number, a rename `git log` didn't follow, etc.); the
+/// caller falls back to a file-level or bare-HEAD search.
+fn commit_touching_line(workdir: &Path, path: &str, line: u32) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args([
+            "log",
+            "-L",
+            &format!("{line},{line}:{path}"),
+            "-1",
+            "--format=%h",
+            "--no-patch",
+        ])
+        .current_dir(workdir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
+/// Short hash of the most recent commit that touched `path` at all — the
+/// file-level fallback when a line-anchored search isn't applicable (a
+/// file-level comment) or comes up empty.
+fn commit_touching_file(workdir: &Path, path: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%h", "--", path])
+        .current_dir(workdir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
+/// Best-effort commit for a "Done in `<sha>`" reply: search history for a
+/// commit that plausibly addressed `comment` before falling back to bare
+/// `HEAD`. Returns the sha alongside whether it's a confident match (the
+/// caller adds a "(latest commit)" caveat when it isn't).
+///
+/// Order: line history (skipped for an outdated anchor, since the line number
+/// no longer corresponds to the comment's original line) → file history →
+/// bare HEAD.
+fn commit_for_done_reply(workdir: &Path, comment: &PrComment) -> (Option<String>, bool) {
+    if let Some(path) = &comment.path {
+        if !comment.outdated
+            && let Some(line) = comment.line
+            && let Some(sha) = commit_touching_line(workdir, path, line)
+        {
+            return (Some(sha), true);
+        }
+        if let Some(sha) = commit_touching_file(workdir, path) {
+            return (Some(sha), true);
+        }
+    }
+    (latest_commit_short_sha(workdir), false)
 }
 
 /// Rough token estimate for a prompt preview (~4 chars/token, the usual
@@ -3246,18 +3316,26 @@ impl App {
     }
 
     /// Open a **"Done in `<sha>`"** reply for the selected comment, seeded from
-    /// the feature workdir's latest commit (the fix the user just made). Editable
-    /// before posting; posting marks the comment `Done`.
+    /// the most recent commit that plausibly fixed it — a commit touching the
+    /// comment's file/line — falling back to bare `HEAD` (flagged "latest
+    /// commit") when history search comes up empty. Editable before posting;
+    /// posting marks the comment `Done`.
     pub fn pr_review_open_reply_done(&mut self) {
-        let workdir = match &self.mode {
+        let (workdir, comment) = match &self.mode {
             AppMode::PrReview(state) if state.reply.is_none() && state.fix_confirm.is_none() => {
-                state.workdir.clone()
+                (state.workdir.clone(), state.selected_comment().cloned())
             }
             _ => return,
         };
-        let seed = match latest_commit_short_sha(&workdir) {
-            Some(sha) => format!("Done in `{sha}`."),
-            None => "Done.".to_string(),
+        let seed = match comment {
+            Some(comment) => match commit_for_done_reply(&workdir, &comment) {
+                (Some(sha), true) => format!("Done in `{sha}`."),
+                (Some(sha), false) => format!("Done in `{sha}` (latest commit)."),
+                (None, _) => "Done.".to_string(),
+            },
+            // No comment selected: `open_reply` below reports "No comment
+            // selected" — the seed is unused in that path.
+            None => String::new(),
         };
         self.open_reply(ReplyKind::Done, seed);
     }
@@ -4285,6 +4363,156 @@ mod tests {
         let body = "Use this instead:\n\n```rust\nlet x = 1;\n```\n\nCleaner.";
         let out = strip_bot_boilerplate(body);
         assert_eq!(out, body);
+    }
+
+    /// Init a throwaway git repo at `dir`, writing `contents` for `rel_path`
+    /// across one commit per entry in `contents` (so later entries are more
+    /// recent history). Returns the short sha of each commit, oldest first.
+    fn git_repo_with_history(dir: &Path, rel_path: &str, contents: &[&str]) -> Vec<String> {
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git command");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        let file = dir.join(rel_path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mut shas = Vec::new();
+        for (i, body) in contents.iter().enumerate() {
+            std::fs::write(&file, body).unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-q", "-m", &format!("commit {i}")]);
+            shas.push(git(&["rev-parse", "--short", "HEAD"]));
+        }
+        shas
+    }
+
+    #[test]
+    fn commit_touching_line_finds_the_commit_that_last_changed_it() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let shas = git_repo_with_history(
+            repo.path(),
+            "src/file.rs",
+            &["line1\nline2\nline3\n", "line1\nCHANGED\nline3\n"],
+        );
+
+        // Line 2 was touched by the second commit only.
+        assert_eq!(
+            commit_touching_line(repo.path(), "src/file.rs", 2),
+            Some(shas[1].clone())
+        );
+        // Line 1 has never changed since the first commit.
+        assert_eq!(
+            commit_touching_line(repo.path(), "src/file.rs", 1),
+            Some(shas[0].clone())
+        );
+    }
+
+    #[test]
+    fn commit_touching_line_is_none_for_a_line_outside_the_file() {
+        let repo = tempfile::TempDir::new().unwrap();
+        git_repo_with_history(repo.path(), "src/file.rs", &["one line\n"]);
+
+        assert_eq!(
+            commit_touching_line(repo.path(), "src/file.rs", 999),
+            None
+        );
+    }
+
+    #[test]
+    fn commit_touching_file_returns_the_latest_commit_on_that_path() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let shas = git_repo_with_history(repo.path(), "src/file.rs", &["a\n", "b\n", "c\n"]);
+
+        assert_eq!(
+            commit_touching_file(repo.path(), "src/file.rs"),
+            Some(shas[2].clone())
+        );
+    }
+
+    #[test]
+    fn commit_touching_file_is_none_for_an_untracked_path() {
+        let repo = tempfile::TempDir::new().unwrap();
+        git_repo_with_history(repo.path(), "src/file.rs", &["a\n"]);
+
+        assert_eq!(commit_touching_file(repo.path(), "src/other.rs"), None);
+    }
+
+    #[test]
+    fn commit_for_done_reply_prefers_line_history_when_the_line_is_current() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let shas = git_repo_with_history(
+            repo.path(),
+            "src/file.rs",
+            &["line1\nline2\n", "line1\nfixed\n"],
+        );
+        let mut comment = inline_comment("needs a fix", false);
+        comment.path = Some("src/file.rs".into());
+        comment.line = Some(2);
+        comment.outdated = false;
+
+        assert_eq!(
+            commit_for_done_reply(repo.path(), &comment),
+            (Some(shas[1].clone()), true)
+        );
+    }
+
+    #[test]
+    fn commit_for_done_reply_skips_line_search_for_an_outdated_anchor() {
+        let repo = tempfile::TempDir::new().unwrap();
+        // The comment's remembered line (2) hasn't changed since the first
+        // commit; only the file as a whole was touched again afterward.
+        let shas = git_repo_with_history(
+            repo.path(),
+            "src/file.rs",
+            &["line1\nline2\n", "line1\nline2\nline3\n"],
+        );
+        let mut comment = inline_comment("stale anchor", false);
+        comment.path = Some("src/file.rs".into());
+        comment.line = Some(2);
+        comment.outdated = true;
+
+        // Falls straight to file history (the most recent commit) rather
+        // than trusting the outdated line number.
+        assert_eq!(
+            commit_for_done_reply(repo.path(), &comment),
+            (Some(shas[1].clone()), true)
+        );
+    }
+
+    #[test]
+    fn commit_for_done_reply_falls_back_to_head_with_a_caveat() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let shas = git_repo_with_history(repo.path(), "src/other.rs", &["x\n"]);
+        let mut comment = inline_comment("unrelated file", false);
+        comment.path = Some("src/not-tracked.rs".into());
+        comment.line = Some(1);
+        comment.outdated = false;
+
+        // Neither line nor file history exists for this path; falls back to
+        // bare HEAD, flagged as an unconfident match.
+        assert_eq!(
+            commit_for_done_reply(repo.path(), &comment),
+            (Some(shas[0].clone()), false)
+        );
+    }
+
+    #[test]
+    fn commit_for_done_reply_none_outside_a_git_repo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let comment = inline_comment("no repo here", false);
+
+        assert_eq!(commit_for_done_reply(dir.path(), &comment), (None, false));
     }
 
     #[test]

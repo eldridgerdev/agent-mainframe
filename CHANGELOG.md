@@ -41,6 +41,11 @@ are tagged.
   every conversation comment after the code-anchored ones and draws a
   "─ Conversation ─" divider ahead of the group, so it reads as a real
   section rather than a silent reorder.
+- **PR Triage's "Done in `<sha>`" reply now points at a commit that
+  plausibly fixed the comment, not blindly at `HEAD`.** `R` searches the
+  comment's file/line history first (`git log -L`), falls back to the
+  file's most recent commit, and only falls back to bare `HEAD` — flagged
+  "(latest commit)" — when neither search finds anything.
 
 ### Fixed
 
@@ -70,9 +75,6 @@ are tagged.
   are too numerous and make the feature hard to use. Audit will evaluate each
   binding's necessity and explore workflow simplifications (e.g., merging
   `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
-- "Done in `<commit>`" reply needs AI attribution and smarter commit detection.
-  Should reference a commit that actually addressed the issue, not blindly use HEAD.
-  Consider `git log -L` or blame to find matching commits for the comment's file/line.
 - Model selection independent of agent harness: allow per-action model selection
   (e.g. powerful model for AI review, cheaper model for reply drafts) via config
   map that falls back to harness default.

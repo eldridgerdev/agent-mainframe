@@ -11181,6 +11181,79 @@ fn pr_review_open_reply_done_seeds_template_in_confirm_view() {
 }
 
 #[test]
+fn pr_review_open_reply_done_seeds_the_commit_that_touched_the_comments_line() {
+    let repo = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    let file = repo.path().join("src/file1.rs");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "line1\nline2\nline3\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "first"]);
+    std::fs::write(&file, "line1\nFIXED\nline3\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "second"]);
+    let fix_sha = git(&["rev-parse", "--short", "HEAD"]);
+
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.workdir = repo.path().to_path_buf();
+        // `pr_review_with_comments` seeds comment 1 at src/file1.rs:1; point it
+        // at the line the second commit actually changed.
+        state.review.comments[0].line = Some(2);
+    }
+
+    app.pr_review_open_reply_done();
+    assert_eq!(reply_editor_text(&app), format!("Done in `{fix_sha}`."));
+}
+
+#[test]
+fn pr_review_open_reply_done_flags_a_bare_head_fallback() {
+    let repo = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    std::fs::write(repo.path().join("README.md"), "hello\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+    let head_sha = git(&["rev-parse", "--short", "HEAD"]);
+
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.workdir = repo.path().to_path_buf();
+        // Comment's path was never committed here — no line/file history to
+        // find, so the reply falls back to bare HEAD with a caveat.
+    }
+
+    app.pr_review_open_reply_done();
+    assert_eq!(
+        reply_editor_text(&app),
+        format!("Done in `{head_sha}` (latest commit).")
+    );
+}
+
+#[test]
 fn pr_review_reply_edit_forwards_keys_and_cancel_closes() {
     use crossterm::event::{KeyCode, KeyEvent};
 

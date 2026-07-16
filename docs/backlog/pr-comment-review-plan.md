@@ -1630,15 +1630,30 @@ explicit non-goal for v1 (GitHub `gh` only), not an open question.
       danger color. → `src/app/pr_review.rs`, `src/db/pr_review_cache.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`, `CHANGELOG.md`.
 
-- [ ] **"Done in `<sha>`" reply: smarter commit detection (UX).** The `R`
-  keybind seeds a "Done in `<sha>`" reply from `HEAD` blindly, with no check
-  that the commit actually addresses the comment being replied to. Parse the
-  comment's file/line and search recent commits that touched that same
-  file/line (e.g. `git log -L` or blame) so the reply references a commit
-  that plausibly fixed the issue. Fall back to `HEAD` with a caveat hint
-  ("latest commit") when no match is found, or let the user pick from recent
-  matching commits. (Whether the template should also carry a "posted via
-  AMF" marker is tracked separately under Open questions.)
+- [x] **"Done in `<sha>`" reply: smarter commit detection (UX).** `R` used to
+      seed "Done in `<sha>`" from `HEAD` blindly, with no check that the
+      commit actually addressed the comment being replied to. A new
+      `commit_for_done_reply` (`src/app/pr_review.rs`) tries, in order: (1)
+      `git log -L<line>,<line>:<path> -1 --format=%h --no-patch` — the line's
+      own history — skipped when the comment's anchor is `outdated` (a
+      stale/shifted line number would just find noise); (2) `git log -1
+      --format=%h -- <path>` — the file's most recent commit, when the line
+      search finds nothing or doesn't apply (file-level comment, outdated
+      anchor); (3) bare `HEAD` (`latest_commit_short_sha`, unchanged) as the
+      last resort. Only the bare-`HEAD` fallback gets a caveat: the seeded
+      reply is `Done in \`<sha>\` (latest commit).` instead of the confident
+      `Done in \`<sha>\`.` when a plausible match was found — so the
+      still-editable template signals when it's guessing. (Letting the user
+      pick from several candidate commits was the documented alternative;
+      went with the single-best-guess fallback chain instead since it needs
+      no new UI and the reply stays editable either way.) Unit-tested at both
+      layers: `commit_touching_line`/`commit_touching_file`/
+      `commit_for_done_reply` against real throwaway git repos (line-specific
+      match, out-of-range line, untracked path, outdated-anchor skip,
+      bare-HEAD caveat, no-repo), plus two `App`-level tests driving `R`
+      end-to-end against a real repo (line-history match, bare-HEAD caveat).
+      → `src/app/pr_review.rs`, `src/app/tests.rs`, `README.md`,
+      `CHANGELOG.md`.
 
 - [ ] **Model selection for AI review, independent of the working harness
   (flexibility).** AI review (`A`, and Epic E's lookback distill) currently

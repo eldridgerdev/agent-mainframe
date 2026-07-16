@@ -13284,3 +13284,41 @@ fn todos_record_spawned_session_updates_in_memory() {
         _ => panic!("expected Todos overlay"),
     }
 }
+
+#[test]
+fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    tx.send(crate::app::pr_review::AiReviewProgress::Reviewing {
+        token_estimate: 50_000,
+    })
+    .unwrap();
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![],
+            raw_output: String::new(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.message.contains("Large diff") && t.message.contains("50000")),
+        "toasts: {:?}",
+        app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
+    );
+}

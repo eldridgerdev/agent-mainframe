@@ -1583,8 +1583,15 @@ pub struct PrReviewState {
     /// Order the comment list is shown in (cycled with `o`), independent of
     /// `hide_resolved`.
     pub sort_mode: crate::app::pr_review::PrSortMode,
-    /// Which agent session "fix" prompts are injected into (toggle with `t`).
+    /// Which agent session "fix" prompts are injected into. Chosen once, via
+    /// `harness_pick`, before the first `f`/`B` of a pane visit.
     pub fix_target: crate::app::pr_review::FixTarget,
+    /// Whether `fix_target` (and, for the dedicated case, `review_harness`)
+    /// has already been explicitly resolved for this pane visit — either by
+    /// the user confirming `harness_pick`, or because a dedicated session
+    /// already existed on entry so there was nothing to ask. Prevents
+    /// re-opening the picker on every subsequent `f`/`B`.
+    pub fix_target_picked: bool,
     /// Token totals already present when each fix-target session joined this
     /// visit to the PR pane. Current totals minus these snapshots are the live
     /// "this visit" tally; a target created after the pane opened has no
@@ -1614,9 +1621,11 @@ pub struct PrReviewState {
     /// Single-select picker shown once per pane, right after the harness is
     /// chosen, before the first `A` run.
     pub ai_model_pick: Option<AiModelPickState>,
-    /// When `Some`, the harness picker is open over the pane: the user is
-    /// choosing which agent harness the dedicated triage session will run before
-    /// the first fix is injected.
+    /// When `Some`, the fix-target picker is open over the pane: the user is
+    /// choosing whether fixes go to the feature's existing live session or a
+    /// dedicated triage session (and, for the latter, which harness) before
+    /// the first fix/batch is injected. Replaces the old standalone `t`
+    /// toggle — the choice is made once, at the point it's needed.
     pub harness_pick: Option<HarnessPickState>,
     /// When `Some`, the fix confirm/edit dialog is open over the pane, holding
     /// the assembled (and editable) prompt awaiting the user's approval before
@@ -1627,6 +1636,13 @@ pub struct PrReviewState {
     /// survives reopening the dialog for another comment — the same approach as
     /// [`PlaceholderFillState::vim_enabled`].
     pub fix_vim_enabled: bool,
+    /// When `Some`, the reply-kind picker (`R`) is open: choosing between a
+    /// "Done" report and a "not needed" explanation before the reply dialog
+    /// itself opens.
+    pub reply_kind_pick: Option<ReplyKindPickState>,
+    /// When `Some`, the "Mark" picker (`m`) is open: choosing Done / Skip /
+    /// Resolve-on-GitHub for the selected comment.
+    pub mark_pick: Option<MarkPickState>,
     /// When `Some`, the reply dialog is open over the pane: an AI-drafted,
     /// editable reply awaiting the user's approval before it is posted to GitHub.
     pub reply: Option<ReplyState>,
@@ -1694,15 +1710,18 @@ pub struct PrReviewReturn {
     pub state: PrReviewState,
 }
 
-/// Single-select harness picker shown before the dedicated PR-triage session is
-/// spun up, so the user can run triage fixes on a different harness than the
-/// feature's working session. Highlights the project's preferred agent by
-/// default.
+/// Single-select fix-target picker shown before the first fix/batch of a PR
+/// Triage pane visit: whether fixes go to the feature's existing live
+/// session, or a dedicated triage session pinned to a specific harness.
+/// Replaces the old standalone `t` toggle — the choice is made once, at the
+/// point it's needed, instead of living as an always-on key. Highlights the
+/// dedicated-review row for the project's preferred agent by default.
 #[derive(Debug, Clone)]
 pub struct HarnessPickState {
-    /// The harnesses to choose from (the repo's allowed agents).
-    pub agents: Vec<AgentKind>,
-    /// Index into `agents` of the highlighted choice.
+    /// The rows to choose from: the existing-live option, plus one row per
+    /// allowed agent for a dedicated session.
+    pub rows: Vec<crate::app::pr_review::FixTargetPickRow>,
+    /// Index into `rows` of the highlighted choice.
     pub selected: usize,
 }
 
@@ -1745,6 +1764,29 @@ pub struct AiModelPickState {
     /// True while keystrokes go to `custom_input` (opened by `⏎`/`e` on the
     /// `Custom` row); false in the plain list-navigation view.
     pub editing_custom: bool,
+}
+
+/// Single-select picker shown by `R` before the reply dialog itself: choose
+/// between a "Done in `<sha>`" report and a "not needed" explanation. Once
+/// confirmed, routes into the same [`ReplyState`] flow either kind already
+/// used — this is purely a UI step in front of it, replacing the old
+/// separate `R`/`n` top-level keys.
+#[derive(Debug, Clone)]
+pub struct ReplyKindPickState {
+    /// Index into `ReplyKind::ALL` of the highlighted choice.
+    pub selected: usize,
+}
+
+/// Single-select picker shown by `m` ("Mark"): choose between marking the
+/// selected comment `Done` (local), `Skip` (local), or toggling its GitHub
+/// review thread's resolved state. Replaces the old separate `m`/`s`/`x`
+/// top-level keys with one entry point; applying a row is immediate (no
+/// further confirm step, matching the original single-key behavior) since
+/// none of the three actions need editable text.
+#[derive(Debug, Clone)]
+pub struct MarkPickState {
+    /// Index into `MarkAction::ALL` of the highlighted choice.
+    pub selected: usize,
 }
 
 /// Reply dialog for one comment. Replies are contextual, not free-form: either

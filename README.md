@@ -537,16 +537,20 @@ In the PR Triage pane:
   are colored and syntax-highlighted (press `i` to install a missing
   language parser without leaving the pane).
 - `f` injects a scoped fix prompt for the selected comment into an
-  agent session — the first fix asks which harness the dedicated
-  triage session should run. Mark several comments with `Space`, then
-  `B` opens one combined, editable prompt for all of them.
-- `R` replies "Done in `<sha>`", seeded from the most recent commit
-  that touched the comment's file/line (falling back to your latest
-  commit, flagged "latest commit", when no matching history is
-  found); `n` replies why a fix isn't needed, and `x` resolves or
-  reopens the GitHub thread.
-- `m` / `s` mark a comment done / skipped locally. Triage state is
-  stored in SQLite and survives restarts, re-opens, and new pushes.
+  agent session — the first fix/batch of a visit asks which session
+  fixes should target: the feature's existing live session, or a
+  dedicated triage session on a chosen harness. Mark several comments
+  with `Space`, then `B` opens one combined, editable prompt for all
+  of them.
+- `R` opens a reply picker: "Done" replies "Done in `<sha>`", seeded
+  from the most recent commit that touched the comment's file/line
+  (falling back to your latest commit, flagged "latest commit", when
+  no matching history is found); "not needed" replies why a fix isn't
+  needed.
+- `m` opens a "Mark" picker: mark the comment `Done` or `Skip`
+  locally, or resolve/reopen its GitHub thread (the one option here
+  that writes to GitHub — labeled as such). Triage state is stored in
+  SQLite and survives restarts, re-opens, and new pushes.
 
 ### Per-Project TODO Lists
 

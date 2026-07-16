@@ -8505,6 +8505,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
         ai_review_harness: None,
@@ -8515,6 +8516,8 @@ fn enter_pr_review(app: &mut App, n: u64) {
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
+        mark_pick: None,
+        reply_kind_pick: None,
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
@@ -8789,6 +8792,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
         ai_review_harness: None,
@@ -8799,6 +8803,8 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
+        mark_pick: None,
+        reply_kind_pick: None,
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
@@ -10339,13 +10345,28 @@ fn pr_review_switching_to_live_target_ignores_its_earlier_usage() {
         .add_session_named(SessionKind::Claude, "Working".to_string())
         .token_usage = Some(usage.clone());
 
-    let mut app = App::new_for_test(
-        store,
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
     enter_pr_review_for_feature(&mut app, 2);
-    app.pr_review_toggle_fix_target();
+
+    // Pick "existing live session" from the fix-target picker (replaces the
+    // old standalone `t` toggle).
+    app.pr_review_open_fix_confirm();
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let pick = state
+            .harness_pick
+            .as_mut()
+            .expect("fix-target picker should be open");
+        pick.selected = pick
+            .rows
+            .iter()
+            .position(|r| matches!(r, crate::app::pr_review::FixTargetPickRow::ExistingLive))
+            .expect("existing-live row should be present");
+    }
+    app.pr_review_harness_pick_confirm();
 
     assert!(app.pr_review_triage_session_usage().is_none());
 
@@ -10378,9 +10399,14 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
             );
             assert!(state.fix_confirm.is_none(), "fix confirm should wait");
             assert!(state.review_harness.is_none());
-            // Default highlight is the project's preferred agent.
+            // First row is always "existing live session"; default highlight
+            // is the dedicated row for the project's preferred agent.
             let pick = state.harness_pick.as_ref().unwrap();
-            assert_eq!(pick.agents[pick.selected], AgentKind::default());
+            assert_eq!(pick.rows[0], crate::app::pr_review::FixTargetPickRow::ExistingLive);
+            assert_eq!(
+                pick.rows[pick.selected],
+                crate::app::pr_review::FixTargetPickRow::Dedicated(AgentKind::default())
+            );
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
@@ -10696,6 +10722,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
         ai_review_harness: None,
@@ -10706,6 +10733,8 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
+        mark_pick: None,
+        reply_kind_pick: None,
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
@@ -10770,6 +10799,7 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
         ai_review_harness: None,
@@ -10780,6 +10810,8 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
+        mark_pick: None,
+        reply_kind_pick: None,
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
@@ -11218,6 +11250,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
         ai_review_harness: None,
@@ -11228,6 +11261,8 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
+        mark_pick: None,
+        reply_kind_pick: None,
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
@@ -11458,6 +11493,100 @@ fn pr_review_open_reply_done_seeds_template_in_confirm_view() {
     // view. The workdir isn't a git repo in tests, so it falls back to "Done.".
     assert_eq!(app.pr_review_reply_view(), Some(false));
     assert_eq!(reply_editor_text(&app), "Done.");
+}
+
+#[test]
+fn pr_review_reply_pick_opens_defaulting_to_done_and_confirm_routes_to_it() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_reply_pick();
+    assert!(app.pr_review_reply_pick_picking());
+
+    // Confirming without moving picks the default (first) row, `Done`.
+    app.pr_review_reply_pick_confirm();
+    assert!(!app.pr_review_reply_pick_picking());
+    assert_eq!(app.pr_review_reply_view(), Some(false));
+    assert_eq!(reply_editor_text(&app), "Done.");
+}
+
+#[test]
+fn pr_review_reply_pick_move_and_confirm_routes_to_not_needed() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_reply_pick();
+    app.pr_review_reply_pick_move(1);
+    app.pr_review_reply_pick_confirm();
+
+    assert!(!app.pr_review_reply_pick_picking());
+    // Not-needed opens straight into edit mode with an empty buffer.
+    assert_eq!(app.pr_review_reply_view(), Some(true));
+    assert_eq!(reply_editor_text(&app), "");
+}
+
+#[test]
+fn pr_review_reply_pick_cancel_closes_without_opening_a_reply() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_reply_pick();
+    app.pr_review_reply_pick_cancel();
+
+    assert!(!app.pr_review_reply_pick_picking());
+    assert_eq!(app.pr_review_reply_view(), None);
+}
+
+#[test]
+fn pr_review_mark_pick_confirm_applies_the_chosen_action() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    // Row 0 is `Done`.
+    app.pr_review_open_mark_pick();
+    assert!(app.pr_review_mark_pick_picking());
+    app.pr_review_mark_pick_confirm();
+    assert!(!app.pr_review_mark_pick_picking());
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.selected_comment().unwrap().triage, crate::app::pr_review::TriageState::Done);
+        }
+        _ => panic!("expected PrReview"),
+    }
+
+    // Row 1 (`Skip`) toggles it back off Done and onto Skipped.
+    app.pr_review_open_mark_pick();
+    app.pr_review_mark_pick_move(1);
+    app.pr_review_mark_pick_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(
+                state.selected_comment().unwrap().triage,
+                crate::app::pr_review::TriageState::Skipped
+            );
+        }
+        _ => panic!("expected PrReview"),
+    }
+}
+
+#[test]
+fn pr_review_mark_pick_cancel_leaves_triage_untouched() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_mark_pick();
+    app.pr_review_mark_pick_cancel();
+
+    assert!(!app.pr_review_mark_pick_picking());
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(
+                state.selected_comment().unwrap().triage,
+                crate::app::pr_review::TriageState::Untriaged
+            );
+        }
+        _ => panic!("expected PrReview"),
+    }
 }
 
 #[test]

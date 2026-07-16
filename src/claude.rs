@@ -219,7 +219,11 @@ impl ClaudeLauncher {
     /// independent of the feature's own harness/model.
     pub fn spawn_headless(workdir: &Path, prompt: &str, model: Option<&str>) -> Result<Child> {
         let binary = Self::resolve_binary();
-        let mut args = vec!["-p".to_string(), "--output-format".to_string(), "text".to_string()];
+        let mut args = vec![
+            "-p".to_string(),
+            "--output-format".to_string(),
+            "text".to_string(),
+        ];
         if let Some(model) = model {
             args.push("--model".to_string());
             args.push(model.to_string());

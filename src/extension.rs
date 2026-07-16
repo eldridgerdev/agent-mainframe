@@ -232,11 +232,15 @@ pub struct ExtensionConfig {
     /// script rather than a hardcoded `cargo build`.
     pub final_review_check_command: Option<String>,
     /// Repo-relative (or absolute) path to the review-findings memory doc
-    /// (Epic E of `pr-comment-review-plan.md`), overriding
-    /// `AppConfig::review_memory_path` for this project only. Project
-    /// overrides global, same as `final_review_check_command`. Falls back to
-    /// `AppConfig::review_memory_path`, then
-    /// [`crate::app::review_memory::DEFAULT_REVIEW_MEMORY_PATH`], when unset.
+    /// (Epic E of `pr-comment-review-plan.md`). Project overrides global,
+    /// same as `final_review_check_command`. Note this field also exists at
+    /// the *global* scope (under the `"extension"` key of
+    /// `~/.config/amf/config.json`), where it takes precedence over the
+    /// older top-level `AppConfig::review_memory_path` in that same file —
+    /// see [`crate::app::App::configured_review_memory_path`] for the full
+    /// precedence chain. Falls back to `AppConfig::review_memory_path`, then
+    /// [`crate::app::review_memory::DEFAULT_REVIEW_MEMORY_PATH`], when unset
+    /// at every scope.
     pub review_memory_path: Option<String>,
 }
 
@@ -305,10 +309,34 @@ struct GlobalConfigPartial {
     extension: ExtensionConfig,
 }
 
+#[cfg(test)]
+thread_local! {
+    // Lets tests stand in for the developer's real `~/.config/amf/config.json`
+    // so assertions don't depend on what happens to be on the machine running
+    // them. Thread-local (not a global static) because the test harness reuses
+    // OS threads across tests, so each test must set this explicitly before
+    // relying on it rather than assuming a clean slate.
+    static TEST_GLOBAL_EXTENSION_CONFIG: std::cell::RefCell<Option<ExtensionConfig>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only seam for [`load_global_extension_config`]: forces the given
+/// config (or clears the override with `None`) instead of reading
+/// `~/.config/amf/config.json` for the rest of the calling thread's tests.
+#[cfg(test)]
+pub fn set_test_global_extension_config(config: Option<ExtensionConfig>) {
+    TEST_GLOBAL_EXTENSION_CONFIG.with(|cell| *cell.borrow_mut() = config);
+}
+
 /// Load the `extension` block from
 /// `~/.config/amf/config.json`.
 /// Returns a default (empty) config on any failure.
 pub fn load_global_extension_config() -> ExtensionConfig {
+    #[cfg(test)]
+    if let Some(config) = TEST_GLOBAL_EXTENSION_CONFIG.with(|cell| cell.borrow().clone()) {
+        return config;
+    }
+
     let config_path = crate::project::amf_config_dir().join("config.json");
 
     if !config_path.exists() {

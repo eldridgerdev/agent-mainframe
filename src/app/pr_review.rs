@@ -540,12 +540,26 @@ fn window_parsed_hunk(
 /// reply should also route through, so every AI-authored post reads as one
 /// consistent voice. Scoped to AI-authored bodies only: a user-typed reply
 /// (the "not needed" reason, a hand-edited "done in `<sha>`" template) is the
-/// user's own words and stays unmarked. AI-review generation can run through
-/// any supported headless harness, independent of whichever
-/// harness a "fix" gets injected into, so the public marker stays provider
-/// neutral rather than incorrectly attributing another harness to Claude.
+/// user's own words, so it gets the lighter [`append_amf_attribution`]
+/// instead. AI-review generation can run through any supported headless
+/// harness, independent of whichever harness a "fix" gets injected into, so
+/// the public marker stays provider neutral rather than incorrectly
+/// attributing another harness to Claude.
 fn append_ai_attribution(body: &str) -> String {
     format!("{}\n\n— drafted by AI via AMF", body.trim_end())
+}
+
+/// Lighter disclosure appended to a reply the user wrote (or edited) through
+/// PR Triage's "Done in `<sha>`"/"not needed" templates — distinct from
+/// [`append_ai_attribution`], which marks content the AI *generated*. This
+/// marks the *channel*, not the authorship: the words are the user's own,
+/// but a reader on GitHub should be able to tell the reply was posted
+/// through tooling rather than typed directly into the GitHub UI. Applied at
+/// post time (not part of the editable seed) so composing a "not needed"
+/// reason — which starts from an empty buffer — isn't complicated by a
+/// footer already sitting in the editor.
+fn append_amf_attribution(body: &str) -> String {
+    format!("{}\n\n— posted via AMF", body.trim_end())
 }
 
 /// Build the `(summary, inline comments)` GitHub review payload from a set of
@@ -3378,6 +3392,10 @@ impl App {
             return Ok(());
         }
 
+        // The posted body carries the "posted via AMF" disclosure; the local
+        // note (kept below for `NotNeeded`) stays the user's unmarked text —
+        // it's AMF's own record, not something read on GitHub.
+        let posted_body = append_amf_attribution(&body);
         let result = match target {
             ReplyTarget::InlineThread { root_comment_id } => GhCli::reply_to_review_comment(
                 &workdir,
@@ -3385,10 +3403,10 @@ impl App {
                 &pr.repo,
                 pr.number,
                 root_comment_id,
-                &body,
+                &posted_body,
             ),
             ReplyTarget::Conversation => {
-                GhCli::post_issue_comment(&workdir, &pr.owner, &pr.repo, pr.number, &body)
+                GhCli::post_issue_comment(&workdir, &pr.owner, &pr.repo, pr.number, &posted_body)
             }
         };
         if let Err(e) = result {
@@ -5175,6 +5193,18 @@ mod tests {
         assert_eq!(
             append_ai_attribution("Trailing newline.\n\n"),
             "Trailing newline.\n\n— drafted by AI via AMF"
+        );
+    }
+
+    #[test]
+    fn append_amf_attribution_uses_a_distinct_channel_disclosure() {
+        assert_eq!(
+            append_amf_attribution("Done in `abc123`."),
+            "Done in `abc123`.\n\n— posted via AMF"
+        );
+        assert_eq!(
+            append_amf_attribution("Trailing newline.\n\n"),
+            "Trailing newline.\n\n— posted via AMF"
         );
     }
 

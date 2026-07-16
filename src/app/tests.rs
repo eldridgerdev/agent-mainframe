@@ -10402,7 +10402,10 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
             // First row is always "existing live session"; default highlight
             // is the dedicated row for the project's preferred agent.
             let pick = state.harness_pick.as_ref().unwrap();
-            assert_eq!(pick.rows[0], crate::app::pr_review::FixTargetPickRow::ExistingLive);
+            assert_eq!(
+                pick.rows[0],
+                crate::app::pr_review::FixTargetPickRow::ExistingLive
+            );
             assert_eq!(
                 pick.rows[pick.selected],
                 crate::app::pr_review::FixTargetPickRow::Dedicated(AgentKind::default())
@@ -11549,7 +11552,10 @@ fn pr_review_mark_pick_confirm_applies_the_chosen_action() {
     assert!(!app.pr_review_mark_pick_picking());
     match &app.mode {
         AppMode::PrReview(state) => {
-            assert_eq!(state.selected_comment().unwrap().triage, crate::app::pr_review::TriageState::Done);
+            assert_eq!(
+                state.selected_comment().unwrap().triage,
+                crate::app::pr_review::TriageState::Done
+            );
         }
         _ => panic!("expected PrReview"),
     }

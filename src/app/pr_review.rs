@@ -1175,7 +1175,11 @@ pub enum MarkAction {
 
 impl MarkAction {
     /// The three actions, in the order the `m` picker lists them.
-    pub const ALL: [MarkAction; 3] = [MarkAction::Done, MarkAction::Skip, MarkAction::ResolveOnGitHub];
+    pub const ALL: [MarkAction; 3] = [
+        MarkAction::Done,
+        MarkAction::Skip,
+        MarkAction::ResolveOnGitHub,
+    ];
 
     /// Row label for the picker, reflecting the selected comment's current
     /// state so the toggle direction is visible before pressing `⏎`.
@@ -3424,7 +3428,10 @@ impl App {
                     state.harness_pick = None;
                     state.review_harness = Some(agent.clone());
                 }
-                self.push_toast_success(format!("Triage session will run {}", agent.display_name()));
+                self.push_toast_success(format!(
+                    "Triage session will run {}",
+                    agent.display_name()
+                ));
             }
         }
         // Continue into the dialog the pending action wanted (single or batch).
@@ -5395,8 +5402,14 @@ mod tests {
     #[test]
     fn reply_kind_menu_labels_are_distinct() {
         assert_eq!(ReplyKind::ALL.len(), 2);
-        assert_eq!(ReplyKind::Done.menu_label(), "Done — report a completed fix");
-        assert_eq!(ReplyKind::NotNeeded.menu_label(), "Not needed — explain why");
+        assert_eq!(
+            ReplyKind::Done.menu_label(),
+            "Done — report a completed fix"
+        );
+        assert_eq!(
+            ReplyKind::NotNeeded.menu_label(),
+            "Not needed — explain why"
+        );
     }
 
     #[test]

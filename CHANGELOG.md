@@ -72,6 +72,10 @@ are tagged.
 
 ### Fixed
 
+- **The theme picker now keeps the selected theme visible when the list is
+  longer than the dialog.** Navigating beyond the initially visible themes
+  scrolls the list automatically, with a scrollbar showing the current
+  position. No migration is required.
 - **The ambient PR badge disappeared while composing.** The badge was only
   wired into `AppMode::Viewing`'s draw path; since compose interception is on
   by default, entering a session normally lands straight in `AppMode::Compose`,

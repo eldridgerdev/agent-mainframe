@@ -1382,6 +1382,33 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `build_ai_review` tests updated to set a matching `diff_hunk` on their
       still-inline-expected fixtures). → `src/app/pr_review.rs`,
       `src/app/tests.rs`.
+- [x] **Make the review-memory path configurable per project (resolves half
+      of the Open Questions item below).** `AppConfig::review_memory_path`
+      was already a path override, but global-only — every project shared
+      it. `ExtensionConfig` (`src/extension.rs`) gains a
+      `review_memory_path: Option<String>` field following the exact
+      "project overrides global" shape `final_review_check_command` already
+      established: a project's `{repo}/.amf/config.json` value wins,
+      falling back to `merge_project_extension_config`'s global `base`. A
+      new `App::configured_review_memory_path(repo)` (`src/app/mod.rs`)
+      resolves that project-scoped `ExtensionConfig` value first, then
+      falls back to the pre-existing global `AppConfig::review_memory_path`
+      — so an existing global setting keeps working unchanged for projects
+      that don't opt into an override — before `review_memory::
+      review_memory_path` applies its own `DEFAULT_REVIEW_MEMORY_PATH`
+      fallback. All four call sites (AI-review context read, manual "add to
+      memory", the lookback bootstrap, and the PR-picker's memory-path
+      display) now route through it instead of reading
+      `self.config.review_memory_path` directly. The config wizard has no
+      UI for this field (same as `final_review_check_command`), so
+      `build_extension_config` carries a loaded value through untouched
+      rather than dropping it on save. Unit-tested (project-overrides-
+      global and global-fallback merge cases in `extension.rs`; an
+      app-level test confirming a project override actually redirects
+      where `pr_review_append_memory` writes, leaving the default path
+      untouched). → `src/extension.rs`, `src/app/mod.rs`,
+      `src/app/pr_review.rs`, `src/app/config_wizard.rs`,
+      `src/ui/dashboard.rs`, `src/app/tests.rs`.
 
 ## Nice to have
 
@@ -1563,11 +1590,13 @@ first), and the reviewer's output (plus comments triaged in the pane)
   first-class findings, its own generate-then-review lifecycle) is the
   better shape, keeping this pane focused on triaging what reviewers
   *actually said*.
-- [ ] **Make the review-memory path configurable (Epic E).** Default stays
-  `.amf/review-memory.md` committed in the repo, but the path should be
-  configurable per project. Decide whether to also add an optional
-  *global* layer (cross-project lessons) merged in on top of the per-repo
-  file, or keep it strictly per-repo.
+- [ ] **Add an optional global review-memory layer (Epic E).** Per-project
+  path configurability shipped (see the Epic E Progress item above — a
+  project's `.amf/config.json` can now point `review_memory_path` at its
+  own file). What's still undecided is *content*, not path: whether a
+  separate cross-project lessons file should be merged in on top of each
+  repo's own doc, or whether per-repo stays strictly isolated (today's
+  behavior).
 - [ ] **Prevent review-memory rot (Epic E).** Appends already dedup against
   existing entries, but the doc will still drift/bloat over time. Add a
   periodic agent-assisted "compaction" pass that merges near-duplicate

@@ -2490,8 +2490,10 @@ impl App {
         );
 
         let repo = self.repo_for_project_path(&workdir);
-        let memory_path =
-            review_memory::review_memory_path(&repo, self.config.review_memory_path.as_deref());
+        let memory_path = review_memory::review_memory_path(
+            &repo,
+            self.configured_review_memory_path(&repo).as_deref(),
+        );
         let memory = std::fs::read_to_string(&memory_path).unwrap_or_default();
         let skill = self.config.ai_review_skill.clone();
 
@@ -4045,8 +4047,10 @@ impl App {
         }
 
         let repo = self.repo_for_project_path(&workdir);
-        let path =
-            review_memory::review_memory_path(&repo, self.config.review_memory_path.as_deref());
+        let path = review_memory::review_memory_path(
+            &repo,
+            self.configured_review_memory_path(&repo).as_deref(),
+        );
         let appended = review_memory::append_finding(&path, category, &finding)?;
 
         if let AppMode::PrReview(state) = &mut self.mode {
@@ -4400,8 +4404,10 @@ impl App {
         }
 
         let repo = self.repo_for_project_path(&workdir);
-        let memory_path =
-            review_memory::review_memory_path(&repo, self.config.review_memory_path.as_deref());
+        let memory_path = review_memory::review_memory_path(
+            &repo,
+            self.configured_review_memory_path(&repo).as_deref(),
+        );
 
         self.log_info(
             "pr_review",

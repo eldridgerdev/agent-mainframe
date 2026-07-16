@@ -2737,6 +2737,17 @@ impl App {
             .unwrap_or_else(|_| path.to_path_buf())
     }
 
+    /// Resolve the configured review-memory path override for `repo`: the
+    /// project's `{repo}/.amf/config.json` `review_memory_path` if set,
+    /// falling back to the global `AppConfig::review_memory_path`. Neither
+    /// set means the caller should fall back to
+    /// [`review_memory::DEFAULT_REVIEW_MEMORY_PATH`].
+    pub(crate) fn configured_review_memory_path(&self, repo: &Path) -> Option<String> {
+        self.extension_for_repo(repo)
+            .review_memory_path
+            .or_else(|| self.config.review_memory_path.clone())
+    }
+
     pub(crate) fn allowed_agents_for_project_path(&self, path: &Path) -> Vec<AgentKind> {
         let repo = self.repo_for_project_path(path);
         self.allowed_agents_for_repo(&repo)

@@ -11869,6 +11869,54 @@ fn pr_review_append_memory_writes_and_dedups() {
 }
 
 #[test]
+fn pr_review_append_memory_honors_project_review_memory_path_override() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().to_path_buf();
+
+    // A project-level override in `{repo}/.amf/config.json` should redirect
+    // the append away from the default `.amf/review-memory.md`.
+    std::fs::create_dir_all(repo.join(".amf")).unwrap();
+    std::fs::write(
+        repo.join(".amf").join("config.json"),
+        r#"{"review_memory_path": ".amf/team-review-memory.md"}"#,
+    )
+    .unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_memory_add();
+    app.pr_review_append_memory().unwrap();
+
+    let default_path = repo.join(".amf").join("review-memory.md");
+    assert!(
+        !default_path.exists(),
+        "the default path should be untouched when a project override is set"
+    );
+    let overridden_path = repo.join(".amf").join("team-review-memory.md");
+    let contents = std::fs::read_to_string(&overridden_path).unwrap();
+    assert!(contents.contains("- comment 1 (src/file1.rs:1)"));
+}
+
+#[test]
 fn pr_review_open_fix_confirm_without_comments_shows_message() {
     let mut app = pr_review_test_app();
     enter_pr_review(&mut app, 0);

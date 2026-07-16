@@ -485,6 +485,11 @@ fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
         final_review_check_command: serde_json::from_str::<ExtensionConfig>(&state.original_json)
             .ok()
             .and_then(|config| config.final_review_check_command),
+        // Same reasoning: the wizard has no UI for the review-memory path
+        // override, so carry the loaded value through untouched.
+        review_memory_path: serde_json::from_str::<ExtensionConfig>(&state.original_json)
+            .ok()
+            .and_then(|config| config.review_memory_path),
     }
 }
 

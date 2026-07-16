@@ -231,6 +231,13 @@ pub struct ExtensionConfig {
     /// `lifecycle_hooks`, so each repo can point this at its own proof / CI
     /// script rather than a hardcoded `cargo build`.
     pub final_review_check_command: Option<String>,
+    /// Repo-relative (or absolute) path to the review-findings memory doc
+    /// (Epic E of `pr-comment-review-plan.md`), overriding
+    /// `AppConfig::review_memory_path` for this project only. Project
+    /// overrides global, same as `final_review_check_command`. Falls back to
+    /// `AppConfig::review_memory_path`, then
+    /// [`crate::app::review_memory::DEFAULT_REVIEW_MEMORY_PATH`], when unset.
+    pub review_memory_path: Option<String>,
 }
 
 impl ExtensionConfig {
@@ -406,6 +413,11 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
         .clone()
         .or_else(|| base.final_review_check_command.clone());
 
+    let review_memory_path = project
+        .review_memory_path
+        .clone()
+        .or_else(|| base.review_memory_path.clone());
+
     let mut merged = ExtensionConfig {
         custom_sessions,
         lifecycle_hooks: LifecycleHooks {
@@ -425,6 +437,7 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
             .skip_builtin_questions
             .or(base.skip_builtin_questions),
         final_review_check_command,
+        review_memory_path,
     };
     merged.normalize_legacy_review_modes();
     merged
@@ -547,6 +560,44 @@ mod tests {
         assert_eq!(
             merged.final_review_check_command.as_deref(),
             Some("cargo build")
+        );
+    }
+
+    #[test]
+    fn project_review_memory_path_overrides_global() {
+        let global = ExtensionConfig {
+            review_memory_path: Some("notes/review.md".to_string()),
+            ..Default::default()
+        };
+        let project_config = ExtensionConfig {
+            review_memory_path: Some(".amf/team-review-memory.md".to_string()),
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged = merge_project_extension_config(&global, tmp.path());
+        assert_eq!(
+            merged.review_memory_path.as_deref(),
+            Some(".amf/team-review-memory.md")
+        );
+    }
+
+    #[test]
+    fn global_review_memory_path_used_when_project_does_not_set_it() {
+        let global = ExtensionConfig {
+            review_memory_path: Some("notes/review.md".to_string()),
+            ..Default::default()
+        };
+        // Project config present but doesn't set a review-memory path.
+        let project_config = ExtensionConfig::default();
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged = merge_project_extension_config(&global, tmp.path());
+        assert_eq!(
+            merged.review_memory_path.as_deref(),
+            Some("notes/review.md")
         );
     }
 

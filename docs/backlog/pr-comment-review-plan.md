@@ -489,6 +489,26 @@ from the last *N* PRs) is reached from the PR entry flow:
       actionable `gh auth refresh -s repo` message. Unit-tested (mutation parse +
       GraphQL-error surfacing). → `src/github.rs`, `src/app/pr_review.rs`,
       `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
+- [x] **Tag AMF-templated (non-AI) replies with a "posted via AMF" footer
+      (resolved open question — channel disclosure, not authorship).** The
+      AI-attribution footer (Epic D) only covers genuinely AI-*generated*
+      content (Epic E findings); the "Done in `<sha>`" and "not-needed"
+      templates are the user's own words and were posting with no marker at
+      all. Decided: mark the *channel* rather than authorship — a reader on
+      GitHub should be able to tell a reply came through tooling even though
+      the words are the user's. A new `append_amf_attribution` (distinct
+      wording from `append_ai_attribution`, `src/app/pr_review.rs`) appends
+      `— posted via AMF` to the body `pr_review_post_reply` sends to GitHub;
+      the locally-persisted `local_note` for a "not needed" reply stays the
+      unmarked text (it's AMF's own record, not something read on GitHub).
+      Applied at post time rather than folded into the editable seed — an
+      empty "not needed" buffer starting with a footer already in it would
+      be awkward to type into — so the reply dialog gained a
+      token-preview-style disclosure line ("will post with a `— posted via
+      AMF` footer") between the editor and the key hints instead. Unit-tested
+      (`append_amf_attribution` wording/trimming; a render test proving the
+      disclosure line appears in the dialog). → `src/app/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`.
 - **Acceptance:** from the pane, reply to a comment to report a fix
   (`Done in <sha>`) or explain why one isn't needed, and optionally resolve the
   thread.
@@ -1521,14 +1541,6 @@ first), and the reviewer's output (plus comments triaged in the pane)
   first-class findings, its own generate-then-review lifecycle) is the
   better shape, keeping this pane focused on triaging what reviewers
   *actually said*.
-- [ ] **Tag AMF-templated (non-AI) replies with a light "posted via AMF"
-  marker.** The AI-attribution footer (Epic D) only covers genuinely
-  AI-generated content (Epic E review findings). The "Done in `<sha>`" and
-  "not-needed" reply templates are deterministic, not AI-drafted, and
-  currently post with no marker at all — decide whether they should carry
-  a lighter "posted via AMF" tag (distinct from the AI-attribution footer)
-  so a reader can tell the reply came through tooling, or stay unmarked as
-  genuinely the user's own words.
 - [ ] **Group conversation comments into their own section.** Conversation
   comments have no `path`/resolution and currently interleave with
   inline/review comments in the list. Add a separate "Conversation"
@@ -1547,10 +1559,11 @@ first), and the reviewer's output (plus comments triaged in the pane)
 Resolved and no longer tracked here (see the linked Epic item for the
 decision and implementation): which agent session runs fixes (Epic B,
 dedicated-session default), AI-authored content attribution (Epic D "AI
-attribution on AMF-posted comments"), resolve-without-reply behavior
-(shipped as-is — `R` stays independent of `r`), and outdated-comment
-badging (shipped in Epic D's pane-clarity item). GitLab/Bitbucket support
-is an explicit non-goal for v1 (GitHub `gh` only), not an open question.
+attribution on AMF-posted comments"), templated-reply channel disclosure
+(Epic C "posted via AMF" footer), resolve-without-reply behavior (shipped
+as-is — `R` stays independent of `r`), and outdated-comment badging
+(shipped in Epic D's pane-clarity item). GitLab/Bitbucket support is an
+explicit non-goal for v1 (GitHub `gh` only), not an open question.
 
 ## Backlog
 

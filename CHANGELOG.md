@@ -29,6 +29,11 @@ are tagged.
   running in the background. The sidebar box's title carries a `<leader G>`
   hint, matching the existing `<leader l>` hint on the "Prompt" box. No setup
   or migration required.
+- **PR Triage's "Done in `<sha>`" and "not-needed" replies now disclose they
+  were posted through AMF.** Both are templated, user-edited text — not
+  AI-generated — so they get a lighter `— posted via AMF` footer, distinct
+  from the existing AI-attribution footer on AI-review findings. The reply
+  dialog shows this will happen before you post.
 
 ### Fixed
 

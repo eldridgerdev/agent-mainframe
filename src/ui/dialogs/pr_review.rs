@@ -773,6 +773,7 @@ fn draw_reply_dialog(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),    // reply body
+            Constraint::Length(1), // footer-disclosure note
             Constraint::Length(1), // key hints
         ])
         .split(inner);
@@ -781,6 +782,18 @@ fn draw_reply_dialog(
     frame.render_widget(
         Paragraph::new(body_lines).wrap(Wrap { trim: false }),
         chunks[0],
+    );
+
+    // The "— posted via AMF" footer is appended at post time, not part of the
+    // editable buffer above (an empty "not needed" reason would otherwise
+    // start with a footer already sitting in it) — this line is the
+    // token-preview-style disclosure of what will actually be sent.
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "will post with a \"— posted via AMF\" footer",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))),
+        chunks[1],
     );
 
     let hints = if reply.editing {
@@ -793,7 +806,7 @@ fn draw_reply_dialog(
             hints,
             Style::default().fg(theme.primary.to_color()),
         ))),
-        chunks[1],
+        chunks[2],
     );
 }
 
@@ -1833,5 +1846,32 @@ mod tests {
     fn fix_confirm_hides_branch_mismatch_warning_when_absent() {
         let rendered = render_fix_confirm(None);
         assert!(!rendered.contains("this worktree is on"));
+    }
+
+    #[test]
+    fn reply_dialog_discloses_the_posted_via_amf_footer() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let reply = crate::app::ReplyState {
+            comment_id: 1,
+            kind: crate::app::pr_review::ReplyKind::Done,
+            editor: crate::editor::TextEditor::new("Done in `abc123`.".to_string()),
+            editing: false,
+        };
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_reply_dialog(frame, &reply, "alice", &theme))
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("posted via AMF"));
     }
 }

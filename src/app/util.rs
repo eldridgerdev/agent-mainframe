@@ -1187,10 +1187,12 @@ fn read_clipboard_macos() -> Option<ClipboardContent> {
                 .output()
                 .ok()?;
             let content = if result.status.success() {
-                std::fs::read(&tmp).ok().map(|data| ClipboardContent::Image {
-                    data,
-                    mime: "image/png".to_string(),
-                })
+                std::fs::read(&tmp)
+                    .ok()
+                    .map(|data| ClipboardContent::Image {
+                        data,
+                        mime: "image/png".to_string(),
+                    })
             } else {
                 None
             };

@@ -362,3 +362,34 @@ Claude Code's current pane content is visible behind the composer immediately.
 
 The composer opens, but the pane behind it is blank until the composer is
 closed or input is sent.
+
+## ~~Composer paste (Ctrl+V) does nothing on macOS~~ (Fixed)
+
+- **Status:** Fixed (2026-07-16)
+- **Reported:** 2026-07-16
+- **Relates to:** clipboard helpers (`src/app/util.rs`)
+- **Root cause:** `read_clipboard`, `copy_image_to_clipboard`, and
+  `copy_to_clipboard` only handled WSL (`clip.exe`/`powershell.exe`), Wayland
+  (`wl-paste`/`wl-copy`), and X11 (`xclip`). There was no macOS branch at all,
+  so every clipboard call on macOS fell through to
+  `Err("No clipboard utility found")`. Typing directly into Claude Code
+  (bypassing AMF's composer) still worked because that path never goes
+  through these helpers.
+- **Fix:** Add macOS clipboard helpers using `pbcopy`/`pbpaste` for text and
+  `osascript` (via a temp PNG file) for images, wired in ahead of the
+  Wayland/X11 fallbacks the same way the WSL helpers are.
+
+### Repro
+
+1. On macOS, open an agent session in AMF with the composer enabled.
+2. Copy an image or text, then press Ctrl+V in the composer.
+
+### Expected
+
+The clipboard content is pasted into the composer (text) or attached as an
+image placeholder.
+
+### Actual
+
+Nothing happens; pasting only works if the composer is bypassed and the
+paste goes directly to Claude Code's own input handling.

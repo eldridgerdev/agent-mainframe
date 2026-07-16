@@ -10441,6 +10441,77 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
     });
 }
 
+/// Enter the review pane with a mix of inline (code-anchored) comments and
+/// top-level conversation comments, in fetch order: every id in `inline_ids`
+/// first, then every id in `conversation_ids` — matching how `normalize`
+/// orders review comments ahead of issue comments. For exercising
+/// `PrSortMode::Conversations`.
+fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversation_ids: &[u64]) {
+    let review_comments: Vec<crate::github::ReviewComment> = inline_ids
+        .iter()
+        .map(|&id| crate::github::ReviewComment {
+            id,
+            path: Some(format!("f{id}.rs")),
+            line: Some(id as u32),
+            original_line: Some(id as u32),
+            side: Some("RIGHT".into()),
+            subject_type: None,
+            diff_hunk: Some("@@".to_string()),
+            body: format!("inline {id}"),
+            user: crate::github::GhUser {
+                login: "alice".into(),
+                kind: "User".into(),
+            },
+            in_reply_to_id: None,
+            pull_request_review_id: None,
+        })
+        .collect();
+    let issue_comments: Vec<crate::github::IssueComment> = conversation_ids
+        .iter()
+        .map(|&id| crate::github::IssueComment {
+            id,
+            body: format!("conversation {id}"),
+            user: crate::github::GhUser {
+                login: "bob".into(),
+                kind: "User".into(),
+            },
+        })
+        .collect();
+    let pr = crate::github::PrRef {
+        number: 7,
+        head_sha: "sha".to_string(),
+        url: "https://github.com/o/r/pull/7".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+        head_ref: "main".to_string(),
+    };
+    let review =
+        crate::app::pr_review::normalize(pr, review_comments, vec![], issue_comments, vec![]);
+    app.mode = AppMode::PrReview(PrReviewState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        review,
+        selected: 0,
+        detail_scroll: 0,
+        detail_content_lines: 0,
+        hide_resolved: false,
+        sort_mode: crate::app::pr_review::PrSortMode::default(),
+        fix_target: crate::app::pr_review::FixTarget::default(),
+        usage_baselines: std::collections::HashMap::new(),
+        review_harness: None,
+        ai_review_harness: None,
+        ai_harness_pick: None,
+        harness_pick: None,
+        fix_confirm: None,
+        fix_vim_enabled: false,
+        reply: None,
+        memory_add: None,
+        marked: std::collections::HashSet::new(),
+        pending_batch: false,
+        ai_review_post: None,
+        checked_out_branch: Some("main".to_string()),
+    });
+}
+
 fn pr_review_ids_in_visible_order(app: &App) -> Vec<u64> {
     match &app.mode {
         AppMode::PrReview(state) => state
@@ -10470,6 +10541,8 @@ fn pr_review_cycle_sort_wraps_through_all_modes() {
     assert_eq!(sort_mode(&app), PrSortMode::ByAuthor);
     app.pr_review_cycle_sort();
     assert_eq!(sort_mode(&app), PrSortMode::HumansFirst);
+    app.pr_review_cycle_sort();
+    assert_eq!(sort_mode(&app), PrSortMode::Conversations);
     app.pr_review_cycle_sort();
     assert_eq!(sort_mode(&app), PrSortMode::FetchOrder);
 }
@@ -10525,6 +10598,110 @@ fn pr_review_sort_humans_first_keeps_bots_last() {
         app.pr_review_cycle_sort(); // FetchOrder -> ByFile -> ByAuthor -> HumansFirst
     }
     assert_eq!(pr_review_ids_in_visible_order(&app), vec![2, 4, 1, 3]);
+}
+
+#[test]
+fn pr_review_sort_conversations_groups_them_after_code_anchored_comments() {
+    let mut app = pr_review_test_app();
+    // Fetch order: inline 1, 2 then conversation 3, 4 — already matches the
+    // desired grouping, so this proves the mode is a no-op here, not just
+    // coincidentally correct because fetch order already separates them
+    // (the interleaved case below is the real test).
+    enter_pr_review_with_conversation(&mut app, &[1, 2], &[3, 4]);
+    for _ in 0..4 {
+        app.pr_review_cycle_sort(); // -> ByFile -> ByAuthor -> HumansFirst -> Conversations
+    }
+    assert_eq!(pr_review_ids_in_visible_order(&app), vec![1, 2, 3, 4]);
+}
+
+fn pr_comment_of_kind(
+    id: u64,
+    kind: crate::app::pr_review::CommentKind,
+) -> crate::app::pr_review::PrComment {
+    crate::app::pr_review::PrComment {
+        id,
+        kind,
+        author: "someone".into(),
+        is_bot: false,
+        path: None,
+        line: None,
+        side: None,
+        outdated: false,
+        file_level: false,
+        diff_hunk: None,
+        body: format!("comment {id}"),
+        snippet: format!("comment {id}"),
+        in_reply_to: None,
+        thread_id: None,
+        is_resolved: false,
+        triage: crate::app::pr_review::TriageState::Untriaged,
+        local_note: None,
+        ai_generated: false,
+        ai_published: false,
+        github_id: None,
+        github_review_id: None,
+    }
+}
+
+#[test]
+fn pr_review_sort_conversations_reorders_interleaved_comments() {
+    use crate::app::pr_review::CommentKind;
+
+    let mut app = pr_review_test_app();
+    enter_pr_review_with_conversation(&mut app, &[], &[]);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        // Fetch order: 1 (inline), 3 (conversation), 2 (inline), 4 (conversation).
+        state.review.comments = vec![
+            pr_comment_of_kind(1, CommentKind::Inline),
+            pr_comment_of_kind(3, CommentKind::Conversation),
+            pr_comment_of_kind(2, CommentKind::Inline),
+            pr_comment_of_kind(4, CommentKind::Conversation),
+        ];
+    }
+
+    for _ in 0..4 {
+        app.pr_review_cycle_sort(); // -> ByFile -> ByAuthor -> HumansFirst -> Conversations
+    }
+    // Every conversation comment moves after every inline one; relative order
+    // within each group is preserved (stable sort).
+    assert_eq!(pr_review_ids_in_visible_order(&app), vec![1, 2, 3, 4]);
+}
+
+#[test]
+fn pr_review_conversation_section_start_marks_where_the_group_begins() {
+    let mut app = pr_review_test_app();
+    enter_pr_review_with_conversation(&mut app, &[1, 2], &[3, 4]);
+    for _ in 0..4 {
+        app.pr_review_cycle_sort(); // -> Conversations
+    }
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PrReview");
+    };
+    assert_eq!(state.conversation_section_start(), Some(2));
+}
+
+#[test]
+fn pr_review_conversation_section_start_is_none_outside_conversations_mode() {
+    let mut app = pr_review_test_app();
+    enter_pr_review_with_conversation(&mut app, &[1, 2], &[3, 4]);
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PrReview");
+    };
+    assert_eq!(state.conversation_section_start(), None);
+}
+
+#[test]
+fn pr_review_conversation_section_start_is_none_without_both_groups() {
+    let mut app = pr_review_test_app();
+    // All inline, no conversation comments — nothing to separate.
+    enter_pr_review_with_conversation(&mut app, &[1, 2], &[]);
+    for _ in 0..4 {
+        app.pr_review_cycle_sort(); // -> Conversations
+    }
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PrReview");
+    };
+    assert_eq!(state.conversation_section_start(), None);
 }
 
 #[test]

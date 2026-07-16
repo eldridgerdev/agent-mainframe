@@ -1823,8 +1823,35 @@ impl PrReviewState {
                     .cmp(&self.review.comments[b].author)
             }),
             PrSortMode::HumansFirst => indices.sort_by_key(|&i| self.review.comments[i].is_bot),
+            PrSortMode::Conversations => indices.sort_by_key(|&i| {
+                matches!(
+                    self.review.comments[i].kind,
+                    crate::app::pr_review::CommentKind::Conversation
+                )
+            }),
         }
         indices
+    }
+
+    /// Under [`PrSortMode::Conversations`], the position within
+    /// [`Self::visible_indices`] where the conversation-comment section
+    /// begins — `None` when not in that mode, or when the visible list has no
+    /// conversation comments (nothing to separate) or is *entirely*
+    /// conversation comments (no code-anchored section to divide from).
+    /// `draw_comment_list` uses this to insert a section divider rather than
+    /// silently reordering the list.
+    pub fn conversation_section_start(&self) -> Option<usize> {
+        if self.sort_mode != crate::app::pr_review::PrSortMode::Conversations {
+            return None;
+        }
+        let visible = self.visible_indices();
+        let start = visible.iter().position(|&i| {
+            matches!(
+                self.review.comments[i].kind,
+                crate::app::pr_review::CommentKind::Conversation
+            )
+        })?;
+        (start > 0).then_some(start)
     }
 
     /// Number of comments hidden by the resolved filter (0 when showing all).

@@ -885,6 +885,10 @@ pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     if is_wsl() && copy_to_clipboard_wsl(text).is_ok() {
         return Ok(());
     }
+    // On macOS, use pbcopy.
+    if cfg!(target_os = "macos") && copy_to_clipboard_macos(text).is_ok() {
+        return Ok(());
+    }
     // Try wl-copy (Wayland)
     if let Ok(mut child) = std::process::Command::new("wl-copy")
         .stdin(std::process::Stdio::piped())
@@ -940,6 +944,11 @@ pub enum ClipboardContent {
 pub fn read_clipboard() -> anyhow::Result<ClipboardContent> {
     if is_wsl()
         && let Some(content) = read_clipboard_wsl()
+    {
+        return Ok(content);
+    }
+    if cfg!(target_os = "macos")
+        && let Some(content) = read_clipboard_macos()
     {
         return Ok(content);
     }
@@ -1048,6 +1057,9 @@ pub fn copy_image_to_clipboard(data: &[u8], mime: &str) -> anyhow::Result<()> {
     if is_wsl() && copy_image_to_clipboard_wsl(data).is_ok() {
         return Ok(());
     }
+    if cfg!(target_os = "macos") && copy_image_to_clipboard_macos(data).is_ok() {
+        return Ok(());
+    }
     if let Ok(mut child) = std::process::Command::new("wl-copy")
         .args(["--type", mime])
         .stdin(std::process::Stdio::piped())
@@ -1133,6 +1145,92 @@ fn read_clipboard_wsl() -> Option<ClipboardContent> {
     result
 }
 
+/// Push text onto the macOS clipboard via `pbcopy`.
+fn copy_to_clipboard_macos(text: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("pbcopy exited with {status}"))
+    }
+}
+
+/// Read the macOS clipboard. `pbpaste` cannot read image data, so an
+/// image is detected via `osascript`'s `clipboard info` and saved to a
+/// temp PNG through AppleScript; otherwise falls back to `pbpaste` text.
+fn read_clipboard_macos() -> Option<ClipboardContent> {
+    let info = std::process::Command::new("osascript")
+        .args(["-e", "clipboard info"])
+        .output()
+        .ok()?;
+    if info.status.success() {
+        let info = String::from_utf8_lossy(&info.stdout);
+        if info.contains("PNGf") || info.contains("TIFF") || info.contains("public.png") {
+            let tmp = std::env::temp_dir().join(format!("amf-clip-{}.png", uuid::Uuid::new_v4()));
+            let script = format!(
+                "set theFile to open for access POSIX file \"{path}\" with write permission\n\
+                 set eof of theFile to 0\n\
+                 write (the clipboard as «class PNGf») to theFile\n\
+                 close access theFile",
+                path = tmp.display()
+            );
+            let result = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output()
+                .ok()?;
+            let content = if result.status.success() {
+                std::fs::read(&tmp).ok().map(|data| ClipboardContent::Image {
+                    data,
+                    mime: "image/png".to_string(),
+                })
+            } else {
+                None
+            };
+            let _ = std::fs::remove_file(&tmp);
+            if content.is_some() {
+                return content;
+            }
+        }
+    }
+
+    let output = std::process::Command::new("pbpaste").output().ok()?;
+    if output.status.success() {
+        return Some(ClipboardContent::Text(
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ));
+    }
+    None
+}
+
+/// Place image bytes on the macOS clipboard via `osascript`, so the
+/// harness's own Ctrl+V image paste can ingest them.
+fn copy_image_to_clipboard_macos(data: &[u8]) -> anyhow::Result<()> {
+    let tmp = std::env::temp_dir().join(format!("amf-clip-{}.png", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, data)?;
+    let script = format!(
+        "set the clipboard to (read (POSIX file \"{path}\") as «class PNGf»)",
+        path = tmp.display()
+    );
+    let status = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .status();
+    let _ = std::fs::remove_file(&tmp);
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(anyhow::anyhow!("osascript set clipboard exited with {s}")),
+        Err(e) => Err(anyhow::anyhow!("failed to launch osascript: {e}")),
+    }
+}
+
 /// Push text onto the Windows clipboard from WSL via `clip.exe`.
 fn copy_to_clipboard_wsl(text: &str) -> anyhow::Result<()> {
     use std::io::Write;
@@ -1211,6 +1309,40 @@ mod tests {
         copy_to_clipboard("amf-wsl-roundtrip").expect("copy text to clipboard");
         match read_clipboard().expect("read clipboard") {
             ClipboardContent::Text(t) => assert_eq!(t, "amf-wsl-roundtrip"),
+            ClipboardContent::Image { .. } => panic!("expected text, got image"),
+        }
+    }
+
+    /// Round-trips an image and text through the real macOS clipboard.
+    /// Only meaningful on macOS; a no-op elsewhere so CI stays green.
+    #[test]
+    fn macos_clipboard_round_trips_image_and_text() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+
+        // 1x1 red PNG.
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x36, 0x37, 0x82,
+            0x9e, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+
+        copy_image_to_clipboard(PNG, "image/png").expect("copy image to clipboard");
+        match read_clipboard().expect("read clipboard") {
+            ClipboardContent::Image { data, mime } => {
+                assert!(!data.is_empty());
+                assert_eq!(mime, "image/png");
+                assert_eq!(&data[..8], &PNG[..8], "should read back PNG bytes");
+            }
+            ClipboardContent::Text(t) => panic!("expected image, got text: {t:?}"),
+        }
+
+        copy_to_clipboard("amf-macos-roundtrip").expect("copy text to clipboard");
+        match read_clipboard().expect("read clipboard") {
+            ClipboardContent::Text(t) => assert_eq!(t, "amf-macos-roundtrip"),
             ClipboardContent::Image { .. } => panic!("expected text, got image"),
         }
     }

@@ -116,6 +116,12 @@ are tagged.
   against the workdir's actual checked-out branch and, on a mismatch, shows
   a danger-colored banner in the pane header and repeats the warning inside
   the fix confirm dialog before anything is injected.
+- **Pasting text or images into the composer did nothing on macOS.** AMF's
+  clipboard support only covered WSL, Wayland, and X11, so on macOS the
+  composer's Ctrl+V had no clipboard to read from. It worked if you bypassed
+  the composer and pasted straight into Claude Code, because that path never
+  went through AMF's clipboard handling. Composer paste now works on macOS
+  for both text and images. No setup required.
 
 ### Backlog
 

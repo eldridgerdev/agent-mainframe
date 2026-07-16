@@ -212,10 +212,24 @@ impl ClaudeLauncher {
     /// this stays non-blocking — the child's stdout isn't read until the
     /// caller starts polling, so a synchronous write-then-return here would
     /// risk the same pipe deadlock `run_headless` avoids.
-    pub fn spawn_headless(workdir: &Path, prompt: &str) -> Result<Child> {
+    ///
+    /// `model`, when set, is passed as `--model <name>` so a bounded,
+    /// single-purpose pass (a per-file walkthrough, an AI co-review) can run
+    /// on a cheaper model than whatever the interactive session uses,
+    /// independent of the feature's own harness/model.
+    pub fn spawn_headless(workdir: &Path, prompt: &str, model: Option<&str>) -> Result<Child> {
         let binary = Self::resolve_binary();
+        let mut args = vec![
+            "-p".to_string(),
+            "--output-format".to_string(),
+            "text".to_string(),
+        ];
+        if let Some(model) = model {
+            args.push("--model".to_string());
+            args.push(model.to_string());
+        }
         let mut child = Command::new(&binary)
-            .args(["-p", "--output-format", "text"])
+            .args(&args)
             .current_dir(workdir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

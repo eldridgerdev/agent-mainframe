@@ -702,6 +702,35 @@ Loop:
 - [ ] Finish summary screen (editable overview of all verdicts /
       comments / suggestions before write + dispatch)
 
+Cost:
+
+- [x] Model selection for the bounded headless passes — `ClaudeLauncher::
+      spawn_headless` (`src/claude.rs`) gained an `Option<&str>` model
+      override (`--model <name>`), previously only threaded through
+      `HeadlessRunner` for AI PR review. Wired `AppConfig::review_model`
+      into the walkthrough (`w`), AI co-review (`A`), changeset overview
+      (`O`), and the config-wizard diff explain — all four used to always
+      run on the CLI's default model with no way to point them at a
+      cheaper one.
+- [x] Capped `.claude/final-review-feedback.md` growth — rounds were
+      prepended and kept forever, but `REVIEW_FEEDBACK_PROMPT` and
+      `parse_agent_responses` only ever consume the newest round, so a
+      long-lived feature's re-review loop paid to re-read the whole
+      history every round for nothing. `split_rounds` /
+      `split_overflow_rounds` (`src/app/review.rs`) now keep only the
+      newest 2 rounds live and move the rest to a new
+      `.claude/final-review-feedback-archive.md` (gitignored in
+      `setup.rs`) — full history stays on disk, live-file read cost stays
+      flat.
+- [x] Batched REVIEW MODE's `.claude/review-notes.md` instruction —
+      `ensure_review_claude_md` (`src/app/setup.rs`) told the agent to
+      append a note before *every* Edit/Write, doubling the write
+      operations for any multi-file task. Reworded to write one note per
+      touched file at the end of each logical batch of changes (skipping
+      a file that already has a note with nothing new to add), instead of
+      one per individual edit. Output format (and `parse_review_notes`)
+      unchanged.
+
 Viewer:
 
 - [ ] Expand context around hunks (old/new content already loaded)

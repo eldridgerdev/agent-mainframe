@@ -1345,7 +1345,8 @@ impl App {
             (state.workdir.clone(), path, build_walkthrough_prompt(file))
         };
 
-        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt) {
+        let model = self.config.review_model.clone();
+        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
                 if let AppMode::DiffViewer(state) = &mut self.mode {
                     state.walkthrough_child = Some(child);
@@ -1437,7 +1438,8 @@ impl App {
             )
         };
 
-        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt) {
+        let model = self.config.review_model.clone();
+        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
                 self.message = Some(format!("AI co-review running on {path}…"));
                 if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -1564,7 +1566,8 @@ impl App {
             )
         };
 
-        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt) {
+        let model = self.config.review_model.clone();
+        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
                 self.message = Some("Changeset overview running…".to_string());
                 if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -2405,8 +2408,26 @@ impl App {
             }
 
             let out = compose_feedback_log(std::fs::read_to_string(&path).ok().as_deref(), &round);
+            let (live, overflow) = split_overflow_rounds(&out, MAX_LIVE_ROUNDS);
 
-            if let Err(e) = std::fs::write(&path, out) {
+            if let Some(overflow) = overflow {
+                let archive_path = workdir
+                    .join(".claude")
+                    .join("final-review-feedback-archive.md");
+                let mut archive = std::fs::read_to_string(&archive_path).unwrap_or_default();
+                if archive.is_empty() {
+                    archive.push_str("# Final Review Feedback Archive\n\n");
+                }
+                archive.push_str(&overflow);
+                if let Err(e) = std::fs::write(&archive_path, archive) {
+                    self.log_warn(
+                        "review",
+                        format!("failed to archive prior review rounds: {e}"),
+                    );
+                }
+            }
+
+            if let Err(e) = std::fs::write(&path, live) {
                 self.message = Some(format!("Final review: failed to write feedback file: {e}"));
                 self.mode = AppMode::Viewing(from_view);
                 return Ok(());
@@ -2980,6 +3001,51 @@ fn compose_feedback_log(existing: Option<&str>, round: &str) -> String {
     out
 }
 
+/// Review rounds kept in the live feedback file: the newest round the agent
+/// is asked to address, plus one prior round for context. Anything older is
+/// moved to `final-review-feedback-archive.md` by `split_overflow_rounds` —
+/// only the newest round is ever consumed (by `REVIEW_FEEDBACK_PROMPT` and by
+/// `parse_agent_responses`), so keeping the rest in the live file would only
+/// cost the agent a bigger read every round without it ever being used.
+const MAX_LIVE_ROUNDS: usize = 2;
+
+/// Split a feedback log's body (title already stripped) into per-round
+/// chunks, each starting at a `## Review` heading line and running up to (not
+/// including) the next one.
+fn split_rounds(body: &str) -> Vec<String> {
+    let mut rounds: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for line in body.lines() {
+        if line.starts_with("## Review") && !current.is_empty() {
+            rounds.push(std::mem::take(&mut current));
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.trim().is_empty() {
+        rounds.push(current);
+    }
+    rounds
+}
+
+/// Split a composed feedback log (title + rounds, newest first) into the live
+/// content to keep (the newest `keep` rounds, re-titled) and, when there are
+/// more rounds than that, the older ones to move out to the archive file
+/// (`None` when nothing overflows).
+fn split_overflow_rounds(content: &str, keep: usize) -> (String, Option<String>) {
+    let body = content.strip_prefix(FEEDBACK_TITLE).unwrap_or(content);
+    let rounds = split_rounds(body);
+    if rounds.len() <= keep {
+        return (content.to_string(), None);
+    }
+    let (live_rounds, old_rounds) = rounds.split_at(keep);
+    let mut live = String::from(FEEDBACK_TITLE);
+    for r in live_rounds {
+        live.push_str(r);
+    }
+    (live, Some(old_rounds.concat()))
+}
+
 /// Reduce an item's anchor heading (`src/foo.rs:42`, `src/foo.rs:42-48 (base)`,
 /// `src/foo.rs (anchor lost — possibly addressed)`, or a bare `src/foo.rs`) to
 /// the file path it belongs to. A trailing ` (…)` note is stripped first — an
@@ -3305,7 +3371,7 @@ mod tests {
         CHECK_OUTPUT_MAX_CHARS, anchor_file_path, build_pr_review, build_walkthrough_prompt,
         comment_anchor_label, compose_feedback_log, compute_search_matches, parse_agent_responses,
         parse_co_review_output, parse_review_notes, reanchor_file_comments, severity_review_event,
-        truncate_check_output,
+        split_overflow_rounds, truncate_check_output,
     };
     use crate::app::state::DiffViewerState;
     use crate::app::{CommentAnchorContext, LineComment, Severity};
@@ -3579,6 +3645,39 @@ mod tests {
         let out = compose_feedback_log(Some(existing), "## Review — x\n\nnew.\n\n");
         assert!(out.starts_with("# Final Review Feedback\n\n## Review — x"));
         assert!(out.contains("old."));
+    }
+
+    #[test]
+    fn split_overflow_rounds_keeps_everything_under_the_cap() {
+        let content = compose_feedback_log(
+            Some("# Final Review Feedback\n\n## Review — r1\n\nold.\n\n"),
+            "## Review — r2\n\nnew.\n\n",
+        );
+        let (live, overflow) = split_overflow_rounds(&content, 2);
+        assert_eq!(live, content);
+        assert!(overflow.is_none());
+    }
+
+    #[test]
+    fn split_overflow_rounds_moves_rounds_past_the_cap_to_the_archive() {
+        let existing = compose_feedback_log(
+            Some("# Final Review Feedback\n\n## Review — r1\n\noldest.\n\n"),
+            "## Review — r2\n\nmiddle.\n\n",
+        );
+        let content = compose_feedback_log(Some(&existing), "## Review — r3\n\nnewest.\n\n");
+        let (live, overflow) = split_overflow_rounds(&content, 2);
+
+        // The two newest rounds stay live, still under a single title.
+        assert!(live.starts_with("# Final Review Feedback\n\n## Review — r3"));
+        assert!(live.contains("newest."));
+        assert!(live.contains("## Review — r2"));
+        assert!(live.contains("middle."));
+        assert!(!live.contains("oldest."));
+
+        // The oldest round is pushed out for the caller to archive.
+        let overflow = overflow.expect("oldest round should overflow");
+        assert!(overflow.contains("## Review — r1"));
+        assert!(overflow.contains("oldest."));
     }
 
     #[test]

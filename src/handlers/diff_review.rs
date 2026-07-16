@@ -284,7 +284,8 @@ fn generate_diff_review_explanation(app: &mut App) {
         "Explain these code changes concisely. What is being changed and why?\n\nFile: {relative_path}\n\nOld:\n```\n{old_snippet}\n```\n\nNew:\n```\n{new_snippet}\n```"
     );
 
-    match ClaudeLauncher::spawn_headless(&workdir, &prompt) {
+    let model = app.config.review_model.clone();
+    match ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
         Ok(child) => {
             if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
                 state.explanation = None;

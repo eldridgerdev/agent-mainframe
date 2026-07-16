@@ -1688,6 +1688,43 @@ explicit non-goal for v1 (GitHub `gh` only), not an open question.
   `src/headless.rs`, `src/app/mod.rs`, `src/app/pr_review.rs`,
   `src/app/tests.rs`.
 
+  **Follow-up, same day — an in-pane picker, not just a config setting.**
+  A config-only knob turned out to be the wrong shape: real use expected a
+  picker like the existing `A` harness picker, not an edit-config.json step.
+  A new single-select `AiModelPickState`/`ModelPickRow` (`src/app/state.rs`)
+  opens automatically right after the harness is chosen (`start_ai_pr_review`
+  now checks a new `PrReviewState::ai_review_model_picked` flag the same way
+  it already checked `ai_review_harness`), offering `Default` (harness's own
+  model), verified presets (`model_pick_rows` — currently only Claude's
+  `sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude --help`; other
+  harnesses get just `Default`/`Custom` rather than guessed-at aliases), and
+  `Custom…` for a free-typed model name/id (`⏎` opens a text field, a second
+  `⏎` submits it — blank falls back to `Default`; `esc` while typing returns
+  to the list without losing what's typed, a second `esc` cancels the picker
+  outright with the harness still remembered). The choice is remembered on
+  `PrReviewState::ai_review_model` for the rest of the PR, same lifecycle as
+  `ai_review_harness`; `begin_ai_pr_review` prefers it over the `review_model`
+  config default (which now seeds the picker's initial highlight/selection
+  instead of being the only way to set it — matching an existing preset
+  exactly highlights that row, otherwise `Custom` opens pre-filled with it,
+  so an existing config value is never silently hidden). Pi skips the picker
+  entirely and proceeds straight to the review, since it has no verified
+  model flag to offer. The lookback bootstrap has no harness-picker step to
+  hang a model picker off of, so it's unchanged (still config-only). New
+  `AppMode`-level key handling in `handlers/pr_review.rs`
+  (`handle_ai_model_pick_key`) and a `draw_ai_model_pick` dialog in
+  `ui/dialogs/pr_review.rs`, mirroring the harness picker's shape. Unit- and
+  live-tested: 9 new tests cover the picker opening after the harness step,
+  Pi's skip, default/preset/custom selection, the custom row's two-step
+  confirm and blank-falls-back-to-default behavior, and esc's two levels
+  (back-to-list vs. full cancel); confirmed live by building the binary and
+  driving it in an isolated tmux server + isolated `HOME` against this
+  repo's own PR (`#466`) — the harness picker, the new model picker with all
+  six rows, custom text entry, both esc levels, and the harness-remembered
+  skip on a second `A` all matched the design. → `src/app/state.rs`,
+  `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
+  `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
+
 - [x] **BUG — fix injection can silently target the wrong checked-out
   branch when triaging a manually-picked PR (correctness).** `G`'s picker (and
   `g`/`#` inside the pane) let the user open *any* PR from the repo, not just

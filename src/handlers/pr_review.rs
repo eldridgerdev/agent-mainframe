@@ -24,6 +24,10 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if app.pr_review_ai_harness_picking() {
         return handle_ai_harness_pick_key(app, key);
     }
+    // The AI-review model picker, shown right after the harness, when open.
+    if app.pr_review_ai_model_picking() {
+        return handle_ai_model_pick_key(app, key);
+    }
     // The harness picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
         return handle_harness_pick_key(app, key);
@@ -85,6 +89,30 @@ fn handle_ai_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Down | KeyCode::Char('j') => app.pr_review_ai_harness_pick_move(1),
         KeyCode::Up | KeyCode::Char('k') => app.pr_review_ai_harness_pick_move(-1),
         KeyCode::Enter => app.pr_review_ai_harness_pick_confirm(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Pick the model for the paid `A` review pass, shown once per pane right
+/// after the harness. While the `Custom` row is open for text entry, keys
+/// route to the buffer instead of list navigation.
+fn handle_ai_model_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if app.pr_review_ai_model_pick_editing_custom() {
+        match key.code {
+            KeyCode::Esc => app.pr_review_ai_model_pick_cancel(),
+            KeyCode::Enter => app.pr_review_ai_model_pick_confirm(),
+            KeyCode::Backspace => app.pr_review_ai_model_pick_backspace(),
+            KeyCode::Char(c) => app.pr_review_ai_model_pick_push_char(c),
+            _ => {}
+        }
+        return Ok(());
+    }
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_ai_model_pick_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_ai_model_pick_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_ai_model_pick_move(-1),
+        KeyCode::Enter => app.pr_review_ai_model_pick_confirm(),
         _ => {}
     }
     Ok(())

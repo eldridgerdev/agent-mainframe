@@ -1617,6 +1617,27 @@ fn run_review_memory_bootstrap(
     let _ = tx.send(BootstrapProgress::Done(result));
 }
 
+/// Rows offered by the AI-review model picker for a given harness: `Default`
+/// and `Custom` always appear; presets are a best-effort, *verified* set of
+/// model aliases — currently only Claude's, confirmed against `claude
+/// --help` ("Provide an alias for the latest model (e.g. 'fable', 'opus', or
+/// 'sonnet')"; `haiku` is the fourth well-known tier). Other harnesses don't
+/// have a reliably enumerable alias list, so guessing would risk offering a
+/// preset that doesn't exist — `Custom` covers them instead.
+fn model_pick_rows(harness: &AgentKind) -> Vec<ModelPickRow> {
+    let mut rows = vec![ModelPickRow::Default];
+    if *harness == AgentKind::Claude {
+        rows.extend([
+            ModelPickRow::Preset("sonnet"),
+            ModelPickRow::Preset("opus"),
+            ModelPickRow::Preset("haiku"),
+            ModelPickRow::Preset("fable"),
+        ]);
+    }
+    rows.push(ModelPickRow::Custom);
+    rows
+}
+
 /// Background body of the AI PR review (`A` in the review pane, Epic E):
 /// assemble the prompt from `diff` + `memory` (+ optional `skill`), report a
 /// token estimate, then make **one** headless agent pass and parse its
@@ -1739,6 +1760,9 @@ impl App {
                 review_harness: None,
                 ai_review_harness: None,
                 ai_harness_pick: None,
+                ai_review_model: None,
+                ai_review_model_picked: false,
+                ai_model_pick: None,
                 harness_pick: None,
                 fix_confirm: None,
                 fix_vim_enabled: false,
@@ -2245,6 +2269,9 @@ impl App {
                             review_harness: None,
                             ai_review_harness: None,
                             ai_harness_pick: None,
+                            ai_review_model: None,
+                            ai_review_model_picked: false,
+                            ai_model_pick: None,
                             harness_pick: None,
                             fix_confirm: None,
                             fix_vim_enabled: false,
@@ -2355,11 +2382,15 @@ impl App {
             self.push_toast_warning("AI review already running — wait for it to finish");
             return;
         }
-        let (workdir, already_chosen) = match &self.mode {
-            AppMode::PrReview(state) => (state.workdir.clone(), state.ai_review_harness.clone()),
+        let (workdir, harness, model_picked) = match &self.mode {
+            AppMode::PrReview(state) => (
+                state.workdir.clone(),
+                state.ai_review_harness.clone(),
+                state.ai_review_model_picked,
+            ),
             _ => return,
         };
-        if already_chosen.is_none() {
+        let Some(harness) = harness else {
             let agents = self.allowed_agents_for_project_path(&workdir);
             if agents.is_empty() {
                 self.push_toast_error("No agent harnesses are enabled for this project");
@@ -2379,6 +2410,42 @@ impl App {
                 });
             }
             return;
+        };
+        if !model_picked {
+            // Pi's headless model flag isn't verified (see `HeadlessRunner`),
+            // so a picker that can't do anything for it would just be
+            // friction — skip straight to "default" for that harness.
+            if harness == AgentKind::Pi {
+                if let AppMode::PrReview(state) = &mut self.mode {
+                    state.ai_review_model_picked = true;
+                }
+                self.begin_ai_pr_review();
+                return;
+            }
+            let rows = model_pick_rows(&harness);
+            let configured = self.config.review_model.clone();
+            let preset_match = configured.as_ref().and_then(|configured| {
+                rows.iter().position(
+                    |row| matches!(row, ModelPickRow::Preset(preset) if preset == configured),
+                )
+            });
+            // Highlight the configured model if it matches a known preset;
+            // otherwise land on `Custom` with the configured value ready to
+            // edit, so the picker never silently hides an existing override.
+            let (selected, custom_input) = match (preset_match, &configured) {
+                (Some(index), _) => (index, String::new()),
+                (None, Some(configured)) => (rows.len() - 1, configured.clone()),
+                (None, None) => (0, String::new()),
+            };
+            if let AppMode::PrReview(state) = &mut self.mode {
+                state.ai_model_pick = Some(AiModelPickState {
+                    rows,
+                    selected,
+                    custom_input,
+                    editing_custom: false,
+                });
+            }
+            return;
         }
         self.begin_ai_pr_review();
     }
@@ -2395,6 +2462,7 @@ impl App {
             return;
         };
         origin.ai_harness_pick = None;
+        origin.ai_model_pick = None;
         origin.harness_pick = None;
         origin.fix_confirm = None;
         origin.reply = None;
@@ -2402,11 +2470,22 @@ impl App {
 
         let workdir = origin.workdir.clone();
         let number = origin.review.pr.number;
+        // The pane's own pick (from the model picker) takes priority over the
+        // `AppConfig::review_model` default it was seeded from — picking
+        // "Default" in the picker clears it back to `None` explicitly.
+        let model = origin
+            .ai_review_model
+            .clone()
+            .or_else(|| self.config.review_model.clone());
         self.log_info(
             "pr_review",
             format!(
-                "starting AI review of PR #{number} with {}",
-                harness.display_name()
+                "starting AI review of PR #{number} with {}{}",
+                harness.display_name(),
+                model
+                    .as_deref()
+                    .map(|m| format!(" (model: {m})"))
+                    .unwrap_or_default()
             ),
         );
 
@@ -2415,7 +2494,6 @@ impl App {
             review_memory::review_memory_path(&repo, self.config.review_memory_path.as_deref());
         let memory = std::fs::read_to_string(&memory_path).unwrap_or_default();
         let skill = self.config.ai_review_skill.clone();
-        let model = self.config.review_model.clone();
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.ai_review_bg = Some(rx);
@@ -2482,6 +2560,118 @@ impl App {
             "AI reviews will run with {}",
             chosen.display_name()
         ));
+        // Re-enter the same start-up chain rather than jumping straight to
+        // `begin_ai_pr_review`: with a harness now chosen but no model picked
+        // yet, this opens the model picker next.
+        self.start_ai_pr_review();
+    }
+
+    pub fn pr_review_ai_model_picking(&self) -> bool {
+        matches!(&self.mode, AppMode::PrReview(state) if state.ai_model_pick.is_some())
+    }
+
+    /// Whether the model picker's `Custom` row is currently open for
+    /// free-text entry, so the key handler can route chars/backspace to it
+    /// instead of list navigation.
+    pub fn pr_review_ai_model_pick_editing_custom(&self) -> bool {
+        matches!(&self.mode, AppMode::PrReview(state)
+            if state.ai_model_pick.as_ref().is_some_and(|pick| pick.editing_custom))
+    }
+
+    pub fn pr_review_ai_model_pick_move(&mut self, delta: isize) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.ai_model_pick
+            && !pick.editing_custom
+            && !pick.rows.is_empty()
+        {
+            let len = pick.rows.len() as isize;
+            pick.selected = ((pick.selected as isize + delta).rem_euclid(len)) as usize;
+        }
+    }
+
+    /// `esc`: while typing a custom model, back out to the row list without
+    /// losing what's typed so far; otherwise cancel the picker outright
+    /// (the harness stays chosen — pressing `A` again reopens this step).
+    pub fn pr_review_ai_model_pick_cancel(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.ai_model_pick
+        {
+            if pick.editing_custom {
+                pick.editing_custom = false;
+            } else {
+                state.ai_model_pick = None;
+            }
+        }
+    }
+
+    pub fn pr_review_ai_model_pick_push_char(&mut self, c: char) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.ai_model_pick
+            && pick.editing_custom
+        {
+            pick.custom_input.push(c);
+        }
+    }
+
+    pub fn pr_review_ai_model_pick_backspace(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.ai_model_pick
+            && pick.editing_custom
+        {
+            pick.custom_input.pop();
+        }
+    }
+
+    /// `⏎`: on `Default`/a `Preset` row, applies the choice and proceeds to
+    /// the review. On `Custom`, the first `⏎` opens the text field; a second
+    /// `⏎` (while editing) submits the typed model (falling back to `Default`
+    /// if left blank).
+    pub fn pr_review_ai_model_pick_confirm(&mut self) {
+        let row = match &self.mode {
+            AppMode::PrReview(state) => state
+                .ai_model_pick
+                .as_ref()
+                .and_then(|pick| pick.rows.get(pick.selected).cloned()),
+            _ => return,
+        };
+        let Some(row) = row else {
+            return;
+        };
+        let editing_custom = matches!(&self.mode, AppMode::PrReview(state) if state.ai_model_pick.as_ref().is_some_and(|p| p.editing_custom));
+
+        let chosen: Option<String> = match row {
+            ModelPickRow::Default => None,
+            ModelPickRow::Preset(name) => Some(name.to_string()),
+            ModelPickRow::Custom if !editing_custom => {
+                if let AppMode::PrReview(state) = &mut self.mode
+                    && let Some(pick) = &mut state.ai_model_pick
+                {
+                    pick.editing_custom = true;
+                }
+                return;
+            }
+            ModelPickRow::Custom => {
+                let typed = match &self.mode {
+                    AppMode::PrReview(state) => state
+                        .ai_model_pick
+                        .as_ref()
+                        .map(|pick| pick.custom_input.trim().to_string())
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                (!typed.is_empty()).then_some(typed)
+            }
+        };
+
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.ai_review_model = chosen.clone();
+            state.ai_review_model_picked = true;
+            state.ai_model_pick = None;
+        }
+        self.push_toast_success(match &chosen {
+            Some(model) => format!("AI reviews will use model: {model}"),
+            None => "AI reviews will use the harness's default model".to_string(),
+        });
         self.begin_ai_pr_review();
     }
 
@@ -5285,6 +5475,30 @@ mod tests {
     fn ai_review_prompt_omits_empty_memory_section() {
         let prompt = ai_review_prompt("diff", "   \n", None);
         assert!(!prompt.contains("Known recurring findings"));
+    }
+
+    #[test]
+    fn model_pick_rows_offers_verified_presets_for_claude_only() {
+        let claude_rows = model_pick_rows(&AgentKind::Claude);
+        assert_eq!(
+            claude_rows,
+            vec![
+                ModelPickRow::Default,
+                ModelPickRow::Preset("sonnet"),
+                ModelPickRow::Preset("opus"),
+                ModelPickRow::Preset("haiku"),
+                ModelPickRow::Preset("fable"),
+                ModelPickRow::Custom,
+            ]
+        );
+
+        for harness in [AgentKind::Codex, AgentKind::Opencode, AgentKind::Pi] {
+            assert_eq!(
+                model_pick_rows(&harness),
+                vec![ModelPickRow::Default, ModelPickRow::Custom],
+                "{harness:?} shouldn't get unverified presets"
+            );
+        }
     }
 
     #[test]

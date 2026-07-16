@@ -8509,6 +8509,9 @@ fn enter_pr_review(app: &mut App, n: u64) {
         review_harness: None,
         ai_review_harness: None,
         ai_harness_pick: None,
+        ai_review_model: None,
+        ai_review_model_picked: false,
+        ai_model_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -8790,6 +8793,9 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         review_harness: None,
         ai_review_harness: None,
         ai_harness_pick: None,
+        ai_review_model: None,
+        ai_review_model_picked: false,
+        ai_model_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -9055,10 +9061,12 @@ fn start_ai_pr_review_stashes_origin_with_dialogs_cleared_and_enters_running_mod
         AppMode::PrReview(state) => assert!(state.memory_add.is_some()),
         _ => panic!("expected PrReview"),
     }
-    // The harness picker is covered separately; seed the remembered choice to
-    // exercise the background lifecycle this regression test owns.
+    // The harness and model pickers are covered separately; seed both
+    // remembered choices to exercise the background lifecycle this
+    // regression test owns.
     if let AppMode::PrReview(state) = &mut app.mode {
         state.ai_review_harness = Some(AgentKind::Claude);
+        state.ai_review_model_picked = true;
     }
 
     app.start_ai_pr_review();
@@ -9142,6 +9150,215 @@ fn cancelling_ai_review_harness_picker_spends_nothing_and_keeps_choice_unset() {
         AppMode::PrReview(state) => {
             assert!(state.ai_harness_pick.is_none());
             assert!(state.ai_review_harness.is_none());
+        }
+        _ => panic!("expected PrReview"),
+    }
+    assert!(app.ai_review_bg.is_none());
+}
+
+#[test]
+fn harness_already_chosen_opens_the_model_picker_next() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Claude);
+    }
+
+    app.start_ai_pr_review();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let pick = state
+                .ai_model_pick
+                .as_ref()
+                .expect("harness chosen but no model picked yet should open the model picker");
+            assert_eq!(pick.rows[0], ModelPickRow::Default);
+            assert!(!pick.editing_custom);
+            assert!(state.ai_review_model.is_none());
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(
+        app.ai_review_bg.is_none(),
+        "picker must pause before token spend"
+    );
+}
+
+fn pr_review_test_app_with_repo_root() -> App {
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|path| Ok(path.to_path_buf()));
+    App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree))
+}
+
+#[test]
+fn pi_harness_skips_the_model_picker_since_its_headless_model_flag_isnt_verified() {
+    let mut app = pr_review_test_app_with_repo_root();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Pi);
+    }
+
+    app.start_ai_pr_review();
+
+    assert!(
+        app.ai_review_bg.is_some(),
+        "Pi should skip straight to the review"
+    );
+    match &app.ai_review_pending {
+        Some(pending) => {
+            assert!(pending.ai_model_pick.is_none());
+            assert!(pending.ai_review_model.is_none());
+            assert!(pending.ai_review_model_picked);
+        }
+        None => panic!("expected ai_review_pending to be set"),
+    }
+}
+
+#[test]
+fn model_pick_default_row_proceeds_with_no_explicit_model() {
+    let mut app = pr_review_test_app_with_repo_root();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Claude);
+    }
+    app.start_ai_pr_review();
+    assert!(app.pr_review_ai_model_picking());
+
+    app.pr_review_ai_model_pick_confirm();
+
+    assert!(app.ai_review_bg.is_some());
+    let pending = app.ai_review_pending.as_ref().expect("pending review");
+    assert!(pending.ai_review_model.is_none());
+    assert!(pending.ai_review_model_picked);
+    assert!(pending.ai_model_pick.is_none());
+}
+
+#[test]
+fn model_pick_preset_row_sets_the_chosen_model() {
+    let mut app = pr_review_test_app_with_repo_root();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Claude);
+    }
+    app.start_ai_pr_review();
+    // rows: [Default, sonnet, opus, haiku, fable, Custom] — move to "opus".
+    app.pr_review_ai_model_pick_move(1);
+    app.pr_review_ai_model_pick_move(1);
+
+    app.pr_review_ai_model_pick_confirm();
+
+    assert!(app.ai_review_bg.is_some());
+    let pending = app.ai_review_pending.as_ref().expect("pending review");
+    assert_eq!(pending.ai_review_model.as_deref(), Some("opus"));
+}
+
+#[test]
+fn model_pick_custom_row_requires_a_second_confirm_to_submit_typed_text() {
+    let mut app = pr_review_test_app_with_repo_root();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Claude);
+    }
+    app.start_ai_pr_review();
+    // rows: [Default, sonnet, opus, haiku, fable, Custom] — move to "Custom".
+    for _ in 0..5 {
+        app.pr_review_ai_model_pick_move(1);
+    }
+
+    // First confirm opens the text field rather than submitting anything.
+    app.pr_review_ai_model_pick_confirm();
+    assert!(app.pr_review_ai_model_picking());
+    assert!(app.ai_review_bg.is_none());
+
+    for c in "gpt-5.5".chars() {
+        app.pr_review_ai_model_pick_push_char(c);
+    }
+    app.pr_review_ai_model_pick_backspace();
+    app.pr_review_ai_model_pick_push_char('5');
+
+    app.pr_review_ai_model_pick_confirm();
+
+    assert!(app.ai_review_bg.is_some());
+    let pending = app.ai_review_pending.as_ref().expect("pending review");
+    assert_eq!(pending.ai_review_model.as_deref(), Some("gpt-5.5"));
+}
+
+#[test]
+fn model_pick_custom_row_with_blank_text_falls_back_to_default() {
+    let mut app = pr_review_test_app_with_repo_root();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Claude);
+    }
+    app.start_ai_pr_review();
+    for _ in 0..5 {
+        app.pr_review_ai_model_pick_move(1);
+    }
+    app.pr_review_ai_model_pick_confirm(); // open the text field
+    app.pr_review_ai_model_pick_push_char(' ');
+
+    app.pr_review_ai_model_pick_confirm(); // submit blank (whitespace-only)
+
+    assert!(app.ai_review_bg.is_some());
+    let pending = app.ai_review_pending.as_ref().expect("pending review");
+    assert!(pending.ai_review_model.is_none());
+}
+
+#[test]
+fn model_pick_esc_while_editing_custom_returns_to_the_list_without_closing() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Claude);
+    }
+    app.start_ai_pr_review();
+    for _ in 0..5 {
+        app.pr_review_ai_model_pick_move(1);
+    }
+    app.pr_review_ai_model_pick_confirm(); // open the text field
+    app.pr_review_ai_model_pick_push_char('x');
+
+    app.pr_review_ai_model_pick_cancel();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let pick = state
+                .ai_model_pick
+                .as_ref()
+                .expect("esc from custom-edit should return to the list, not close the picker");
+            assert!(!pick.editing_custom);
+            assert_eq!(pick.custom_input, "x", "typed text is kept, not discarded");
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(app.ai_review_bg.is_none());
+}
+
+#[test]
+fn model_pick_cancel_from_the_list_closes_without_picking_or_spending() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Claude);
+    }
+    app.start_ai_pr_review();
+
+    app.pr_review_ai_model_pick_cancel();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.ai_model_pick.is_none());
+            assert!(!state.ai_review_model_picked);
         }
         _ => panic!("expected PrReview"),
     }
@@ -10483,6 +10700,9 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         review_harness: None,
         ai_review_harness: None,
         ai_harness_pick: None,
+        ai_review_model: None,
+        ai_review_model_picked: false,
+        ai_model_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -10554,6 +10774,9 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         review_harness: None,
         ai_review_harness: None,
         ai_harness_pick: None,
+        ai_review_model: None,
+        ai_review_model_picked: false,
+        ai_model_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -10999,6 +11222,9 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         review_harness: None,
         ai_review_harness: None,
         ai_harness_pick: None,
+        ai_review_model: None,
+        ai_review_model_picked: false,
+        ai_model_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,

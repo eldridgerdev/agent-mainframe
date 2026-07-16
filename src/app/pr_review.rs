@@ -4423,10 +4423,7 @@ mod tests {
         let repo = tempfile::TempDir::new().unwrap();
         git_repo_with_history(repo.path(), "src/file.rs", &["one line\n"]);
 
-        assert_eq!(
-            commit_touching_line(repo.path(), "src/file.rs", 999),
-            None
-        );
+        assert_eq!(commit_touching_line(repo.path(), "src/file.rs", 999), None);
     }
 
     #[test]

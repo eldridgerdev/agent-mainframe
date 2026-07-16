@@ -57,6 +57,27 @@ are tagged.
   file's most recent commit, and only falls back to bare `HEAD` — flagged
   "(latest commit)" — when neither search finds anything.
 
+### Changed
+
+- **Review Mode uses noticeably fewer tokens.** Three independent cuts to
+  the same feature: (1) the `.claude/review-notes.md` instruction injected
+  into `CLAUDE.local.md` used to ask the agent to write a note before
+  *every* Edit/Write, doubling the write operations on a multi-file task —
+  it now asks for one note per touched file at the end of each logical
+  batch of changes instead (note format unchanged, so existing tooling
+  still parses it fine). (2) Final review's walkthrough (`w`), AI
+  co-review (`A`), and changeset overview (`O`) previously always ran on
+  the CLI's default model with no override, unlike PR Triage's AI review —
+  they now honor the existing `review_model` config setting too, so you
+  can point these bounded, single-purpose passes at a cheaper model. (3)
+  `.claude/final-review-feedback.md` kept every review round forever even
+  though only the newest round is ever read (by the agent or by AMF's own
+  parsing) — on a long-lived feature this meant re-reading the whole
+  accumulated history every round for nothing. The live file now keeps
+  just the newest 2 rounds; older ones move to a new, gitignored
+  `.claude/final-review-feedback-archive.md` so history is preserved
+  without the ongoing read cost. No migration required.
+
 ### Fixed
 
 - **The ambient PR badge disappeared while composing.** The badge was only
@@ -87,7 +108,10 @@ are tagged.
   `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
 - Model selection independent of agent harness: allow per-action model selection
   (e.g. powerful model for AI review, cheaper model for reply drafts) via config
-  map that falls back to harness default.
+  map that falls back to harness default. (Partial: final review's walkthrough /
+  AI co-review / changeset overview now reuse the single `review_model` setting —
+  still open is letting different actions pick genuinely different models rather
+  than sharing one.)
 
 ## [v0.30.1] - 2026-07-14
 

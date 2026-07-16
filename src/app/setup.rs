@@ -1071,6 +1071,7 @@ pub fn ensure_notification_hooks(
     ensure_gitignore_entry(&claude_gitignore, "notifications/");
     ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
     ensure_gitignore_entry(&claude_gitignore, "final-review-feedback.md");
+    ensure_gitignore_entry(&claude_gitignore, "final-review-feedback-archive.md");
     ensure_gitignore_entry(&claude_gitignore, "latest-prompt.txt");
     ensure_gitignore_entry(&claude_gitignore, "skills/amf-*/");
 
@@ -1179,20 +1180,21 @@ pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
     const BLOCK: &str = concat!(
         "<!-- AMF:review-instructions:begin -->\n\n",
         "## Review Mode\n\n",
-        "You are in **REVIEW MODE**. Before making any file ",
-        "change (Edit or Write), append a note to ",
-        "`.claude/review-notes.md` explaining:\n\n",
-        "- The relative path of the file you are changing\n",
-        "- What you are changing and why\n",
-        "- How it fits the overall approach\n\n",
-        "Use this exact format:\n\n",
+        "You are in **REVIEW MODE**. When you finish a logical ",
+        "batch of related changes (not after every individual ",
+        "Edit/Write — batch it), append one section per file you ",
+        "touched in that batch to `.claude/review-notes.md`. Keep ",
+        "each note to 1-2 sentences: what changed and why. Skip a ",
+        "file if it already has a note from an earlier batch and ",
+        "there is nothing new to add.\n\n",
+        "Use this exact format per file:\n\n",
         "```\n",
         "## <relative-file-path> — <brief title>\n\n",
-        "<your explanation>\n\n",
+        "<1-2 sentence explanation>\n\n",
         "---\n",
         "```\n\n",
-        "Write the note BEFORE the edit so the reviewer can\n",
-        "see your reasoning when the diff appears.\n\n",
+        "Batching keeps the reviewer's context of your reasoning\n",
+        "without a round-trip per edit.\n\n",
         "<!-- AMF:review-instructions:end -->\n",
     );
 

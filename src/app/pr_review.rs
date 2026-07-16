@@ -20,7 +20,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::claude::ClaudeLauncher;
 use crate::editor::TextEditor;
 use crate::github::{
     GhCli, IssueComment, PrListEntry, PrRef, PrResolution, PrReviewComment as GhPrReviewComment,
@@ -47,6 +46,13 @@ const LEGACY_REVIEW_SESSION_LABEL: &str = "PR Review";
 /// set bounded"). They gate a warning, not the action.
 const BATCH_COMBINED_COMMENT_WARN: usize = 15;
 const BATCH_COMBINED_TOKEN_WARN: usize = 6000;
+
+/// Soft ceiling on the AI review's assembled prompt (diff + memory doc +
+/// instructions), mirroring [`BATCH_COMBINED_TOKEN_WARN`]: past this, a
+/// warning toast fires once the token estimate is known, but the review
+/// still runs — chunking or an outright refusal isn't worth the complexity
+/// until real use shows it's needed.
+const AI_REVIEW_PROMPT_TOKEN_WARN: usize = 40_000;
 
 /// Categories offered in the "add to memory" dialog (`Tab` cycles), matching
 /// the examples in the review-memory doc's own header template. `General` is
@@ -1567,6 +1573,7 @@ fn run_review_memory_bootstrap(
     workdir: PathBuf,
     memory_path: PathBuf,
     entries: Vec<PrListEntry>,
+    model: Option<String>,
     tx: std::sync::mpsc::Sender<BootstrapProgress>,
 ) {
     let mut pr_bodies = Vec::new();
@@ -1593,19 +1600,20 @@ fn run_review_memory_bootstrap(
         token_estimate: estimate_tokens(&prompt),
     });
 
-    let result = ClaudeLauncher::run_headless(&workdir, &prompt).and_then(|output| {
-        let findings = review_memory::parse_findings_markdown(&output);
-        let mut appended = 0;
-        for (category, finding) in &findings {
-            if review_memory::append_finding(&memory_path, category, finding)? {
-                appended += 1;
+    let result = HeadlessRunner::run(&AgentKind::Claude, &workdir, &prompt, model.as_deref())
+        .and_then(|output| {
+            let findings = review_memory::parse_findings_markdown(&output);
+            let mut appended = 0;
+            for (category, finding) in &findings {
+                if review_memory::append_finding(&memory_path, category, finding)? {
+                    appended += 1;
+                }
             }
-        }
-        Ok(BootstrapOutcome {
-            pr_count: pr_bodies.len(),
-            appended,
-        })
-    });
+            Ok(BootstrapOutcome {
+                pr_count: pr_bodies.len(),
+                appended,
+            })
+        });
     let _ = tx.send(BootstrapProgress::Done(result));
 }
 
@@ -1613,13 +1621,16 @@ fn run_review_memory_bootstrap(
 /// assemble the prompt from `diff` + `memory` (+ optional `skill`), report a
 /// token estimate, then make **one** headless agent pass and parse its
 /// response into findings. Runs off the UI thread; progress and the final
-/// result are reported over `tx`.
+/// result are reported over `tx`. `model`, when set (`AppConfig::review_model`),
+/// picks the review's model independent of whichever model the feature's
+/// interactive session runs.
 fn run_ai_pr_review(
     harness: AgentKind,
     workdir: PathBuf,
     diff: String,
     memory: String,
     skill: Option<String>,
+    model: Option<String>,
     tx: std::sync::mpsc::Sender<AiReviewProgress>,
 ) {
     let prompt = ai_review_prompt(&diff, &memory, skill.as_deref());
@@ -1627,7 +1638,7 @@ fn run_ai_pr_review(
         token_estimate: estimate_tokens(&prompt),
     });
 
-    let result = HeadlessRunner::run(&harness, &workdir, &prompt).map(|output| {
+    let result = HeadlessRunner::run(&harness, &workdir, &prompt, model.as_deref()).map(|output| {
         let mut findings = parse_ai_findings(&output);
         // Attach each anchored finding's diff hunk by re-matching its
         // `path:line` into the already-fetched PR diff — nothing about
@@ -2404,13 +2415,14 @@ impl App {
             review_memory::review_memory_path(&repo, self.config.review_memory_path.as_deref());
         let memory = std::fs::read_to_string(&memory_path).unwrap_or_default();
         let skill = self.config.ai_review_skill.clone();
+        let model = self.config.review_model.clone();
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.ai_review_bg = Some(rx);
         self.ai_review_pending = Some(origin.clone());
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || match GhCli::pr_diff(&thread_workdir, number) {
-            Ok(diff) => run_ai_pr_review(harness, thread_workdir, diff, memory, skill, tx),
+            Ok(diff) => run_ai_pr_review(harness, thread_workdir, diff, memory, skill, model, tx),
             Err(e) => {
                 let _ = tx.send(AiReviewProgress::Done(Err(e)));
             }
@@ -2486,11 +2498,19 @@ impl App {
             return false;
         };
         let mut changed = false;
+        // Deferred past the loop: `rx` borrows `self.ai_review_bg` for every
+        // iteration, so a toast (which needs `&mut self`) can't be pushed
+        // from inside a non-terminal arm without conflicting with that
+        // borrow.
+        let mut large_diff_warning: Option<usize> = None;
         loop {
             match rx.try_recv() {
                 Ok(AiReviewProgress::Reviewing { token_estimate }) => {
                     if let AppMode::AiPrReviewRunning(state) = &mut self.mode {
                         state.stage = AiReviewStage::Reviewing { token_estimate };
+                    }
+                    if token_estimate > AI_REVIEW_PROMPT_TOKEN_WARN {
+                        large_diff_warning = Some(token_estimate);
                     }
                     changed = true;
                 }
@@ -2699,6 +2719,11 @@ impl App {
                     break;
                 }
             }
+        }
+        if let Some(token_estimate) = large_diff_warning {
+            self.push_toast_warning(format!(
+                "Large diff: ~{token_estimate} tokens in this review — may exceed the agent's context window"
+            ));
         }
         changed
     }
@@ -4197,11 +4222,12 @@ impl App {
             ),
         );
 
+        let model = self.config.review_model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         self.review_memory_bootstrap_bg = Some(rx);
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || {
-            run_review_memory_bootstrap(thread_workdir, memory_path, entries, tx);
+            run_review_memory_bootstrap(thread_workdir, memory_path, entries, model, tx);
         });
 
         self.mode = AppMode::ReviewMemoryBootstrapRunning(BootstrapRunState {

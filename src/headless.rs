@@ -16,6 +16,9 @@ pub struct HeadlessRunner;
 struct HeadlessCommand {
     binary: String,
     args: Vec<&'static str>,
+    /// Args that must stay last (e.g. Codex's trailing `-` stdin marker). An
+    /// optional `--model <name>` is inserted between `args` and `trailing`.
+    trailing: Vec<&'static str>,
 }
 
 /// Long flags `command_for(Codex)` relies on. Older Codex releases reject
@@ -48,9 +51,20 @@ impl HeadlessRunner {
         }
     }
 
-    pub fn run(harness: &AgentKind, workdir: &Path, prompt: &str) -> Result<String> {
+    /// `model`, when set, is passed as an explicit `--model <name>` (the
+    /// flag name/format every harness but Pi shares) so a caller — e.g. PR
+    /// Triage's AI review — can pick a model independent of whatever the
+    /// feature's interactive session runs. Pi's headless model flag isn't
+    /// verified (mirrors `check_available`'s existing Pi caution), so a
+    /// requested model is silently not applied there rather than guessed at.
+    pub fn run(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> Result<String> {
         let spec = command_for(harness);
-        run_command(harness, &spec, workdir, prompt)
+        run_command(harness, &spec, workdir, prompt, model)
     }
 
     /// Pick the engine for a plan interview.
@@ -130,14 +144,41 @@ fn select_interview_harness_with(
         .find(|harness| is_available(harness))
 }
 
+/// Harnesses whose headless CLI accepts `--model <name>`. Pi's headless model
+/// support isn't verified, so it's excluded rather than guessed at.
+fn supports_model_flag(harness: &AgentKind) -> bool {
+    match harness {
+        AgentKind::Claude | AgentKind::Codex | AgentKind::Opencode => true,
+        AgentKind::Pi => false,
+    }
+}
+
+/// `spec.args`, then an optional `--model <name>` (only for harnesses where
+/// [`supports_model_flag`] holds), then `spec.trailing` — e.g. Codex's `-`
+/// stdin marker must stay last.
+fn assemble_args(harness: &AgentKind, spec: &HeadlessCommand, model: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = spec.args.iter().map(|arg| arg.to_string()).collect();
+    if let Some(model) = model
+        && supports_model_flag(harness)
+    {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    args.extend(spec.trailing.iter().map(|arg| arg.to_string()));
+    args
+}
+
 fn run_command(
     harness: &AgentKind,
     spec: &HeadlessCommand,
     workdir: &Path,
     prompt: &str,
+    model: Option<&str>,
 ) -> Result<String> {
+    let args = assemble_args(harness, spec, model);
+
     let mut child = Command::new(&spec.binary)
-        .args(&spec.args)
+        .args(&args)
         .current_dir(workdir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -190,6 +231,7 @@ fn command_for(harness: &AgentKind) -> HeadlessCommand {
         AgentKind::Claude => HeadlessCommand {
             binary: crate::claude::ClaudeLauncher::resolve_binary(),
             args: vec!["-p", "--output-format", "text"],
+            trailing: vec![],
         },
         AgentKind::Codex => HeadlessCommand {
             binary: "codex".into(),
@@ -201,16 +243,20 @@ fn command_for(harness: &AgentKind) -> HeadlessCommand {
                 "--skip-git-repo-check",
                 "--color",
                 "never",
-                "-",
             ],
+            // Codex reads the prompt from stdin only when `-` is the final
+            // positional arg; an inserted `--model` must land before it.
+            trailing: vec!["-"],
         },
         AgentKind::Opencode => HeadlessCommand {
             binary: "opencode".into(),
             args: vec!["run"],
+            trailing: vec![],
         },
         AgentKind::Pi => HeadlessCommand {
             binary: "pi".into(),
             args: vec!["-p"],
+            trailing: vec![],
         },
     }
 }
@@ -237,22 +283,24 @@ mod tests {
                     "--skip-git-repo-check",
                     "--color",
                     "never",
-                    "-",
-                ]
+                ],
+                trailing: vec!["-"],
             }
         );
         assert_eq!(
             command_for(&AgentKind::Opencode),
             HeadlessCommand {
                 binary: "opencode".into(),
-                args: vec!["run"]
+                args: vec!["run"],
+                trailing: vec![],
             }
         );
         assert_eq!(
             command_for(&AgentKind::Pi),
             HeadlessCommand {
                 binary: "pi".into(),
-                args: vec!["-p"]
+                args: vec!["-p"],
+                trailing: vec![],
             }
         );
     }
@@ -262,8 +310,9 @@ mod tests {
         let spec = HeadlessCommand {
             binary: "sh".into(),
             args: vec!["-c", "read input; printf 'received:%s' \"$input\""],
+            trailing: vec![],
         };
-        let output = run_command(&AgentKind::Codex, &spec, Path::new("/tmp"), "hello")
+        let output = run_command(&AgentKind::Codex, &spec, Path::new("/tmp"), "hello", None)
             .expect("fake headless command should succeed");
         assert_eq!(output, "received:hello");
     }
@@ -273,15 +322,68 @@ mod tests {
         let spec = HeadlessCommand {
             binary: "sh".into(),
             args: vec!["-c", "printf 'quota exhausted' >&2; exit 9"],
+            trailing: vec![],
         };
         // Large enough that the early exit also breaks the stdin writer. The
         // provider's stderr must win over that secondary pipe error.
         let prompt = "x".repeat(1_000_000);
-        let error = run_command(&AgentKind::Opencode, &spec, Path::new("/tmp"), &prompt)
-            .unwrap_err()
-            .to_string();
+        let error = run_command(
+            &AgentKind::Opencode,
+            &spec,
+            Path::new("/tmp"),
+            &prompt,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("Opencode headless command failed"));
         assert!(error.contains("quota exhausted"));
+    }
+
+    #[test]
+    fn model_flag_is_appended_for_supported_harnesses_only() {
+        assert!(supports_model_flag(&AgentKind::Claude));
+        assert!(supports_model_flag(&AgentKind::Codex));
+        assert!(supports_model_flag(&AgentKind::Opencode));
+        assert!(!supports_model_flag(&AgentKind::Pi));
+    }
+
+    #[test]
+    fn assemble_args_inserts_model_before_trailing_stdin_marker() {
+        let spec = command_for(&AgentKind::Codex);
+        assert_eq!(
+            assemble_args(&AgentKind::Codex, &spec, Some("gpt-5.5")),
+            [
+                "exec",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+                "--model",
+                "gpt-5.5",
+                "-",
+            ]
+        );
+    }
+
+    #[test]
+    fn assemble_args_omits_model_flag_for_pi() {
+        let spec = command_for(&AgentKind::Pi);
+        assert_eq!(
+            assemble_args(&AgentKind::Pi, &spec, Some("some-model")),
+            ["-p"]
+        );
+    }
+
+    #[test]
+    fn assemble_args_is_unchanged_when_no_model_requested() {
+        let spec = command_for(&AgentKind::Claude);
+        assert_eq!(
+            assemble_args(&AgentKind::Claude, &spec, None),
+            ["-p", "--output-format", "text"]
+        );
     }
 
     #[test]

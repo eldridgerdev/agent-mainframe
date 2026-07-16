@@ -441,6 +441,16 @@ pub struct AppConfig {
     /// PR diff, so the feature must work without assuming one is installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_review_skill: Option<String>,
+    /// Explicit model name/id passed as `--model` to the headless CLI for AI
+    /// PR review (`A`) and the review-memory lookback bootstrap (Epic E of
+    /// `pr-comment-review-plan.md`), independent of whatever model the
+    /// feature's own interactive session runs. Format depends on the harness
+    /// running the review (a bare name/alias for Claude/Codex, `provider/model`
+    /// for Opencode; not applied for Pi, whose headless model flag isn't
+    /// verified). `None` (default) passes no explicit model, so the harness's
+    /// own default model applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_model: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -498,6 +508,7 @@ impl Default for AppConfig {
             final_review_post_to_pr: false,
             review_memory_path: None,
             ai_review_skill: None,
+            review_model: None,
         }
     }
 }

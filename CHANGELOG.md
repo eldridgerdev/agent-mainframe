@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **PR Triage's AI review can use a different model than the working
+  session.** A new `review_model` config setting is passed as `--model
+  <name>` to whichever harness runs `A` (AI review) and the review-memory
+  lookback bootstrap — e.g. a stronger/slower model to catch subtleties,
+  independent of whatever model the feature's interactive session uses.
+  Format depends on the harness (a bare name/alias for Claude/Codex,
+  `provider/model` for Opencode); unset (the default) passes no explicit
+  model, so the harness's own default applies. Not supported for Pi, whose
+  headless model flag isn't verified.
 - **Open PR Triage from inside the agent session, with an ambient status
   indicator.** Previously `G` only worked from the dashboard; getting to PR
   Triage from a live session meant exiting the view first. `leader G` now

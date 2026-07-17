@@ -9,8 +9,9 @@
   `review_model`, caps `final-review-feedback.md` with an archive file, and
   batches REVIEW MODE's note instruction per turn. The rest of the
   loop-closing, viewer-ergonomics, AI co-review,
-  and workflow items are not yet started. Two Cost follow-ups (per-action
-  model overrides, capping `review-notes.md` the same way) are added below.
+  and workflow items are not yet started. Three Cost follow-ups (per-action
+  model overrides, capping `review-notes.md` the same way, and measuring the
+  most token-efficient way to dispatch review fixes) are added below.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -783,6 +784,30 @@ Cost:
       round). Likely the same shape as `split_overflow_rounds`: keep the
       newest N files' notes (or notes from the last N review rounds) live,
       move the rest to a gitignored `.claude/review-notes-archive.md`.
+- [ ] Investigate and implement the most token-efficient strategy for
+      dispatching review comments to fixing agents. Benchmark at least four
+      shapes on small, medium, and very large review rounds: one fresh agent per
+      comment, one agent per file, batches of related comments, and one agent
+      for the whole round. Measure total input/output tokens, repeated
+      repository/bootstrap context, wall-clock time, fix quality, and edit
+      conflicts — a separate agent for every comment may parallelize well, but
+      can waste tokens by rebuilding the same context and can race when several
+      comments touch the same file or behavior. The likely default to validate
+      is adaptive: batch comments on the same file or dependency together,
+      parallelize only independent batches, and cap concurrency.
+
+      Do not require every fixing agent to read a potentially huge
+      `.claude/final-review-feedback.md`. AMF already parses review state, so it
+      should be able to construct a minimal task packet containing only the
+      latest unresolved comment(s), severity, file/line or range, bounded diff
+      hunk and nearby context, relevant developer note/agent reply, and any
+      explicitly related comments. Compare that against reading the complete
+      latest round, including the effect of provider prompt caching. Preserve a
+      central round manifest so replies, resolutions, retries, and partial
+      failures still reconcile into the review file without each worker loading
+      or rewriting the whole document. Define size/token thresholds that switch
+      strategies automatically, while allowing the reviewer to override the
+      choice for unusually coupled changes.
 
 Viewer:
 

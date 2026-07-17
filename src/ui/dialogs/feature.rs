@@ -619,6 +619,12 @@ fn draw_create_feature_branch_mode(
             },
         ),
         Span::styled(format!("{} Final review log", review_check), review_style),
+        Span::styled(
+            " HIGH TOKEN USAGE",
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
     ])];
     let review_widget = Paragraph::new(review_lines);
     frame.render_widget(review_widget, chunks[8]);

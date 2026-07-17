@@ -3,13 +3,15 @@
 - **Status:** Rounds 1–2 shipped; Round 3 in backlog — every item under
   **Progress → Round 1** and **Round 2** is implemented and merged
   (most recently Round 2's file-level PR comments). **Round 3** (captured
-  2026-07-01) has started: interdiff on re-review, the "fixes ready —
-  re-review?" notification, and a **Cost** batch (bounded headless passes
-  honor `review_model`, `final-review-feedback.md` is capped with an
-  archive file, REVIEW MODE's note instruction is batched per turn) have
-  shipped; the rest of the loop-closing, viewer-ergonomics, AI co-review,
-  and workflow items are not yet started. Two Cost follow-ups (per-action
-  model overrides, capping `review-notes.md` the same way) are added below.
+  2026-07-01) has started: first-class file-level comments, interdiff on
+  re-review, the "fixes ready — re-review?" notification, and a **Cost** batch
+  have shipped. The Cost batch makes bounded headless passes honor
+  `review_model`, caps `final-review-feedback.md` with an archive file, and
+  batches REVIEW MODE's note instruction per turn. The rest of the
+  loop-closing, viewer-ergonomics, AI co-review,
+  and workflow items are not yet started. Three Cost follow-ups (per-action
+  model overrides, capping `review-notes.md` the same way, and measuring the
+  most token-efficient way to dispatch review fixes) are added below.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -278,6 +280,51 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
 
 #### Viewer ergonomics
 
+- **High priority: close / pause without finishing the review.** Review
+  progress is persisted, but there is no intentional way to leave the viewer
+  without completing the round: outside cursor/editor modes, both `q` and
+  `Esc` run the finish flow, which can write feedback, post to the PR, dispatch
+  fixes, clear progress, and replace the last-review snapshot. Add a distinct
+  close/pause action that returns to the feature view while preserving
+  `.claude/final-review-progress.json` exactly as-is and performs none of the
+  finish side effects. Make the difference between **pause** and **finish**
+  explicit in the footer/help and confirmation copy, and keep nested `Esc`
+  behavior predictable (dismiss editor/cursor/modal first, then pause from the
+  top-level viewer). Reopening Final Review must resume the same file,
+  decisions, comments, filters where applicable, and general feedback.
+- **Fix the layout toggle.** `v` should reliably switch the diff between
+  unified and side-by-side layouts and the footer should always describe the
+  layout actually being rendered. Today the binding can be shadowed by `v`'s
+  range-selection meaning while the line cursor is active, and added/untracked
+  files force unified layout by silently ignoring the toggle. Give layout and
+  range selection unambiguous bindings or mode-specific hints, avoid a silent
+  no-op for files that cannot render side-by-side, preserve the user's layout
+  preference when moving between ordinary and new files, and add handler/UI
+  coverage for toggling in final-review mode.
+- **Review-round timeline and history browser.** Add a compact timeline strip
+  such as `Round 1 ─ Round 2 ─ Current` so reviewers can move backward and
+  forward through the conversation instead of seeing only the latest round and
+  its replies. Left/right (or h/l) selects a round; the body is independently
+  scrollable and shows that round's verdicts, file/line comments, suggestions,
+  agent replies, check result, timestamp, and summary counts. Historical rounds
+  are read-only, while `Current` returns to the live editable review. Make long
+  histories horizontally scroll or window around the selected round, with a
+  clear marker for the current round and unresolved threads that carried
+  forward. Load older rounds lazily from
+  `.claude/final-review-feedback-archive.md` so this view does not undo the
+  existing live-file token cap; show an explicit limitation when an old round
+  lacks enough snapshot data to reconstruct its original diff, rather than
+  silently presenting today's diff as historical content.
+- **Hierarchical file tree + shorter Developer Notes panel.** Replace the flat
+  changed-file list with a directory-aware tree so files are grouped by path,
+  directories can be expanded/collapsed, and keyboard navigation can move
+  through the visible hierarchy without losing the existing verdict, comment,
+  risk, and changed-since-last-review markers. Keep filters working against
+  files while retaining the directories needed to show matching results. At
+  the same time, reduce the Developer Notes panel's default share of the right
+  column from about 40% to about 20% (half its current height), leaving more
+  room for the diff; the existing expand-notes action should still make it
+  full-height on demand.
 - **Expand context around hunks.** `DiffFile` already carries
   `old_content`/`new_content`, so GitHub-style "expand N lines
   above/below" (or a whole-file toggle) is mostly a rendering change.
@@ -652,11 +699,25 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
 
 Comments:
 
-- [ ] File-level comments — a verdict-free comment anchored to a whole file,
-      alongside the existing general and line comments (severity + thread
-      state, own file-list marker / `F` filter step, `### src/foo.rs` section
-      in the feedback file, posted via the already-shipped `subject_type: file`
-      PR path)
+- [x] File-level comments — press `m` in the final review to edit one
+      verdict-free comment anchored to the current file; unlike a rejection or
+      an open line comment, it never auto-rejects the file, so observations,
+      questions, nits and praise can coexist with an approve/skip verdict. The
+      comment carries the same conventional `Severity` and resolved/thread
+      state as line comments (`M` resolves/reopens it), persists in
+      `.claude/final-review-progress.json`, and is carried between finished
+      rounds in the review snapshot with an "unresolved from a previous round"
+      tag. File-list rows show `◆` for an open file thread and `◇` for a
+      resolved one; the `F` cycle gained a `File comments` step, while the
+      existing `Blockers` and `Unresolved` filters/counts include open file
+      threads. Finishing writes a dedicated `### File Comments` section with a
+      `#### src/foo.rs — [severity]` anchor and posts each open comment through
+      the already-shipped `GhCli::create_file_comment` /
+      `subject_type: file` path. Blocker file comments participate in PR event
+      escalation; resolved ones are retained for reopening but withheld from
+      feedback and PR posting. `FileComment` / `file_comments` in
+      `src/app/state.rs`; editor, persistence, finish and PR mapping in
+      `src/app/review.rs`.
 
 Loop:
 
@@ -758,9 +819,46 @@ Cost:
       round). Likely the same shape as `split_overflow_rounds`: keep the
       newest N files' notes (or notes from the last N review rounds) live,
       move the rest to a gitignored `.claude/review-notes-archive.md`.
+- [ ] Investigate and implement the most token-efficient strategy for
+      dispatching review comments to fixing agents. Benchmark at least four
+      shapes on small, medium, and very large review rounds: one fresh agent per
+      comment, one agent per file, batches of related comments, and one agent
+      for the whole round. Measure total input/output tokens, repeated
+      repository/bootstrap context, wall-clock time, fix quality, and edit
+      conflicts — a separate agent for every comment may parallelize well, but
+      can waste tokens by rebuilding the same context and can race when several
+      comments touch the same file or behavior. The likely default to validate
+      is adaptive: batch comments on the same file or dependency together,
+      parallelize only independent batches, and cap concurrency.
+
+      Do not require every fixing agent to read a potentially huge
+      `.claude/final-review-feedback.md`. AMF already parses review state, so it
+      should be able to construct a minimal task packet containing only the
+      latest unresolved comment(s), severity, file/line or range, bounded diff
+      hunk and nearby context, relevant developer note/agent reply, and any
+      explicitly related comments. Compare that against reading the complete
+      latest round, including the effect of provider prompt caching. Preserve a
+      central round manifest so replies, resolutions, retries, and partial
+      failures still reconcile into the review file without each worker loading
+      or rewriting the whole document. Define size/token thresholds that switch
+      strategies automatically, while allowing the reviewer to override the
+      choice for unusually coupled changes.
 
 Viewer:
 
+- [ ] **High priority:** close / pause Final Review without finishing — retain
+      persisted progress and return to the feature view without writing or
+      dispatching feedback, posting to the PR, clearing progress, or updating
+      the finished-review snapshot
+- [ ] Fix the `v` layout toggle so unified/side-by-side switching is reliable,
+      discoverable, and accurately labeled in review mode (including cursor
+      binding conflicts and added/untracked-file fallback behavior)
+- [ ] Review-round timeline/history browser (`Round 1 ─ Round 2 ─ Current`)
+      with round selection, a scrollable read-only summary, carried-thread
+      markers, and lazy access to archived rounds
+- [ ] Hierarchical, collapsible file tree for easier path-based navigation +
+      reduce the Developer Notes panel's default height from ~40% to ~20%
+      (preserve full-height expansion)
 - [ ] Expand context around hunks (old/new content already loaded)
 - [ ] Word-level intra-line diff highlighting + ignore-whitespace toggle
 - [ ] Global comment navigation across files + undo last verdict

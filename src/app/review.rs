@@ -65,6 +65,8 @@ struct ReviewProgress {
     #[serde(default)]
     line_comments: std::collections::HashMap<String, Vec<LineComment>>,
     #[serde(default)]
+    file_comments: std::collections::HashMap<String, FileComment>,
+    #[serde(default)]
     general_feedback: String,
     #[serde(default)]
     selected_file: usize,
@@ -105,6 +107,9 @@ struct ReviewSnapshot {
     /// Defaulted so snapshots written before this field load unchanged.
     #[serde(default)]
     threads: std::collections::HashMap<String, Vec<LineComment>>,
+    /// Whole-file threads carried across finished review rounds.
+    #[serde(default)]
+    file_threads: std::collections::HashMap<String, FileComment>,
     /// file path -> the file's `new_content` as it stood when this round
     /// finished. Used to compute an on-demand "since last review" interdiff
     /// for a changed file (`open_interdiff`) without re-reading history from
@@ -212,6 +217,7 @@ impl App {
             decisions: state.decisions.clone(),
             auto_rejected: state.auto_rejected.clone(),
             line_comments: state.line_comments.clone(),
+            file_comments: state.file_comments.clone(),
             general_feedback: state.general_feedback.clone(),
             selected_file: state.selected_file,
         };
@@ -327,6 +333,7 @@ impl App {
         files: &[crate::diff::DiffFile],
         decisions: &std::collections::HashMap<String, ReviewDecision>,
         line_comments: &std::collections::HashMap<String, Vec<LineComment>>,
+        file_comments: &std::collections::HashMap<String, FileComment>,
     ) {
         let snapshot = ReviewSnapshot {
             reviewed_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
@@ -356,6 +363,20 @@ impl App {
                         })
                         .collect();
                     (!kept.is_empty()).then(|| (f.path.clone(), kept))
+                })
+                .collect(),
+            file_threads: files
+                .iter()
+                .filter_map(|f| {
+                    file_comments.get(&f.path).map(|c| {
+                        (
+                            f.path.clone(),
+                            FileComment {
+                                carried: true,
+                                ..c.clone()
+                            },
+                        )
+                    })
                 })
                 .collect(),
             content: files
@@ -402,6 +423,7 @@ impl App {
         if !state.review
             || !state.decisions.is_empty()
             || !state.line_comments.is_empty()
+            || !state.file_comments.is_empty()
             || !state.general_feedback.is_empty()
         {
             return;
@@ -431,6 +453,22 @@ impl App {
                     (!live.is_empty()).then_some((path, live))
                 })
                 .collect();
+            state.file_comments = snapshot
+                .file_threads
+                .into_iter()
+                .filter(|(path, comment)| {
+                    known.contains(path.as_str()) && !(comment.resolved && comment.text.is_empty())
+                })
+                .map(|(path, comment)| {
+                    (
+                        path,
+                        FileComment {
+                            carried: true,
+                            ..comment
+                        },
+                    )
+                })
+                .collect();
             return;
         };
         state.decisions = progress
@@ -445,6 +483,11 @@ impl App {
             .collect();
         state.line_comments = progress
             .line_comments
+            .into_iter()
+            .filter(|(path, _)| known.contains(path.as_str()))
+            .collect();
+        state.file_comments = progress
+            .file_comments
             .into_iter()
             .filter(|(path, _)| known.contains(path.as_str()))
             .collect();
@@ -1872,6 +1915,91 @@ impl App {
         }
     }
 
+    /// Edit a verdict-free comment anchored to the current file. A file
+    /// comment is deliberately independent of approve/reject and therefore
+    /// never participates in the line-comment auto-reject rule.
+    pub fn diff_review_start_file_comment(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let Some(file) = state.files.get(state.selected_file) else {
+                return;
+            };
+            let existing = state.file_comments.get(&file.path);
+            state.comment_severity = existing.map(|c| c.severity).unwrap_or_default();
+            state.feedback_editor = crate::editor::TextEditor::new(
+                existing.map(|c| c.text.clone()).unwrap_or_default(),
+            );
+            state.feedback_scroll = 0;
+            state.feedback_sync_to_cursor = true;
+            state.editing_file_comment = true;
+            state.feedback_editing = false;
+            state.editing_general = false;
+            state.editing_line_comment = false;
+            state.editing_suggestion = false;
+        }
+    }
+
+    /// Store the current file comment; an empty editor deletes it. Editing a
+    /// carried or resolved thread re-opens it while retaining its round origin.
+    pub fn diff_review_submit_file_comment(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.editing_file_comment {
+                return;
+            }
+            let text = state.feedback_editor.text().trim().to_string();
+            if let Some(file) = state.files.get(state.selected_file) {
+                let path = file.path.clone();
+                if text.is_empty() {
+                    state.file_comments.remove(&path);
+                } else {
+                    let carried = state.file_comments.get(&path).is_some_and(|c| c.carried);
+                    state.file_comments.insert(
+                        path,
+                        FileComment {
+                            text,
+                            severity: state.comment_severity,
+                            resolved: false,
+                            carried,
+                        },
+                    );
+                }
+            }
+            state.editing_file_comment = false;
+            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+        }
+        self.persist_review_progress();
+    }
+
+    /// Resolve or re-open the current file's whole-file thread.
+    pub fn diff_review_toggle_file_comment_resolved(&mut self) -> bool {
+        let resolved = if let AppMode::DiffViewer(state) = &mut self.mode {
+            let Some(file) = state.files.get(state.selected_file) else {
+                return false;
+            };
+            let Some(comment) = state.file_comments.get_mut(&file.path) else {
+                self.message = Some("No file comment on this file".to_string());
+                return false;
+            };
+            comment.resolved = !comment.resolved;
+            Some(comment.resolved)
+        } else {
+            None
+        };
+        if let Some(resolved) = resolved {
+            self.message = Some(if resolved {
+                "File comment resolved".to_string()
+            } else {
+                "File comment re-opened".to_string()
+            });
+            self.persist_review_progress();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Store the typed general feedback. Unlike per-file rejection this does not
     /// advance the file selection.
     pub fn diff_review_submit_general_feedback(&mut self) {
@@ -1891,6 +2019,7 @@ impl App {
             state.feedback_editing = false;
             state.editing_general = false;
             state.editing_line_comment = false;
+            state.editing_file_comment = false;
             state.editing_suggestion = false;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
@@ -2046,6 +2175,14 @@ impl App {
                 return;
             }
             state.file_filter = state.file_filter.next();
+            if state.file_filter == FileFilter::FileComments
+                && !state
+                    .file_comments
+                    .values()
+                    .any(FileComment::is_open_thread)
+            {
+                state.file_filter = state.file_filter.next();
+            }
             // `Unresolved` is only meaningful when at least one open thread
             // exists; `Changed` only when a prior review exists to compare
             // against. Otherwise skip straight past them.
@@ -2216,27 +2353,36 @@ impl App {
     /// return to the feature view with a summary message, folding in the
     /// optional build/test-gate `check` outcome.
     fn complete_final_review(&mut self, check: Option<CheckOutcome>) -> Result<()> {
-        let (workdir, files, decisions, line_comments, general_feedback, from_view, fix_target) =
-            match std::mem::replace(&mut self.mode, AppMode::Normal) {
-                AppMode::DiffViewer(state) => (
-                    state.workdir,
-                    state.files,
-                    state.decisions,
-                    state.line_comments,
-                    state.general_feedback,
-                    state.from_view,
-                    state.fix_target,
-                ),
-                AppMode::DiffViewerLoading(state) => {
-                    // Diff not loaded yet; nothing to summarize.
-                    self.mode = AppMode::Viewing(state.from_view);
-                    return Ok(());
-                }
-                other => {
-                    self.mode = other;
-                    return Ok(());
-                }
-            };
+        let (
+            workdir,
+            files,
+            decisions,
+            line_comments,
+            file_comments,
+            general_feedback,
+            from_view,
+            fix_target,
+        ) = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::DiffViewer(state) => (
+                state.workdir,
+                state.files,
+                state.decisions,
+                state.line_comments,
+                state.file_comments,
+                state.general_feedback,
+                state.from_view,
+                state.fix_target,
+            ),
+            AppMode::DiffViewerLoading(state) => {
+                // Diff not loaded yet; nothing to summarize.
+                self.mode = AppMode::Viewing(state.from_view);
+                return Ok(());
+            }
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
 
         // The review is over; drop any saved progress so the next review for
         // this feature starts clean.
@@ -2244,7 +2390,7 @@ impl App {
         // …but record a fingerprint of what was reviewed (even an all-approved
         // round) so the next review can flag files that changed since.
         if !files.is_empty() {
-            self.save_review_snapshot(&workdir, &files, &decisions, &line_comments);
+            self.save_review_snapshot(&workdir, &files, &decisions, &line_comments, &file_comments);
         }
 
         let total = files.len();
@@ -2259,6 +2405,17 @@ impl App {
                 None => {}
             }
         }
+
+        let file_comment_sections: Vec<(String, FileComment)> = files
+            .iter()
+            .filter_map(|file| {
+                file_comments
+                    .get(&file.path)
+                    .filter(|comment| comment.is_open_thread())
+                    .cloned()
+                    .map(|comment| (file.path.clone(), comment))
+            })
+            .collect();
         let skipped = total
             .saturating_sub(approved)
             .saturating_sub(rejected.len());
@@ -2294,6 +2451,7 @@ impl App {
             && rejected.is_empty()
             && general_feedback.is_empty()
             && line_comment_sections.is_empty()
+            && file_comment_sections.is_empty()
         {
             self.message = Some(if total == 0 {
                 "Final review: no changes against the base branch".to_string()
@@ -2331,8 +2489,9 @@ impl App {
             round.push_str(&format!(
                 "**Files reviewed:** {total} | **Approved:** {approved} | \
                  **Needs work:** {} | **Skipped:** {skipped} | \
-                 **Line comments:** {line_comment_count}\n\n",
-                rejected.len()
+                 **File comments:** {} | **Line comments:** {line_comment_count}\n\n",
+                rejected.len(),
+                file_comment_sections.len()
             ));
 
             if let Some(c) = &check {
@@ -2373,6 +2532,22 @@ impl App {
                         round.push_str(feedback);
                         round.push_str("\n\n");
                     }
+                }
+            }
+
+            if !file_comment_sections.is_empty() {
+                round.push_str("### File Comments\n\n");
+                for (file, comment) in &file_comment_sections {
+                    let carried_tag = if comment.carried {
+                        " (unresolved from a previous round)"
+                    } else {
+                        ""
+                    };
+                    round.push_str(&format!(
+                        "#### {file} — [{}]{carried_tag}\n\n{}\n\n",
+                        comment.severity.label(),
+                        comment.text
+                    ));
                 }
             }
 
@@ -2438,6 +2613,11 @@ impl App {
             } else {
                 String::new()
             };
+            let file_comment_note = if file_comment_sections.is_empty() {
+                String::new()
+            } else {
+                format!(", {} file comment(s)", file_comment_sections.len())
+            };
             let check_note = match &check {
                 Some(c) if c.passed => format!(", check `{}` passed", c.command),
                 Some(c) => format!(", check `{}` FAILED", c.command),
@@ -2445,7 +2625,7 @@ impl App {
             };
             let summary = format!(
                 "Final review: {approved} approved, {} need work, {skipped} skipped\
-                 {comment_note}{check_note} — feedback saved to .claude/final-review-feedback.md",
+                 {file_comment_note}{comment_note}{check_note} — feedback saved to .claude/final-review-feedback.md",
                 rejected.len()
             );
             // Optionally mirror the feedback onto the branch's GitHub PR as a
@@ -2455,6 +2635,7 @@ impl App {
                 self.post_final_review_to_pr(
                     &workdir,
                     &rejected,
+                    &file_comment_sections,
                     &line_comment_sections,
                     &general_feedback,
                 )
@@ -2657,13 +2838,18 @@ impl App {
         &mut self,
         workdir: &Path,
         rejected: &[(String, String, Severity)],
+        file_comment_sections: &[(String, FileComment)],
         line_comment_sections: &[(String, Vec<LineComment>)],
         general_feedback: &str,
     ) -> String {
         use crate::github::{GhCli, PrResolution};
 
-        let (body, comments, file_comments) =
-            build_pr_review(rejected, line_comment_sections, general_feedback);
+        let (body, comments, file_comments) = build_pr_review(
+            rejected,
+            file_comment_sections,
+            line_comment_sections,
+            general_feedback,
+        );
         let pr = match GhCli::resolve_pr(workdir) {
             Ok(PrResolution::Found(pr)) => pr,
             Ok(PrResolution::NoPrForBranch) => {
@@ -2677,7 +2863,13 @@ impl App {
         // Map the review's severities onto a GitHub review event, but only
         // escalate past COMMENT when we can confirm the reviewer isn't the PR
         // author (GitHub rejects self approve / request-changes).
-        let event = resolve_review_event(workdir, pr.number, rejected, line_comment_sections);
+        let event = resolve_review_event(
+            workdir,
+            pr.number,
+            rejected,
+            file_comment_sections,
+            line_comment_sections,
+        );
         if event != "COMMENT" {
             self.log_info(
                 "review",
@@ -2854,9 +3046,10 @@ fn resolve_review_event(
     workdir: &Path,
     pr_number: u32,
     rejected: &[(String, String, Severity)],
+    file_comment_sections: &[(String, FileComment)],
     line_comment_sections: &[(String, Vec<LineComment>)],
 ) -> &'static str {
-    let escalated = severity_review_event(rejected, line_comment_sections);
+    let escalated = severity_review_event(rejected, file_comment_sections, line_comment_sections);
     if escalated == "COMMENT" {
         return "COMMENT";
     }
@@ -2872,9 +3065,13 @@ fn resolve_review_event(
 /// rejected, `APPROVE`; else `COMMENT`.
 fn severity_review_event(
     rejected: &[(String, String, Severity)],
+    file_comment_sections: &[(String, FileComment)],
     line_comment_sections: &[(String, Vec<LineComment>)],
 ) -> &'static str {
     let has_blocker = rejected.iter().any(|(_, _, s)| s.is_blocker())
+        || file_comment_sections
+            .iter()
+            .any(|(_, comment)| comment.severity.is_blocker())
         || line_comment_sections
             .iter()
             .flat_map(|(_, cs)| cs)
@@ -2899,6 +3096,7 @@ fn severity_review_event(
 /// comments, file_comments)`.
 fn build_pr_review(
     rejected: &[(String, String, Severity)],
+    file_comment_sections: &[(String, FileComment)],
     line_comment_sections: &[(String, Vec<LineComment>)],
     general_feedback: &str,
 ) -> (
@@ -2954,7 +3152,7 @@ fn build_pr_review(
     // Whole-file rejections carry the same conventional-comments severity
     // tag as line comments, with a filler line when the reviewer left no
     // feedback text (mirrors the old body-dump's bare "needs revision").
-    let file_comments = rejected
+    let mut file_comments: Vec<crate::github::PrFileComment> = rejected
         .iter()
         .map(|(file, feedback, severity)| {
             let feedback = feedback.trim();
@@ -2970,6 +3168,12 @@ fn build_pr_review(
             }
         })
         .collect();
+    file_comments.extend(file_comment_sections.iter().map(|(file, comment)| {
+        crate::github::PrFileComment {
+            path: file.clone(),
+            body: format!("**[{}]** {}", comment.severity.label(), comment.text.trim()),
+        }
+    }));
 
     (body, comments, file_comments)
 }
@@ -3374,7 +3578,7 @@ mod tests {
         split_overflow_rounds, truncate_check_output,
     };
     use crate::app::state::DiffViewerState;
-    use crate::app::{CommentAnchorContext, LineComment, Severity};
+    use crate::app::{CommentAnchorContext, FileComment, LineComment, Severity};
     use crate::diff::{DiffFile, DiffLineLocation, parse_unified_diff};
 
     fn line_comment(new_line: Option<usize>, old_line: Option<usize>, text: &str) -> LineComment {
@@ -3471,7 +3675,7 @@ mod tests {
             ],
         )];
         let (body, comments, file_comments) =
-            build_pr_review(&rejected, &line_comments, "overall LGTM-ish");
+            build_pr_review(&rejected, &[], &line_comments, "overall LGTM-ish");
 
         // Inline comments: an added/current line posts on RIGHT, a deletion-only
         // line on LEFT.
@@ -3502,7 +3706,7 @@ mod tests {
             "src/c.rs".to_string(),
             vec![line_comment(Some(3), None, "nit")],
         )];
-        let (body, comments, file_comments) = build_pr_review(&[], &line_comments, "");
+        let (body, comments, file_comments) = build_pr_review(&[], &[], &line_comments, "");
         assert!(body.is_empty());
         assert_eq!(comments.len(), 1);
         assert!(file_comments.is_empty());
@@ -3514,7 +3718,7 @@ mod tests {
             "src/c.rs".to_string(),
             vec![ranged_comment(10, 14, "this whole block")],
         )];
-        let (_, comments, _) = build_pr_review(&[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].line, 14);
         assert_eq!(comments[0].side, "RIGHT");
@@ -3528,7 +3732,7 @@ mod tests {
             "src/c.rs".to_string(),
             vec![line_comment(Some(5), None, "nit")],
         )];
-        let (_, comments, _) = build_pr_review(&[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
         assert_eq!(comments[0].start_line, None);
         assert_eq!(comments[0].start_side, None);
     }
@@ -3538,7 +3742,7 @@ mod tests {
         let mut comment = line_comment(Some(5), None, "use a guard");
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
-        let (_, comments, _) = build_pr_review(&[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
         assert_eq!(comments.len(), 1);
         // The comment body leads with the conventional-comments severity tag.
         assert_eq!(
@@ -3552,7 +3756,7 @@ mod tests {
         let mut comment = line_comment(Some(5), None, "");
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
-        let (_, comments, _) = build_pr_review(&[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
         // Even a suggestion-only comment carries its severity tag.
         assert_eq!(
             comments[0].body,
@@ -3570,31 +3774,63 @@ mod tests {
     fn severity_event_requests_changes_on_a_blocker() {
         // A blocker rejection escalates.
         let rejected = vec![("a.rs".to_string(), "no".to_string(), Severity::Blocker)];
-        assert_eq!(severity_review_event(&rejected, &[]), "REQUEST_CHANGES");
+        assert_eq!(
+            severity_review_event(&rejected, &[], &[]),
+            "REQUEST_CHANGES"
+        );
         // A blocker line comment escalates even with no rejection.
         let sections = vec![("a.rs".to_string(), vec![blocker_comment(3, "must fix")])];
-        assert_eq!(severity_review_event(&[], &sections), "REQUEST_CHANGES");
+        assert_eq!(
+            severity_review_event(&[], &[], &sections),
+            "REQUEST_CHANGES"
+        );
     }
 
     #[test]
     fn severity_event_approves_with_no_rejections_else_comments() {
         // No rejection, only non-blocking notes → an approving review.
         let sections = vec![("a.rs".to_string(), vec![line_comment(Some(3), None, "nit")])];
-        assert_eq!(severity_review_event(&[], &sections), "APPROVE");
-        assert_eq!(severity_review_event(&[], &[]), "APPROVE");
+        assert_eq!(severity_review_event(&[], &[], &sections), "APPROVE");
+        assert_eq!(severity_review_event(&[], &[], &[]), "APPROVE");
         // A non-blocking rejection is a plain comment review.
         let rejected = vec![("a.rs".to_string(), "meh".to_string(), Severity::Suggestion)];
-        assert_eq!(severity_review_event(&rejected, &[]), "COMMENT");
+        assert_eq!(severity_review_event(&rejected, &[], &[]), "COMMENT");
     }
 
     #[test]
     fn feedback_file_comment_tags_whole_file_rejection_with_severity() {
         // A whole-file rejection's file-level comment carries its severity tag.
         let rejected = vec![("a.rs".to_string(), "fix".to_string(), Severity::Blocker)];
-        let (_, _, file_comments) = build_pr_review(&rejected, &[], "");
+        let (_, _, file_comments) = build_pr_review(&rejected, &[], &[], "");
         assert_eq!(file_comments.len(), 1);
         assert_eq!(file_comments[0].path, "a.rs");
         assert_eq!(file_comments[0].body, "**[blocker]** fix");
+    }
+
+    #[test]
+    fn verdict_free_file_comment_posts_and_can_escalate() {
+        let comments = vec![(
+            "src/module.rs".to_string(),
+            FileComment {
+                text: "This module should be split.".to_string(),
+                severity: Severity::Blocker,
+                resolved: false,
+                carried: false,
+            },
+        )];
+        let (body, inline, file_comments) = build_pr_review(&[], &comments, &[], "");
+        assert!(body.is_empty());
+        assert!(inline.is_empty());
+        assert_eq!(file_comments.len(), 1);
+        assert_eq!(file_comments[0].path, "src/module.rs");
+        assert_eq!(
+            file_comments[0].body,
+            "**[blocker]** This module should be split."
+        );
+        assert_eq!(
+            severity_review_event(&[], &comments, &[]),
+            "REQUEST_CHANGES"
+        );
     }
 
     #[test]
@@ -4234,7 +4470,7 @@ index 1111111..2222222 100644
 
         // A stale line number must never be posted inline on the PR.
         let sections = vec![("src/foo.rs".to_string(), vec![comment])];
-        let (body, comments, _) = build_pr_review(&[], &sections, "");
+        let (body, comments, _) = build_pr_review(&[], &[], &sections, "");
         assert!(comments.is_empty(), "lost anchor must not post inline");
         assert!(!body.contains("src/foo.rs:42"));
     }

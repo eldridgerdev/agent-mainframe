@@ -50,6 +50,12 @@ are tagged.
   full-screen (editable) and explicitly write (`⏎`/`w`) or discard (`esc`).
   `esc` from the running screen returns to the picker without losing the
   in-flight pass, same as the bootstrap and `A`/AI-review running screens.
+- **Final Review now supports comments on an entire file without rejecting
+  it.** Press `m` on a file to leave a verdict-free observation, question,
+  nit, or praise, and `M` to resolve or reopen that thread. File comments
+  carry severity, survive re-review rounds, appear in file filters and review
+  feedback, and can be posted to GitHub as file-level PR comments when PR
+  posting is enabled. No migration is required.
 - **The review-memory doc path can now be overridden per project, not just
   globally.** `review_memory_path` was already a config setting, but one
   value applied to every project. Set `review_memory_path` in a project's
@@ -110,6 +116,11 @@ are tagged.
 
 ### Changed
 
+- **The new-session Review toggle now warns that Review Mode has high token
+  usage.** The creator shows a prominent `HIGH TOKEN USAGE` label and repeats
+  the warning in the option help, so the cost is clear before Review Mode is
+  enabled. This is a labeling change only; existing sessions and defaults are
+  unchanged.
 - **PR Triage keymap simplified: three sets of top-level keys folded into
   pickers.** Real use reported the pane as overwhelming (18+ top-level
   action keys). First pass: (1) the standalone `t` fix-target toggle is
@@ -177,6 +188,13 @@ are tagged.
 
 ### Backlog
 
+- **High priority: pause or close Final Review without finishing it.** A
+  reviewer should be able to leave an in-progress review and resume later
+  without writing or dispatching feedback, posting to the PR, or replacing the
+  finished-review snapshot.
+- Fix Final Review's layout toggle so switching between unified and
+  side-by-side views is reliable and clearly labeled, including while using
+  the line-comment cursor and when viewing added or untracked files.
 - Model selection independent of agent harness: allow per-action model selection
   (e.g. powerful model for AI review, cheaper model for reply drafts) via config
   map that falls back to harness default. (Partial: final review's walkthrough /

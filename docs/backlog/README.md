@@ -110,6 +110,17 @@ doc always says exactly what remains.
   have shipped for Claude, Codex, and opencode; feature-row aggregation
   remains. Pi remains unsupported until it exposes usable per-session
   usage metadata.
+- [Token-efficient agent sessions](token-efficiency-plan.md) — _Backlog._
+  Move AMF from cumulative usage accounting to active usage management:
+  provider/model-aware costs, Economy/Balanced/Deep session profiles,
+  context-pressure warnings and soft budgets, deliberate
+  resume/compact/fresh rotation, bounded cross-provider handoffs,
+  token-aware utility inference and caching, removal of the per-edit
+  Review Mode note tax, prompt/instruction/output hygiene, and a
+  capability recheck/report for fast-moving model, effort, context,
+  pricing, CLI, and usage-schema changes. Sequenced from correctness and
+  zero-token quick wins through context lifecycle and local efficiency
+  analytics.
 - [Vim mode](vim-mode-plan.md) — _Partial._ Ranked checklist of vim
   features for the in-house editor (`src/editor.rs`). Tier 1 core editing
   largely shipped; change operators and Tiers 2-3 remain.

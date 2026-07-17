@@ -3660,7 +3660,7 @@ fn create_feature_mode_review_focus_describes_review_notes() {
         assert_eq!(
             state.focused_mode_description(),
             Some(
-                "Write developer notes with every code change for a detailed code review (may use more tokens)."
+                "High token usage: writes developer notes with every code change for a detailed code review."
             )
         );
     } else {

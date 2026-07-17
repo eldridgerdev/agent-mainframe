@@ -673,6 +673,10 @@ pub struct App {
     /// Receiver for the background AI review of the current PR's diff (the
     /// `A` action, AI Review pane). See `app::ai_review::run_ai_pr_review`.
     pub ai_review_bg: Option<Receiver<ai_review::AiReviewProgress>>,
+    /// Live progress is kept outside `AppMode` so `esc` can leave the running
+    /// screen and `A` can later reconstruct it without resetting its timer or
+    /// losing activity received while the user was elsewhere.
+    pub ai_review_progress: Option<AiReviewRunProgress>,
     /// The AI Review pane snapshot a background review ([`Self::ai_review_bg`])
     /// was started against, kept alive independent of `self.mode` — in
     /// particular across `cancel_ai_pr_review` (`esc`), which restores
@@ -2037,6 +2041,7 @@ impl App {
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
             ai_review_bg: None,
+            ai_review_progress: None,
             ai_review_pending: None,
             ai_review_return_to: None,
             gh_current_user: None,
@@ -2244,6 +2249,7 @@ impl App {
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
             ai_review_bg: None,
+            ai_review_progress: None,
             ai_review_pending: None,
             ai_review_return_to: None,
             gh_current_user: None,

@@ -47,7 +47,7 @@ pub fn draw_ai_review_running(
         .style(Style::default().fg(theme.warning.to_color()));
     let spinner = throbber.to_symbol_span(throbber_state);
 
-    let status_line = match state.stage {
+    let status_line = match state.progress.stage {
         AiReviewStage::PreparingDiff => Line::from(vec![
             spinner,
             Span::styled(
@@ -68,9 +68,9 @@ pub fn draw_ai_review_running(
         ]),
     };
 
-    let elapsed = format_elapsed(state.started_at.elapsed());
+    let elapsed = format_elapsed(state.progress.started_at.elapsed());
     let mut lines = vec![Line::from(""), status_line, Line::from("")];
-    if let Some(activity) = &state.activity {
+    if let Some(activity) = &state.progress.activity {
         lines.push(Line::from(vec![
             Span::styled(
                 "Current activity: ",
@@ -91,7 +91,7 @@ pub fn draw_ai_review_running(
         ),
         Span::styled(elapsed, Style::default().fg(theme.text.to_color())),
     ];
-    if let Some((input, output)) = state.usage {
+    if let Some((input, output)) = state.progress.usage {
         elapsed_line.push(Span::styled(
             format!("  ·  {input} input / {output} output tokens"),
             Style::default().fg(theme.text_muted.to_color()),
@@ -392,8 +392,13 @@ pub fn draw_ai_review(
     );
     state.detail_content_lines = detail_lines;
 
+    let ai_action = if ai_review_running {
+        "A view progress"
+    } else {
+        "A regenerate"
+    };
     let keys = Paragraph::new(Line::from(Span::styled(
-        " j/k move   s skip/unskip   e edit   A regenerate   W post   esc/q close",
+        format!(" j/k move   s skip/unskip   e edit   {ai_action}   W post   esc/q close"),
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(keys, outer[2]);
@@ -666,7 +671,7 @@ mod tests {
 
     use ratatui::{Terminal, backend::TestBackend};
 
-    use super::{draw_ai_review_running, format_elapsed};
+    use super::{draw_ai_review, draw_ai_review_running, format_elapsed};
     use crate::{
         app::{AiReviewRunState, AiReviewState},
         project::AgentKind,
@@ -684,7 +689,7 @@ mod tests {
 
     #[test]
     fn running_pane_renders_live_activity_elapsed_time_and_usage() {
-        let state = AiReviewRunState {
+        let mut state = AiReviewRunState {
             origin: AiReviewState {
                 workdir: PathBuf::from("/tmp/review"),
                 pr: crate::github::PrRef {
@@ -708,12 +713,14 @@ mod tests {
                 finding_editor: None,
                 post_confirm: None,
             },
-            stage: crate::app::ai_review::AiReviewStage::Reviewing {
-                token_estimate: 95_000,
+            progress: crate::app::AiReviewRunProgress {
+                stage: crate::app::ai_review::AiReviewStage::Reviewing {
+                    token_estimate: 95_000,
+                },
+                started_at: std::time::Instant::now() - std::time::Duration::from_secs(125),
+                activity: Some("Inspecting the repository".to_string()),
+                usage: Some((94_000, 1_200)),
             },
-            started_at: std::time::Instant::now() - std::time::Duration::from_secs(125),
-            activity: Some("Inspecting the repository".to_string()),
-            usage: Some((94_000, 1_200)),
         };
         let backend = TestBackend::new(100, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -734,5 +741,19 @@ mod tests {
         assert!(rendered.contains("Current activity: Inspecting the repository"));
         assert!(rendered.contains("Elapsed: 2m 05s"));
         assert!(rendered.contains("94000 input / 1200 output tokens"));
+
+        terminal
+            .draw(|frame| {
+                draw_ai_review(frame, &mut state.origin, &Theme::default(), true, &throbber)
+            })
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("A view progress"));
     }
 }

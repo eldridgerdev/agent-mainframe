@@ -1355,12 +1355,20 @@ fn predecessor_invalidation_preserves_live_successor_ai_review() {
     let (_tx, rx) = std::sync::mpsc::channel();
     app.ai_review_bg = Some(rx);
     app.ai_review_pending = Some(ai_origin.clone());
-    app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
-        origin: ai_origin,
+    app.ai_review_progress = Some(crate::app::AiReviewRunProgress {
         stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
         started_at: std::time::Instant::now(),
         activity: None,
         usage: None,
+    });
+    app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
+        origin: ai_origin,
+        progress: crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
+        },
     });
 
     assert!(
@@ -1370,6 +1378,7 @@ fn predecessor_invalidation_preserves_live_successor_ai_review() {
     assert!(app.pr_review_return.is_some());
     assert!(app.ai_review_pending.is_some());
     assert!(app.ai_review_bg.is_some());
+    assert!(app.ai_review_progress.is_some());
     assert!(matches!(
         &app.mode,
         AppMode::AiReviewRunning(state) if state.origin.pr.number == 450
@@ -1593,10 +1602,12 @@ fn visible_animation_is_enabled_for_pr_review_running_screens() {
     };
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin: sample_ai_review_state(std::path::PathBuf::from("/tmp/wd"), pr),
-        stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
-        started_at: std::time::Instant::now(),
-        activity: None,
-        usage: None,
+        progress: crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
+        },
     });
     assert!(app.has_visible_animation());
 
@@ -12751,10 +12762,12 @@ fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
     app.ai_review_pending = Some(origin.clone());
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin,
-        stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
-        started_at: std::time::Instant::now(),
-        activity: None,
-        usage: None,
+        progress: crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
+        },
     });
 
     tx.send(crate::app::ai_review::AiReviewProgress::Reviewing {
@@ -12797,12 +12810,14 @@ fn poll_ai_pr_review_bg_surfaces_streamed_activity_and_usage() {
     app.ai_review_pending = Some(origin.clone());
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin,
-        stage: crate::app::ai_review::AiReviewStage::Reviewing {
-            token_estimate: 42_000,
+        progress: crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::Reviewing {
+                token_estimate: 42_000,
+            },
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
         },
-        started_at: std::time::Instant::now(),
-        activity: None,
-        usage: None,
     });
 
     tx.send(crate::app::ai_review::AiReviewProgress::Activity(
@@ -12818,10 +12833,68 @@ fn poll_ai_pr_review_bg_surfaces_streamed_activity_and_usage() {
     assert!(app.poll_ai_pr_review_bg());
     match &app.mode {
         AppMode::AiReviewRunning(state) => {
-            assert_eq!(state.activity.as_deref(), Some("Inspecting the repository"));
-            assert_eq!(state.usage, Some((41_000, 900)));
+            assert_eq!(
+                state.progress.activity.as_deref(),
+                Some("Inspecting the repository")
+            );
+            assert_eq!(state.progress.usage, Some((41_000, 900)));
         }
         _ => panic!("expected running AI review"),
+    }
+}
+
+#[test]
+fn running_ai_review_can_reopen_preserved_progress_after_escape() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_ai_review_for_feature(&mut app);
+    let origin = match &app.mode {
+        AppMode::AiReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let started_at = std::time::Instant::now() - std::time::Duration::from_secs(75);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.ai_review_progress = Some(crate::app::AiReviewRunProgress {
+        stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+        started_at,
+        activity: None,
+        usage: None,
+    });
+
+    // Progress that lands after leaving the full-screen view is retained in
+    // the app-level run state rather than discarded with the old mode.
+    tx.send(crate::app::ai_review::AiReviewProgress::Reviewing {
+        token_estimate: 95_000,
+    })
+    .unwrap();
+    tx.send(crate::app::ai_review::AiReviewProgress::Activity(
+        "Inspecting the repository".to_string(),
+    ))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+
+    app.start_ai_pr_review();
+    match &app.mode {
+        AppMode::AiReviewRunning(state) => {
+            assert_eq!(state.progress.started_at, started_at);
+            assert_eq!(
+                state.progress.stage,
+                crate::app::ai_review::AiReviewStage::Reviewing {
+                    token_estimate: 95_000
+                }
+            );
+            assert_eq!(
+                state.progress.activity.as_deref(),
+                Some("Inspecting the repository")
+            );
+        }
+        _ => panic!("expected preserved AI review progress"),
     }
 }
 

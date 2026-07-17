@@ -1731,6 +1731,22 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/app/ai_review.rs`, `src/app/state.rs`,
       `src/ui/dialogs/ai_review.rs`, `src/app/tests.rs`, `CHANGELOG.md`.
 
+      **Follow-up — make progress reopenable.** The first progress pass kept
+      its timer and activity only inside `AiReviewRunState`, so `Esc` discarded
+      the detailed view even though the headless review continued and the
+      findings-pane header still said `running…`. Live run progress now also
+      lives on `App`, updates regardless of the current pane, and is cleared
+      with the receiver on completion/invalidation. While that run exists the
+      findings footer says `A view progress`; pressing `A` reconstructs
+      `AiReviewRunning` with the original start time, latest stage/activity,
+      and usage rather than trying to start a duplicate pass. App and render
+      tests cover progress arriving while away and the return path; full
+      suite green (1135 passed, 1 ignored), with check, strict clippy, and
+      formatting clean. →
+      `src/app/mod.rs`, `src/app/state.rs`, `src/app/ai_review.rs`,
+      `src/app/pr_review.rs`, `src/app/tests.rs`,
+      `src/ui/dialogs/ai_review.rs`, `CHANGELOG.md`.
+
 - [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit
   each). `B` opens a confirm dialog before combining them into one prompt and

@@ -1614,11 +1614,7 @@ pub struct CompactReviewState {
 /// Full-screen progress view for the AI PR review's background diff-fetch +
 /// review pass (`A`), entered from the AI Review pane.
 #[derive(Debug, Clone)]
-pub struct AiReviewRunState {
-    /// The AI Review pane to return to on completion or cancel (dialogs
-    /// cleared before stashing, matching the PR Triage `P`/`f` stash
-    /// convention).
-    pub origin: AiReviewState,
+pub struct AiReviewRunProgress {
     pub stage: crate::app::ai_review::AiReviewStage,
     /// Wall-clock start for a live elapsed timer. This state is intentionally
     /// not persisted; an in-flight headless process belongs to this AMF
@@ -1628,6 +1624,15 @@ pub struct AiReviewRunState {
     pub activity: Option<String>,
     /// Final token usage, when the harness reports it before completion.
     pub usage: Option<(u64, u64)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AiReviewRunState {
+    /// The AI Review pane to return to on completion or cancel (dialogs
+    /// cleared before stashing, matching the PR Triage `P`/`f` stash
+    /// convention).
+    pub origin: AiReviewState,
+    pub progress: AiReviewRunProgress,
 }
 
 /// State for the full-screen AI Review pane — AMF's own review of a PR's

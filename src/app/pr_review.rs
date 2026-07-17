@@ -1439,6 +1439,7 @@ impl App {
         }) {
             self.ai_review_pending = None;
             self.ai_review_bg = None;
+            self.ai_review_progress = None;
             changed = true;
         }
 
@@ -1460,6 +1461,7 @@ impl App {
         } else if stale_ai_run {
             self.ai_review_bg = None;
             self.ai_review_pending = None;
+            self.ai_review_progress = None;
             self.mode = AppMode::Normal;
             changed = true;
         }

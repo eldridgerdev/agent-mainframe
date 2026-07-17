@@ -668,11 +668,25 @@ impl App {
     /// Kick off the AI PR review (`A`): resolve the review-memory doc
     /// synchronously (cheap, a local file read), then hand the PR-diff fetch
     /// and the one paid agent pass to a background thread and switch to the
-    /// full-screen running view. No-op (with a hint) if a review is already
-    /// running.
+    /// full-screen running view. If this pane's review is already running,
+    /// reopen its preserved progress view instead of starting another pass.
     pub fn start_ai_pr_review(&mut self) {
         if self.ai_review_bg.is_some() {
-            self.push_toast_warning("AI review already running — wait for it to finish");
+            let origin = match &self.mode {
+                AppMode::AiReview(state) => state.clone(),
+                _ => return,
+            };
+            let same_run = self.ai_review_pending.as_ref().is_some_and(|pending| {
+                pending.workdir == origin.workdir && pending.pr.number == origin.pr.number
+            }) && self.ai_review_progress.is_some();
+            if same_run {
+                self.mode = AppMode::AiReviewRunning(AiReviewRunState {
+                    origin,
+                    progress: self.ai_review_progress.clone().expect("checked above"),
+                });
+            } else {
+                self.push_toast_warning("Another AI review is already running");
+            }
             return;
         }
         let (workdir, harness, model_picked) = match &self.mode {
@@ -797,13 +811,14 @@ impl App {
             }
         });
 
-        self.mode = AppMode::AiReviewRunning(AiReviewRunState {
-            origin,
+        let progress = AiReviewRunProgress {
             stage: AiReviewStage::PreparingDiff,
             started_at: std::time::Instant::now(),
             activity: None,
             usage: None,
-        });
+        };
+        self.ai_review_progress = Some(progress.clone());
+        self.mode = AppMode::AiReviewRunning(AiReviewRunState { origin, progress });
     }
 
     pub fn ai_review_harness_picking(&self) -> bool {
@@ -985,8 +1000,11 @@ impl App {
         loop {
             match rx.try_recv() {
                 Ok(AiReviewProgress::Reviewing { token_estimate }) => {
+                    if let Some(progress) = &mut self.ai_review_progress {
+                        progress.stage = AiReviewStage::Reviewing { token_estimate };
+                    }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
-                        state.stage = AiReviewStage::Reviewing { token_estimate };
+                        state.progress.stage = AiReviewStage::Reviewing { token_estimate };
                     }
                     if token_estimate > AI_REVIEW_PROMPT_TOKEN_WARN {
                         large_diff_warning = Some(token_estimate);
@@ -994,8 +1012,11 @@ impl App {
                     changed = true;
                 }
                 Ok(AiReviewProgress::Activity(activity)) => {
+                    if let Some(progress) = &mut self.ai_review_progress {
+                        progress.activity = Some(activity.clone());
+                    }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
-                        state.activity = Some(activity);
+                        state.progress.activity = Some(activity);
                     }
                     changed = true;
                 }
@@ -1003,13 +1024,17 @@ impl App {
                     input_tokens,
                     output_tokens,
                 }) => {
+                    if let Some(progress) = &mut self.ai_review_progress {
+                        progress.usage = Some((input_tokens, output_tokens));
+                    }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
-                        state.usage = Some((input_tokens, output_tokens));
+                        state.progress.usage = Some((input_tokens, output_tokens));
                     }
                     changed = true;
                 }
                 Ok(AiReviewProgress::Done(result)) => {
                     self.ai_review_bg = None;
+                    self.ai_review_progress = None;
                     let Some(pending) = self.ai_review_pending.take() else {
                         if let Err(e) = result {
                             self.log_error("pr_review", format!("AI review failed: {e}"));
@@ -1147,6 +1172,7 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.ai_review_bg = None;
+                    self.ai_review_progress = None;
                     let pending = self.ai_review_pending.take();
                     let pr_number = pending.as_ref().map(|p| p.pr.number);
                     let detail = pr_number.map_or_else(

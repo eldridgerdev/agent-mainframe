@@ -175,6 +175,11 @@ are tagged.
   AI co-review / changeset overview now reuse the single `review_model` setting —
   still open is letting different actions pick genuinely different models rather
   than sharing one.)
+- Cap/archive `.claude/review-notes.md` the same way `final-review-feedback.md`
+  was capped: nothing trims it today, and the agent has to re-read the whole
+  file every batch (per the REVIEW MODE instructions) to check which files
+  already have a note — the same unbounded-history-reread cost the feedback
+  file had, on a file read even more often.
 
 ## [v0.30.1] - 2026-07-14
 

@@ -280,6 +280,20 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
 
 #### Viewer ergonomics
 
+- **Review-round timeline and history browser.** Add a compact timeline strip
+  such as `Round 1 ─ Round 2 ─ Current` so reviewers can move backward and
+  forward through the conversation instead of seeing only the latest round and
+  its replies. Left/right (or h/l) selects a round; the body is independently
+  scrollable and shows that round's verdicts, file/line comments, suggestions,
+  agent replies, check result, timestamp, and summary counts. Historical rounds
+  are read-only, while `Current` returns to the live editable review. Make long
+  histories horizontally scroll or window around the selected round, with a
+  clear marker for the current round and unresolved threads that carried
+  forward. Load older rounds lazily from
+  `.claude/final-review-feedback-archive.md` so this view does not undo the
+  existing live-file token cap; show an explicit limitation when an old round
+  lacks enough snapshot data to reconstruct its original diff, rather than
+  silently presenting today's diff as historical content.
 - **Hierarchical file tree + shorter Developer Notes panel.** Replace the flat
   changed-file list with a directory-aware tree so files are grouped by path,
   directories can be expanded/collapsed, and keyboard navigation can move
@@ -811,6 +825,9 @@ Cost:
 
 Viewer:
 
+- [ ] Review-round timeline/history browser (`Round 1 ─ Round 2 ─ Current`)
+      with round selection, a scrollable read-only summary, carried-thread
+      markers, and lazy access to archived rounds
 - [ ] Hierarchical, collapsible file tree for easier path-based navigation +
       reduce the Developer Notes panel's default height from ~40% to ~20%
       (preserve full-height expansion)

@@ -1747,6 +1747,20 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/app/pr_review.rs`, `src/app/tests.rs`,
       `src/ui/dialogs/ai_review.rs`, `CHANGELOG.md`.
 
+      **Follow-up — live progress for every built-in harness.** The progress
+      screen no longer falls back to elapsed time alone when AI Review uses
+      Claude, Opencode, or Pi. Each runner now consumes that CLI's structured
+      event stream and maps lifecycle, reasoning, tool, completion, retry,
+      and usage events onto the same safe activity labels already used for
+      Codex. Prompts still travel over stdin, and raw reasoning, commands,
+      tool arguments/results, and draft response text never enter progress
+      state. Harness selection validates the required streaming capability
+      up front and gives older CLI versions an upgrade hint. Provider fixture
+      tests cover argument selection, final-response extraction, cumulative
+      usage, error handling, and redaction. Restart recovery remains separate
+      follow-up work. → `src/headless.rs`, `src/app/ai_review.rs`,
+      `CHANGELOG.md`.
+
 - [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit
   each). `B` opens a confirm dialog before combining them into one prompt and

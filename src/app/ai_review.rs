@@ -853,7 +853,7 @@ impl App {
         let Some(chosen) = chosen else {
             return;
         };
-        if let Err(error) = HeadlessRunner::check_available(&chosen) {
+        if let Err(error) = HeadlessRunner::check_progress_available(&chosen) {
             if let AppMode::AiReview(state) = &mut self.mode
                 && let Some(pick) = &mut state.harness_pick
             {

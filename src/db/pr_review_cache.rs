@@ -82,13 +82,10 @@ mod tests {
                 is_resolved: false,
                 triage: TriageState::Untriaged,
                 local_note: None,
-                ai_generated: false,
-                ai_published: false,
                 github_id: None,
                 github_review_id: None,
             }],
             fetched_at: Local::now(),
-            last_ai_review: None,
         }
     }
 

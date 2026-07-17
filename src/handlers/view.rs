@@ -453,6 +453,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('G') => {
             app.open_pr_review_from_view();
         }
+        KeyCode::Char('W') => {
+            app.open_ai_review_from_view();
+        }
         _ => {}
     }
 

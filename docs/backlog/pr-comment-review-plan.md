@@ -1409,6 +1409,43 @@ first), and the reviewer's output (plus comments triaged in the pane)
       untouched). → `src/extension.rs`, `src/app/mod.rs`,
       `src/app/pr_review.rs`, `src/app/config_wizard.rs`,
       `src/ui/dashboard.rs`, `src/app/tests.rs`.
+- [x] **Prevent review-memory rot (resolves the Open Questions item of the
+      same name).** Findings only ever accumulated (`M`, the lookback
+      bootstrap) with no pruning, so the doc could drift/bloat with
+      near-duplicate or stale rules over time. `c` in the PR picker opens a
+      confirm overlay showing how many findings are in the doc today
+      (`review_memory::count_findings`, a plain local read — free), then a
+      single headless agent pass (always Claude, mirroring the lookback
+      bootstrap's harness choice) rewrites the whole doc: merge
+      near-duplicates, drop stale/superseded/overly-specific findings,
+      preserve section structure and hand-written prose
+      (`review_memory::compact_prompt`). Unlike every other review-memory
+      write, this is **not** append-only — `review_memory.rs`'s header now
+      documents the one explicit exception. So nothing touches disk until
+      the user reviews the proposal: the background pass (`CompactProgress`,
+      `run_review_memory_compact`) reports the full proposed replacement to
+      a new full-screen, editable `AppMode::ReviewMemoryCompactReview`
+      (mirrors `draw_fix_confirm`'s edit/scroll handling), and only `⏎`/`w`
+      (`App::pr_review_compact_write`) writes it — `esc` discards, doc
+      untouched. `esc` from the running screen (`AppMode::
+      ReviewMemoryCompactRunning`) returns to the picker without aborting
+      the background pass, same as the bootstrap/`A` running screens; a late
+      result after that no longer has anywhere live to land a full-screen
+      dialog without yanking the user out of whatever they're doing, so it
+      toasts instead of reopening — tracked via a new `App::
+      review_memory_compact_pending`, the same fix already shipped for `A`'s
+      `ai_review_pending` after the "findings silently dropped after an
+      `esc`" bug. Unit-tested (confirm-overlay open/bail-when-empty/cancel,
+      poll success/empty/error transitions, the late-result-after-cancel
+      toast-not-reopen path, write-overwrites-and-toasts, discard-leaves-
+      file-untouched, plus `compact_prompt`/`count_findings` directly) — full
+      suite green (1151 tests) and `cargo clippy` clean. →
+      `src/app/review_memory.rs`, `src/app/pr_review.rs`,
+      `src/app/state.rs`, `src/app/mod.rs`, `src/main.rs`,
+      `src/handlers/pr_review.rs`, `src/handlers/mod.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/mod.rs`,
+      `src/ui/dialogs/help.rs`, `src/ui/dashboard.rs`, `src/ui/status.rs`,
+      `src/app/tests.rs`, `CHANGELOG.md`.
 
 ## Nice to have
 
@@ -1571,25 +1608,6 @@ first), and the reviewer's output (plus comments triaged in the pane)
 
 ## Open questions
 
-- [ ] **Does "AI review of the PR diff" (`A`/`W`) belong in this pane, or
-  should it be its own workflow? — RECONSIDER.** Real use surfaced a
-  cluster of friction that traces back to one seam: this pane's data model
-  was built for *triaging comments other people/bots already left on
-  GitHub* (every `PrComment` was assumed to have a real GitHub identity,
-  resolution state, and a free `diff_hunk`), and bolting "the AI generates
-  its own draft comments" onto that model meant fighting the fit
-  repeatedly — a synthetic id range to avoid colliding with real GitHub
-  ids, a bot/human chip that had to special-case a third "AI-authored,
-  not-yet-posted" kind, a `diff_hunk` that has to be reverse-engineered
-  from the full PR diff instead of coming for free, and a background-job
-  lifecycle that doesn't compose cleanly with "merge results into
-  whichever pane state the user is looking at by the time it finishes"
-  (this last one caused a real bug — findings silently dropped after an
-  `esc`). None of this is unfixable — each has landed a patch — but decide
-  whether a dedicated "AI code review" workflow (its own view/state,
-  first-class findings, its own generate-then-review lifecycle) is the
-  better shape, keeping this pane focused on triaging what reviewers
-  *actually said*.
 - [ ] **Add an optional global review-memory layer (Epic E).** Per-project
   path configurability shipped (see the Epic E Progress item above — a
   project's `.amf/config.json` can now point `review_memory_path` at its
@@ -1597,22 +1615,137 @@ first), and the reviewer's output (plus comments triaged in the pane)
   separate cross-project lessons file should be merged in on top of each
   repo's own doc, or whether per-repo stays strictly isolated (today's
   behavior).
-- [ ] **Prevent review-memory rot (Epic E).** Appends already dedup against
-  existing entries, but the doc will still drift/bloat over time. Add a
-  periodic agent-assisted "compaction" pass that merges near-duplicate
-  entries and prunes stale rules, or decide curation stays fully manual.
-
 Resolved and no longer tracked here (see the linked Epic item for the
 decision and implementation): which agent session runs fixes (Epic B,
 dedicated-session default), AI-authored content attribution (Epic D "AI
 attribution on AMF-posted comments"), templated-reply channel disclosure
 (Epic C "posted via AMF" footer), conversation-comment grouping (Epic D's
 `PrSortMode::Conversations`), resolve-without-reply behavior (shipped as-is
-— `R` stays independent of `r`), and outdated-comment badging (shipped in
-Epic D's pane-clarity item). GitLab/Bitbucket support is an
-explicit non-goal for v1 (GitHub `gh` only), not an open question.
+— `R` stays independent of `r`), outdated-comment badging (shipped in
+Epic D's pane-clarity item), review-memory rot (Epic E "Prevent
+review-memory rot" — `c` in the PR picker), and whether AI review belongs in
+this pane (Backlog "Split AI Review into its own workflow" — it doesn't;
+shipped as a dedicated pane). GitLab/Bitbucket support is an explicit
+non-goal for v1 (GitHub `gh` only), not an open question.
 
 ## Backlog
+
+- [x] **Split AI Review into its own workflow (resolves the "does AI review
+      belong in this pane" open question).** AMF's own review of a PR's diff
+      (`A`/`W`) used to live inside PR Triage, converting each finding into a
+      synthetic `PrComment` merged into the same list real GitHub comments
+      live in — a fit that kept fighting the triage data model on every
+      follow-up: a synthetic id range kept clear of real GitHub ids, a
+      bot/human chip special-cased for a third "AI, not yet posted" kind, a
+      `diff_hunk` reconstructed from the full diff instead of coming for
+      free, and a background-job lifecycle that didn't compose with "merge
+      into whichever pane the user is looking at" (the real bug that started
+      this reconsideration — findings silently dropped after an `esc`).
+      Shipped as a fully separate pane instead: a new `src/app/ai_review.rs`
+      owns a first-class, persisted `AiReviewFinding` (`path`/`line`/`body`/
+      `diff_hunk`/`skipped`/`published`) and the whole generate → poll →
+      post lifecycle (moved verbatim from the old `pr_review.rs` methods,
+      retargeted at a new `AppMode::AiReview(AiReviewState)` /
+      `AppMode::AiReviewRunning(AiReviewRunState)` pair), with its own
+      `ai_review_cache` SQLite table (migration 012) keyed by `PR# + head
+      SHA` — no longer riding inside `pr_review_cache`'s blob. The shape is
+      deliberately **lean**: `W` posts every kept (not skipped, not already
+      posted) finding as one GitHub review and simply marks them
+      `published` locally — no reconciliation of GitHub identities back onto
+      the pane (the `reconcile_ai_publication`/`carry_forward_ai_drafts`
+      machinery that used to keep posted drafts alive in the triage list is
+      gone entirely). Following up on a posted finding (mark done, reply,
+      resolve, inject a fix) happens back in PR Triage once a manual refresh
+      picks it up as an ordinary fetched comment. New UI lives in
+      `src/ui/dialogs/ai_review.rs` (findings list + detail, the running
+      screen, harness/model pickers, post-confirm dialog — all moved out of
+      `dialogs/pr_review.rs`, which lost every AI-only code path: the
+      `[AI]`/`ai` chips, the header throbber/last-run badge, and the
+      `ai_generated`/`ai_published` fields on `PrComment`). Four entry
+      points, all wired to the same `App::open_ai_review_for_pr`: PR
+      Triage's `A` key (`open_ai_review_from_triage`, which additionally
+      stashes the triage pane so closing AI Review returns to it — the only
+      entry that does; the other three close straight to the dashboard,
+      matching how `close_pr_review` already behaves) — dashboard `W`
+      (`open_ai_review`), leader `W` from inside an agent session
+      (`open_ai_review_from_view`, peer to `leader G`), and `W` in the PR
+      picker (`pr_picker_choose_ai_review`, peer to `Enter`'s
+      `pr_picker_choose`). Unit-tested (parsing/prompt/build-review tests
+      carried over into `ai_review.rs`'s own test module; App-level tests
+      for all four entry points, the triage-pane stash/restore round trip,
+      the `AiReviewState`-shaped `has_visible_animation`/
+      `invalidate_pr_context_for_transition` regressions, and the
+      `ai_review_cache` DB round trip) — full suite green (1126 tests),
+      `cargo clippy`/`cargo fmt` clean. No migration needed: old
+      `pr_review_cache` rows with `ai_generated`/`ai_published`/
+      `last_ai_review` keys deserialize fine (serde ignores unknown fields);
+      their same-SHA AI drafts don't carry into the new table, so
+      regenerating with `A` after upgrading is the norm. →
+      `src/app/ai_review.rs`, `src/app/state.rs`, `src/app/mod.rs`,
+      `src/app/pr_review.rs`, `src/app/navigation.rs`, `src/db/ai_review_cache.rs`,
+      `src/db/migrations.rs`, `src/db/mod.rs`, `src/db/pr_review_cache.rs`,
+      `src/handlers/ai_review.rs`, `src/handlers/mod.rs`,
+      `src/handlers/pr_review.rs`, `src/handlers/normal.rs`,
+      `src/handlers/view.rs`, `src/ui/dialogs/ai_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/mod.rs`,
+      `src/ui/dialogs/help.rs`, `src/ui/dashboard.rs`, `src/ui/status.rs`,
+      `src/ui/pane.rs`, `src/app/tests.rs`, `README.md`, `CHANGELOG.md`.
+
+      **Follow-up, same day — from real use.** Splitting the pane dropped a
+      real signal: PR Triage's own header used to show "AI review running…"
+      / the last run's outcome (it lived inside `draw_pr_review` before the
+      split), and that disappeared along with the rest of the AI-only
+      rendering — leaving PR Triage's header with no idea a background
+      review for the same PR was still going once you left the AI Review
+      pane (via `leader W`, say) and came back in through `G`. The
+      dashboard/session ambient badge (`pr_triage_badge_span`) still knew,
+      via the unchanged `ai_review_running_for_workdir`, just not the pane
+      itself. Fixed by threading that same already-live check into
+      `draw_pr_review` as a new `ai_review_running: bool` parameter (the
+      dashboard's `PrReview` draw call site computes it from `app.mode`'s
+      `state.workdir` before the mutable borrow, same pattern as
+      `dedicated_session_working`), rendering a `[AI review running]` badge
+      next to the existing `[dedicated ● working]` one. Render tests cover
+      both the present and absent cases. → `src/ui/dashboard.rs`,
+      `src/ui/dialogs/pr_review.rs`, `CHANGELOG.md`.
+
+      **Follow-up, same day — expose progress for long AI reviews.** Real use
+      on PR #473 made a large Codex-backed review look stuck: the diff was
+      roughly 386 KB / 95–100k estimated tokens, while `HeadlessRunner`
+      buffered all output with `wait_with_output()` and the running pane could
+      only say "Reviewing diff…" until the process exited. Worse, closing AMF
+      during that wait orphaned the ephemeral `codex exec` process and left no
+      result to recover. Codex-backed AI reviews now opt into the CLI's
+      structured `--json` event stream, drain it while the process is alive,
+      preserve the final `agent_message` for the existing finding parser, and
+      reduce intermediate events to safe activity labels (no prompt,
+      reasoning text, or raw command content). `AiReviewRunState` carries the
+      latest activity, elapsed start time, and reported usage into the running
+      pane; non-Codex harnesses keep their existing runner and still gain the
+      elapsed timer. Tests cover JSON flag/model/stdin ordering, final-message
+      extraction, error and usage events, progress redaction, app-state
+      polling, and the rendered running pane. Full suite green (1134 passed,
+      1 ignored); `cargo check`, strict clippy, and formatting clean. Restart
+      recovery remains separate follow-up work: an in-flight review still
+      belongs to the AMF process that launched it. → `src/headless.rs`,
+      `src/app/ai_review.rs`, `src/app/state.rs`,
+      `src/ui/dialogs/ai_review.rs`, `src/app/tests.rs`, `CHANGELOG.md`.
+
+      **Follow-up — make progress reopenable.** The first progress pass kept
+      its timer and activity only inside `AiReviewRunState`, so `Esc` discarded
+      the detailed view even though the headless review continued and the
+      findings-pane header still said `running…`. Live run progress now also
+      lives on `App`, updates regardless of the current pane, and is cleared
+      with the receiver on completion/invalidation. While that run exists the
+      findings footer says `A view progress`; pressing `A` reconstructs
+      `AiReviewRunning` with the original start time, latest stage/activity,
+      and usage rather than trying to start a duplicate pass. App and render
+      tests cover progress arriving while away and the return path; full
+      suite green (1135 passed, 1 ignored), with check, strict clippy, and
+      formatting clean. →
+      `src/app/mod.rs`, `src/app/state.rs`, `src/app/ai_review.rs`,
+      `src/app/pr_review.rs`, `src/app/tests.rs`,
+      `src/ui/dialogs/ai_review.rs`, `CHANGELOG.md`.
 
 - [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit

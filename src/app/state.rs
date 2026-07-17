@@ -1577,6 +1577,9 @@ pub struct PrPickerState {
     /// When `Some`, the lookback-bootstrap depth picker (`b`) is open over the
     /// picker.
     pub bootstrap_pick: Option<BootstrapPickState>,
+    /// When `Some`, the review-memory compact confirm overlay (`c`) is open
+    /// over the picker.
+    pub compact_confirm: Option<CompactConfirmState>,
     /// The logged-in `gh` user's login, when resolvable — used to highlight
     /// the user's own PRs in the row rendering. `None` if unresolved/failed.
     pub current_user: Option<String>,
@@ -1601,14 +1604,129 @@ pub struct BootstrapRunState {
     pub stage: crate::app::pr_review::BootstrapStage,
 }
 
+/// Confirm overlay for the review-memory compact pass (`c` in the PR picker):
+/// shows how many findings are currently in the doc before spending an agent
+/// pass to merge near-duplicates and prune stale ones (Epic E "prevent
+/// review-memory rot").
+#[derive(Debug, Clone)]
+pub struct CompactConfirmState {
+    /// Bullet count in the doc as it stands, read synchronously when the
+    /// overlay opens (a local file read — cheap enough not to background).
+    pub existing_findings: usize,
+}
+
+/// Full-screen progress view for the review-memory compact pass's background
+/// read + rewrite, entered once the confirm overlay is accepted.
+#[derive(Debug, Clone)]
+pub struct CompactRunState {
+    /// The PR picker to return to on completion or cancel.
+    pub origin: PrPickerState,
+    /// Resolved path of the review-memory doc being compacted, carried
+    /// through from confirm so the poll's success path doesn't need to
+    /// re-resolve it (a second `repo_root` lookup) once the background
+    /// thread reports back.
+    pub path: PathBuf,
+    pub stage: crate::app::pr_review::CompactStage,
+}
+
+/// Full-screen review of the compact pass's proposed replacement doc, entered
+/// once the background run finishes. Unlike [`append_finding`]-backed dialogs
+/// (`M`, the bootstrap), this proposes rewriting the *entire* doc, so nothing
+/// is written until the user explicitly confirms here — editable first, same
+/// as every other write in this pane.
+///
+/// [`append_finding`]: crate::app::review_memory::append_finding
+#[derive(Debug, Clone)]
+pub struct CompactReviewState {
+    /// The PR picker to return to on write or discard.
+    pub origin: PrPickerState,
+    /// Resolved path of the review-memory doc this will write to.
+    pub path: PathBuf,
+    /// Bullet count in the doc before compacting, for the "N -> M" summary.
+    pub original_findings: usize,
+    /// Bullet count in the agent's proposed replacement, for the same summary.
+    pub proposed_findings: usize,
+    /// The proposed replacement text, editable before writing.
+    pub editor: TextEditor,
+    /// True while keystrokes go to the editor (`e` to enter); false in the
+    /// confirm view (`⏎`/`w` write / `e` edit / `esc` discard).
+    pub editing: bool,
+    /// Scroll offset, in wrapped visual rows, for docs taller than the screen.
+    pub scroll: usize,
+    /// Request that the next render scroll the cursor back into view. Mirrors
+    /// [`FixConfirmState::sync_to_cursor`].
+    pub sync_to_cursor: bool,
+    /// Last write failure, shown inline so it's recoverable without losing
+    /// the edited content.
+    pub error: Option<String>,
+}
+
 /// Full-screen progress view for the AI PR review's background diff-fetch +
-/// review pass (Epic E `A`), entered from the review pane.
+/// review pass (`A`), entered from the AI Review pane.
+#[derive(Debug, Clone)]
+pub struct AiReviewRunProgress {
+    pub stage: crate::app::ai_review::AiReviewStage,
+    /// Wall-clock start for a live elapsed timer. This state is intentionally
+    /// not persisted; an in-flight headless process belongs to this AMF
+    /// process and cannot be resumed after restart.
+    pub started_at: std::time::Instant,
+    /// Latest sanitized activity label from the harness's structured stream.
+    pub activity: Option<String>,
+    /// Final token usage, when the harness reports it before completion.
+    pub usage: Option<(u64, u64)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AiReviewRunState {
-    /// The review pane to return to on completion or cancel (dialogs cleared
-    /// before stashing, matching the `P`/`f` stash convention).
-    pub origin: PrReviewState,
-    pub stage: crate::app::pr_review::AiReviewStage,
+    /// The AI Review pane to return to on completion or cancel (dialogs
+    /// cleared before stashing, matching the PR Triage `P`/`f` stash
+    /// convention).
+    pub origin: AiReviewState,
+    pub progress: AiReviewRunProgress,
+}
+
+/// State for the full-screen AI Review pane — AMF's own review of a PR's
+/// diff, independent of PR Triage (see `crate::app::ai_review`'s module doc
+/// for why this is a separate workflow rather than bolted onto triage).
+#[derive(Debug, Clone)]
+pub struct AiReviewState {
+    /// Working directory of the feature whose PR this reviews.
+    pub workdir: PathBuf,
+    /// The PR being reviewed.
+    pub pr: crate::github::PrRef,
+    /// Findings from the most recent `A` run (or loaded from `ai_review_cache`
+    /// on entry), in generation order.
+    pub findings: Vec<crate::app::ai_review::AiReviewFinding>,
+    /// Index into `findings` of the highlighted finding.
+    pub selected: usize,
+    /// Scroll offset (in lines) for the detail pane of the selected finding.
+    pub detail_scroll: usize,
+    /// Number of lines the detail pane rendered on the last frame, so the
+    /// scroll clamp bounds against what was actually shown.
+    pub detail_content_lines: usize,
+    /// Record of the most recent `A` run (success/error/finding-count),
+    /// shown as a header badge so a review that already ran doesn't look
+    /// identical to one that never did.
+    pub last_run: Option<crate::app::ai_review::AiReviewRun>,
+    /// Harness chosen for this pane's `A` runs, picked once via `harness_pick`
+    /// and remembered for the rest of the visit.
+    pub harness: Option<AgentKind>,
+    /// Single-select picker shown before the first `A` run in this pane.
+    pub harness_pick: Option<AiHarnessPickState>,
+    /// Model chosen for this pane's `A` runs, picked once via `model_pick`
+    /// right after the harness. `None` means "use the default" — either the
+    /// picker hasn't run yet (see `model_picked`) or the user explicitly
+    /// chose the "Default" row.
+    pub model: Option<String>,
+    /// Whether the model has been picked (or auto-skipped, e.g. for Pi) yet
+    /// this pane visit.
+    pub model_picked: bool,
+    /// Single-select picker shown once per pane, right after the harness.
+    pub model_pick: Option<AiModelPickState>,
+    /// When `Some`, the selected finding's body is open for editing (`e`).
+    pub finding_editor: Option<TextEditor>,
+    /// When `Some`, the post-to-GitHub confirm dialog is open (`W`).
+    pub post_confirm: Option<AiReviewPostConfirmState>,
 }
 
 /// State for the full-screen PR Triage pane.
@@ -1653,24 +1771,6 @@ pub struct PrReviewState {
     /// target). Lets PR triage run on a different harness than the feature's
     /// working session.
     pub review_harness: Option<AgentKind>,
-    /// Harness used to generate AI review drafts with `A`. Independent from
-    /// `review_harness`, which only controls the dedicated fix session.
-    pub ai_review_harness: Option<AgentKind>,
-    /// Single-select picker shown before the first AI-review run in this pane.
-    pub ai_harness_pick: Option<AiHarnessPickState>,
-    /// Model chosen for this pane's AI reviews, picked once via
-    /// `ai_model_pick` right after the harness and remembered for the rest of
-    /// the PR. `None` means "use the default" — either because the picker
-    /// hasn't run yet (see `ai_review_model_picked`) or because the user
-    /// explicitly chose the "Default" row.
-    pub ai_review_model: Option<String>,
-    /// Whether the model has been picked (or auto-skipped, e.g. for Pi) yet
-    /// this pane visit. Distinct from `ai_review_model` being `None`, which
-    /// can also mean "picked Default".
-    pub ai_review_model_picked: bool,
-    /// Single-select picker shown once per pane, right after the harness is
-    /// chosen, before the first `A` run.
-    pub ai_model_pick: Option<AiModelPickState>,
     /// When `Some`, the fix-target picker is open over the pane: the user is
     /// choosing whether fixes go to the feature's existing live session or a
     /// dedicated triage session (and, for the latter, which harness) before
@@ -1709,10 +1809,6 @@ pub struct PrReviewState {
     /// combined-batch confirm dialog instead of the single-comment one. Cleared
     /// when the picker is confirmed or cancelled.
     pub pending_batch: bool,
-    /// When `Some`, the AI-review post-to-GitHub confirm dialog is open over
-    /// the pane: a preview of the review that will post (Epic E `W`),
-    /// awaiting the user's approval.
-    pub ai_review_post: Option<AiReviewPostConfirmState>,
     /// The branch actually checked out in `workdir`, snapshotted when the pane
     /// was entered/refreshed (`WorktreeManager::current_branch`). `f`/`B` fix
     /// injection reads files from this workdir regardless of which PR is being
@@ -1723,17 +1819,13 @@ pub struct PrReviewState {
     pub checked_out_branch: Option<String>,
 }
 
-/// Confirm/edit dialog for posting the AI-review draft findings to GitHub as
-/// a real review (Epic E `W`). Built once when opened from the findings
-/// eligible to post (`ai_generated`, not skipped, not already posted); `⏎`
-/// posts as-is. Only the summary body is editable — the per-finding inline
-/// comment bodies are the AI's own text, vetted by skipping (`s`) rather than
-/// hand-edited here.
+/// Confirm/edit dialog for posting the kept AI-review findings to GitHub as a
+/// real review (`W`). Built once from every not-skipped, not-yet-published
+/// finding; `⏎` posts as-is. Only the summary body is editable — the
+/// per-finding inline comment bodies are the AI's own text, vetted by
+/// skipping (`s`) rather than hand-edited here.
 #[derive(Debug, Clone)]
 pub struct AiReviewPostConfirmState {
-    /// Ids of every included finding (inline-anchored and summary-folded), so
-    /// a successful post can mark them all `Replied` in one pass.
-    pub comment_ids: Vec<u64>,
     /// Inline review comments built from the anchored findings.
     pub inline: Vec<crate::github::PrReviewComment>,
     pub editor: TextEditor,
@@ -2149,9 +2241,18 @@ pub enum AppMode {
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.
     ReviewMemoryBootstrapRunning(BootstrapRunState),
+    /// Running the review-memory compact pass off the UI thread ("prevent
+    /// review-memory rot"); shows a loading frame with the current stage.
+    ReviewMemoryCompactRunning(CompactRunState),
+    /// Reviewing the compact pass's proposed replacement doc before it's
+    /// written — full-screen, editable, nothing written until confirmed.
+    ReviewMemoryCompactReview(CompactReviewState),
+    /// Reviewing/triaging findings from AMF's own AI review of a PR's diff —
+    /// its own workflow, independent of `PrReview` (see `crate::app::ai_review`).
+    AiReview(AiReviewState),
     /// Running the AI PR review's diff-fetch + review pass off the UI thread
-    /// (Epic E `A`); shows a loading frame with the current stage.
-    AiPrReviewRunning(AiReviewRunState),
+    /// (`A`); shows a loading frame with the current stage.
+    AiReviewRunning(AiReviewRunState),
     SteeringPrompt(SteeringPromptState),
     Compose(ComposeState),
     SessionPicker(SessionPickerState),

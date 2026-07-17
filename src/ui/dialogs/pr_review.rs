@@ -1,4 +1,3 @@
-use chrono::{DateTime, Local};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -15,12 +14,12 @@ use std::path::Path;
 
 use crate::{
     app::pr_review::{
-        AiReviewRunOutcome, AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, MarkAction,
-        PrComment, ReplyKind,
+        BootstrapDepth, BootstrapStage, CommentKind, CompactStage, MarkAction, PrComment, ReplyKind,
     },
     app::{
-        AiReviewRunState, BootstrapPickState, BootstrapRunState, MarkPickState, ModelPickRow,
-        PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState, ReplyKindPickState,
+        BootstrapPickState, BootstrapRunState, CompactConfirmState, CompactReviewState,
+        CompactRunState, MarkPickState, PrNumberPromptState, PrPickerState, PrReviewLoadState,
+        PrReviewState, ReplyKindPickState,
     },
     editor::VimMode,
     theme::Theme,
@@ -158,13 +157,18 @@ pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, m
         "a include-closed"
     };
     let footer = Paragraph::new(Line::from(Span::styled(
-        format!(" j/k move   \u{23ce} open   {toggle}   # number   b bootstrap memory   esc close"),
+        format!(
+            " j/k move   \u{23ce} open   {toggle}   # number   b bootstrap memory   c compact memory   esc close"
+        ),
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(footer, layout[3]);
 
     if let Some(pick) = &state.bootstrap_pick {
         draw_bootstrap_pick(frame, pick, memory_path, theme);
+    }
+    if let Some(confirm) = &state.compact_confirm {
+        draw_compact_confirm(frame, confirm, memory_path, theme);
     }
 }
 
@@ -252,6 +256,65 @@ fn draw_bootstrap_pick(
     );
 }
 
+/// Confirm overlay for the review-memory compact pass (`c` in the PR picker):
+/// shows how many findings are in the doc today before spending an agent pass
+/// to merge near-duplicates and prune stale ones.
+fn draw_compact_confirm(
+    frame: &mut Frame,
+    confirm: &CompactConfirmState,
+    memory_path: &Path,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(60, 35, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Compact review memory ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // description
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    let n = confirm.existing_findings;
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(
+                    "  {n} finding{} currently in {}.",
+                    if n == 1 { "" } else { "s" },
+                    memory_path.display()
+                ),
+                Style::default().fg(theme.text.to_color()),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  One agent pass merges near-duplicate findings and prunes stale ones. \
+                 You'll review the proposed doc before anything is written.",
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+        ])
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] run   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[1],
+    );
+}
+
 /// Full-screen progress view for the lookback bootstrap's background fetch +
 /// distill pass.
 pub fn draw_review_memory_bootstrap_running(
@@ -306,25 +369,16 @@ pub fn draw_review_memory_bootstrap_running(
     frame.render_widget(body, inner);
 }
 
-/// Full-screen progress view for the AI PR review's background diff-fetch +
-/// review pass (Epic E `A`). Mirrors [`draw_review_memory_bootstrap_running`].
-pub fn draw_ai_pr_review_running(
+/// Full-screen progress view for the review-memory compact pass's background
+/// read + rewrite. Mirrors [`draw_review_memory_bootstrap_running`].
+pub fn draw_review_memory_compact_running(
     frame: &mut Frame,
-    state: &AiReviewRunState,
+    state: &CompactRunState,
     throbber_state: &throbber_widgets_tui::ThrobberState,
     theme: &Theme,
 ) {
     let area = frame.area();
-    let block = pane_block(theme).title(format!(
-        " AI review of PR #{} with {} (experimental) ",
-        state.origin.review.pr.number,
-        state
-            .origin
-            .ai_review_harness
-            .as_ref()
-            .map(|agent| agent.display_name())
-            .unwrap_or("agent")
-    ));
+    let block = pane_block(theme).title(" Compact review memory (experimental) ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -333,19 +387,19 @@ pub fn draw_ai_pr_review_running(
     let spinner = throbber.to_symbol_span(throbber_state);
 
     let status_line = match state.stage {
-        AiReviewStage::PreparingDiff => Line::from(vec![
+        CompactStage::ReadingDoc => Line::from(vec![
             spinner,
             Span::styled(
-                " Fetching PR diff...",
+                " Reading review memory doc...",
                 Style::default()
                     .fg(theme.text.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
-        AiReviewStage::Reviewing { token_estimate } => Line::from(vec![
+        CompactStage::Compacting { token_estimate } => Line::from(vec![
             spinner,
             Span::styled(
-                format!(" Reviewing diff (~{token_estimate} tokens)..."),
+                format!(" Compacting findings (~{token_estimate} tokens)..."),
                 Style::default()
                     .fg(theme.text.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -358,7 +412,7 @@ pub fn draw_ai_pr_review_running(
         status_line,
         Line::from(""),
         Line::from(Span::styled(
-            "esc to return to PR Triage (the run keeps going in the background)",
+            "esc to return to the PR picker (the run keeps going in the background)",
             Style::default().fg(theme.text_muted.to_color()),
         )),
     ])
@@ -366,11 +420,106 @@ pub fn draw_ai_pr_review_running(
     frame.render_widget(body, inner);
 }
 
-/// One PR row: `#123  title  · @author · branch` plus a state chip for anything
-/// that isn't a plain open PR (draft / merged / closed). When `current_user`
-/// resolves and matches the entry's author, the author is highlighted and
-/// tagged `(you)` so the user's own PRs stand out without reading every
-/// `@author` in the list.
+/// Full-screen review of the compact pass's proposed replacement doc: an
+/// editable preview of what will be written, shown before anything actually
+/// is (mirrors [`draw_fix_confirm`]'s edit/confirm split and scroll handling,
+/// full-screen rather than a centered dialog since a whole doc can run long).
+pub fn draw_review_memory_compact_review(
+    frame: &mut Frame,
+    state: &mut CompactReviewState,
+    theme: &Theme,
+) {
+    let area = frame.area();
+    let block = pane_block(theme).title(format!(
+        " Review compacted memory: {} \u{2192} {} findings (experimental) ",
+        state.original_findings, state.proposed_findings
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut constraints = vec![Constraint::Length(1)]; // path line
+    if state.error.is_some() {
+        constraints.push(Constraint::Length(2)); // error message
+    }
+    constraints.push(Constraint::Min(1)); // doc body / editor
+    constraints.push(Constraint::Length(1)); // key hints
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+    let mut row = 0;
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  Will overwrite {}", state.path.display()),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))),
+        chunks[row],
+    );
+    row += 1;
+
+    if let Some(error) = &state.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("Write failed: {error}"),
+                Style::default().fg(theme.danger.to_color()),
+            )))
+            .wrap(Wrap { trim: false }),
+            chunks[row],
+        );
+        row += 1;
+    }
+
+    let doc_area = chunks[row];
+    let doc_lines = super::editor_view::editor_lines(&state.editor, theme, "(empty doc)");
+    let visible_lines = doc_area.height as usize;
+    let mut wrap_width = doc_area.width as usize;
+    let mut total_visual_lines =
+        super::editor_view::count_wrapped_editor_lines(&doc_lines, wrap_width);
+    if total_visual_lines > visible_lines && wrap_width > 1 {
+        wrap_width -= 1;
+        total_visual_lines = super::editor_view::count_wrapped_editor_lines(&doc_lines, wrap_width);
+    }
+    super::editor_view::sync_editor_scroll(
+        &state.editor,
+        &mut state.scroll,
+        &mut state.sync_to_cursor,
+        visible_lines,
+        wrap_width,
+        total_visual_lines,
+    );
+    frame.render_widget(
+        Paragraph::new(doc_lines)
+            .wrap(Wrap { trim: false })
+            .scroll((state.scroll.min(u16::MAX as usize) as u16, 0)),
+        doc_area,
+    );
+    if total_visual_lines > visible_lines {
+        let scrollbar = Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(total_visual_lines)
+            .position(state.scroll)
+            .viewport_content_length(visible_lines);
+        frame.render_stateful_widget(scrollbar, doc_area, &mut scrollbar_state);
+    }
+    row += 1;
+
+    let hints = if state.editing {
+        "[esc] done editing"
+    } else {
+        "[⏎/w] write   [e] edit   [esc] discard"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[row],
+    );
+}
+
 fn pr_picker_row(
     entry: &crate::github::PrListEntry,
     current_user: Option<&str>,
@@ -470,7 +619,6 @@ pub fn draw_pr_review(
     usage: PrReviewUsage<'_>,
     dedicated_session_working: Option<bool>,
     ai_review_running: bool,
-    throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
     let area = frame.area();
     let review = &state.review;
@@ -516,32 +664,15 @@ pub fn draw_pr_review(
         };
         header_spans.push(Span::styled(label, Style::default().fg(color)));
     }
-    // The AI review (`A`) keeps running in the background after `esc` returns
-    // here — without this, nothing in the pane hints that it's still working,
-    // so the header gets a throbber + label for as long as it's in flight.
+    // `A` opens a separate AI Review pane now, so a background pass kicked
+    // off there and left running isn't visible from inside this pane unless
+    // called out explicitly — this is that ambient "yes, it's still going"
+    // signal (mirrors the dashboard/session ambient badge's own
+    // `ai_review_running_for_workdir` check).
     if ai_review_running {
-        header_spans.push(Span::raw("  "));
-        header_spans.push(
-            throbber_widgets_tui::Throbber::default()
-                .style(Style::default().fg(theme.warning.to_color()))
-                .to_symbol_span(throbber_state),
-        );
         header_spans.push(Span::styled(
-            " AI review running…",
+            "  [AI review running]",
             Style::default().fg(theme.warning.to_color()),
-        ));
-    } else if let Some(run) = &review.last_ai_review {
-        // The result of the last `A` run is cached and would otherwise be
-        // invisible until the user pressed `A` again to find out — this is the
-        // discovery mechanism for "did a review already happen here."
-        let (text, is_error) = ai_review_last_run_badge(run);
-        header_spans.push(Span::styled(
-            text,
-            Style::default().fg(if is_error {
-                theme.danger.to_color()
-            } else {
-                theme.status_detail.to_color()
-            }),
         ));
     }
     // Once the fix-target session exists, show what triage has spent on it —
@@ -630,14 +761,9 @@ pub fn draw_pr_review(
         0 => "space mark".to_string(),
         n => format!("space mark · B combine({n})"),
     };
-    let ai_harness = state
-        .ai_review_harness
-        .as_ref()
-        .map(|agent| agent.display_name())
-        .unwrap_or("pick");
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review→{ai_harness}   W post-review   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
         ),
@@ -650,14 +776,6 @@ pub fn draw_pr_review(
     frame.render_widget(keys, footer[0]);
     frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);
 
-    // Harness picker overlays the pane on the first fix of a dedicated triage.
-    if let Some(pick) = &state.ai_harness_pick {
-        draw_ai_harness_pick(frame, pick, theme);
-    }
-    // Model picker overlays the pane right after the harness is chosen.
-    if let Some(pick) = &state.ai_model_pick {
-        draw_ai_model_pick(frame, pick, theme);
-    }
     if let Some(pick) = &state.harness_pick {
         draw_harness_pick(frame, pick, theme);
     }
@@ -697,149 +815,6 @@ pub fn draw_pr_review(
             .unwrap_or("reviewer");
         draw_memory_add_dialog(frame, memory_add, author, theme);
     }
-    // AI-review post-to-GitHub confirm dialog overlays the pane when open.
-    if let Some(post) = &state.ai_review_post {
-        draw_ai_review_post_dialog(frame, post, theme);
-    }
-}
-
-fn draw_ai_harness_pick(frame: &mut Frame, pick: &crate::app::AiHarnessPickState, theme: &Theme) {
-    let area = super::super::dashboard::centered_rect(54, 44, frame.area());
-    crate::ui::draw_modal_overlay(frame, area, theme);
-
-    let block = Block::default()
-        .title(" Harness for AI review ")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(theme.effective_bg()))
-        .border_style(Style::default().fg(theme.primary.to_color()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(1),
-            Constraint::Length(if pick.error.is_some() { 2 } else { 0 }),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    frame.render_widget(
-        Paragraph::new("  Generate this PR's AI review with:")
-            .style(Style::default().fg(theme.text_muted.to_color())),
-        chunks[0],
-    );
-    let lines = pick.agents.iter().enumerate().map(|(index, agent)| {
-        let selected = index == pick.selected;
-        let style = if selected {
-            Style::default()
-                .fg(theme.text.to_color())
-                .bg(theme.effective_selection_bg())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text.to_color())
-        };
-        Line::from(vec![
-            Span::styled(
-                if selected { "  > " } else { "    " },
-                Style::default().fg(theme.warning.to_color()),
-            ),
-            Span::styled(agent.display_name().to_string(), style),
-        ])
-    });
-    frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()), chunks[1]);
-    if let Some(error) = &pick.error {
-        frame.render_widget(
-            Paragraph::new(format!("  {error}"))
-                .style(Style::default().fg(theme.danger.to_color()))
-                .wrap(Wrap { trim: true }),
-            chunks[2],
-        );
-    }
-    frame.render_widget(
-        Paragraph::new("  [j/k] choose   [⏎] run review   [esc] cancel")
-            .style(Style::default().fg(theme.primary.to_color())),
-        chunks[3],
-    );
-}
-
-/// Label shown for one [`ModelPickRow`] in the model picker's list.
-fn model_pick_row_label(row: &ModelPickRow) -> String {
-    match row {
-        ModelPickRow::Default => "Default (harness's own model)".to_string(),
-        ModelPickRow::Preset(name) => name.to_string(),
-        ModelPickRow::Custom => "Custom…".to_string(),
-    }
-}
-
-fn draw_ai_model_pick(frame: &mut Frame, pick: &crate::app::AiModelPickState, theme: &Theme) {
-    let area = super::super::dashboard::centered_rect(54, 46, frame.area());
-    crate::ui::draw_modal_overlay(frame, area, theme);
-
-    let block = Block::default()
-        .title(" Model for AI review ")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(theme.effective_bg()))
-        .border_style(Style::default().fg(theme.primary.to_color()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let custom_selected = matches!(pick.rows.get(pick.selected), Some(ModelPickRow::Custom));
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(1),
-            Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    frame.render_widget(
-        Paragraph::new("  Generate this PR's AI review using:")
-            .style(Style::default().fg(theme.text_muted.to_color())),
-        chunks[0],
-    );
-    let lines = pick.rows.iter().enumerate().map(|(index, row)| {
-        let selected = index == pick.selected;
-        let style = if selected {
-            Style::default()
-                .fg(theme.text.to_color())
-                .bg(theme.effective_selection_bg())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text.to_color())
-        };
-        let mut label = model_pick_row_label(row);
-        if matches!(row, ModelPickRow::Custom) && !pick.custom_input.is_empty() {
-            label = format!("{label} ({})", pick.custom_input);
-        }
-        Line::from(vec![
-            Span::styled(
-                if selected { "  > " } else { "    " },
-                Style::default().fg(theme.warning.to_color()),
-            ),
-            Span::styled(label, style),
-        ])
-    });
-    frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()), chunks[1]);
-    if pick.editing_custom {
-        frame.render_widget(
-            Paragraph::new(format!("  model: {}▏", pick.custom_input))
-                .style(Style::default().fg(theme.text.to_color())),
-            chunks[2],
-        );
-    }
-    let hints = if pick.editing_custom {
-        "  [⏎] use this model   [esc] back to list"
-    } else if custom_selected {
-        "  [j/k] choose   [⏎] type a model   [esc] cancel"
-    } else {
-        "  [j/k] choose   [⏎] confirm   [esc] cancel"
-    };
-    frame.render_widget(
-        Paragraph::new(hints).style(Style::default().fg(theme.primary.to_color())),
-        chunks[3],
-    );
 }
 
 /// Reply dialog: a contextual, editable reply (a "done in `<sha>`." report or a
@@ -900,96 +875,6 @@ fn draw_reply_dialog(
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[2],
-    );
-}
-
-/// AI-review post-to-GitHub confirm dialog (Epic E `W`): a preview of the
-/// review that will post — inline comment count, and the editable summary
-/// body — awaiting approval before [`GhCli::create_review`] runs.
-///
-/// [`GhCli::create_review`]: crate::github::GhCli::create_review
-fn draw_ai_review_post_dialog(
-    frame: &mut Frame,
-    post: &crate::app::AiReviewPostConfirmState,
-    theme: &Theme,
-) {
-    let area = super::super::dashboard::centered_rect(70, 55, frame.area());
-    crate::ui::draw_modal_overlay(frame, area, theme);
-
-    let block = Block::default()
-        .title(" Post AI review to GitHub ")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(theme.effective_bg()))
-        .border_style(Style::default().fg(theme.primary.to_color()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // A prior post attempt's failure gets its own row rather than only being
-    // logged/toasted — `pr_review_post_ai_review` restores this dialog (with
-    // `error` set) specifically so a rejected post is recoverable in-place.
-    let mut constraints = vec![Constraint::Length(2)]; // preview counts
-    if post.error.is_some() {
-        constraints.push(Constraint::Length(2)); // error message
-    }
-    constraints.push(Constraint::Min(1)); // summary body
-    constraints.push(Constraint::Length(1)); // key hints
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(inner);
-    let mut row = 0;
-
-    let n = post.comment_ids.len();
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                format!(
-                    "{n} finding{} · {} inline comment{}, rest folded into the summary",
-                    if n == 1 { "" } else { "s" },
-                    post.inline.len(),
-                    if post.inline.len() == 1 { "" } else { "s" },
-                ),
-                Style::default().fg(theme.text_muted.to_color()),
-            )),
-            Line::from(Span::styled(
-                "Summary (edit freely):",
-                Style::default().fg(theme.text.to_color()),
-            )),
-        ]),
-        chunks[row],
-    );
-    row += 1;
-
-    if let Some(error) = &post.error {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("Post failed: {error}"),
-                Style::default().fg(theme.danger.to_color()),
-            )))
-            .wrap(Wrap { trim: false }),
-            chunks[row],
-        );
-        row += 1;
-    }
-
-    let body_lines = super::editor_view::editor_lines(&post.editor, theme, "(summary body)");
-    frame.render_widget(
-        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
-        chunks[row],
-    );
-    row += 1;
-
-    let hints = if post.editing {
-        "[esc] done editing"
-    } else {
-        "[⏎] post to GitHub   [e] edit summary   [esc] cancel"
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            hints,
-            Style::default().fg(theme.primary.to_color()),
-        ))),
-        chunks[row],
     );
 }
 
@@ -1519,64 +1404,10 @@ fn comment_list_line<'a>(
     ])
 }
 
-/// Header text (plus whether it should render as an error) for the persisted
-/// outcome of the last `A` run, shown once the running screen isn't already
-/// covering it — see [`AiReviewRun`](crate::app::pr_review::AiReviewRun).
-fn ai_review_last_run_badge(run: &crate::app::pr_review::AiReviewRun) -> (String, bool) {
-    let age = format_relative_time(run.ran_at);
-    match &run.outcome {
-        AiReviewRunOutcome::Findings(0) => (format!("  AI review: no findings ({age})"), false),
-        AiReviewRunOutcome::Findings(n) => (
-            format!(
-                "  AI review: {n} finding{} ({age})",
-                if *n == 1 { "" } else { "s" }
-            ),
-            false,
-        ),
-        AiReviewRunOutcome::Error(e) => (
-            format!("  AI review failed ({age}): {}", truncate_right(e, 60)),
-            true,
-        ),
-    }
-}
-
-/// Coarse relative age (`"now"`, `"5m"`, `"3h"`, `"2d"`, or a bare date past a
-/// week) for a header badge — mirrors [`ui::picker::format_session_age`]'s
-/// buckets but takes a `DateTime` directly rather than a raw unix timestamp.
-fn format_relative_time(at: DateTime<Local>) -> String {
-    let delta = Local::now().signed_duration_since(at);
-    if delta.num_minutes() < 1 {
-        "now".to_string()
-    } else if delta.num_hours() < 1 {
-        format!("{}m", delta.num_minutes())
-    } else if delta.num_days() < 1 {
-        format!("{}h", delta.num_hours())
-    } else if delta.num_days() < 7 {
-        format!("{}d", delta.num_days())
-    } else {
-        at.format("%b %-d").to_string()
-    }
-}
-
-/// Truncate `s` to at most `max` display columns, keeping the head and marking
-/// the elision with a trailing `…`. Used for error text in the header badge, so
-/// a long `gh`/agent error doesn't blow out the single-line header.
-fn truncate_right(s: &str, max: usize) -> String {
-    let len = s.chars().count();
-    if len <= max {
-        return s.to_string();
-    }
-    if max <= 1 {
-        return "…".to_string();
-    }
-    let head: String = s.chars().take(max - 1).collect();
-    format!("{head}…")
-}
-
 /// Truncate `s` to at most `max` display columns, keeping the tail and marking
 /// the elision with a leading `…`. Used for file paths so the filename (and its
 /// line number) remain visible when the row is too narrow for the full path.
-fn truncate_left(s: &str, max: usize) -> String {
+pub(crate) fn truncate_left(s: &str, max: usize) -> String {
     let len = s.chars().count();
     if len <= max {
         return s.to_string();
@@ -1626,9 +1457,6 @@ fn draw_comment_detail(
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
     )];
-    if c.ai_generated {
-        header_spans.push(chip("AI", theme.info.to_color()));
-    }
     if c.outdated {
         header_spans.push(chip("outdated", theme.warning.to_color()));
     }
@@ -1640,19 +1468,11 @@ fn draw_comment_detail(
     }
     lines.push(Line::from(header_spans));
 
-    // Author / role / kind chips. An AI-review draft is neither a bot nor a
-    // human GitHub account — label it distinctly rather than falling through
-    // to "human" (the `is_bot` false-default a draft finding is built with).
+    // Author / role / kind chips.
     lines.push(Line::from(vec![
         chip(&format!("@{}", c.author), theme.secondary.to_color()),
         chip(
-            if c.ai_generated {
-                "ai"
-            } else if c.is_bot {
-                "bot"
-            } else {
-                "human"
-            },
+            if c.is_bot { "bot" } else { "human" },
             theme.text_muted.to_color(),
         ),
         chip(kind_label(&c.kind), theme.text_muted.to_color()),
@@ -1721,12 +1541,12 @@ fn draw_comment_detail(
 
 /// A compact `[label]` chip in the given accent color, with a leading space so
 /// chips read as a spaced row.
-fn chip(label: &str, color: ratatui::style::Color) -> Span<'static> {
+pub(crate) fn chip(label: &str, color: ratatui::style::Color) -> Span<'static> {
     Span::styled(format!(" [{label}]"), Style::default().fg(color))
 }
 
 /// A full-width horizontal divider line in a muted color.
-fn divider(width: usize, theme: &Theme) -> Line<'static> {
+pub(crate) fn divider(width: usize, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
         "─".repeat(width),
         Style::default().fg(theme.text_muted.to_color()),
@@ -1734,7 +1554,7 @@ fn divider(width: usize, theme: &Theme) -> Line<'static> {
 }
 
 /// A small muted section label inside the detail pane.
-fn section_label(label: &str, theme: &Theme) -> Line<'static> {
+pub(crate) fn section_label(label: &str, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
         label.to_string(),
         Style::default()
@@ -1754,7 +1574,7 @@ fn section_label(label: &str, theme: &Theme) -> Line<'static> {
 /// context, then each hunk line is matched back to its highlighted line. When
 /// no language is detected (e.g. a comment with no file path) or a parser isn't
 /// available, this degrades to the plain marker coloring.
-fn diff_hunk_lines(hunk: &str, path: Option<&str>, theme: &Theme) -> Vec<Line<'static>> {
+pub(crate) fn diff_hunk_lines(hunk: &str, path: Option<&str>, theme: &Theme) -> Vec<Line<'static>> {
     // Reconstruct the two sides so the highlighter parses contiguous source.
     let mut new_src = String::new();
     let mut old_src = String::new();
@@ -1938,7 +1758,7 @@ fn triage_color(state: crate::app::pr_review::TriageState, theme: &Theme) -> rat
 /// A muted hint nudging the user toward `i` when the comment's file maps to a
 /// known highlight language whose parser isn't installed yet. Returns `None` for
 /// comments with no path, unrecognized languages, or already-installed parsers.
-fn syntax_install_hint(path: Option<&str>) -> Option<String> {
+pub(crate) fn syntax_install_hint(path: Option<&str>) -> Option<String> {
     let path = path?;
     let (language, status) =
         crate::highlight::language_install_state_for_path(std::path::Path::new(path))?;
@@ -1958,7 +1778,7 @@ fn kind_label(kind: &CommentKind) -> &'static str {
     }
 }
 
-fn pane_block(theme: &Theme) -> Block<'static> {
+pub(crate) fn pane_block(theme: &Theme) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
@@ -2136,8 +1956,6 @@ mod tests {
             is_resolved: false,
             triage: crate::app::pr_review::TriageState::Untriaged,
             local_note: None,
-            ai_generated: false,
-            ai_published: false,
             github_id: None,
             github_review_id: None,
         }
@@ -2161,7 +1979,6 @@ mod tests {
                 pr,
                 comments,
                 fetched_at: chrono::Local::now(),
-                last_ai_review: None,
             },
             selected: 0,
             detail_scroll: 0,
@@ -2172,11 +1989,6 @@ mod tests {
             fix_target_picked: false,
             usage_baselines: std::collections::HashMap::new(),
             review_harness: None,
-            ai_review_harness: None,
-            ai_harness_pick: None,
-            ai_review_model: None,
-            ai_review_model_picked: false,
-            ai_model_pick: None,
             harness_pick: None,
             fix_confirm: None,
             fix_vim_enabled: false,
@@ -2186,7 +1998,6 @@ mod tests {
             memory_add: None,
             marked: std::collections::HashSet::new(),
             pending_batch: false,
-            ai_review_post: None,
             checked_out_branch: Some("main".to_string()),
         }
     }

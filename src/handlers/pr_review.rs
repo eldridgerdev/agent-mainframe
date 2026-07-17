@@ -16,18 +16,10 @@ const FIX_PAGE_STEP: isize = 10;
 /// inject one combined prompt for all marked comments, `R` opens the
 /// reply-kind picker (Done / not-needed), `M` add to memory, `m` opens the
 /// "Mark" picker (Done (local) / Skip (local) / Resolve on GitHub), `i`
-/// install syntax highlighting for the selected comment's file, `A` run an AI
-/// review of the PR diff (Epic E — draft findings merge into this same
-/// list), `W` post the AI-review draft findings to GitHub as a real review.
+/// install syntax highlighting for the selected comment's file, `A` opens the
+/// dedicated AI Review pane for this PR (its own workflow — see
+/// `crate::app::ai_review`).
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
-    // The AI-review harness picker is independent from the fix-session picker.
-    if app.pr_review_ai_harness_picking() {
-        return handle_ai_harness_pick_key(app, key);
-    }
-    // The AI-review model picker, shown right after the harness, when open.
-    if app.pr_review_ai_model_picking() {
-        return handle_ai_model_pick_key(app, key);
-    }
     // The fix-target picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
         return handle_harness_pick_key(app, key);
@@ -52,10 +44,6 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if let Some(editing) = app.pr_review_memory_add_view() {
         return handle_memory_add_key(app, key, editing);
     }
-    // The AI-review post-to-GitHub confirm dialog, when open, captures all keys.
-    if let Some(editing) = app.pr_review_ai_review_post_view() {
-        return handle_ai_review_post_key(app, key, editing);
-    }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -78,8 +66,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('r') => app.refresh_pr_review(),
         KeyCode::Char('i') => app.open_syntax_language_picker_for_selected_diff_file(),
         KeyCode::Char('g') => app.open_pr_picker_from_pane(),
-        KeyCode::Char('A') => app.start_ai_pr_review(),
-        KeyCode::Char('W') => app.pr_review_open_ai_review_post_confirm(),
+        KeyCode::Char('A') => app.open_ai_review_from_triage(),
         _ => {}
     }
     Ok(())
@@ -111,50 +98,19 @@ fn handle_mark_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Pick the harness for the paid `A` review pass. Confirm validates the CLI
-/// before any diff is fetched or agent tokens are spent; failures stay inline.
-fn handle_ai_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_ai_harness_pick_cancel(),
-        KeyCode::Down | KeyCode::Char('j') => app.pr_review_ai_harness_pick_move(1),
-        KeyCode::Up | KeyCode::Char('k') => app.pr_review_ai_harness_pick_move(-1),
-        KeyCode::Enter => app.pr_review_ai_harness_pick_confirm(),
-        _ => {}
-    }
-    Ok(())
-}
-
-/// Pick the model for the paid `A` review pass, shown once per pane right
-/// after the harness. While the `Custom` row is open for text entry, keys
-/// route to the buffer instead of list navigation.
-fn handle_ai_model_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
-    if app.pr_review_ai_model_pick_editing_custom() {
-        match key.code {
-            KeyCode::Esc => app.pr_review_ai_model_pick_cancel(),
-            KeyCode::Enter => app.pr_review_ai_model_pick_confirm(),
-            KeyCode::Backspace => app.pr_review_ai_model_pick_backspace(),
-            KeyCode::Char(c) => app.pr_review_ai_model_pick_push_char(c),
-            _ => {}
-        }
-        return Ok(());
-    }
-    match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_ai_model_pick_cancel(),
-        KeyCode::Down | KeyCode::Char('j') => app.pr_review_ai_model_pick_move(1),
-        KeyCode::Up | KeyCode::Char('k') => app.pr_review_ai_model_pick_move(-1),
-        KeyCode::Enter => app.pr_review_ai_model_pick_confirm(),
-        _ => {}
-    }
-    Ok(())
-}
-
 /// Key handling for the PR picker: navigate the list, `⏎` open the highlighted
-/// PR, `a` toggle closed/merged PRs, `#` switch to typing a number, `b` open
-/// the review-memory lookback bootstrap, `esc` close.
+/// PR in PR Triage, `W` open it in the AI Review pane instead, `a` toggle
+/// closed/merged PRs, `#` switch to typing a number, `b` open the
+/// review-memory lookback bootstrap, `c` compact the review-memory doc,
+/// `esc` close.
 pub fn handle_pr_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The lookback-bootstrap depth picker, when open, captures all keys.
     if app.review_memory_bootstrap_picking() {
         return handle_bootstrap_pick_key(app, key);
+    }
+    // The compact confirm overlay, when open, captures all keys.
+    if app.review_memory_compact_confirming() {
+        return handle_compact_confirm_key(app, key);
     }
 
     match key.code {
@@ -162,9 +118,11 @@ pub fn handle_pr_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Down | KeyCode::Char('j') => app.pr_picker_select_next(),
         KeyCode::Up | KeyCode::Char('k') => app.pr_picker_select_prev(),
         KeyCode::Enter => app.pr_picker_choose(),
+        KeyCode::Char('W') => app.pr_picker_choose_ai_review(),
         KeyCode::Char('a') => app.pr_picker_toggle_closed(),
         KeyCode::Char('#') | KeyCode::Char('g') => app.pr_picker_to_number_prompt(),
         KeyCode::Char('b') => app.open_review_memory_bootstrap_pick(),
+        KeyCode::Char('c') => app.open_review_memory_compact_confirm(),
         _ => {}
     }
     Ok(())
@@ -183,6 +141,17 @@ fn handle_bootstrap_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+/// Key handling for the review-memory compact confirm overlay: `⏎` run,
+/// `esc`/`q` cancel back to the PR picker.
+fn handle_compact_confirm_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.review_memory_compact_confirm_cancel(),
+        KeyCode::Enter => app.review_memory_compact_confirm_run(),
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Key handling for the full-screen lookback-bootstrap running view: `esc`/`q`
 /// return to the PR picker (the background thread keeps running to
 /// completion; its result still lands via `poll_review_memory_bootstrap_bg`).
@@ -193,13 +162,43 @@ pub fn handle_review_memory_bootstrap_running_key(app: &mut App, key: KeyEvent) 
     Ok(())
 }
 
-/// Key handling while the AI PR review's background pass is running:
-/// `Esc`/`q` returns to the review pane without aborting the background
-/// thread (it keeps running — a real side effect, tokens spent — and
-/// [`App::poll_ai_pr_review_bg`] still surfaces the result whenever it lands).
-pub fn handle_ai_pr_review_running_key(app: &mut App, key: KeyEvent) -> Result<()> {
+/// Key handling for the full-screen compact running view: `esc`/`q` return to
+/// the PR picker (the background thread keeps running to completion; its
+/// result still lands via `poll_review_memory_compact_bg`).
+pub fn handle_review_memory_compact_running_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-        app.cancel_ai_pr_review();
+        app.cancel_review_memory_compact();
+    }
+    Ok(())
+}
+
+/// Key handling while the compact review dialog is open.
+///
+/// Confirm view: `⏎`/`w` writes the proposed doc, `e` edits, `esc`/`q`
+/// discards without writing. Edit mode: keystrokes flow to the editor; `esc`
+/// returns to the confirm view.
+pub fn handle_review_memory_compact_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if app.pr_review_compact_review_editing() == Some(true) {
+        match key.code {
+            KeyCode::Esc => app.pr_review_compact_review_stop_edit(),
+            _ => app.pr_review_compact_review_editor_key(key),
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Enter | KeyCode::Char('w') => app.pr_review_compact_write()?,
+        KeyCode::Char('e') => app.pr_review_compact_review_edit(),
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.pr_review_compact_review_scroll(DETAIL_SCROLL_STEP as isize)
+        }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.pr_review_compact_review_scroll(-(DETAIL_SCROLL_STEP as isize))
+        }
+        KeyCode::PageDown => app.pr_review_compact_review_scroll(FIX_PAGE_STEP),
+        KeyCode::PageUp => app.pr_review_compact_review_scroll(-FIX_PAGE_STEP),
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_compact_discard(),
+        _ => {}
     }
     Ok(())
 }
@@ -222,30 +221,6 @@ fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
         KeyCode::Enter => app.pr_review_post_reply()?,
         KeyCode::Char('e') => app.pr_review_reply_edit(),
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_reply(),
-        _ => {}
-    }
-    Ok(())
-}
-
-/// Key handling while the AI-review post-to-GitHub confirm dialog is open.
-///
-/// Confirm view: `⏎` posts, `e` edits the summary, `esc`/`q` cancels. Edit
-/// mode: keystrokes flow to the summary editor; `esc` returns to the confirm
-/// view. Only the summary is editable — inline finding bodies are vetted by
-/// skipping (`s`), not hand-edited here.
-fn handle_ai_review_post_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
-    if editing {
-        match key.code {
-            KeyCode::Esc => app.pr_review_ai_review_post_stop_edit(),
-            _ => app.pr_review_ai_review_post_editor_key(key),
-        }
-        return Ok(());
-    }
-
-    match key.code {
-        KeyCode::Enter => app.pr_review_post_ai_review()?,
-        KeyCode::Char('e') => app.pr_review_ai_review_post_edit(),
-        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_ai_review_post(),
         _ => {}
     }
     Ok(())

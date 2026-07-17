@@ -7,7 +7,11 @@
 //! `docs/backlog/pr-comment-review-plan.md` (Epic E).
 //!
 //! AMF only ever *appends* here (dedup-aware, grouped by category) — it never
-//! rewrites existing prose, so hand-edits are safe across runs.
+//! rewrites existing prose, so hand-edits are safe across runs. The one
+//! exception is the explicit, user-triggered "compact" pass ([`compact_prompt`]),
+//! which proposes a wholesale rewrite (merging near-duplicates, pruning stale
+//! rules) but never writes it without the user reviewing and confirming the
+//! result first — see `App::pr_review_compact_write`.
 
 use std::path::{Path, PathBuf};
 
@@ -127,6 +131,43 @@ pub fn append_finding(path: &Path, category: &str, finding: &str) -> std::io::Re
 
     std::fs::write(path, updated)?;
     Ok(true)
+}
+
+/// Count of `- ` bullet findings in a review-memory doc's raw contents. Used
+/// by the compact flow to show "N -> M findings" before/after a proposed
+/// rewrite, and to skip running the pass entirely on a doc with nothing to
+/// compact.
+pub fn count_findings(contents: &str) -> usize {
+    contents
+        .lines()
+        .filter(|line| line.trim_start().starts_with("- "))
+        .count()
+}
+
+/// Prompt asking an agent to compact a review-memory doc: merge near-duplicate
+/// findings and prune stale or overly specific ones, without touching
+/// hand-written prose or the doc's overall shape. Unlike [`append_finding`],
+/// the response replaces the doc wholesale — the caller must show it to the
+/// user for explicit approval before writing (Epic E "prevent review-memory
+/// rot").
+pub fn compact_prompt(contents: &str) -> String {
+    format!(
+        "You are compacting a team's code-review findings doc so it stays useful \
+         over time instead of drifting and bloating.\n\n\
+         Below is the current contents of the doc. It is Markdown: a top-level \
+         header, `## Category` section headings, and findings as `- ` bullets \
+         underneath. It may also contain hand-written prose paragraphs.\n\n\
+         Rewrite it: merge findings that state the same rule in different words \
+         into one clear bullet, and drop findings that are stale, superseded by a \
+         more general bullet already in the doc, or too specific to a single past \
+         PR to be a durable rule. Keep every section heading that still has \
+         findings under it; drop a heading only if it ends up empty. Preserve the \
+         top-level header and any hand-written prose paragraphs exactly as they \
+         are — do not rewrite or remove them.\n\n\
+         Output ONLY the full replacement document in the same Markdown shape as \
+         the input (header, prose, `## Category` headings, `- ` bullets). No \
+         commentary outside the document itself.\n\n---\n\n{contents}"
+    )
 }
 
 /// Parse a distilled-findings response into `(category, finding)` pairs:
@@ -362,5 +403,30 @@ mod tests {
     fn parse_findings_markdown_empty_input_yields_no_findings() {
         assert!(parse_findings_markdown("").is_empty());
         assert!(parse_findings_markdown("## Tests\n").is_empty());
+    }
+
+    #[test]
+    fn count_findings_counts_only_bullet_lines() {
+        let text =
+            "# Review memory\n\nSome prose.\n\n## Tests\n- One\n- Two\n\n## Naming\n- Three\n";
+        assert_eq!(count_findings(text), 3);
+    }
+
+    #[test]
+    fn count_findings_empty_doc_is_zero() {
+        assert_eq!(count_findings(""), 0);
+        assert_eq!(
+            count_findings("# Review memory\n\nJust prose, no bullets.\n"),
+            0
+        );
+    }
+
+    #[test]
+    fn compact_prompt_embeds_the_doc_and_instructs_full_replacement() {
+        let contents = "# Review memory\n\n## Tests\n- Cover the error path\n";
+        let prompt = compact_prompt(contents);
+        assert!(prompt.contains(contents));
+        assert!(prompt.contains("merge"));
+        assert!(prompt.contains("Output ONLY the full replacement document"));
     }
 }

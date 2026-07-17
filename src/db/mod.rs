@@ -1,3 +1,4 @@
+mod ai_review_cache;
 mod debug_log;
 mod migrations;
 mod pr_comment_triage;
@@ -125,6 +126,28 @@ impl AmfDb {
 
     pub fn evict_stale_pr_comment_triage(&self) -> Result<()> {
         pr_comment_triage::evict_stale(&self.conn)
+    }
+
+    /// Cached AI-review findings for `(pr_number, head_sha)`, or `None` on miss.
+    pub fn load_ai_review_cache(
+        &self,
+        pr_number: u32,
+        head_sha: &str,
+    ) -> Result<Option<crate::app::ai_review::AiReviewCacheEntry>> {
+        ai_review_cache::load(&self.conn, pr_number, head_sha)
+    }
+
+    pub fn save_ai_review_cache(
+        &self,
+        pr_number: u32,
+        head_sha: &str,
+        entry: &crate::app::ai_review::AiReviewCacheEntry,
+    ) -> Result<()> {
+        ai_review_cache::save(&self.conn, pr_number, head_sha, entry)
+    }
+
+    pub fn evict_stale_ai_review_cache(&self) -> Result<()> {
+        ai_review_cache::evict_stale(&self.conn)
     }
 
     pub fn append_log_entry(&self, entry: &crate::debug::LogEntry) -> Result<()> {

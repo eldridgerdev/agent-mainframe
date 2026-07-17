@@ -12,6 +12,44 @@ are tagged.
 
 ### Added
 
+- **AI Review is now its own pane, separate from PR Triage.** Generating
+  AMF's own review of a PR's diff (`A`/`W`) used to live inside the PR Triage
+  pane, converting each finding into a synthetic comment merged into the same
+  list real GitHub comments live in — a fit that kept fighting the triage
+  data model (a synthetic id range, a bot/human/AI three-way chip, a diff
+  hunk reconstructed from the full diff, a background-job lifecycle that
+  didn't compose with "merge into whichever pane is showing"). AI Review is
+  now a dedicated pane with its own findings list, its own cache
+  (`ai_review_cache`, keyed by PR# + head SHA, no longer riding inside the
+  triage cache), and a leaner loop: generate (`A`) → keep/skip/edit each
+  finding → post the kept ones as one GitHub review (`W`). Posted findings
+  don't reconcile back into this pane — return to PR Triage and refresh to
+  follow up on them (mark done, reply, resolve, inject a fix) as ordinary
+  fetched comments. Reachable four ways: `A` from inside PR Triage (returns
+  there on close), `W` on the dashboard for the selected feature, `W` in the
+  PR picker for the highlighted PR, and leader `W` from inside an agent
+  session. No migration needed — old cached AI drafts inside `pr_review_cache`
+  are simply left behind; press `A` in the new pane to regenerate. PR Triage's
+  own header shows `[AI review running]` whenever a background pass for that
+  PR is still going, so leaving the AI Review pane (or opening PR Triage from
+  the dashboard/a session) doesn't lose track of it. Codex-backed reviews now
+  show their current activity, elapsed time, and reported token usage in the
+  running pane, so long reviews no longer look stuck. Other agent harnesses
+  continue to show elapsed time while they run. After leaving that pane with
+  `Esc`, press `A` on the AI Review pane to return to the same live progress
+  view without resetting its timer. No migration is required.
+- **Compact the review-memory doc (`c` in the PR picker).** Findings
+  accumulate one bullet at a time (`M`, the lookback bootstrap) but were
+  never pruned — the doc could drift and bloat over time with near-duplicate
+  or stale rules. `c` shows how many findings are in the doc today, then a
+  single headless agent pass merges near-duplicates and drops findings that
+  are stale, superseded, or too specific to a single past PR — preserving
+  section structure and any hand-written prose. Unlike every other
+  review-memory write, this proposes a wholesale rewrite rather than an
+  append, so nothing touches disk until you review the proposed doc
+  full-screen (editable) and explicitly write (`⏎`/`w`) or discard (`esc`).
+  `esc` from the running screen returns to the picker without losing the
+  in-flight pass, same as the bootstrap and `A`/AI-review running screens.
 - **Final Review now supports comments on an entire file without rejecting
   it.** Press `m` on a file to leave a verdict-free observation, question,
   nit, or praise, and `M` to resolve or reopen that thread. File comments

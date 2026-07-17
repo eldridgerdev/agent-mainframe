@@ -285,6 +285,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `O` | Open the `~/.config/amf` settings project |
 | `A` | Manage agent harnesses (the first-run wizard) |
 | `G` | Open PR Triage |
+| `W` | Open AI Review (AMF's own review of this feature's PR diff) |
 | `s` | Open session picker / add a session |
 | `S` | Resume a Claude or Opencode session |
 | `r` | Rename selected feature or session |
@@ -551,6 +552,27 @@ In the PR Triage pane:
   locally, or resolve/reopen its GitHub thread (the one option here
   that writes to GitHub — labeled as such). Triage state is stored in
   SQLite and survives restarts, re-opens, and new pushes.
+- `A` opens the AI Review pane for this same PR (see below).
+
+### AI Review
+
+Press `W` on a feature (or `A` from inside PR Triage, or `W` in the PR
+picker, or leader `W` from inside an agent session) to have AMF
+generate its own review of a PR's diff — a separate workflow from PR
+Triage, since it's reviewing the diff itself rather than triaging what
+other reviewers already said.
+
+- `A` fetches the diff and runs one headless agent pass (the first run
+  asks which harness/model to use); findings are cached by the PR's
+  head SHA, so reopening the pane after a same-SHA visit is instant and
+  spends no tokens.
+- `j`/`k` navigate findings; `s` skips a finding (excluding it from a
+  post without discarding it) and `e` edits its body.
+- `W` posts every kept finding to GitHub as a single review (an
+  editable summary plus inline comments where the finding's line
+  matched the diff). Once posted, follow up on a finding — mark done,
+  reply, resolve, inject a fix — back in PR Triage, where a refresh
+  picks it up as an ordinary fetched comment.
 
 ### Per-Project TODO Lists
 

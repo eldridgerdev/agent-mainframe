@@ -3,10 +3,13 @@
 - **Status:** Rounds 1–2 shipped; Round 3 in backlog — every item under
   **Progress → Round 1** and **Round 2** is implemented and merged
   (most recently Round 2's file-level PR comments). **Round 3** (captured
-  2026-07-01) has started: interdiff on re-review and the "fixes ready —
-  re-review?" notification have shipped; the rest of the loop-closing,
-  viewer-ergonomics, AI co-review, and workflow items are not yet
-  started.
+  2026-07-01) has started: interdiff on re-review, the "fixes ready —
+  re-review?" notification, and a **Cost** batch (bounded headless passes
+  honor `review_model`, `final-review-feedback.md` is capped with an
+  archive file, REVIEW MODE's note instruction is batched per turn) have
+  shipped; the rest of the loop-closing, viewer-ergonomics, AI co-review,
+  and workflow items are not yet started. Two Cost follow-ups (per-action
+  model overrides, capping `review-notes.md` the same way) are added below.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -730,6 +733,31 @@ Cost:
       a file that already has a note with nothing new to add), instead of
       one per individual edit. Output format (and `parse_review_notes`)
       unchanged.
+- [ ] Per-action model overrides. `review_model` is one setting shared
+      across six call sites with different cost/quality needs — PR
+      Triage's AI review, the review-memory lookback bootstrap, and (as of
+      the item above) final review's walkthrough / AI co-review /
+      changeset overview / diff explain. A whole-changeset overview (`O`)
+      reading every file's diff at once benefits from a stronger model; a
+      single-file walkthrough is a much smaller ask and could run on
+      something cheap. Extend `review_model` from one string to a map
+      keyed by action, falling back to a single default when unset.
+      Explicitly flagged as still-open in the shipped item's own
+      CHANGELOG entry.
+- [ ] Cap/archive `.claude/review-notes.md` the same way
+      `final-review-feedback.md` was capped above. The batching fix
+      reduces how *often* the agent writes to this file, but not how
+      large it gets — nothing trims it, and
+      `generate_review_walkthrough`'s "does this file already have a
+      note" check (`state.review_notes.contains_key`, `src/app/review.rs`)
+      means the agent — per the REVIEW MODE instructions
+      `ensure_review_claude_md` writes into `CLAUDE.local.md` — has to
+      read the whole file every batch to decide what still needs a note.
+      Same unbounded-history-reread shape the feedback file had, on a
+      file that's read even more often (every batch, not just per review
+      round). Likely the same shape as `split_overflow_rounds`: keep the
+      newest N files' notes (or notes from the last N review rounds) live,
+      move the rest to a gitignored `.claude/review-notes-archive.md`.
 
 Viewer:
 

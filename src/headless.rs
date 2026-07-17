@@ -46,9 +46,38 @@ const CODEX_EXEC_REQUIRED_FLAGS: [&str; 5] = [
     "--json",
 ];
 
-const CLAUDE_PROGRESS_REQUIRED_FLAGS: [&str; 3] = ["--output-format", "stream-json", "--verbose"];
-const OPENCODE_PROGRESS_REQUIRED_FLAGS: [&str; 2] = ["--format", "json"];
-const PI_PROGRESS_REQUIRED_FLAGS: [&str; 2] = ["--mode", "json"];
+/// A flag a headless CLI must advertise in `--help` for structured progress
+/// to be trusted. `value`, when set, must appear within
+/// [`PROGRESS_FLAG_VALUE_WINDOW`] characters of `flag`'s occurrence — a
+/// generic token like `json` or `stream-json` appearing anywhere else in the
+/// help text (an unrelated flag, an example, a URL) must not count. The
+/// window (rather than requiring the exact same line) tolerates clap-style
+/// help that wraps a flag's accepted values onto their own line.
+struct ProgressFlag {
+    flag: &'static str,
+    value: Option<&'static str>,
+}
+
+const PROGRESS_FLAG_VALUE_WINDOW: usize = 240;
+
+const CLAUDE_PROGRESS_REQUIRED_FLAGS: [ProgressFlag; 2] = [
+    ProgressFlag {
+        flag: "--output-format",
+        value: Some("stream-json"),
+    },
+    ProgressFlag {
+        flag: "--verbose",
+        value: None,
+    },
+];
+const OPENCODE_PROGRESS_REQUIRED_FLAGS: [ProgressFlag; 1] = [ProgressFlag {
+    flag: "--format",
+    value: Some("json"),
+}];
+const PI_PROGRESS_REQUIRED_FLAGS: [ProgressFlag; 1] = [ProgressFlag {
+    flag: "--mode",
+    value: Some("json"),
+}];
 
 impl HeadlessRunner {
     pub fn check_available(harness: &AgentKind) -> Result<()> {
@@ -146,7 +175,7 @@ impl HeadlessRunner {
 fn check_progress_flags(
     binary: &str,
     help_args: &[&str],
-    required: &[&'static str],
+    required: &[ProgressFlag],
     display_name: &str,
 ) -> Result<()> {
     let output = Command::new(binary)
@@ -158,11 +187,7 @@ fn check_progress_flags(
     }
     let mut help = String::from_utf8_lossy(&output.stdout).into_owned();
     help.push_str(&String::from_utf8_lossy(&output.stderr));
-    let missing: Vec<_> = required
-        .iter()
-        .copied()
-        .filter(|flag| !help.contains(flag))
-        .collect();
+    let missing = missing_progress_flags(&help, required);
     if !missing.is_empty() {
         anyhow::bail!(
             "installed {display_name} CLI is too old for live headless progress (lacks {}) - upgrade {display_name}",
@@ -170,6 +195,31 @@ fn check_progress_flags(
         );
     }
     Ok(())
+}
+
+fn missing_progress_flags(help: &str, required: &[ProgressFlag]) -> Vec<&'static str> {
+    required
+        .iter()
+        .filter(|req| !flag_advertised(help, req))
+        .map(|req| req.flag)
+        .collect()
+}
+
+/// Whether `help` advertises `req.flag` with `req.value` (if any) nearby.
+/// Unlike a plain substring search over the whole text, this ties a generic
+/// value token to the specific flag it must belong to.
+fn flag_advertised(help: &str, req: &ProgressFlag) -> bool {
+    let Some(value) = req.value else {
+        return help.contains(req.flag);
+    };
+    help.match_indices(req.flag).any(|(start, _)| {
+        let end = (start + req.flag.len() + PROGRESS_FLAG_VALUE_WINDOW).min(help.len());
+        let mut end = end;
+        while !help.is_char_boundary(end) {
+            end -= 1;
+        }
+        help[start..end].contains(value)
+    })
 }
 
 fn check_codex_headless_available() -> Result<()> {
@@ -458,7 +508,7 @@ fn assemble_jsonl_args(
             );
         }
         AgentKind::Opencode => args.extend(["--format".to_string(), "json".to_string()]),
-        AgentKind::Pi => args = vec!["--mode".to_string(), "json".to_string()],
+        AgentKind::Pi => args.extend(["--mode".to_string(), "json".to_string()]),
     }
     args
 }
@@ -630,12 +680,18 @@ fn apply_opencode_json_event(
             "Completed a reasoning step".to_string(),
         )),
         Some("text") => {
+            // Opencode's `run --format json` emits `text` as incremental
+            // chunks of the response rather than one final full-text part,
+            // so each chunk is appended, not treated as a full replacement.
             if let Some(text) = event
                 .get("part")
                 .and_then(|part| part.get("text"))
                 .and_then(serde_json::Value::as_str)
             {
-                output.final_message = Some(text.to_string());
+                match &mut output.final_message {
+                    Some(message) => message.push_str(text),
+                    None => output.final_message = Some(text.to_string()),
+                }
             }
             on_progress(HeadlessProgress::Activity(
                 "Drafted the review response".to_string(),
@@ -978,7 +1034,7 @@ mod tests {
         );
         assert_eq!(
             assemble_jsonl_args(&AgentKind::Pi, &command_for(&AgentKind::Pi), None),
-            ["--mode", "json"]
+            ["-p", "--mode", "json"]
         );
     }
 
@@ -1011,6 +1067,34 @@ mod tests {
             missing_codex_exec_flags(old_help),
             ["--ephemeral", "--skip-git-repo-check", "--json"]
         );
+    }
+
+    #[test]
+    fn progress_flag_probe_requires_value_near_its_flag_not_anywhere_in_help() {
+        // An older CLI whose --format only supports plain text, but which
+        // happens to mention "json" elsewhere, far from --format's own
+        // definition (a config file example, an unrelated flag), must not
+        // be mistaken for one that supports `--format json`.
+        let filler = "x".repeat(300);
+        let stale_help = format!(
+            "Options:\n  --format <FORMAT>  text or markdown\n{filler}\n  \
+             --config <PATH>  e.g. settings.json"
+        );
+        assert_eq!(
+            missing_progress_flags(&stale_help, &OPENCODE_PROGRESS_REQUIRED_FLAGS),
+            ["--format"]
+        );
+
+        let current_help = "Options:\n  --format <FORMAT>  [possible values: text, json]";
+        assert!(missing_progress_flags(current_help, &OPENCODE_PROGRESS_REQUIRED_FLAGS).is_empty());
+    }
+
+    #[test]
+    fn progress_flag_probe_tolerates_value_wrapped_onto_its_own_line() {
+        let wrapped_help = "Options:\n  --output-format <FORMAT>\n          \
+                             Output format\n          \
+                             [possible values: text, json, stream-json]\n  --verbose";
+        assert!(missing_progress_flags(wrapped_help, &CLAUDE_PROGRESS_REQUIRED_FLAGS).is_empty());
     }
 
     #[test]
@@ -1158,7 +1242,11 @@ mod tests {
             }),
             serde_json::json!({
                 "type": "text",
-                "part": {"text": "### src/main.rs:9\nFinding"}
+                "part": {"text": "### src/main.rs:9\n"}
+            }),
+            serde_json::json!({
+                "type": "text",
+                "part": {"text": "Finding"}
             }),
         ] {
             apply_opencode_json_event(&event, &mut output, &|event| {

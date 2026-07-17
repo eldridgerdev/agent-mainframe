@@ -1881,6 +1881,17 @@ non-goal for v1 (GitHub `gh` only), not an open question.
     (1133 tests) and `cargo clippy` clean. `i`/`A`/`W` left untouched per the
     audit.
 
+- [ ] **Name the existing session in the `f`/`B` fix-target picker.** When a
+      batch update starts with `B`, the target menu currently offers a generic
+      `Existing session` row alongside the dedicated-session harness choices.
+      Render the actual existing session label in that row (for example,
+      `Existing session — Claude 2`) so the user knows exactly where the
+      combined fix prompt will be sent before confirming. Use the same label
+      in the shared single-fix (`f`) picker, since both actions resolve through
+      the same target menu; retain a clear generic fallback only when the
+      session name genuinely cannot be resolved. Add row-label and picker
+      render coverage for named and fallback cases.
+
 - [x] **AI review result persistence (UX — visibility).** When running an AI
       review (`A`), the user could escape back to the pane, navigate away, or
       close AMF entirely; returning to the PR later showed no indication of
@@ -2131,6 +2142,31 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       in its top border), matching the existing `<leader l>` hint on the
       "Prompt" section — the same discoverability pattern, just pointing at
       the shortcut that opens the pane this box is a preview of. → `src/ui/pane.rs`.
+
+- [ ] **Headless/agent-posted fixes need concrete UI around reply posting and
+      thread state (UX — visibility).** Surfaced while fixing three review
+      comments on a branch: an already-running headless/automated path had
+      posted `Done in <sha>` replies to all three threads, but the `<sha>` it
+      named was the **original commit the comment was filed against**, not a
+      commit that actually applied the fix — because the fix hadn't landed
+      yet when the reply went out. Nothing in AMF (or the reply itself)
+      distinguished "reply posted" from "reply posted *and confirmed
+      accurate*," and after the real fix commit landed, confirming that the
+      threads were in fact resolved required shelling out to `gh api
+      graphql` for `isOutdated`/`isResolved` by hand — the existing
+      `[outdated]` chip (Epic D pane-clarity item, `normalize` in
+      `src/app/pr_review.rs`) only reflects the state of *incoming* review
+      comments, not of AMF's own posted replies, and isn't re-checked after a
+      reply goes out. Two gaps worth closing together: (1) the headless
+      reply-posting path should hold off (or clearly caveat, the way the
+      interactive `R` flow's `commit_for_done_reply` already caveats a
+      bare-`HEAD` guess) until it can confirm the named commit actually
+      touches the comment's anchor, rather than firing eagerly against
+      whatever `HEAD` was at trigger time; (2) once a reply is posted —
+      headless or via `R` — the pane should show its post status (posted /
+      failed, and later, once GitHub reprocesses it, outdated/resolved) next
+      to the reply itself, so confirming a fix landed correctly is a glance
+      in AMF instead of a manual GraphQL query.
 
 ## Reasoning / when to build
 

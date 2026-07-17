@@ -32,7 +32,10 @@ are tagged.
   are simply left behind; press `A` in the new pane to regenerate. PR Triage's
   own header shows `[AI review running]` whenever a background pass for that
   PR is still going, so leaving the AI Review pane (or opening PR Triage from
-  the dashboard/a session) doesn't lose track of it.
+  the dashboard/a session) doesn't lose track of it. Codex-backed reviews now
+  show their current activity, elapsed time, and reported token usage in the
+  running pane, so long reviews no longer look stuck. Other agent harnesses
+  continue to show elapsed time while they run. No migration is required.
 - **Compact the review-memory doc (`c` in the PR picker).** Findings
   accumulate one bullet at a time (`M`, the lookback bootstrap) but were
   never pruned — the doc could drift and bloat over time with near-duplicate

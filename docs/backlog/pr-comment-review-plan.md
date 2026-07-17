@@ -1709,6 +1709,28 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       both the present and absent cases. → `src/ui/dashboard.rs`,
       `src/ui/dialogs/pr_review.rs`, `CHANGELOG.md`.
 
+      **Follow-up, same day — expose progress for long AI reviews.** Real use
+      on PR #473 made a large Codex-backed review look stuck: the diff was
+      roughly 386 KB / 95–100k estimated tokens, while `HeadlessRunner`
+      buffered all output with `wait_with_output()` and the running pane could
+      only say "Reviewing diff…" until the process exited. Worse, closing AMF
+      during that wait orphaned the ephemeral `codex exec` process and left no
+      result to recover. Codex-backed AI reviews now opt into the CLI's
+      structured `--json` event stream, drain it while the process is alive,
+      preserve the final `agent_message` for the existing finding parser, and
+      reduce intermediate events to safe activity labels (no prompt,
+      reasoning text, or raw command content). `AiReviewRunState` carries the
+      latest activity, elapsed start time, and reported usage into the running
+      pane; non-Codex harnesses keep their existing runner and still gain the
+      elapsed timer. Tests cover JSON flag/model/stdin ordering, final-message
+      extraction, error and usage events, progress redaction, app-state
+      polling, and the rendered running pane. Full suite green (1134 passed,
+      1 ignored); `cargo check`, strict clippy, and formatting clean. Restart
+      recovery remains separate follow-up work: an in-flight review still
+      belongs to the AMF process that launched it. → `src/headless.rs`,
+      `src/app/ai_review.rs`, `src/app/state.rs`,
+      `src/ui/dialogs/ai_review.rs`, `src/app/tests.rs`, `CHANGELOG.md`.
+
 - [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit
   each). `B` opens a confirm dialog before combining them into one prompt and

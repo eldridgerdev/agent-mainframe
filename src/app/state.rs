@@ -1620,6 +1620,14 @@ pub struct AiReviewRunState {
     /// convention).
     pub origin: AiReviewState,
     pub stage: crate::app::ai_review::AiReviewStage,
+    /// Wall-clock start for a live elapsed timer. This state is intentionally
+    /// not persisted; an in-flight headless process belongs to this AMF
+    /// process and cannot be resumed after restart.
+    pub started_at: std::time::Instant,
+    /// Latest sanitized activity label from the harness's structured stream.
+    pub activity: Option<String>,
+    /// Final token usage, when the harness reports it before completion.
+    pub usage: Option<(u64, u64)>,
 }
 
 /// State for the full-screen AI Review pane — AMF's own review of a PR's

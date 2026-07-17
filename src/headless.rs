@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -11,6 +11,19 @@ use crate::project::AgentKind;
 /// prompts out of process listings, this avoids Linux's 128 KiB per-argument
 /// limit for real-world PR diffs.
 pub struct HeadlessRunner;
+
+/// Sanitized progress emitted by a headless harness while it works. The
+/// provider's raw event payload is deliberately not exposed: it may contain
+/// the full prompt, reasoning text, or shell commands. Callers get enough
+/// structure to prove the run is alive without leaking review input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadlessProgress {
+    Activity(String),
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct HeadlessCommand {
@@ -25,11 +38,12 @@ struct HeadlessCommand {
 /// some of these with an argument-parse error, so headless availability must
 /// probe `codex exec --help` for each — `codex --version` succeeding is not
 /// enough.
-const CODEX_EXEC_REQUIRED_FLAGS: [&str; 4] = [
+const CODEX_EXEC_REQUIRED_FLAGS: [&str; 5] = [
     "--sandbox",
     "--ephemeral",
     "--skip-git-repo-check",
     "--color",
+    "--json",
 ];
 
 impl HeadlessRunner {
@@ -65,6 +79,27 @@ impl HeadlessRunner {
     ) -> Result<String> {
         let spec = command_for(harness);
         run_command(harness, &spec, workdir, prompt, model)
+    }
+
+    /// Run a headless pass while reporting sanitized provider activity.
+    ///
+    /// Codex has a documented JSONL event stream, so it can report genuine
+    /// turn/item progress. Other harnesses retain the existing text-mode
+    /// behavior until their streaming contracts are integrated; callers
+    /// still have their own top-level "running" stage for those providers.
+    pub fn run_with_progress(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+        on_progress: impl Fn(HeadlessProgress) + Send + 'static,
+    ) -> Result<String> {
+        let spec = command_for(harness);
+        if *harness == AgentKind::Codex {
+            run_codex_json_command(harness, &spec, workdir, prompt, model, on_progress)
+        } else {
+            run_command(harness, &spec, workdir, prompt, model)
+        }
     }
 
     /// Pick the engine for a plan interview.
@@ -226,6 +261,190 @@ fn run_command(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+#[derive(Default)]
+struct CodexJsonOutput {
+    final_message: Option<String>,
+    event_error: Option<String>,
+}
+
+/// Codex's `--json` mode turns stdout into JSONL. Drain and parse it while
+/// the child is alive so callers see progress immediately, while stderr is
+/// drained separately for an actionable provider error on non-zero exit.
+fn run_codex_json_command(
+    harness: &AgentKind,
+    spec: &HeadlessCommand,
+    workdir: &Path,
+    prompt: &str,
+    model: Option<&str>,
+    on_progress: impl Fn(HeadlessProgress) + Send + 'static,
+) -> Result<String> {
+    let args = assemble_codex_json_args(harness, spec, model);
+
+    let mut child = Command::new(&spec.binary)
+        .args(&args)
+        .current_dir(workdir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "Failed to spawn {} in headless mode",
+                harness.display_name()
+            )
+        })?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .with_context(|| format!("Failed to open stdin for {}", harness.display_name()))?;
+    let prompt = prompt.to_string();
+    let writer = std::thread::spawn(move || stdin.write_all(prompt.as_bytes()));
+
+    let stdout = child
+        .stdout
+        .take()
+        .with_context(|| format!("Failed to capture stdout for {}", harness.display_name()))?;
+    let stdout_reader = std::thread::spawn(move || -> Result<CodexJsonOutput> {
+        let mut output = CodexJsonOutput::default();
+        for line in BufReader::new(stdout).lines() {
+            let line = line.context("Failed to read Codex JSONL output")?;
+            let value: serde_json::Value =
+                serde_json::from_str(&line).context("Codex emitted invalid JSONL output")?;
+            apply_codex_json_event(&value, &mut output, &on_progress);
+        }
+        Ok(output)
+    });
+
+    let mut stderr = child
+        .stderr
+        .take()
+        .with_context(|| format!("Failed to capture stderr for {}", harness.display_name()))?;
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+
+    let status = child
+        .wait()
+        .with_context(|| format!("Failed to run {} headlessly", harness.display_name()))?;
+    let write_result = writer
+        .join()
+        .map_err(|_| anyhow::anyhow!("{} prompt writer panicked", harness.display_name()))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("{} stderr reader panicked", harness.display_name()))?
+        .with_context(|| format!("Failed to read stderr from {}", harness.display_name()))?;
+    let json_output = stdout_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("{} JSONL reader panicked", harness.display_name()))??;
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
+        let detail = stderr.trim();
+        anyhow::bail!(
+            "{} headless command failed{}{}",
+            harness.display_name(),
+            if detail.is_empty() { "" } else { ": " },
+            detail
+        );
+    }
+    write_result.with_context(|| format!("Failed to send prompt to {}", harness.display_name()))?;
+    if let Some(message) = json_output.final_message {
+        return Ok(message);
+    }
+    if let Some(error) = json_output.event_error {
+        anyhow::bail!(
+            "{} headless command failed: {error}",
+            harness.display_name()
+        );
+    }
+    anyhow::bail!(
+        "{} headless command completed without a final agent message",
+        harness.display_name()
+    )
+}
+
+fn assemble_codex_json_args(
+    harness: &AgentKind,
+    spec: &HeadlessCommand,
+    model: Option<&str>,
+) -> Vec<String> {
+    let mut args = assemble_args(harness, spec, model);
+    let trailing_len = spec.trailing.len();
+    args.insert(
+        args.len().saturating_sub(trailing_len),
+        "--json".to_string(),
+    );
+    args
+}
+
+fn apply_codex_json_event(
+    event: &serde_json::Value,
+    output: &mut CodexJsonOutput,
+    on_progress: &impl Fn(HeadlessProgress),
+) {
+    match event.get("type").and_then(serde_json::Value::as_str) {
+        Some("thread.started") => on_progress(HeadlessProgress::Activity(
+            "Codex session started".to_string(),
+        )),
+        Some("turn.started") => on_progress(HeadlessProgress::Activity(
+            "Analyzing the PR diff".to_string(),
+        )),
+        Some("item.started") | Some("item.completed") => {
+            let event_type = event.get("type").and_then(serde_json::Value::as_str);
+            let item = event.get("item").unwrap_or(&serde_json::Value::Null);
+            let item_type = item.get("type").and_then(serde_json::Value::as_str);
+            if item_type == Some("agent_message")
+                && event_type == Some("item.completed")
+                && let Some(text) = item.get("text").and_then(serde_json::Value::as_str)
+            {
+                output.final_message = Some(text.to_string());
+            }
+            let completed = event_type == Some("item.completed");
+            let activity = match (item_type, completed) {
+                (Some("reasoning"), false) => Some("Reasoning about possible findings"),
+                (Some("reasoning"), true) => Some("Completed a reasoning step"),
+                (Some("command_execution"), false) => Some("Inspecting the repository"),
+                (Some("command_execution"), true) => Some("Completed a repository check"),
+                (Some("mcp_tool_call"), false) => Some("Consulting an external tool"),
+                (Some("mcp_tool_call"), true) => Some("Completed an external tool call"),
+                (Some("web_search"), false) => Some("Searching for supporting context"),
+                (Some("web_search"), true) => Some("Completed a context search"),
+                (Some("plan"), _) => Some("Updating the review plan"),
+                (Some("agent_message"), true) => Some("Drafted the review response"),
+                _ => None,
+            };
+            if let Some(activity) = activity {
+                on_progress(HeadlessProgress::Activity(activity.to_string()));
+            }
+        }
+        Some("turn.completed") => {
+            let usage = event.get("usage").unwrap_or(&serde_json::Value::Null);
+            let input_tokens = usage
+                .get("input_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let output_tokens = usage
+                .get("output_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            on_progress(HeadlessProgress::Usage {
+                input_tokens,
+                output_tokens,
+            });
+        }
+        Some("turn.failed") | Some("error") => {
+            output.event_error = event
+                .get("message")
+                .or_else(|| event.get("error").and_then(|error| error.get("message")))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+        }
+        _ => {}
+    }
+}
+
 fn command_for(harness: &AgentKind) -> HeadlessCommand {
     match harness {
         AgentKind::Claude => HeadlessCommand {
@@ -369,6 +588,27 @@ mod tests {
     }
 
     #[test]
+    fn codex_json_args_keep_json_and_model_before_stdin_marker() {
+        let spec = command_for(&AgentKind::Codex);
+        assert_eq!(
+            assemble_codex_json_args(&AgentKind::Codex, &spec, Some("gpt-5.5")),
+            [
+                "exec",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+                "--model",
+                "gpt-5.5",
+                "--json",
+                "-",
+            ]
+        );
+    }
+
+    #[test]
     fn assemble_args_omits_model_flag_for_pi() {
         let spec = command_for(&AgentKind::Pi);
         assert_eq!(
@@ -389,31 +629,98 @@ mod tests {
     #[test]
     fn codex_flag_probe_reports_only_missing_required_flags() {
         let full_help = "Options:\n  --sandbox <MODE>\n  --ephemeral\n  \
-                         --skip-git-repo-check\n  --color <WHEN>";
+                         --skip-git-repo-check\n  --color <WHEN>\n  --json";
         assert!(missing_codex_exec_flags(full_help).is_empty());
 
         let old_help = "Options:\n  --sandbox <MODE>\n  --color <WHEN>";
         assert_eq!(
             missing_codex_exec_flags(old_help),
-            ["--ephemeral", "--skip-git-repo-check"]
+            ["--ephemeral", "--skip-git-repo-check", "--json"]
         );
     }
 
     #[test]
     fn codex_required_flags_cover_everything_the_headless_command_passes() {
-        let args = command_for(&AgentKind::Codex).args;
+        let spec = command_for(&AgentKind::Codex);
+        let args = assemble_codex_json_args(&AgentKind::Codex, &spec, None);
         for flag in CODEX_EXEC_REQUIRED_FLAGS {
             assert!(
-                args.contains(&flag),
+                args.iter().any(|arg| arg == flag),
                 "probe checks {flag} but the headless command no longer passes it"
             );
         }
-        for arg in args.iter().filter(|arg| arg.starts_with("--")) {
+        for arg in spec.args.iter().filter(|arg| arg.starts_with("--")) {
             assert!(
                 CODEX_EXEC_REQUIRED_FLAGS.contains(arg),
                 "headless command passes {arg} but the availability probe never checks it"
             );
         }
+    }
+
+    #[test]
+    fn codex_json_events_preserve_final_message_and_sanitize_progress() {
+        use std::cell::RefCell;
+
+        let progress = RefCell::new(Vec::new());
+        let mut output = CodexJsonOutput::default();
+        for event in [
+            serde_json::json!({"type": "thread.started", "thread_id": "secret"}),
+            serde_json::json!({"type": "turn.started"}),
+            serde_json::json!({
+                "type": "item.started",
+                "item": {
+                    "type": "command_execution",
+                    "command": "cat super-secret-review-input"
+                }
+            }),
+            serde_json::json!({
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": "### src/main.rs:42\nFinding body"
+                }
+            }),
+            serde_json::json!({
+                "type": "turn.completed",
+                "usage": {"input_tokens": 1200, "output_tokens": 34}
+            }),
+        ] {
+            apply_codex_json_event(&event, &mut output, &|event| {
+                progress.borrow_mut().push(event)
+            });
+        }
+
+        assert_eq!(
+            output.final_message.as_deref(),
+            Some("### src/main.rs:42\nFinding body")
+        );
+        assert!(progress.borrow().contains(&HeadlessProgress::Activity(
+            "Inspecting the repository".to_string()
+        )));
+        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
+            input_tokens: 1200,
+            output_tokens: 34,
+        }));
+        let rendered = format!("{:?}", progress.borrow());
+        assert!(!rendered.contains("super-secret-review-input"));
+        assert!(!rendered.contains("Finding body"));
+    }
+
+    #[test]
+    fn codex_json_error_event_keeps_actionable_message() {
+        let mut output = CodexJsonOutput::default();
+        apply_codex_json_event(
+            &serde_json::json!({
+                "type": "turn.failed",
+                "error": {"message": "context window exceeded"}
+            }),
+            &mut output,
+            &|_| {},
+        );
+        assert_eq!(
+            output.event_error.as_deref(),
+            Some("context window exceeded")
+        );
     }
 
     #[test]

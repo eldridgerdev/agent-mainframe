@@ -68,17 +68,55 @@ pub fn draw_ai_review_running(
         ]),
     };
 
-    let body = Paragraph::new(vec![
-        Line::from(""),
-        status_line,
-        Line::from(""),
-        Line::from(Span::styled(
-            "esc to return to the AI Review pane (the run keeps going in the background)",
+    let elapsed = format_elapsed(state.started_at.elapsed());
+    let mut lines = vec![Line::from(""), status_line, Line::from("")];
+    if let Some(activity) = &state.activity {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Current activity: ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled(activity, Style::default().fg(theme.text.to_color())),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Waiting for the harness's first progress event...",
             Style::default().fg(theme.text_muted.to_color()),
-        )),
-    ])
-    .wrap(Wrap { trim: false });
+        )));
+    }
+    let mut elapsed_line = vec![
+        Span::styled(
+            "Elapsed: ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled(elapsed, Style::default().fg(theme.text.to_color())),
+    ];
+    if let Some((input, output)) = state.usage {
+        elapsed_line.push(Span::styled(
+            format!("  ·  {input} input / {output} output tokens"),
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    }
+    lines.push(Line::from(elapsed_line));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "esc to return to the AI Review pane (the run keeps going in the background)",
+        Style::default().fg(theme.text_muted.to_color()),
+    )));
+
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(body, inner);
+}
+
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    if minutes == 0 {
+        format!("{seconds}s")
+    } else {
+        format!("{minutes}m {seconds:02}s")
+    }
 }
 
 fn ai_review_last_run_badge(run: &AiReviewRun) -> (String, bool) {
@@ -620,4 +658,81 @@ fn draw_ai_review_post_dialog(
         ))),
         chunks[row],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::{draw_ai_review_running, format_elapsed};
+    use crate::{
+        app::{AiReviewRunState, AiReviewState},
+        project::AgentKind,
+        theme::Theme,
+    };
+
+    #[test]
+    fn elapsed_time_stays_compact_for_short_and_long_reviews() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(9)), "9s");
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(125)),
+            "2m 05s"
+        );
+    }
+
+    #[test]
+    fn running_pane_renders_live_activity_elapsed_time_and_usage() {
+        let state = AiReviewRunState {
+            origin: AiReviewState {
+                workdir: PathBuf::from("/tmp/review"),
+                pr: crate::github::PrRef {
+                    number: 473,
+                    head_sha: "abc123".to_string(),
+                    url: "https://github.com/o/r/pull/473".to_string(),
+                    owner: "o".to_string(),
+                    repo: "r".to_string(),
+                    head_ref: "feature".to_string(),
+                },
+                findings: Vec::new(),
+                selected: 0,
+                detail_scroll: 0,
+                detail_content_lines: 0,
+                last_run: None,
+                harness: Some(AgentKind::Codex),
+                harness_pick: None,
+                model: None,
+                model_picked: true,
+                model_pick: None,
+                finding_editor: None,
+                post_confirm: None,
+            },
+            stage: crate::app::ai_review::AiReviewStage::Reviewing {
+                token_estimate: 95_000,
+            },
+            started_at: std::time::Instant::now() - std::time::Duration::from_secs(125),
+            activity: Some("Inspecting the repository".to_string()),
+            usage: Some((94_000, 1_200)),
+        };
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut throbber = throbber_widgets_tui::ThrobberState::default();
+        throbber.calc_next();
+        terminal
+            .draw(|frame| draw_ai_review_running(frame, &state, &throbber, &Theme::default()))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Reviewing diff (~95000 tokens)"));
+        assert!(rendered.contains("Current activity: Inspecting the repository"));
+        assert!(rendered.contains("Elapsed: 2m 05s"));
+        assert!(rendered.contains("94000 input / 1200 output tokens"));
+    }
 }

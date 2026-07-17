@@ -1358,6 +1358,9 @@ fn predecessor_invalidation_preserves_live_successor_ai_review() {
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin: ai_origin,
         stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+        started_at: std::time::Instant::now(),
+        activity: None,
+        usage: None,
     });
 
     assert!(
@@ -1591,6 +1594,9 @@ fn visible_animation_is_enabled_for_pr_review_running_screens() {
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin: sample_ai_review_state(std::path::PathBuf::from("/tmp/wd"), pr),
         stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+        started_at: std::time::Instant::now(),
+        activity: None,
+        usage: None,
     });
     assert!(app.has_visible_animation());
 
@@ -12746,6 +12752,9 @@ fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin,
         stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+        started_at: std::time::Instant::now(),
+        activity: None,
+        usage: None,
     });
 
     tx.send(crate::app::ai_review::AiReviewProgress::Reviewing {
@@ -12767,6 +12776,53 @@ fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
         "toasts: {:?}",
         app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn poll_ai_pr_review_bg_surfaces_streamed_activity_and_usage() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_ai_review_for_feature(&mut app);
+    let origin = match &app.mode {
+        AppMode::AiReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::ai_review::AiReviewStage::Reviewing {
+            token_estimate: 42_000,
+        },
+        started_at: std::time::Instant::now(),
+        activity: None,
+        usage: None,
+    });
+
+    tx.send(crate::app::ai_review::AiReviewProgress::Activity(
+        "Inspecting the repository".to_string(),
+    ))
+    .unwrap();
+    tx.send(crate::app::ai_review::AiReviewProgress::Usage {
+        input_tokens: 41_000,
+        output_tokens: 900,
+    })
+    .unwrap();
+
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::AiReviewRunning(state) => {
+            assert_eq!(state.activity.as_deref(), Some("Inspecting the repository"));
+            assert_eq!(state.usage, Some((41_000, 900)));
+        }
+        _ => panic!("expected running AI review"),
+    }
 }
 
 #[test]

@@ -84,9 +84,17 @@ pub struct AiReviewFinding {
 
 /// Progress of the background AI PR review (`A`): the one headless agent pass
 /// over the PR diff. `Reviewing` fires once with a token estimate right
-/// before the paid call, `Done` fires exactly once at the end.
+/// before the paid call; structured harness activity and usage may follow;
+/// `Done` fires exactly once at the end.
 pub enum AiReviewProgress {
-    Reviewing { token_estimate: usize },
+    Reviewing {
+        token_estimate: usize,
+    },
+    Activity(String),
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
     Done(Result<AiReviewOutcome>),
 }
 
@@ -393,7 +401,29 @@ fn run_ai_pr_review(
         token_estimate: super::pr_review::estimate_tokens(&prompt),
     });
 
-    let result = HeadlessRunner::run(&harness, &workdir, &prompt, model.as_deref()).map(|output| {
+    let progress_tx = tx.clone();
+    let result = HeadlessRunner::run_with_progress(
+        &harness,
+        &workdir,
+        &prompt,
+        model.as_deref(),
+        move |progress| {
+            let progress = match progress {
+                crate::headless::HeadlessProgress::Activity(message) => {
+                    AiReviewProgress::Activity(message)
+                }
+                crate::headless::HeadlessProgress::Usage {
+                    input_tokens,
+                    output_tokens,
+                } => AiReviewProgress::Usage {
+                    input_tokens,
+                    output_tokens,
+                },
+            };
+            let _ = progress_tx.send(progress);
+        },
+    )
+    .map(|output| {
         let mut findings = parse_ai_findings(&output);
         // Attach each anchored finding's diff hunk by re-matching its
         // `path:line` into the already-fetched PR diff — nothing about
@@ -770,6 +800,9 @@ impl App {
         self.mode = AppMode::AiReviewRunning(AiReviewRunState {
             origin,
             stage: AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
         });
     }
 
@@ -957,6 +990,21 @@ impl App {
                     }
                     if token_estimate > AI_REVIEW_PROMPT_TOKEN_WARN {
                         large_diff_warning = Some(token_estimate);
+                    }
+                    changed = true;
+                }
+                Ok(AiReviewProgress::Activity(activity)) => {
+                    if let AppMode::AiReviewRunning(state) = &mut self.mode {
+                        state.activity = Some(activity);
+                    }
+                    changed = true;
+                }
+                Ok(AiReviewProgress::Usage {
+                    input_tokens,
+                    output_tokens,
+                }) => {
+                    if let AppMode::AiReviewRunning(state) = &mut self.mode {
+                        state.usage = Some((input_tokens, output_tokens));
                     }
                     changed = true;
                 }

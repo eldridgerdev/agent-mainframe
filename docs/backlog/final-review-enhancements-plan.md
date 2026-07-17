@@ -3,11 +3,12 @@
 - **Status:** Rounds 1–2 shipped; Round 3 in backlog — every item under
   **Progress → Round 1** and **Round 2** is implemented and merged
   (most recently Round 2's file-level PR comments). **Round 3** (captured
-  2026-07-01) has started: interdiff on re-review, the "fixes ready —
-  re-review?" notification, and a **Cost** batch (bounded headless passes
-  honor `review_model`, `final-review-feedback.md` is capped with an
-  archive file, REVIEW MODE's note instruction is batched per turn) have
-  shipped; the rest of the loop-closing, viewer-ergonomics, AI co-review,
+  2026-07-01) has started: first-class file-level comments, interdiff on
+  re-review, the "fixes ready — re-review?" notification, and a **Cost** batch
+  have shipped. The Cost batch makes bounded headless passes honor
+  `review_model`, caps `final-review-feedback.md` with an archive file, and
+  batches REVIEW MODE's note instruction per turn. The rest of the
+  loop-closing, viewer-ergonomics, AI co-review,
   and workflow items are not yet started. Two Cost follow-ups (per-action
   model overrides, capping `review-notes.md` the same way) are added below.
 - **Owner:** unassigned
@@ -278,6 +279,16 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
 
 #### Viewer ergonomics
 
+- **Hierarchical file tree + shorter Developer Notes panel.** Replace the flat
+  changed-file list with a directory-aware tree so files are grouped by path,
+  directories can be expanded/collapsed, and keyboard navigation can move
+  through the visible hierarchy without losing the existing verdict, comment,
+  risk, and changed-since-last-review markers. Keep filters working against
+  files while retaining the directories needed to show matching results. At
+  the same time, reduce the Developer Notes panel's default share of the right
+  column from about 40% to about 20% (half its current height), leaving more
+  room for the diff; the existing expand-notes action should still make it
+  full-height on demand.
 - **Expand context around hunks.** `DiffFile` already carries
   `old_content`/`new_content`, so GitHub-style "expand N lines
   above/below" (or a whole-file toggle) is mostly a rendering change.
@@ -652,11 +663,25 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
 
 Comments:
 
-- [ ] File-level comments — a verdict-free comment anchored to a whole file,
-      alongside the existing general and line comments (severity + thread
-      state, own file-list marker / `F` filter step, `### src/foo.rs` section
-      in the feedback file, posted via the already-shipped `subject_type: file`
-      PR path)
+- [x] File-level comments — press `m` in the final review to edit one
+      verdict-free comment anchored to the current file; unlike a rejection or
+      an open line comment, it never auto-rejects the file, so observations,
+      questions, nits and praise can coexist with an approve/skip verdict. The
+      comment carries the same conventional `Severity` and resolved/thread
+      state as line comments (`M` resolves/reopens it), persists in
+      `.claude/final-review-progress.json`, and is carried between finished
+      rounds in the review snapshot with an "unresolved from a previous round"
+      tag. File-list rows show `◆` for an open file thread and `◇` for a
+      resolved one; the `F` cycle gained a `File comments` step, while the
+      existing `Blockers` and `Unresolved` filters/counts include open file
+      threads. Finishing writes a dedicated `### File Comments` section with a
+      `#### src/foo.rs — [severity]` anchor and posts each open comment through
+      the already-shipped `GhCli::create_file_comment` /
+      `subject_type: file` path. Blocker file comments participate in PR event
+      escalation; resolved ones are retained for reopening but withheld from
+      feedback and PR posting. `FileComment` / `file_comments` in
+      `src/app/state.rs`; editor, persistence, finish and PR mapping in
+      `src/app/review.rs`.
 
 Loop:
 
@@ -761,6 +786,9 @@ Cost:
 
 Viewer:
 
+- [ ] Hierarchical, collapsible file tree for easier path-based navigation +
+      reduce the Developer Notes panel's default height from ~40% to ~20%
+      (preserve full-height expansion)
 - [ ] Expand context around hunks (old/new content already loaded)
 - [ ] Word-level intra-line diff highlighting + ignore-whitespace toggle
 - [ ] Global comment navigation across files + undo last verdict

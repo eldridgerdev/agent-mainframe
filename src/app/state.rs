@@ -538,6 +538,26 @@ impl LineComment {
     }
 }
 
+/// A reviewer comment anchored to a whole file, independent of that file's
+/// approve/reject verdict. Unlike a line comment it never auto-rejects the
+/// file: its severity communicates priority without changing the verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileComment {
+    pub text: String,
+    #[serde(default)]
+    pub severity: Severity,
+    #[serde(default)]
+    pub resolved: bool,
+    #[serde(default)]
+    pub carried: bool,
+}
+
+impl FileComment {
+    pub fn is_open_thread(&self) -> bool {
+        !self.resolved
+    }
+}
+
 /// Which files the review file-list shows. Lets a reviewer narrow a large
 /// changeset to the work that still needs attention. Only meaningful in review
 /// mode; the read-only viewer always behaves as `All`.
@@ -553,6 +573,8 @@ pub enum FileFilter {
     /// Files that carry a `Blocker`-severity rejection or line comment, so a
     /// reviewer can focus on the must-fix items in a large changeset.
     Blockers,
+    /// Files carrying an open whole-file comment.
+    FileComments,
     /// Files carrying at least one unresolved thread (a kept, non-draft line
     /// comment the reviewer hasn't settled). Empty when nothing is open, so the
     /// cycle skips it unless an open thread exists.
@@ -564,7 +586,8 @@ pub enum FileFilter {
 }
 
 impl FileFilter {
-    /// Cycle All → Undecided → Rejected → Blockers → Unresolved → Changed → All.
+    /// Cycle All → Undecided → Rejected → Blockers → File comments →
+    /// Unresolved → Changed → All.
     /// Steps with nothing to show are skipped by the caller (see
     /// `diff_review_cycle_file_filter`): `Changed` without a prior review
     /// snapshot, `Unresolved` without an open thread.
@@ -573,7 +596,8 @@ impl FileFilter {
             FileFilter::All => FileFilter::Undecided,
             FileFilter::Undecided => FileFilter::Rejected,
             FileFilter::Rejected => FileFilter::Blockers,
-            FileFilter::Blockers => FileFilter::Unresolved,
+            FileFilter::Blockers => FileFilter::FileComments,
+            FileFilter::FileComments => FileFilter::Unresolved,
             FileFilter::Unresolved => FileFilter::Changed,
             FileFilter::Changed => FileFilter::All,
         }
@@ -585,6 +609,7 @@ impl FileFilter {
             FileFilter::Undecided => "undecided",
             FileFilter::Rejected => "rejected",
             FileFilter::Blockers => "blockers",
+            FileFilter::FileComments => "file comments",
             FileFilter::Unresolved => "unresolved",
             FileFilter::Changed => "changed",
         }
@@ -637,6 +662,8 @@ pub struct DiffViewerState {
     pub auto_rejected: std::collections::HashSet<String>,
     /// File path -> line-level comments anchored to specific diff lines.
     pub line_comments: std::collections::HashMap<String, Vec<LineComment>>,
+    /// File path -> verdict-free comment anchored to the whole file.
+    pub file_comments: std::collections::HashMap<String, FileComment>,
     /// Active line-comment cursor: index into the current file's
     /// `addressable_lines()`. `None` when the line cursor is inactive.
     pub comment_cursor: Option<usize>,
@@ -648,6 +675,8 @@ pub struct DiffViewerState {
     /// True while typing a comment for the cursored line (reuses
     /// `feedback_editor`).
     pub editing_line_comment: bool,
+    /// True while editing the current file's verdict-free whole-file comment.
+    pub editing_file_comment: bool,
     /// True while typing a *suggested replacement* for the cursored line/span
     /// (also reuses `feedback_editor`; mutually exclusive with
     /// `editing_line_comment`). The editor content is the replacement code.
@@ -797,9 +826,11 @@ impl DiffViewerState {
             decisions: std::collections::HashMap::new(),
             auto_rejected: std::collections::HashSet::new(),
             line_comments: std::collections::HashMap::new(),
+            file_comments: std::collections::HashMap::new(),
             comment_cursor: None,
             comment_anchor: None,
             editing_line_comment: false,
+            editing_file_comment: false,
             editing_suggestion: false,
             comment_severity: Severity::default(),
             cursor_sync_to_view: false,
@@ -884,7 +915,11 @@ impl DiffViewerState {
             cs.iter()
                 .any(|c| c.is_open_thread() && c.severity.is_blocker())
         });
-        reject_blocks || comment_blocks
+        let file_comment_blocks = self
+            .file_comments
+            .get(path)
+            .is_some_and(|c| c.is_open_thread() && c.severity.is_blocker());
+        reject_blocks || comment_blocks || file_comment_blocks
     }
 
     /// Whether the file at `path` carries at least one open thread — a kept,
@@ -894,15 +929,25 @@ impl DiffViewerState {
         self.line_comments
             .get(path)
             .is_some_and(|cs| cs.iter().any(|c| c.is_open_thread()))
+            || self
+                .file_comments
+                .get(path)
+                .is_some_and(FileComment::is_open_thread)
     }
 
     /// Total open threads across every file in the diff. Reported on opening a
     /// re-review and used to decide whether the `Unresolved` filter has anything
     /// to show.
     pub fn unresolved_thread_count(&self) -> usize {
-        self.line_comments
+        let line = self
+            .line_comments
             .values()
             .flatten()
+            .filter(|c| c.is_open_thread())
+            .count();
+        line + self
+            .file_comments
+            .values()
             .filter(|c| c.is_open_thread())
             .count()
     }
@@ -913,6 +958,7 @@ impl DiffViewerState {
     /// the `Changed` filter, even though it opens with threads restored.
     pub fn has_only_carried_comments(&self) -> bool {
         self.line_comments.values().flatten().all(|c| c.carried)
+            && self.file_comments.values().all(|c| c.carried)
     }
 
     /// Whether `file` passes the active file-list filter. Always true outside
@@ -926,6 +972,10 @@ impl DiffViewerState {
                 Some(ReviewDecision::Reject { .. })
             ),
             FileFilter::Blockers => self.file_has_blocker(&file.path),
+            FileFilter::FileComments => self
+                .file_comments
+                .get(&file.path)
+                .is_some_and(FileComment::is_open_thread),
             FileFilter::Unresolved => self.file_has_unresolved_thread(&file.path),
             FileFilter::Changed => self.changed_since_last.contains(&file.path),
         }
@@ -2765,7 +2815,7 @@ impl CreateFeatureState {
         match self.mode_focus {
             0 | 1 => None,
             2 => Some(
-                "Write developer notes with every code change for a detailed code review (may use more tokens).",
+                "High token usage: writes developer notes with every code change for a detailed code review.",
             ),
             3 => Some("Start in planning mode so the agent discusses the approach before editing."),
             4 if self.agent == AgentKind::Claude => {

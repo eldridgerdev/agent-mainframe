@@ -1527,6 +1527,9 @@ pub struct PrPickerState {
     /// When `Some`, the lookback-bootstrap depth picker (`b`) is open over the
     /// picker.
     pub bootstrap_pick: Option<BootstrapPickState>,
+    /// When `Some`, the review-memory compact confirm overlay (`c`) is open
+    /// over the picker.
+    pub compact_confirm: Option<CompactConfirmState>,
     /// The logged-in `gh` user's login, when resolvable — used to highlight
     /// the user's own PRs in the row rendering. `None` if unresolved/failed.
     pub current_user: Option<String>,
@@ -1549,6 +1552,63 @@ pub struct BootstrapRunState {
     pub origin: PrPickerState,
     pub depth: crate::app::pr_review::BootstrapDepth,
     pub stage: crate::app::pr_review::BootstrapStage,
+}
+
+/// Confirm overlay for the review-memory compact pass (`c` in the PR picker):
+/// shows how many findings are currently in the doc before spending an agent
+/// pass to merge near-duplicates and prune stale ones (Epic E "prevent
+/// review-memory rot").
+#[derive(Debug, Clone)]
+pub struct CompactConfirmState {
+    /// Bullet count in the doc as it stands, read synchronously when the
+    /// overlay opens (a local file read — cheap enough not to background).
+    pub existing_findings: usize,
+}
+
+/// Full-screen progress view for the review-memory compact pass's background
+/// read + rewrite, entered once the confirm overlay is accepted.
+#[derive(Debug, Clone)]
+pub struct CompactRunState {
+    /// The PR picker to return to on completion or cancel.
+    pub origin: PrPickerState,
+    /// Resolved path of the review-memory doc being compacted, carried
+    /// through from confirm so the poll's success path doesn't need to
+    /// re-resolve it (a second `repo_root` lookup) once the background
+    /// thread reports back.
+    pub path: PathBuf,
+    pub stage: crate::app::pr_review::CompactStage,
+}
+
+/// Full-screen review of the compact pass's proposed replacement doc, entered
+/// once the background run finishes. Unlike [`append_finding`]-backed dialogs
+/// (`M`, the bootstrap), this proposes rewriting the *entire* doc, so nothing
+/// is written until the user explicitly confirms here — editable first, same
+/// as every other write in this pane.
+///
+/// [`append_finding`]: crate::app::review_memory::append_finding
+#[derive(Debug, Clone)]
+pub struct CompactReviewState {
+    /// The PR picker to return to on write or discard.
+    pub origin: PrPickerState,
+    /// Resolved path of the review-memory doc this will write to.
+    pub path: PathBuf,
+    /// Bullet count in the doc before compacting, for the "N -> M" summary.
+    pub original_findings: usize,
+    /// Bullet count in the agent's proposed replacement, for the same summary.
+    pub proposed_findings: usize,
+    /// The proposed replacement text, editable before writing.
+    pub editor: TextEditor,
+    /// True while keystrokes go to the editor (`e` to enter); false in the
+    /// confirm view (`⏎`/`w` write / `e` edit / `esc` discard).
+    pub editing: bool,
+    /// Scroll offset, in wrapped visual rows, for docs taller than the screen.
+    pub scroll: usize,
+    /// Request that the next render scroll the cursor back into view. Mirrors
+    /// [`FixConfirmState::sync_to_cursor`].
+    pub sync_to_cursor: bool,
+    /// Last write failure, shown inline so it's recoverable without losing
+    /// the edited content.
+    pub error: Option<String>,
 }
 
 /// Full-screen progress view for the AI PR review's background diff-fetch +
@@ -2099,6 +2159,12 @@ pub enum AppMode {
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.
     ReviewMemoryBootstrapRunning(BootstrapRunState),
+    /// Running the review-memory compact pass off the UI thread ("prevent
+    /// review-memory rot"); shows a loading frame with the current stage.
+    ReviewMemoryCompactRunning(CompactRunState),
+    /// Reviewing the compact pass's proposed replacement doc before it's
+    /// written — full-screen, editable, nothing written until confirmed.
+    ReviewMemoryCompactReview(CompactReviewState),
     /// Running the AI PR review's diff-fetch + review pass off the UI thread
     /// (Epic E `A`); shows a loading frame with the current stage.
     AiPrReviewRunning(AiReviewRunState),

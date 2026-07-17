@@ -1409,6 +1409,43 @@ first), and the reviewer's output (plus comments triaged in the pane)
       untouched). → `src/extension.rs`, `src/app/mod.rs`,
       `src/app/pr_review.rs`, `src/app/config_wizard.rs`,
       `src/ui/dashboard.rs`, `src/app/tests.rs`.
+- [x] **Prevent review-memory rot (resolves the Open Questions item of the
+      same name).** Findings only ever accumulated (`M`, the lookback
+      bootstrap) with no pruning, so the doc could drift/bloat with
+      near-duplicate or stale rules over time. `c` in the PR picker opens a
+      confirm overlay showing how many findings are in the doc today
+      (`review_memory::count_findings`, a plain local read — free), then a
+      single headless agent pass (always Claude, mirroring the lookback
+      bootstrap's harness choice) rewrites the whole doc: merge
+      near-duplicates, drop stale/superseded/overly-specific findings,
+      preserve section structure and hand-written prose
+      (`review_memory::compact_prompt`). Unlike every other review-memory
+      write, this is **not** append-only — `review_memory.rs`'s header now
+      documents the one explicit exception. So nothing touches disk until
+      the user reviews the proposal: the background pass (`CompactProgress`,
+      `run_review_memory_compact`) reports the full proposed replacement to
+      a new full-screen, editable `AppMode::ReviewMemoryCompactReview`
+      (mirrors `draw_fix_confirm`'s edit/scroll handling), and only `⏎`/`w`
+      (`App::pr_review_compact_write`) writes it — `esc` discards, doc
+      untouched. `esc` from the running screen (`AppMode::
+      ReviewMemoryCompactRunning`) returns to the picker without aborting
+      the background pass, same as the bootstrap/`A` running screens; a late
+      result after that no longer has anywhere live to land a full-screen
+      dialog without yanking the user out of whatever they're doing, so it
+      toasts instead of reopening — tracked via a new `App::
+      review_memory_compact_pending`, the same fix already shipped for `A`'s
+      `ai_review_pending` after the "findings silently dropped after an
+      `esc`" bug. Unit-tested (confirm-overlay open/bail-when-empty/cancel,
+      poll success/empty/error transitions, the late-result-after-cancel
+      toast-not-reopen path, write-overwrites-and-toasts, discard-leaves-
+      file-untouched, plus `compact_prompt`/`count_findings` directly) — full
+      suite green (1151 tests) and `cargo clippy` clean. →
+      `src/app/review_memory.rs`, `src/app/pr_review.rs`,
+      `src/app/state.rs`, `src/app/mod.rs`, `src/main.rs`,
+      `src/handlers/pr_review.rs`, `src/handlers/mod.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/mod.rs`,
+      `src/ui/dialogs/help.rs`, `src/ui/dashboard.rs`, `src/ui/status.rs`,
+      `src/app/tests.rs`, `CHANGELOG.md`.
 
 ## Nice to have
 
@@ -1597,19 +1634,15 @@ first), and the reviewer's output (plus comments triaged in the pane)
   separate cross-project lessons file should be merged in on top of each
   repo's own doc, or whether per-repo stays strictly isolated (today's
   behavior).
-- [ ] **Prevent review-memory rot (Epic E).** Appends already dedup against
-  existing entries, but the doc will still drift/bloat over time. Add a
-  periodic agent-assisted "compaction" pass that merges near-duplicate
-  entries and prunes stale rules, or decide curation stays fully manual.
-
 Resolved and no longer tracked here (see the linked Epic item for the
 decision and implementation): which agent session runs fixes (Epic B,
 dedicated-session default), AI-authored content attribution (Epic D "AI
 attribution on AMF-posted comments"), templated-reply channel disclosure
 (Epic C "posted via AMF" footer), conversation-comment grouping (Epic D's
 `PrSortMode::Conversations`), resolve-without-reply behavior (shipped as-is
-— `R` stays independent of `r`), and outdated-comment badging (shipped in
-Epic D's pane-clarity item). GitLab/Bitbucket support is an
+— `R` stays independent of `r`), outdated-comment badging (shipped in
+Epic D's pane-clarity item), and review-memory rot (Epic E "Prevent
+review-memory rot" — `c` in the PR picker). GitLab/Bitbucket support is an
 explicit non-goal for v1 (GitHub `gh` only), not an open question.
 
 ## Backlog

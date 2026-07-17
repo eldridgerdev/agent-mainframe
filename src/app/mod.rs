@@ -655,6 +655,20 @@ pub struct App {
     /// Receiver for the background review-memory lookback bootstrap (fetch +
     /// distill pass). See `app::pr_review::run_review_memory_bootstrap`.
     pub review_memory_bootstrap_bg: Option<Receiver<pr_review::BootstrapProgress>>,
+    /// Receiver for the background review-memory compact pass ("prevent
+    /// review-memory rot"). See `app::pr_review::run_review_memory_compact`.
+    pub review_memory_compact_bg: Option<Receiver<pr_review::CompactProgress>>,
+    /// The origin picker + resolved doc path a background compact pass
+    /// ([`Self::review_memory_compact_bg`]) was started against, kept alive
+    /// independent of `self.mode` — in particular across
+    /// `cancel_review_memory_compact` (`esc`), which restores `self.mode` to
+    /// `PrPicker` well before the background pass finishes. Without this, a
+    /// `Done` arriving after a cancel would find `self.mode` is no longer
+    /// `ReviewMemoryCompactRunning` and has nowhere to land the proposed
+    /// rewrite — mirrors [`Self::ai_review_pending`]. `Some` exactly while
+    /// `review_memory_compact_bg` is `Some`; both are cleared together once
+    /// `Done` is processed.
+    pub review_memory_compact_pending: Option<CompactRunState>,
     /// Receiver for the background AI code review of the current PR's diff
     /// (the `A` action). See `app::pr_review::run_ai_pr_review`.
     pub ai_review_bg: Option<Receiver<pr_review::AiReviewProgress>>,
@@ -885,6 +899,7 @@ impl App {
             // background thread is working.
             AppMode::PrReviewLoading(_)
             | AppMode::ReviewMemoryBootstrapRunning(_)
+            | AppMode::ReviewMemoryCompactRunning(_)
             | AppMode::AiPrReviewRunning(_) => true,
             _ => false,
         };
@@ -2011,6 +2026,8 @@ impl App {
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
+            review_memory_compact_bg: None,
+            review_memory_compact_pending: None,
             ai_review_bg: None,
             ai_review_pending: None,
             gh_current_user: None,
@@ -2214,6 +2231,8 @@ impl App {
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
+            review_memory_compact_bg: None,
+            review_memory_compact_pending: None,
             ai_review_bg: None,
             ai_review_pending: None,
             gh_current_user: None,

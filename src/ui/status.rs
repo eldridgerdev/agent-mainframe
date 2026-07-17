@@ -636,6 +636,20 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::ReviewMemoryCompactRunning(_) => Line::from(vec![
+            Span::raw(" Compacting review memory (experimental)...  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ReviewMemoryCompactReview(_) => Line::from(vec![
+            Span::raw(" Review compacted memory doc (experimental)  "),
+            Span::styled("Enter/w", key_style()),
+            Span::raw(" write  "),
+            Span::styled("e", key_style()),
+            Span::raw(" edit  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" discard"),
+        ]),
         AppMode::AiPrReviewRunning(_) => Line::from(vec![
             Span::raw(" Running AI PR review (experimental)...  "),
             Span::styled("Esc", key_style()),

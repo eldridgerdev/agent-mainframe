@@ -805,6 +805,10 @@ fn run_loop<B: Backend>(
             force_redraw = true;
         }
 
+        if app.review_memory_compact_bg.is_some() && app.poll_review_memory_compact_bg() {
+            force_redraw = true;
+        }
+
         if app.ai_review_bg.is_some() && app.poll_ai_pr_review_bg() {
             force_redraw = true;
         }

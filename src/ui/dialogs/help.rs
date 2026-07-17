@@ -264,6 +264,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("a", "Include/hide closed & merged PRs"),
         ("#", "Enter a PR number instead"),
         ("b", "Bootstrap review memory from recent PRs"),
+        ("c", "Compact review memory (merge dupes, prune stale)"),
         ("q / Esc", "Close picker"),
     ];
 

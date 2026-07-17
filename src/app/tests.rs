@@ -8825,6 +8825,7 @@ fn enter_pr_picker_for_test(app: &mut App) {
         include_closed: false,
         error: None,
         bootstrap_pick: None,
+        compact_confirm: None,
         current_user: None,
     });
 }
@@ -9044,6 +9045,376 @@ fn cancel_review_memory_bootstrap_returns_to_picker_without_dropping_the_bg_resu
     assert!(app.poll_review_memory_bootstrap_bg());
     assert!(app.review_memory_bootstrap_bg.is_none());
     assert!(matches!(app.mode, AppMode::PrPicker(_)));
+}
+
+#[test]
+fn open_review_memory_compact_confirm_reads_doc_and_opens() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().to_path_buf();
+    std::fs::create_dir_all(repo.join(".amf")).unwrap();
+    std::fs::write(
+        repo.join(".amf").join("review-memory.md"),
+        "# Review memory\n\n## Tests\n- One\n- Two\n",
+    )
+    .unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    app.mode = AppMode::PrPicker(crate::app::PrPickerState {
+        workdir: repo,
+        entries: vec![],
+        selected: 0,
+        include_closed: false,
+        error: None,
+        bootstrap_pick: None,
+        compact_confirm: None,
+        current_user: None,
+    });
+
+    assert!(!app.review_memory_compact_confirming());
+    app.open_review_memory_compact_confirm();
+    assert!(app.review_memory_compact_confirming());
+
+    match &app.mode {
+        AppMode::PrPicker(state) => {
+            assert_eq!(state.compact_confirm.as_ref().unwrap().existing_findings, 2);
+        }
+        other => panic!("expected PrPicker, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn open_review_memory_compact_confirm_bails_when_doc_missing() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().to_path_buf();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    app.mode = AppMode::PrPicker(crate::app::PrPickerState {
+        workdir: repo,
+        entries: vec![],
+        selected: 0,
+        include_closed: false,
+        error: None,
+        bootstrap_pick: None,
+        compact_confirm: None,
+        current_user: None,
+    });
+
+    app.open_review_memory_compact_confirm();
+
+    assert!(!app.review_memory_compact_confirming());
+    assert!(app.message.is_some());
+}
+
+#[test]
+fn review_memory_compact_confirm_cancel_closes_the_overlay() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    if let AppMode::PrPicker(state) = &mut app.mode {
+        state.compact_confirm = Some(crate::app::CompactConfirmState {
+            existing_findings: 3,
+        });
+    }
+    assert!(app.review_memory_compact_confirming());
+
+    app.review_memory_compact_confirm_cancel();
+
+    assert!(!app.review_memory_compact_confirming());
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+}
+
+#[test]
+fn poll_review_memory_compact_bg_success_opens_review_dialog() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.review_memory_compact_bg = Some(rx);
+    let run_state = crate::app::CompactRunState {
+        origin,
+        path: std::path::PathBuf::from("/tmp/test-workdir/.amf/review-memory.md"),
+        stage: crate::app::pr_review::CompactStage::ReadingDoc,
+    };
+    app.review_memory_compact_pending = Some(run_state.clone());
+    app.mode = AppMode::ReviewMemoryCompactRunning(run_state);
+
+    tx.send(crate::app::pr_review::CompactProgress::Compacting { token_estimate: 99 })
+        .unwrap();
+    assert!(app.poll_review_memory_compact_bg());
+    match &app.mode {
+        AppMode::ReviewMemoryCompactRunning(state) => assert_eq!(
+            state.stage,
+            crate::app::pr_review::CompactStage::Compacting { token_estimate: 99 }
+        ),
+        other => panic!(
+            "expected ReviewMemoryCompactRunning, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+
+    tx.send(crate::app::pr_review::CompactProgress::Done(Ok(Some(
+        crate::app::pr_review::CompactOutcome {
+            original_findings: 5,
+            proposed_findings: 3,
+            proposed_content: "# Review memory\n\n## Tests\n- Merged finding\n".to_string(),
+        },
+    ))))
+    .unwrap();
+    assert!(app.poll_review_memory_compact_bg());
+    assert!(app.review_memory_compact_bg.is_none());
+    match &app.mode {
+        AppMode::ReviewMemoryCompactReview(state) => {
+            assert_eq!(state.original_findings, 5);
+            assert_eq!(state.proposed_findings, 3);
+            assert_eq!(
+                state.editor.text(),
+                "# Review memory\n\n## Tests\n- Merged finding\n"
+            );
+        }
+        other => panic!(
+            "expected ReviewMemoryCompactReview, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+}
+
+#[test]
+fn poll_review_memory_compact_bg_nothing_to_compact_returns_to_picker_with_message() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.review_memory_compact_bg = Some(rx);
+    let run_state = crate::app::CompactRunState {
+        origin,
+        path: std::path::PathBuf::from("/tmp/test-workdir/.amf/review-memory.md"),
+        stage: crate::app::pr_review::CompactStage::ReadingDoc,
+    };
+    app.review_memory_compact_pending = Some(run_state.clone());
+    app.mode = AppMode::ReviewMemoryCompactRunning(run_state);
+
+    tx.send(crate::app::pr_review::CompactProgress::Done(Ok(None)))
+        .unwrap();
+    assert!(app.poll_review_memory_compact_bg());
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+    assert!(app.message.is_some());
+}
+
+#[test]
+fn poll_review_memory_compact_bg_error_still_returns_to_picker() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.review_memory_compact_bg = Some(rx);
+    let run_state = crate::app::CompactRunState {
+        origin,
+        path: std::path::PathBuf::from("/tmp/test-workdir/.amf/review-memory.md"),
+        stage: crate::app::pr_review::CompactStage::ReadingDoc,
+    };
+    app.review_memory_compact_pending = Some(run_state.clone());
+    app.mode = AppMode::ReviewMemoryCompactRunning(run_state);
+
+    tx.send(crate::app::pr_review::CompactProgress::Done(Err(
+        anyhow::anyhow!("claude headless command failed"),
+    )))
+    .unwrap();
+    assert!(app.poll_review_memory_compact_bg());
+    match &app.mode {
+        AppMode::PrPicker(state) => {
+            assert!(
+                state
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("claude headless command failed"))
+            );
+        }
+        other => panic!("expected PrPicker, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(app.review_memory_compact_bg.is_none());
+}
+
+#[test]
+fn cancel_review_memory_compact_does_not_reopen_review_dialog_over_the_user() {
+    // Regression guard for the analogous AI-review bug (`ai_review_pending`):
+    // a late `Done` after the user already backed out (`esc`) must not force
+    // them into a full-screen dialog they didn't ask to see, and must not
+    // panic when `self.mode` is no longer `ReviewMemoryCompactRunning`.
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.review_memory_compact_bg = Some(rx);
+    let run_state = crate::app::CompactRunState {
+        origin,
+        path: std::path::PathBuf::from("/tmp/test-workdir/.amf/review-memory.md"),
+        stage: crate::app::pr_review::CompactStage::ReadingDoc,
+    };
+    app.review_memory_compact_pending = Some(run_state.clone());
+    app.mode = AppMode::ReviewMemoryCompactRunning(run_state);
+
+    app.cancel_review_memory_compact();
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+
+    tx.send(crate::app::pr_review::CompactProgress::Done(Ok(Some(
+        crate::app::pr_review::CompactOutcome {
+            original_findings: 2,
+            proposed_findings: 1,
+            proposed_content: "# Review memory\n".to_string(),
+        },
+    ))))
+    .unwrap();
+    assert!(app.poll_review_memory_compact_bg());
+    assert!(app.review_memory_compact_bg.is_none());
+    assert!(app.review_memory_compact_pending.is_none());
+    // Stays on the picker the user cancelled back to — not yanked into the
+    // review dialog, and not silently dropped either (a toast explains it).
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("navigated away"))
+    );
+}
+
+fn enter_compact_review_for_test(app: &mut App, path: std::path::PathBuf, content: &str) {
+    let origin = crate::app::PrPickerState {
+        workdir: std::path::PathBuf::from("/tmp/test-workdir"),
+        entries: vec![],
+        selected: 0,
+        include_closed: false,
+        error: None,
+        bootstrap_pick: None,
+        compact_confirm: None,
+        current_user: None,
+    };
+    app.mode = AppMode::ReviewMemoryCompactReview(crate::app::CompactReviewState {
+        origin,
+        path,
+        original_findings: 3,
+        proposed_findings: 2,
+        editor: crate::editor::TextEditor::new(content.to_string()),
+        editing: false,
+        scroll: 0,
+        sync_to_cursor: false,
+        error: None,
+    });
+}
+
+#[test]
+fn pr_review_compact_write_overwrites_file_and_returns_to_picker() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("review-memory.md");
+    std::fs::write(
+        &path,
+        "# Review memory\n\n## Tests\n- Stale one\n- Stale two\n",
+    )
+    .unwrap();
+
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_compact_review_for_test(
+        &mut app,
+        path.clone(),
+        "# Review memory\n\n## Tests\n- Merged finding\n",
+    );
+
+    app.pr_review_compact_write().unwrap();
+
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(contents, "# Review memory\n\n## Tests\n- Merged finding\n");
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("3") && t.message.contains("2"))
+    );
+}
+
+#[test]
+fn pr_review_compact_discard_leaves_file_untouched() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("review-memory.md");
+    let original = "# Review memory\n\n## Tests\n- Stale one\n- Stale two\n";
+    std::fs::write(&path, original).unwrap();
+
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_compact_review_for_test(&mut app, path.clone(), "# Review memory\n\n- edited away\n");
+
+    app.pr_review_compact_discard();
+
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(contents, original);
 }
 
 #[test]

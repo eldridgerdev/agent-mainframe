@@ -150,11 +150,16 @@ fn handle_ai_model_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
 /// Key handling for the PR picker: navigate the list, `⏎` open the highlighted
 /// PR, `a` toggle closed/merged PRs, `#` switch to typing a number, `b` open
-/// the review-memory lookback bootstrap, `esc` close.
+/// the review-memory lookback bootstrap, `c` compact the review-memory doc,
+/// `esc` close.
 pub fn handle_pr_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The lookback-bootstrap depth picker, when open, captures all keys.
     if app.review_memory_bootstrap_picking() {
         return handle_bootstrap_pick_key(app, key);
+    }
+    // The compact confirm overlay, when open, captures all keys.
+    if app.review_memory_compact_confirming() {
+        return handle_compact_confirm_key(app, key);
     }
 
     match key.code {
@@ -165,6 +170,7 @@ pub fn handle_pr_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('a') => app.pr_picker_toggle_closed(),
         KeyCode::Char('#') | KeyCode::Char('g') => app.pr_picker_to_number_prompt(),
         KeyCode::Char('b') => app.open_review_memory_bootstrap_pick(),
+        KeyCode::Char('c') => app.open_review_memory_compact_confirm(),
         _ => {}
     }
     Ok(())
@@ -183,12 +189,64 @@ fn handle_bootstrap_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+/// Key handling for the review-memory compact confirm overlay: `⏎` run,
+/// `esc`/`q` cancel back to the PR picker.
+fn handle_compact_confirm_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.review_memory_compact_confirm_cancel(),
+        KeyCode::Enter => app.review_memory_compact_confirm_run(),
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Key handling for the full-screen lookback-bootstrap running view: `esc`/`q`
 /// return to the PR picker (the background thread keeps running to
 /// completion; its result still lands via `poll_review_memory_bootstrap_bg`).
 pub fn handle_review_memory_bootstrap_running_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
         app.cancel_review_memory_bootstrap();
+    }
+    Ok(())
+}
+
+/// Key handling for the full-screen compact running view: `esc`/`q` return to
+/// the PR picker (the background thread keeps running to completion; its
+/// result still lands via `poll_review_memory_compact_bg`).
+pub fn handle_review_memory_compact_running_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        app.cancel_review_memory_compact();
+    }
+    Ok(())
+}
+
+/// Key handling while the compact review dialog is open.
+///
+/// Confirm view: `⏎`/`w` writes the proposed doc, `e` edits, `esc`/`q`
+/// discards without writing. Edit mode: keystrokes flow to the editor; `esc`
+/// returns to the confirm view.
+pub fn handle_review_memory_compact_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if app.pr_review_compact_review_editing() == Some(true) {
+        match key.code {
+            KeyCode::Esc => app.pr_review_compact_review_stop_edit(),
+            _ => app.pr_review_compact_review_editor_key(key),
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Enter | KeyCode::Char('w') => app.pr_review_compact_write()?,
+        KeyCode::Char('e') => app.pr_review_compact_review_edit(),
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.pr_review_compact_review_scroll(DETAIL_SCROLL_STEP as isize)
+        }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.pr_review_compact_review_scroll(-(DETAIL_SCROLL_STEP as isize))
+        }
+        KeyCode::PageDown => app.pr_review_compact_review_scroll(FIX_PAGE_STEP),
+        KeyCode::PageUp => app.pr_review_compact_review_scroll(-FIX_PAGE_STEP),
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_compact_discard(),
+        _ => {}
     }
     Ok(())
 }

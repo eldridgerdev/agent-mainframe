@@ -126,6 +126,38 @@ pub enum BootstrapStage {
     },
 }
 
+/// Stage of the review-memory compact pass's full-screen running view
+/// (Epic E "prevent review-memory rot"). Mirrors [`BootstrapStage`]: a cheap
+/// prep stage (reading the doc off disk), then the one paid pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactStage {
+    ReadingDoc,
+    Compacting { token_estimate: usize },
+}
+
+/// Outcome of a completed compact run: the doc was read, rewritten by one
+/// headless agent pass, and the proposed replacement is awaiting the user's
+/// review before anything is written to disk.
+#[derive(Debug, Clone)]
+pub struct CompactOutcome {
+    /// Bullet count in the doc as it stood before compacting.
+    pub original_findings: usize,
+    /// Bullet count in the agent's proposed replacement.
+    pub proposed_findings: usize,
+    /// The full proposed replacement document text.
+    pub proposed_content: String,
+}
+
+/// Messages sent back from the background compact thread. `Compacting` fires
+/// once, right before the one headless agent call, so the running screen can
+/// show a token estimate; `Done` fires exactly once at the end. `Ok(None)`
+/// means there was nothing to compact (doc missing or has zero findings) —
+/// distinct from an error, since it isn't one.
+pub enum CompactProgress {
+    Compacting { token_estimate: usize },
+    Done(Result<Option<CompactOutcome>>),
+}
+
 /// Stage of the AI PR review's full-screen running view (Epic E `A`). Mirrors
 /// [`BootstrapStage`]: a cheap prep stage, then the one paid pass with a token
 /// estimate.
@@ -1695,6 +1727,54 @@ fn run_review_memory_bootstrap(
     let _ = tx.send(BootstrapProgress::Done(result));
 }
 
+/// Background body of the review-memory compact pass ("prevent review-memory
+/// rot"): read the doc, make **one** headless agent pass to merge
+/// near-duplicate findings and prune stale ones, and report the proposed
+/// replacement for the user to review — nothing is written here. Runs off the
+/// UI thread; progress and the final result are reported over `tx`.
+fn run_review_memory_compact(
+    workdir: PathBuf,
+    memory_path: PathBuf,
+    model: Option<String>,
+    tx: std::sync::mpsc::Sender<CompactProgress>,
+) {
+    let contents = match std::fs::read_to_string(&memory_path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = tx.send(CompactProgress::Done(Ok(None)));
+            return;
+        }
+        Err(e) => {
+            let _ = tx.send(CompactProgress::Done(Err(e.into())));
+            return;
+        }
+    };
+
+    let original_findings = review_memory::count_findings(&contents);
+    if original_findings == 0 {
+        let _ = tx.send(CompactProgress::Done(Ok(None)));
+        return;
+    }
+
+    let prompt = review_memory::compact_prompt(&contents);
+    let _ = tx.send(CompactProgress::Compacting {
+        token_estimate: estimate_tokens(&prompt),
+    });
+
+    let result = HeadlessRunner::run(&AgentKind::Claude, &workdir, &prompt, model.as_deref()).map(
+        |output| {
+            let proposed_content = output.trim().to_string();
+            let proposed_findings = review_memory::count_findings(&proposed_content);
+            Some(CompactOutcome {
+                original_findings,
+                proposed_findings,
+                proposed_content,
+            })
+        },
+    );
+    let _ = tx.send(CompactProgress::Done(result));
+}
+
 /// Rows offered by the AI-review model picker for a given harness: `Default`
 /// and `Custom` always appear; presets are a best-effort, *verified* set of
 /// model aliases — currently only Claude's, confirmed against `claude
@@ -2169,6 +2249,7 @@ impl App {
                     include_closed: false,
                     error: None,
                     bootstrap_pick: None,
+                    compact_confirm: None,
                     current_user,
                 });
             }
@@ -4775,6 +4856,268 @@ impl App {
     /// [`App::poll_review_memory_bootstrap_bg`] still surfaces the result.
     pub fn cancel_review_memory_bootstrap(&mut self) {
         if let AppMode::ReviewMemoryBootstrapRunning(state) = &self.mode {
+            self.mode = AppMode::PrPicker(state.origin.clone());
+        }
+    }
+
+    /// Open the review-memory compact confirm overlay (`c` in the PR picker):
+    /// a synchronous local file read to show how many findings are currently
+    /// in the doc before spending an agent pass on them (Epic E "prevent
+    /// review-memory rot"). A no-op with a message if the doc is missing or
+    /// empty — nothing to compact.
+    pub fn open_review_memory_compact_confirm(&mut self) {
+        let workdir = match &self.mode {
+            AppMode::PrPicker(state) => state.workdir.clone(),
+            _ => return,
+        };
+        let repo = self.repo_for_project_path(&workdir);
+        let path = review_memory::review_memory_path(
+            &repo,
+            self.configured_review_memory_path(&repo).as_deref(),
+        );
+        let existing_findings = std::fs::read_to_string(&path)
+            .map(|contents| review_memory::count_findings(&contents))
+            .unwrap_or(0);
+        if existing_findings == 0 {
+            self.message = Some("Review memory doc is empty — nothing to compact".into());
+            return;
+        }
+        if let AppMode::PrPicker(state) = &mut self.mode {
+            state.compact_confirm = Some(CompactConfirmState { existing_findings });
+        }
+    }
+
+    /// Whether the compact confirm overlay is currently open over the picker.
+    pub fn review_memory_compact_confirming(&self) -> bool {
+        matches!(&self.mode, AppMode::PrPicker(state) if state.compact_confirm.is_some())
+    }
+
+    /// Close the overlay without running anything, staying on the PR picker.
+    pub fn review_memory_compact_confirm_cancel(&mut self) {
+        if let AppMode::PrPicker(state) = &mut self.mode {
+            state.compact_confirm = None;
+        }
+    }
+
+    /// Confirm the overlay: hand the doc read + one agent pass to a
+    /// background thread and switch to the full-screen running view.
+    pub fn review_memory_compact_confirm_run(&mut self) {
+        let (workdir, mut origin) = match &self.mode {
+            AppMode::PrPicker(state) if state.compact_confirm.is_some() => {
+                (state.workdir.clone(), state.clone())
+            }
+            _ => return,
+        };
+        origin.compact_confirm = None;
+
+        let repo = self.repo_for_project_path(&workdir);
+        let memory_path = review_memory::review_memory_path(
+            &repo,
+            self.configured_review_memory_path(&repo).as_deref(),
+        );
+
+        self.log_info("pr_review", "compacting review memory doc".to_string());
+
+        let model = self.config.review_model.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.review_memory_compact_bg = Some(rx);
+        let thread_workdir = workdir.clone();
+        let thread_memory_path = memory_path.clone();
+        std::thread::spawn(move || {
+            run_review_memory_compact(thread_workdir, thread_memory_path, model, tx);
+        });
+
+        let run_state = CompactRunState {
+            origin,
+            path: memory_path,
+            stage: CompactStage::ReadingDoc,
+        };
+        self.review_memory_compact_pending = Some(run_state.clone());
+        self.mode = AppMode::ReviewMemoryCompactRunning(run_state);
+    }
+
+    /// Poll the background compact pass. `Compacting` updates the running
+    /// screen's token estimate; `Done` transitions to the full-screen review
+    /// dialog on a successful rewrite (nothing is written yet), surfaces a
+    /// message and returns to the picker when there was nothing to compact,
+    /// or restores the picker with an inline error on failure — same
+    /// restore-before-`show_error` ordering as
+    /// [`App::poll_review_memory_bootstrap_bg`], for the same reason.
+    pub fn poll_review_memory_compact_bg(&mut self) -> bool {
+        let Some(rx) = self.review_memory_compact_bg.as_ref() else {
+            return false;
+        };
+        let mut changed = false;
+        loop {
+            match rx.try_recv() {
+                Ok(CompactProgress::Compacting { token_estimate }) => {
+                    if let AppMode::ReviewMemoryCompactRunning(state) = &mut self.mode {
+                        state.stage = CompactStage::Compacting { token_estimate };
+                    }
+                    changed = true;
+                }
+                Ok(CompactProgress::Done(result)) => {
+                    self.review_memory_compact_bg = None;
+                    let Some(pending) = self.review_memory_compact_pending.take() else {
+                        // Invariant: always set alongside `review_memory_compact_bg`
+                        // in `review_memory_compact_confirm_run`. If it's ever
+                        // missing there's nowhere safe to land the proposal.
+                        changed = true;
+                        break;
+                    };
+                    // Only auto-open the review dialog (or bounce a `None`/error
+                    // back to the picker) if the user is still on the running
+                    // screen. If they cancelled (`esc`) to the picker — or
+                    // navigated anywhere else — nothing was written (unlike the
+                    // bootstrap, which writes as it goes), so there's nowhere
+                    // live to land a full-screen editable proposal without
+                    // yanking the user out of whatever they're doing now; just
+                    // surface that it finished.
+                    let still_watching =
+                        matches!(&self.mode, AppMode::ReviewMemoryCompactRunning(_));
+                    match result {
+                        Ok(Some(outcome)) => {
+                            if still_watching {
+                                self.mode =
+                                    AppMode::ReviewMemoryCompactReview(CompactReviewState {
+                                        origin: pending.origin,
+                                        path: pending.path,
+                                        original_findings: outcome.original_findings,
+                                        proposed_findings: outcome.proposed_findings,
+                                        editor: TextEditor::new(outcome.proposed_content),
+                                        editing: false,
+                                        scroll: 0,
+                                        sync_to_cursor: false,
+                                        error: None,
+                                    });
+                            } else {
+                                self.push_toast_info(
+                                    "Review memory compact finished after you navigated away \
+                                     — press c to re-run and review it"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            self.message =
+                                Some("Review memory doc is empty — nothing to compact".into());
+                            if still_watching {
+                                self.mode = AppMode::PrPicker(pending.origin);
+                            }
+                        }
+                        Err(e) => {
+                            if still_watching {
+                                let mut origin = pending.origin;
+                                origin.error = Some(e.to_string());
+                                self.show_error(e);
+                                self.mode = AppMode::PrPicker(origin);
+                            } else {
+                                self.show_error(e);
+                            }
+                        }
+                    }
+                    changed = true;
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.review_memory_compact_bg = None;
+                    self.review_memory_compact_pending = None;
+                    if let AppMode::ReviewMemoryCompactRunning(state) = &self.mode {
+                        self.mode = AppMode::PrPicker(state.origin.clone());
+                        self.message = Some("Compact failed unexpectedly".to_string());
+                        changed = true;
+                    }
+                    break;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Cancel the running screen (`esc`/`q`): return to the PR picker. The
+    /// background thread isn't aborted — if it finishes later,
+    /// [`App::poll_review_memory_compact_bg`] still notices (it doesn't
+    /// auto-open the review dialog once the user isn't watching the running
+    /// screen anymore, since nothing was written to land it against).
+    pub fn cancel_review_memory_compact(&mut self) {
+        if let AppMode::ReviewMemoryCompactRunning(state) = &self.mode {
+            self.mode = AppMode::PrPicker(state.origin.clone());
+        }
+    }
+
+    /// Enter edit mode so keystrokes flow to the proposed-doc editor.
+    pub fn pr_review_compact_review_edit(&mut self) {
+        if let AppMode::ReviewMemoryCompactReview(state) = &mut self.mode {
+            state.editing = true;
+        }
+    }
+
+    /// Leave edit mode, returning to the confirm view (the text is kept).
+    pub fn pr_review_compact_review_stop_edit(&mut self) {
+        if let AppMode::ReviewMemoryCompactReview(state) = &mut self.mode {
+            state.editing = false;
+        }
+    }
+
+    /// Whether the compact review dialog is in edit mode. `None` when the
+    /// dialog isn't open.
+    pub fn pr_review_compact_review_editing(&self) -> Option<bool> {
+        match &self.mode {
+            AppMode::ReviewMemoryCompactReview(state) => Some(state.editing),
+            _ => None,
+        }
+    }
+
+    /// Forward a key to the proposed-doc editor (only meaningful in edit mode).
+    pub fn pr_review_compact_review_editor_key(&mut self, key: crossterm::event::KeyEvent) {
+        if let AppMode::ReviewMemoryCompactReview(state) = &mut self.mode
+            && state.editing
+        {
+            state.editor.handle_key(key);
+            state.sync_to_cursor = true;
+        }
+    }
+
+    /// Scroll the proposed-doc view (confirm view only).
+    pub fn pr_review_compact_review_scroll(&mut self, delta: isize) {
+        if let AppMode::ReviewMemoryCompactReview(state) = &mut self.mode {
+            state.scroll = state.scroll.saturating_add_signed(delta);
+            state.sync_to_cursor = false;
+        }
+    }
+
+    /// Write the (possibly edited) proposed replacement to the review-memory
+    /// doc and return to the PR picker. This is the one place the compact
+    /// flow writes anything — the background pass only ever produces a
+    /// proposal (see [`run_review_memory_compact`]). A write failure keeps
+    /// the dialog open with the error shown inline, same as
+    /// [`App::pr_review_post_ai_review`]'s recoverable-error handling.
+    pub fn pr_review_compact_write(&mut self) -> Result<()> {
+        let AppMode::ReviewMemoryCompactReview(state) = &mut self.mode else {
+            return Ok(());
+        };
+        let content = state.editor.text().to_string();
+        match std::fs::write(&state.path, &content) {
+            Ok(()) => {
+                let (original, proposed) = (state.original_findings, state.proposed_findings);
+                let origin = state.origin.clone();
+                self.mode = AppMode::PrPicker(origin);
+                self.push_toast_success(format!(
+                    "Review memory compacted · {original} \u{2192} {proposed} findings"
+                ));
+            }
+            Err(e) => {
+                state.error = Some(e.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// Discard the proposed replacement without writing, returning to the PR
+    /// picker.
+    pub fn pr_review_compact_discard(&mut self) {
+        if let AppMode::ReviewMemoryCompactReview(state) = &self.mode {
             self.mode = AppMode::PrPicker(state.origin.clone());
         }
     }

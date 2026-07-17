@@ -12,6 +12,18 @@ are tagged.
 
 ### Added
 
+- **Compact the review-memory doc (`c` in the PR picker).** Findings
+  accumulate one bullet at a time (`M`, the lookback bootstrap) but were
+  never pruned — the doc could drift and bloat over time with near-duplicate
+  or stale rules. `c` shows how many findings are in the doc today, then a
+  single headless agent pass merges near-duplicates and drops findings that
+  are stale, superseded, or too specific to a single past PR — preserving
+  section structure and any hand-written prose. Unlike every other
+  review-memory write, this proposes a wholesale rewrite rather than an
+  append, so nothing touches disk until you review the proposed doc
+  full-screen (editable) and explicitly write (`⏎`/`w`) or discard (`esc`).
+  `esc` from the running screen returns to the picker without losing the
+  in-flight pass, same as the bootstrap and `A`/AI-review running screens.
 - **The review-memory doc path can now be overridden per project, not just
   globally.** `review_memory_path` was already a config setting, but one
   value applied to every project. Set `review_memory_path` in a project's

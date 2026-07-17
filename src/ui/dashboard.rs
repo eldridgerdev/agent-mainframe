@@ -1042,6 +1042,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
+    if let AppMode::ReviewMemoryCompactRunning(state) = &app.mode {
+        super::dialogs::draw_review_memory_compact_running(
+            frame,
+            state,
+            &app.throbber_state,
+            &app.theme,
+        );
+        super::draw_toasts(frame, &app.toasts, &app.theme);
+        return;
+    }
+    if matches!(app.mode, AppMode::ReviewMemoryCompactReview(_)) {
+        if let AppMode::ReviewMemoryCompactReview(state) = &mut app.mode {
+            super::dialogs::draw_review_memory_compact_review(frame, state, &app.theme);
+        }
+        super::draw_toasts(frame, &app.toasts, &app.theme);
+        return;
+    }
     if let AppMode::AiPrReviewRunning(state) = &app.mode {
         super::dialogs::draw_ai_pr_review_running(frame, state, &app.throbber_state, &app.theme);
         super::draw_toasts(frame, &app.toasts, &app.theme);

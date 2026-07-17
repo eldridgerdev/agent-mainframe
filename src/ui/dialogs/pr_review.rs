@@ -15,12 +15,13 @@ use std::path::Path;
 
 use crate::{
     app::pr_review::{
-        AiReviewRunOutcome, AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, MarkAction,
-        PrComment, ReplyKind,
+        AiReviewRunOutcome, AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind,
+        CompactStage, MarkAction, PrComment, ReplyKind,
     },
     app::{
-        AiReviewRunState, BootstrapPickState, BootstrapRunState, MarkPickState, ModelPickRow,
-        PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState, ReplyKindPickState,
+        AiReviewRunState, BootstrapPickState, BootstrapRunState, CompactConfirmState,
+        CompactReviewState, CompactRunState, MarkPickState, ModelPickRow, PrNumberPromptState,
+        PrPickerState, PrReviewLoadState, PrReviewState, ReplyKindPickState,
     },
     editor::VimMode,
     theme::Theme,
@@ -158,13 +159,18 @@ pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, m
         "a include-closed"
     };
     let footer = Paragraph::new(Line::from(Span::styled(
-        format!(" j/k move   \u{23ce} open   {toggle}   # number   b bootstrap memory   esc close"),
+        format!(
+            " j/k move   \u{23ce} open   {toggle}   # number   b bootstrap memory   c compact memory   esc close"
+        ),
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(footer, layout[3]);
 
     if let Some(pick) = &state.bootstrap_pick {
         draw_bootstrap_pick(frame, pick, memory_path, theme);
+    }
+    if let Some(confirm) = &state.compact_confirm {
+        draw_compact_confirm(frame, confirm, memory_path, theme);
     }
 }
 
@@ -252,6 +258,65 @@ fn draw_bootstrap_pick(
     );
 }
 
+/// Confirm overlay for the review-memory compact pass (`c` in the PR picker):
+/// shows how many findings are in the doc today before spending an agent pass
+/// to merge near-duplicates and prune stale ones.
+fn draw_compact_confirm(
+    frame: &mut Frame,
+    confirm: &CompactConfirmState,
+    memory_path: &Path,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(60, 35, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Compact review memory ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // description
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    let n = confirm.existing_findings;
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(
+                    "  {n} finding{} currently in {}.",
+                    if n == 1 { "" } else { "s" },
+                    memory_path.display()
+                ),
+                Style::default().fg(theme.text.to_color()),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  One agent pass merges near-duplicate findings and prunes stale ones. \
+                 You'll review the proposed doc before anything is written.",
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+        ])
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] run   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[1],
+    );
+}
+
 /// Full-screen progress view for the lookback bootstrap's background fetch +
 /// distill pass.
 pub fn draw_review_memory_bootstrap_running(
@@ -304,6 +369,157 @@ pub fn draw_review_memory_bootstrap_running(
     ])
     .wrap(Wrap { trim: false });
     frame.render_widget(body, inner);
+}
+
+/// Full-screen progress view for the review-memory compact pass's background
+/// read + rewrite. Mirrors [`draw_review_memory_bootstrap_running`].
+pub fn draw_review_memory_compact_running(
+    frame: &mut Frame,
+    state: &CompactRunState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let area = frame.area();
+    let block = pane_block(theme).title(" Compact review memory (experimental) ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+
+    let status_line = match state.stage {
+        CompactStage::ReadingDoc => Line::from(vec![
+            spinner,
+            Span::styled(
+                " Reading review memory doc...",
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        CompactStage::Compacting { token_estimate } => Line::from(vec![
+            spinner,
+            Span::styled(
+                format!(" Compacting findings (~{token_estimate} tokens)..."),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    };
+
+    let body = Paragraph::new(vec![
+        Line::from(""),
+        status_line,
+        Line::from(""),
+        Line::from(Span::styled(
+            "esc to return to the PR picker (the run keeps going in the background)",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+    frame.render_widget(body, inner);
+}
+
+/// Full-screen review of the compact pass's proposed replacement doc: an
+/// editable preview of what will be written, shown before anything actually
+/// is (mirrors [`draw_fix_confirm`]'s edit/confirm split and scroll handling,
+/// full-screen rather than a centered dialog since a whole doc can run long).
+pub fn draw_review_memory_compact_review(
+    frame: &mut Frame,
+    state: &mut CompactReviewState,
+    theme: &Theme,
+) {
+    let area = frame.area();
+    let block = pane_block(theme).title(format!(
+        " Review compacted memory: {} \u{2192} {} findings (experimental) ",
+        state.original_findings, state.proposed_findings
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut constraints = vec![Constraint::Length(1)]; // path line
+    if state.error.is_some() {
+        constraints.push(Constraint::Length(2)); // error message
+    }
+    constraints.push(Constraint::Min(1)); // doc body / editor
+    constraints.push(Constraint::Length(1)); // key hints
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+    let mut row = 0;
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  Will overwrite {}", state.path.display()),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))),
+        chunks[row],
+    );
+    row += 1;
+
+    if let Some(error) = &state.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("Write failed: {error}"),
+                Style::default().fg(theme.danger.to_color()),
+            )))
+            .wrap(Wrap { trim: false }),
+            chunks[row],
+        );
+        row += 1;
+    }
+
+    let doc_area = chunks[row];
+    let doc_lines = super::editor_view::editor_lines(&state.editor, theme, "(empty doc)");
+    let visible_lines = doc_area.height as usize;
+    let mut wrap_width = doc_area.width as usize;
+    let mut total_visual_lines =
+        super::editor_view::count_wrapped_editor_lines(&doc_lines, wrap_width);
+    if total_visual_lines > visible_lines && wrap_width > 1 {
+        wrap_width -= 1;
+        total_visual_lines = super::editor_view::count_wrapped_editor_lines(&doc_lines, wrap_width);
+    }
+    super::editor_view::sync_editor_scroll(
+        &state.editor,
+        &mut state.scroll,
+        &mut state.sync_to_cursor,
+        visible_lines,
+        wrap_width,
+        total_visual_lines,
+    );
+    frame.render_widget(
+        Paragraph::new(doc_lines)
+            .wrap(Wrap { trim: false })
+            .scroll((state.scroll.min(u16::MAX as usize) as u16, 0)),
+        doc_area,
+    );
+    if total_visual_lines > visible_lines {
+        let scrollbar = Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(total_visual_lines)
+            .position(state.scroll)
+            .viewport_content_length(visible_lines);
+        frame.render_stateful_widget(scrollbar, doc_area, &mut scrollbar_state);
+    }
+    row += 1;
+
+    let hints = if state.editing {
+        "[esc] done editing"
+    } else {
+        "[⏎/w] write   [e] edit   [esc] discard"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[row],
+    );
 }
 
 /// Full-screen progress view for the AI PR review's background diff-fetch +

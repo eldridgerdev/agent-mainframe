@@ -1003,6 +1003,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let fix_session_usage = app.pr_review_fix_session_usage();
         let triage_session_usage = app.pr_review_triage_session_usage();
         let dedicated_session_working = app.pr_review_dedicated_session_working();
+        let ai_review_running = match &app.mode {
+            AppMode::PrReview(state) => app.ai_review_running_for_workdir(&state.workdir),
+            _ => false,
+        };
         if let AppMode::PrReview(state) = &mut app.mode {
             super::dialogs::draw_pr_review(
                 frame,
@@ -1014,6 +1018,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     pricing: &app.config.token_pricing,
                 },
                 dedicated_session_working,
+                ai_review_running,
             );
         }
         super::draw_toasts(frame, &app.toasts, &app.theme);
@@ -2282,6 +2287,83 @@ mod tests {
             pending_batch: false,
             checked_out_branch: Some(checked_out.to_string()),
         }
+    }
+
+    #[test]
+    fn pr_review_pane_shows_ai_review_running_badge_for_its_own_workdir() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let state = pr_review_state_with_branches("main", "main");
+        let workdir = state.workdir.clone();
+        app.mode = crate::app::AppMode::PrReview(state);
+
+        let pr = crate::github::PrRef {
+            number: 321,
+            head_sha: "abc123".to_string(),
+            url: "https://github.com/o/r/pull/321".to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            head_ref: "main".to_string(),
+        };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        app.ai_review_bg = Some(rx);
+        app.ai_review_pending = Some(crate::app::AiReviewState {
+            workdir,
+            pr,
+            findings: Vec::new(),
+            selected: 0,
+            detail_scroll: 0,
+            detail_content_lines: 0,
+            last_run: None,
+            harness: None,
+            harness_pick: None,
+            model: None,
+            model_picked: false,
+            model_pick: None,
+            finding_editor: None,
+            post_confirm: None,
+        });
+
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("AI review running"));
+    }
+
+    #[test]
+    fn pr_review_pane_omits_ai_review_badge_when_nothing_is_running() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = crate::app::AppMode::PrReview(pr_review_state_with_branches("main", "main"));
+
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(!rendered.contains("AI review running"));
     }
 
     #[test]

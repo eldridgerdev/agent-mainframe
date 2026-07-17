@@ -29,7 +29,10 @@ are tagged.
   there on close), `W` on the dashboard for the selected feature, `W` in the
   PR picker for the highlighted PR, and leader `W` from inside an agent
   session. No migration needed — old cached AI drafts inside `pr_review_cache`
-  are simply left behind; press `A` in the new pane to regenerate.
+  are simply left behind; press `A` in the new pane to regenerate. PR Triage's
+  own header shows `[AI review running]` whenever a background pass for that
+  PR is still going, so leaving the AI Review pane (or opening PR Triage from
+  the dashboard/a session) doesn't lose track of it.
 - **Compact the review-memory doc (`c` in the PR picker).** Findings
   accumulate one bullet at a time (`M`, the lookback bootstrap) but were
   never pruned — the doc could drift and bloat over time with near-duplicate

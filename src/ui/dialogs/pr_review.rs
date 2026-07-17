@@ -618,6 +618,7 @@ pub fn draw_pr_review(
     theme: &Theme,
     usage: PrReviewUsage<'_>,
     dedicated_session_working: Option<bool>,
+    ai_review_running: bool,
 ) {
     let area = frame.area();
     let review = &state.review;
@@ -662,6 +663,17 @@ pub fn draw_pr_review(
             ("  [dedicated idle]", theme.status_detail.to_color())
         };
         header_spans.push(Span::styled(label, Style::default().fg(color)));
+    }
+    // `A` opens a separate AI Review pane now, so a background pass kicked
+    // off there and left running isn't visible from inside this pane unless
+    // called out explicitly — this is that ambient "yes, it's still going"
+    // signal (mirrors the dashboard/session ambient badge's own
+    // `ai_review_running_for_workdir` check).
+    if ai_review_running {
+        header_spans.push(Span::styled(
+            "  [AI review running]",
+            Style::default().fg(theme.warning.to_color()),
+        ));
     }
     // Once the fix-target session exists, show what triage has spent on it —
     // the "only pay for what you asked for" constraint made visible in-pane.

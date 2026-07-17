@@ -1691,6 +1691,24 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/ui/dialogs/help.rs`, `src/ui/dashboard.rs`, `src/ui/status.rs`,
       `src/ui/pane.rs`, `src/app/tests.rs`, `README.md`, `CHANGELOG.md`.
 
+      **Follow-up, same day — from real use.** Splitting the pane dropped a
+      real signal: PR Triage's own header used to show "AI review running…"
+      / the last run's outcome (it lived inside `draw_pr_review` before the
+      split), and that disappeared along with the rest of the AI-only
+      rendering — leaving PR Triage's header with no idea a background
+      review for the same PR was still going once you left the AI Review
+      pane (via `leader W`, say) and came back in through `G`. The
+      dashboard/session ambient badge (`pr_triage_badge_span`) still knew,
+      via the unchanged `ai_review_running_for_workdir`, just not the pane
+      itself. Fixed by threading that same already-live check into
+      `draw_pr_review` as a new `ai_review_running: bool` parameter (the
+      dashboard's `PrReview` draw call site computes it from `app.mode`'s
+      `state.workdir` before the mutable borrow, same pattern as
+      `dedicated_session_working`), rendering a `[AI review running]` badge
+      next to the existing `[dedicated ● working]` one. Render tests cover
+      both the present and absent cases. → `src/ui/dashboard.rs`,
+      `src/ui/dialogs/pr_review.rs`, `CHANGELOG.md`.
+
 - [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit
   each). `B` opens a confirm dialog before combining them into one prompt and

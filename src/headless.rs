@@ -46,6 +46,39 @@ const CODEX_EXEC_REQUIRED_FLAGS: [&str; 5] = [
     "--json",
 ];
 
+/// A flag a headless CLI must advertise in `--help` for structured progress
+/// to be trusted. `value`, when set, must appear within
+/// [`PROGRESS_FLAG_VALUE_WINDOW`] characters of `flag`'s occurrence — a
+/// generic token like `json` or `stream-json` appearing anywhere else in the
+/// help text (an unrelated flag, an example, a URL) must not count. The
+/// window (rather than requiring the exact same line) tolerates clap-style
+/// help that wraps a flag's accepted values onto their own line.
+struct ProgressFlag {
+    flag: &'static str,
+    value: Option<&'static str>,
+}
+
+const PROGRESS_FLAG_VALUE_WINDOW: usize = 240;
+
+const CLAUDE_PROGRESS_REQUIRED_FLAGS: [ProgressFlag; 2] = [
+    ProgressFlag {
+        flag: "--output-format",
+        value: Some("stream-json"),
+    },
+    ProgressFlag {
+        flag: "--verbose",
+        value: None,
+    },
+];
+const OPENCODE_PROGRESS_REQUIRED_FLAGS: [ProgressFlag; 1] = [ProgressFlag {
+    flag: "--format",
+    value: Some("json"),
+}];
+const PI_PROGRESS_REQUIRED_FLAGS: [ProgressFlag; 1] = [ProgressFlag {
+    flag: "--mode",
+    value: Some("json"),
+}];
+
 impl HeadlessRunner {
     pub fn check_available(harness: &AgentKind) -> Result<()> {
         match harness {
@@ -62,6 +95,31 @@ impl HeadlessRunner {
                 Ok(())
             }
             AgentKind::Pi => crate::pi::PiLauncher::check_available(),
+        }
+    }
+
+    /// AI Review depends on the harness's structured event mode in addition
+    /// to its ordinary headless launcher. Probe that mode before any diff is
+    /// fetched or paid work begins so older CLIs fail with an upgrade hint.
+    pub fn check_progress_available(harness: &AgentKind) -> Result<()> {
+        Self::check_available(harness)?;
+        match harness {
+            AgentKind::Claude => check_progress_flags(
+                &crate::claude::ClaudeLauncher::resolve_binary(),
+                &["--help"],
+                &CLAUDE_PROGRESS_REQUIRED_FLAGS,
+                "Claude",
+            ),
+            AgentKind::Codex => Ok(()),
+            AgentKind::Opencode => check_progress_flags(
+                "opencode",
+                &["run", "--help"],
+                &OPENCODE_PROGRESS_REQUIRED_FLAGS,
+                "Opencode",
+            ),
+            AgentKind::Pi => {
+                check_progress_flags("pi", &["--help"], &PI_PROGRESS_REQUIRED_FLAGS, "Pi")
+            }
         }
     }
 
@@ -83,10 +141,10 @@ impl HeadlessRunner {
 
     /// Run a headless pass while reporting sanitized provider activity.
     ///
-    /// Codex has a documented JSONL event stream, so it can report genuine
-    /// turn/item progress. Other harnesses retain the existing text-mode
-    /// behavior until their streaming contracts are integrated; callers
-    /// still have their own top-level "running" stage for those providers.
+    /// Every built-in harness has a structured event mode. Provider payloads
+    /// are reduced to the same sanitized activity/usage contract here; raw
+    /// reasoning, commands, tool arguments, and prompt content never leave
+    /// this module.
     pub fn run_with_progress(
         harness: &AgentKind,
         workdir: &Path,
@@ -95,11 +153,7 @@ impl HeadlessRunner {
         on_progress: impl Fn(HeadlessProgress) + Send + 'static,
     ) -> Result<String> {
         let spec = command_for(harness);
-        if *harness == AgentKind::Codex {
-            run_codex_json_command(harness, &spec, workdir, prompt, model, on_progress)
-        } else {
-            run_command(harness, &spec, workdir, prompt, model)
-        }
+        run_jsonl_command(harness, &spec, workdir, prompt, model, on_progress)
     }
 
     /// Pick the engine for a plan interview.
@@ -116,6 +170,56 @@ impl HeadlessRunner {
     pub fn select_for_interview(preferred: &AgentKind) -> Option<AgentKind> {
         select_interview_harness_with(preferred, |harness| Self::check_available(harness).is_ok())
     }
+}
+
+fn check_progress_flags(
+    binary: &str,
+    help_args: &[&str],
+    required: &[ProgressFlag],
+    display_name: &str,
+) -> Result<()> {
+    let output = Command::new(binary)
+        .args(help_args)
+        .output()
+        .with_context(|| format!("{display_name} CLI not found"))?;
+    if !output.status.success() {
+        anyhow::bail!("{display_name} CLI could not describe its headless mode");
+    }
+    let mut help = String::from_utf8_lossy(&output.stdout).into_owned();
+    help.push_str(&String::from_utf8_lossy(&output.stderr));
+    let missing = missing_progress_flags(&help, required);
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "installed {display_name} CLI is too old for live headless progress (lacks {}) - upgrade {display_name}",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn missing_progress_flags(help: &str, required: &[ProgressFlag]) -> Vec<&'static str> {
+    required
+        .iter()
+        .filter(|req| !flag_advertised(help, req))
+        .map(|req| req.flag)
+        .collect()
+}
+
+/// Whether `help` advertises `req.flag` with `req.value` (if any) nearby.
+/// Unlike a plain substring search over the whole text, this ties a generic
+/// value token to the specific flag it must belong to.
+fn flag_advertised(help: &str, req: &ProgressFlag) -> bool {
+    let Some(value) = req.value else {
+        return help.contains(req.flag);
+    };
+    help.match_indices(req.flag).any(|(start, _)| {
+        let end = (start + req.flag.len() + PROGRESS_FLAG_VALUE_WINDOW).min(help.len());
+        let mut end = end;
+        while !help.is_char_boundary(end) {
+            end -= 1;
+        }
+        help[start..end].contains(value)
+    })
 }
 
 fn check_codex_headless_available() -> Result<()> {
@@ -262,15 +366,17 @@ fn run_command(
 }
 
 #[derive(Default)]
-struct CodexJsonOutput {
+struct JsonlOutput {
     final_message: Option<String>,
     event_error: Option<String>,
+    input_tokens: u64,
+    output_tokens: u64,
 }
 
-/// Codex's `--json` mode turns stdout into JSONL. Drain and parse it while
-/// the child is alive so callers see progress immediately, while stderr is
-/// drained separately for an actionable provider error on non-zero exit.
-fn run_codex_json_command(
+/// Drain a harness's structured event stream while the child is alive so the
+/// UI sees progress immediately. Stderr is drained separately to avoid pipe
+/// deadlocks and preserve actionable provider errors on non-zero exit.
+fn run_jsonl_command(
     harness: &AgentKind,
     spec: &HeadlessCommand,
     workdir: &Path,
@@ -278,7 +384,7 @@ fn run_codex_json_command(
     model: Option<&str>,
     on_progress: impl Fn(HeadlessProgress) + Send + 'static,
 ) -> Result<String> {
-    let args = assemble_codex_json_args(harness, spec, model);
+    let args = assemble_jsonl_args(harness, spec, model);
 
     let mut child = Command::new(&spec.binary)
         .args(&args)
@@ -305,13 +411,26 @@ fn run_codex_json_command(
         .stdout
         .take()
         .with_context(|| format!("Failed to capture stdout for {}", harness.display_name()))?;
-    let stdout_reader = std::thread::spawn(move || -> Result<CodexJsonOutput> {
-        let mut output = CodexJsonOutput::default();
+    let harness_for_reader = harness.clone();
+    let stdout_reader = std::thread::spawn(move || -> Result<JsonlOutput> {
+        let mut output = JsonlOutput::default();
         for line in BufReader::new(stdout).lines() {
-            let line = line.context("Failed to read Codex JSONL output")?;
-            let value: serde_json::Value =
-                serde_json::from_str(&line).context("Codex emitted invalid JSONL output")?;
-            apply_codex_json_event(&value, &mut output, &on_progress);
+            let line = line.with_context(|| {
+                format!(
+                    "Failed to read {} JSONL output",
+                    harness_for_reader.display_name()
+                )
+            })?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = serde_json::from_str(&line).with_context(|| {
+                format!(
+                    "{} emitted invalid JSONL output",
+                    harness_for_reader.display_name()
+                )
+            })?;
+            apply_jsonl_event(&harness_for_reader, &value, &mut output, &on_progress);
         }
         Ok(output)
     });
@@ -365,23 +484,52 @@ fn run_codex_json_command(
     )
 }
 
-fn assemble_codex_json_args(
+fn assemble_jsonl_args(
     harness: &AgentKind,
     spec: &HeadlessCommand,
     model: Option<&str>,
 ) -> Vec<String> {
     let mut args = assemble_args(harness, spec, model);
-    let trailing_len = spec.trailing.len();
-    args.insert(
-        args.len().saturating_sub(trailing_len),
-        "--json".to_string(),
-    );
+    match harness {
+        AgentKind::Claude => {
+            if let Some(format) = args
+                .windows(2)
+                .position(|pair| pair[0] == "--output-format")
+            {
+                args[format + 1] = "stream-json".to_string();
+            }
+            args.push("--verbose".to_string());
+        }
+        AgentKind::Codex => {
+            let trailing_len = spec.trailing.len();
+            args.insert(
+                args.len().saturating_sub(trailing_len),
+                "--json".to_string(),
+            );
+        }
+        AgentKind::Opencode => args.extend(["--format".to_string(), "json".to_string()]),
+        AgentKind::Pi => args.extend(["--mode".to_string(), "json".to_string()]),
+    }
     args
+}
+
+fn apply_jsonl_event(
+    harness: &AgentKind,
+    event: &serde_json::Value,
+    output: &mut JsonlOutput,
+    on_progress: &impl Fn(HeadlessProgress),
+) {
+    match harness {
+        AgentKind::Claude => apply_claude_json_event(event, output, on_progress),
+        AgentKind::Codex => apply_codex_json_event(event, output, on_progress),
+        AgentKind::Opencode => apply_opencode_json_event(event, output, on_progress),
+        AgentKind::Pi => apply_pi_json_event(event, output, on_progress),
+    }
 }
 
 fn apply_codex_json_event(
     event: &serde_json::Value,
-    output: &mut CodexJsonOutput,
+    output: &mut JsonlOutput,
     on_progress: &impl Fn(HeadlessProgress),
 ) {
     match event.get("type").and_then(serde_json::Value::as_str) {
@@ -443,6 +591,257 @@ fn apply_codex_json_event(
         }
         _ => {}
     }
+}
+
+fn apply_claude_json_event(
+    event: &serde_json::Value,
+    output: &mut JsonlOutput,
+    on_progress: &impl Fn(HeadlessProgress),
+) {
+    match event.get("type").and_then(serde_json::Value::as_str) {
+        Some("system") => match event.get("subtype").and_then(serde_json::Value::as_str) {
+            Some("init") => on_progress(HeadlessProgress::Activity(
+                "Claude session started".to_string(),
+            )),
+            Some("api_retry") => on_progress(HeadlessProgress::Activity(
+                "Retrying the Claude request".to_string(),
+            )),
+            _ => {}
+        },
+        Some("assistant") => {
+            let content = event
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(serde_json::Value::as_array);
+            let activity = content.map(|blocks| {
+                if blocks.iter().any(|block| {
+                    matches!(
+                        block.get("type").and_then(serde_json::Value::as_str),
+                        Some("tool_use")
+                    )
+                }) {
+                    "Inspecting the repository"
+                } else if blocks.iter().any(|block| {
+                    matches!(
+                        block.get("type").and_then(serde_json::Value::as_str),
+                        Some("thinking") | Some("redacted_thinking")
+                    )
+                }) {
+                    "Reasoning about possible findings"
+                } else {
+                    "Drafting the review response"
+                }
+            });
+            if let Some(activity) = activity {
+                on_progress(HeadlessProgress::Activity(activity.to_string()));
+            }
+        }
+        Some("user") => on_progress(HeadlessProgress::Activity(
+            "Completed a repository check".to_string(),
+        )),
+        Some("result") => {
+            if event
+                .get("is_error")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                output.event_error = event
+                    .get("result")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+            } else {
+                output.final_message = event
+                    .get("result")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+            }
+            emit_usage_from(event.get("usage"), false, output, on_progress);
+            on_progress(HeadlessProgress::Activity(
+                "Completed the Claude review".to_string(),
+            ));
+        }
+        _ => {}
+    }
+}
+
+fn apply_opencode_json_event(
+    event: &serde_json::Value,
+    output: &mut JsonlOutput,
+    on_progress: &impl Fn(HeadlessProgress),
+) {
+    match event.get("type").and_then(serde_json::Value::as_str) {
+        Some("step_start") => on_progress(HeadlessProgress::Activity(
+            "Opencode started a review step".to_string(),
+        )),
+        Some("tool_use") => on_progress(HeadlessProgress::Activity(
+            "Completed a repository check".to_string(),
+        )),
+        Some("reasoning") => on_progress(HeadlessProgress::Activity(
+            "Completed a reasoning step".to_string(),
+        )),
+        Some("text") => {
+            // Opencode's `run --format json` emits `text` as incremental
+            // chunks of the response rather than one final full-text part,
+            // so each chunk is appended, not treated as a full replacement.
+            if let Some(text) = event
+                .get("part")
+                .and_then(|part| part.get("text"))
+                .and_then(serde_json::Value::as_str)
+            {
+                match &mut output.final_message {
+                    Some(message) => message.push_str(text),
+                    None => output.final_message = Some(text.to_string()),
+                }
+            }
+            on_progress(HeadlessProgress::Activity(
+                "Drafted the review response".to_string(),
+            ));
+        }
+        Some("step_finish") => {
+            let usage = event.get("part").and_then(|part| part.get("tokens"));
+            emit_usage_from(usage, true, output, on_progress);
+            on_progress(HeadlessProgress::Activity(
+                "Completed an Opencode review step".to_string(),
+            ));
+        }
+        Some("error") => {
+            output.event_error = json_error_message(event.get("error"));
+        }
+        _ => {}
+    }
+}
+
+fn apply_pi_json_event(
+    event: &serde_json::Value,
+    output: &mut JsonlOutput,
+    on_progress: &impl Fn(HeadlessProgress),
+) {
+    match event.get("type").and_then(serde_json::Value::as_str) {
+        Some("session") => {
+            on_progress(HeadlessProgress::Activity("Pi session started".to_string()))
+        }
+        Some("turn_start") => on_progress(HeadlessProgress::Activity(
+            "Analyzing the PR diff".to_string(),
+        )),
+        Some("tool_execution_start") => on_progress(HeadlessProgress::Activity(
+            "Inspecting the repository".to_string(),
+        )),
+        Some("tool_execution_end") => on_progress(HeadlessProgress::Activity(
+            "Completed a repository check".to_string(),
+        )),
+        Some("message_update") => {
+            let update_type = event
+                .get("assistantMessageEvent")
+                .and_then(|update| update.get("type"))
+                .and_then(serde_json::Value::as_str);
+            if matches!(update_type, Some("thinking_start") | Some("thinking_delta")) {
+                on_progress(HeadlessProgress::Activity(
+                    "Reasoning about possible findings".to_string(),
+                ));
+            }
+        }
+        Some("message_end") => {
+            let Some(message) = event.get("message") else {
+                return;
+            };
+            if message.get("role").and_then(serde_json::Value::as_str) == Some("assistant") {
+                if message
+                    .get("stopReason")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("error")
+                {
+                    output.event_error = message
+                        .get("errorMessage")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                }
+                if let Some(text) = assistant_message_text(message) {
+                    output.final_message = Some(text);
+                }
+                emit_usage_from(message.get("usage"), true, output, on_progress);
+                on_progress(HeadlessProgress::Activity(
+                    "Drafted the review response".to_string(),
+                ));
+            }
+        }
+        Some("auto_retry_start") => on_progress(HeadlessProgress::Activity(
+            "Retrying the Pi request".to_string(),
+        )),
+        Some("auto_retry_end") => {
+            if !event
+                .get("success")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true)
+            {
+                output.event_error = event
+                    .get("finalError")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+            }
+        }
+        Some("compaction_start") => on_progress(HeadlessProgress::Activity(
+            "Compacting the Pi review context".to_string(),
+        )),
+        Some("agent_end") => on_progress(HeadlessProgress::Activity(
+            "Completed the Pi review".to_string(),
+        )),
+        _ => {}
+    }
+}
+
+fn assistant_message_text(message: &serde_json::Value) -> Option<String> {
+    let text = message
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn emit_usage_from(
+    usage: Option<&serde_json::Value>,
+    accumulate: bool,
+    output: &mut JsonlOutput,
+    on_progress: &impl Fn(HeadlessProgress),
+) {
+    let Some(usage) = usage else {
+        return;
+    };
+    let input = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("input"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("output"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if accumulate {
+        output.input_tokens = output.input_tokens.saturating_add(input);
+        output.output_tokens = output.output_tokens.saturating_add(output_tokens);
+    } else {
+        output.input_tokens = input;
+        output.output_tokens = output_tokens;
+    }
+    on_progress(HeadlessProgress::Usage {
+        input_tokens: output.input_tokens,
+        output_tokens: output.output_tokens,
+    });
+}
+
+fn json_error_message(error: Option<&serde_json::Value>) -> Option<String> {
+    let error = error?;
+    error
+        .get("data")
+        .and_then(|data| data.get("message"))
+        .or_else(|| error.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or_else(|| error.as_str().map(str::to_string))
 }
 
 fn command_for(harness: &AgentKind) -> HeadlessCommand {
@@ -591,7 +990,7 @@ mod tests {
     fn codex_json_args_keep_json_and_model_before_stdin_marker() {
         let spec = command_for(&AgentKind::Codex);
         assert_eq!(
-            assemble_codex_json_args(&AgentKind::Codex, &spec, Some("gpt-5.5")),
+            assemble_jsonl_args(&AgentKind::Codex, &spec, Some("gpt-5.5")),
             [
                 "exec",
                 "--sandbox",
@@ -605,6 +1004,37 @@ mod tests {
                 "--json",
                 "-",
             ]
+        );
+    }
+
+    #[test]
+    fn structured_args_enable_each_harness_event_stream() {
+        assert_eq!(
+            assemble_jsonl_args(
+                &AgentKind::Claude,
+                &command_for(&AgentKind::Claude),
+                Some("sonnet")
+            ),
+            [
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--model",
+                "sonnet",
+                "--verbose",
+            ]
+        );
+        assert_eq!(
+            assemble_jsonl_args(
+                &AgentKind::Opencode,
+                &command_for(&AgentKind::Opencode),
+                None
+            ),
+            ["run", "--format", "json"]
+        );
+        assert_eq!(
+            assemble_jsonl_args(&AgentKind::Pi, &command_for(&AgentKind::Pi), None),
+            ["-p", "--mode", "json"]
         );
     }
 
@@ -640,9 +1070,37 @@ mod tests {
     }
 
     #[test]
+    fn progress_flag_probe_requires_value_near_its_flag_not_anywhere_in_help() {
+        // An older CLI whose --format only supports plain text, but which
+        // happens to mention "json" elsewhere, far from --format's own
+        // definition (a config file example, an unrelated flag), must not
+        // be mistaken for one that supports `--format json`.
+        let filler = "x".repeat(300);
+        let stale_help = format!(
+            "Options:\n  --format <FORMAT>  text or markdown\n{filler}\n  \
+             --config <PATH>  e.g. settings.json"
+        );
+        assert_eq!(
+            missing_progress_flags(&stale_help, &OPENCODE_PROGRESS_REQUIRED_FLAGS),
+            ["--format"]
+        );
+
+        let current_help = "Options:\n  --format <FORMAT>  [possible values: text, json]";
+        assert!(missing_progress_flags(current_help, &OPENCODE_PROGRESS_REQUIRED_FLAGS).is_empty());
+    }
+
+    #[test]
+    fn progress_flag_probe_tolerates_value_wrapped_onto_its_own_line() {
+        let wrapped_help = "Options:\n  --output-format <FORMAT>\n          \
+                             Output format\n          \
+                             [possible values: text, json, stream-json]\n  --verbose";
+        assert!(missing_progress_flags(wrapped_help, &CLAUDE_PROGRESS_REQUIRED_FLAGS).is_empty());
+    }
+
+    #[test]
     fn codex_required_flags_cover_everything_the_headless_command_passes() {
         let spec = command_for(&AgentKind::Codex);
-        let args = assemble_codex_json_args(&AgentKind::Codex, &spec, None);
+        let args = assemble_jsonl_args(&AgentKind::Codex, &spec, None);
         for flag in CODEX_EXEC_REQUIRED_FLAGS {
             assert!(
                 args.iter().any(|arg| arg == flag),
@@ -662,7 +1120,7 @@ mod tests {
         use std::cell::RefCell;
 
         let progress = RefCell::new(Vec::new());
-        let mut output = CodexJsonOutput::default();
+        let mut output = JsonlOutput::default();
         for event in [
             serde_json::json!({"type": "thread.started", "thread_id": "secret"}),
             serde_json::json!({"type": "turn.started"}),
@@ -708,7 +1166,7 @@ mod tests {
 
     #[test]
     fn codex_json_error_event_keeps_actionable_message() {
-        let mut output = CodexJsonOutput::default();
+        let mut output = JsonlOutput::default();
         apply_codex_json_event(
             &serde_json::json!({
                 "type": "turn.failed",
@@ -720,6 +1178,150 @@ mod tests {
         assert_eq!(
             output.event_error.as_deref(),
             Some("context window exceeded")
+        );
+    }
+
+    #[test]
+    fn claude_stream_events_preserve_result_usage_and_redact_payloads() {
+        use std::cell::RefCell;
+
+        let progress = RefCell::new(Vec::new());
+        let mut output = JsonlOutput::default();
+        for event in [
+            serde_json::json!({"type": "system", "subtype": "init"}),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"content": [{
+                    "type": "tool_use",
+                    "name": "Bash",
+                    "input": {"command": "cat private-diff"}
+                }]}
+            }),
+            serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "result": "### src/lib.rs:7\nFinding body",
+                "usage": {"input_tokens": 450, "output_tokens": 21}
+            }),
+        ] {
+            apply_claude_json_event(&event, &mut output, &|event| {
+                progress.borrow_mut().push(event)
+            });
+        }
+
+        assert_eq!(
+            output.final_message.as_deref(),
+            Some("### src/lib.rs:7\nFinding body")
+        );
+        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
+            input_tokens: 450,
+            output_tokens: 21,
+        }));
+        let rendered = format!("{:?}", progress.borrow());
+        assert!(!rendered.contains("private-diff"));
+        assert!(!rendered.contains("Finding body"));
+    }
+
+    #[test]
+    fn opencode_events_capture_final_text_and_accumulate_step_usage() {
+        let progress = std::cell::RefCell::new(Vec::new());
+        let mut output = JsonlOutput::default();
+        for event in [
+            serde_json::json!({
+                "type": "tool_use",
+                "part": {"tool": "bash", "state": {"output": "private output"}}
+            }),
+            serde_json::json!({
+                "type": "step_finish",
+                "part": {"tokens": {"input": 100, "output": 10}}
+            }),
+            serde_json::json!({
+                "type": "step_finish",
+                "part": {"tokens": {"input": 50, "output": 5}}
+            }),
+            serde_json::json!({
+                "type": "text",
+                "part": {"text": "### src/main.rs:9\n"}
+            }),
+            serde_json::json!({
+                "type": "text",
+                "part": {"text": "Finding"}
+            }),
+        ] {
+            apply_opencode_json_event(&event, &mut output, &|event| {
+                progress.borrow_mut().push(event)
+            });
+        }
+
+        assert_eq!(
+            output.final_message.as_deref(),
+            Some("### src/main.rs:9\nFinding")
+        );
+        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
+            input_tokens: 150,
+            output_tokens: 15,
+        }));
+        assert!(!format!("{:?}", progress.borrow()).contains("private output"));
+    }
+
+    #[test]
+    fn pi_events_capture_assistant_text_usage_and_redact_tool_details() {
+        let progress = std::cell::RefCell::new(Vec::new());
+        let mut output = JsonlOutput::default();
+        for event in [
+            serde_json::json!({"type": "session", "cwd": "/secret/path"}),
+            serde_json::json!({
+                "type": "tool_execution_start",
+                "toolName": "bash",
+                "args": {"command": "cat private-diff"}
+            }),
+            serde_json::json!({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "private reasoning"},
+                        {"type": "text", "text": "### src/app.rs:4\nFinding"}
+                    ],
+                    "usage": {"input": 88, "output": 12}
+                }
+            }),
+        ] {
+            apply_pi_json_event(&event, &mut output, &|event| {
+                progress.borrow_mut().push(event)
+            });
+        }
+
+        assert_eq!(
+            output.final_message.as_deref(),
+            Some("### src/app.rs:4\nFinding")
+        );
+        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
+            input_tokens: 88,
+            output_tokens: 12,
+        }));
+        let rendered = format!("{:?}", progress.borrow());
+        assert!(!rendered.contains("private-diff"));
+        assert!(!rendered.contains("private reasoning"));
+    }
+
+    #[test]
+    fn pi_terminal_retry_error_is_actionable() {
+        let mut output = JsonlOutput::default();
+        apply_pi_json_event(
+            &serde_json::json!({
+                "type": "auto_retry_end",
+                "success": false,
+                "attempt": 3,
+                "finalError": "rate limit did not recover"
+            }),
+            &mut output,
+            &|_| {},
+        );
+        assert_eq!(
+            output.event_error.as_deref(),
+            Some("rate limit did not recover")
         );
     }
 

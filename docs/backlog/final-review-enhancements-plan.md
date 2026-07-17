@@ -280,6 +280,27 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
 
 #### Viewer ergonomics
 
+- **High priority: close / pause without finishing the review.** Review
+  progress is persisted, but there is no intentional way to leave the viewer
+  without completing the round: outside cursor/editor modes, both `q` and
+  `Esc` run the finish flow, which can write feedback, post to the PR, dispatch
+  fixes, clear progress, and replace the last-review snapshot. Add a distinct
+  close/pause action that returns to the feature view while preserving
+  `.claude/final-review-progress.json` exactly as-is and performs none of the
+  finish side effects. Make the difference between **pause** and **finish**
+  explicit in the footer/help and confirmation copy, and keep nested `Esc`
+  behavior predictable (dismiss editor/cursor/modal first, then pause from the
+  top-level viewer). Reopening Final Review must resume the same file,
+  decisions, comments, filters where applicable, and general feedback.
+- **Fix the layout toggle.** `v` should reliably switch the diff between
+  unified and side-by-side layouts and the footer should always describe the
+  layout actually being rendered. Today the binding can be shadowed by `v`'s
+  range-selection meaning while the line cursor is active, and added/untracked
+  files force unified layout by silently ignoring the toggle. Give layout and
+  range selection unambiguous bindings or mode-specific hints, avoid a silent
+  no-op for files that cannot render side-by-side, preserve the user's layout
+  preference when moving between ordinary and new files, and add handler/UI
+  coverage for toggling in final-review mode.
 - **Review-round timeline and history browser.** Add a compact timeline strip
   such as `Round 1 ─ Round 2 ─ Current` so reviewers can move backward and
   forward through the conversation instead of seeing only the latest round and
@@ -825,6 +846,13 @@ Cost:
 
 Viewer:
 
+- [ ] **High priority:** close / pause Final Review without finishing — retain
+      persisted progress and return to the feature view without writing or
+      dispatching feedback, posting to the PR, clearing progress, or updating
+      the finished-review snapshot
+- [ ] Fix the `v` layout toggle so unified/side-by-side switching is reliable,
+      discoverable, and accurately labeled in review mode (including cursor
+      binding conflicts and added/untracked-file fallback behavior)
 - [ ] Review-round timeline/history browser (`Round 1 ─ Round 2 ─ Current`)
       with round selection, a scrollable read-only summary, carried-thread
       markers, and lazy access to archived rounds

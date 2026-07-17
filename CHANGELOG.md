@@ -150,6 +150,13 @@ are tagged.
 
 ### Backlog
 
+- **High priority: pause or close Final Review without finishing it.** A
+  reviewer should be able to leave an in-progress review and resume later
+  without writing or dispatching feedback, posting to the PR, or replacing the
+  finished-review snapshot.
+- Fix Final Review's layout toggle so switching between unified and
+  side-by-side views is reliable and clearly labeled, including while using
+  the line-comment cursor and when viewing added or untracked files.
 - Model selection independent of agent harness: allow per-action model selection
   (e.g. powerful model for AI review, cheaper model for reply drafts) via config
   map that falls back to harness default. (Partial: final review's walkthrough /

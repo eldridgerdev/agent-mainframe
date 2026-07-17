@@ -1003,7 +1003,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let fix_session_usage = app.pr_review_fix_session_usage();
         let triage_session_usage = app.pr_review_triage_session_usage();
         let dedicated_session_working = app.pr_review_dedicated_session_working();
-        let ai_review_running = app.ai_review_bg.is_some();
         if let AppMode::PrReview(state) = &mut app.mode {
             super::dialogs::draw_pr_review(
                 frame,
@@ -1015,6 +1014,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     pricing: &app.config.token_pricing,
                 },
                 dedicated_session_working,
+            );
+        }
+        super::draw_toasts(frame, &app.toasts, &app.theme);
+        return;
+    }
+    if matches!(app.mode, AppMode::AiReview(_)) {
+        let ai_review_running = app.ai_review_bg.is_some();
+        if let AppMode::AiReview(state) = &mut app.mode {
+            super::dialogs::draw_ai_review(
+                frame,
+                state,
+                &app.theme,
                 ai_review_running,
                 &app.throbber_state,
             );
@@ -1059,8 +1070,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
-    if let AppMode::AiPrReviewRunning(state) = &app.mode {
-        super::dialogs::draw_ai_pr_review_running(frame, state, &app.throbber_state, &app.theme);
+    if let AppMode::AiReviewRunning(state) = &app.mode {
+        super::dialogs::draw_ai_review_running(frame, state, &app.throbber_state, &app.theme);
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
@@ -2150,35 +2161,21 @@ mod tests {
             repo: "r".to_string(),
             head_ref: "main".to_string(),
         };
-        let review = crate::app::pr_review::normalize(pr, vec![], vec![], vec![], vec![]);
-        let origin = crate::app::PrReviewState {
+        let origin = crate::app::AiReviewState {
             workdir: feature.workdir.clone(),
-            review,
+            pr,
+            findings: Vec::new(),
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
-            hide_resolved: false,
-            sort_mode: crate::app::pr_review::PrSortMode::default(),
-            fix_target: crate::app::pr_review::FixTarget::default(),
-            fix_target_picked: false,
-            usage_baselines: HashMap::new(),
-            review_harness: None,
-            ai_review_harness: None,
-            ai_harness_pick: None,
-            ai_review_model: None,
-            ai_review_model_picked: false,
-            ai_model_pick: None,
+            last_run: None,
+            harness: None,
             harness_pick: None,
-            fix_confirm: None,
-            fix_vim_enabled: false,
-            mark_pick: None,
-            reply_kind_pick: None,
-            reply: None,
-            memory_add: None,
-            marked: std::collections::HashSet::new(),
-            pending_batch: false,
-            ai_review_post: None,
-            checked_out_branch: Some("main".to_string()),
+            model: None,
+            model_picked: false,
+            model_pick: None,
+            finding_editor: None,
+            post_confirm: None,
         };
         let (_tx, rx) = std::sync::mpsc::channel();
         app.ai_review_bg = Some(rx);
@@ -2274,11 +2271,6 @@ mod tests {
             fix_target_picked: false,
             usage_baselines: HashMap::new(),
             review_harness: None,
-            ai_review_harness: None,
-            ai_harness_pick: None,
-            ai_review_model: None,
-            ai_review_model_picked: false,
-            ai_model_pick: None,
             harness_pick: None,
             fix_confirm: None,
             fix_vim_enabled: false,
@@ -2288,7 +2280,6 @@ mod tests {
             memory_add: None,
             marked: std::collections::HashSet::new(),
             pending_batch: false,
-            ai_review_post: None,
             checked_out_branch: Some(checked_out.to_string()),
         }
     }

@@ -650,8 +650,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" discard"),
         ]),
-        AppMode::AiPrReviewRunning(_) => Line::from(vec![
-            Span::raw(" Running AI PR review (experimental)...  "),
+        AppMode::AiReviewRunning(_) => Line::from(vec![
+            Span::raw(" Running AI review (experimental)...  "),
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
@@ -661,6 +661,17 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" move  "),
             Span::styled("g", key_style()),
             Span::raw(" other PR  "),
+            Span::styled("Esc/q", key_style()),
+            Span::raw(" close"),
+        ]),
+        AppMode::AiReview(_) => Line::from(vec![
+            Span::raw(" AI Review (experimental)  "),
+            Span::styled(" j/k", key_style()),
+            Span::raw(" move  "),
+            Span::styled("A", key_style()),
+            Span::raw(" regenerate  "),
+            Span::styled("W", key_style()),
+            Span::raw(" post  "),
             Span::styled("Esc/q", key_style()),
             Span::raw(" close"),
         ]),

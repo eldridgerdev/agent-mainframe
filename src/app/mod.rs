@@ -1,3 +1,4 @@
+pub(crate) mod ai_review;
 mod automation;
 mod bookmarks;
 mod claude_session_picker;
@@ -669,19 +670,26 @@ pub struct App {
     /// `review_memory_compact_bg` is `Some`; both are cleared together once
     /// `Done` is processed.
     pub review_memory_compact_pending: Option<CompactRunState>,
-    /// Receiver for the background AI code review of the current PR's diff
-    /// (the `A` action). See `app::pr_review::run_ai_pr_review`.
-    pub ai_review_bg: Option<Receiver<pr_review::AiReviewProgress>>,
-    /// The review-pane snapshot a background AI review ([`Self::ai_review_bg`])
+    /// Receiver for the background AI review of the current PR's diff (the
+    /// `A` action, AI Review pane). See `app::ai_review::run_ai_pr_review`.
+    pub ai_review_bg: Option<Receiver<ai_review::AiReviewProgress>>,
+    /// The AI Review pane snapshot a background review ([`Self::ai_review_bg`])
     /// was started against, kept alive independent of `self.mode` — in
     /// particular across `cancel_ai_pr_review` (`esc`), which restores
-    /// `self.mode` to `PrReview` well before the background pass finishes.
+    /// `self.mode` to `AiReview` well before the background pass finishes.
     /// Without this, `Done` arriving after a cancel finds `self.mode` is no
-    /// longer `AiPrReviewRunning` and has nowhere to merge the findings.
+    /// longer `AiReviewRunning` and has nowhere to merge the findings.
     /// `Some` exactly while `ai_review_bg` is `Some`; both are cleared
     /// together once `Done` is processed. See
-    /// `app::pr_review::poll_ai_pr_review_bg`.
-    pub ai_review_pending: Option<PrReviewState>,
+    /// `app::ai_review::poll_ai_pr_review_bg`.
+    pub ai_review_pending: Option<AiReviewState>,
+    /// The mode to restore when the AI Review pane closes (`esc`/`q`),
+    /// stashed by `open_ai_review_from_triage` so returning from a review
+    /// started inside PR Triage lands back in that same pane rather than the
+    /// dashboard. `None` for the other three entry points (dashboard, an
+    /// agent session, the PR picker), which close straight to `Normal` —
+    /// matching how `close_pr_review` already behaves for those.
+    pub ai_review_return_to: Option<Box<AppMode>>,
     /// Memoized `GhCli::current_user` result for the session, so opening or
     /// refreshing the PR picker doesn't repeat the `gh api user` call every
     /// time. `None` = not yet resolved; `Some(None)` = resolution was
@@ -888,8 +896,8 @@ impl App {
                 .any(|h| h.status == HarnessCheckStatus::Checking),
             // The AI review keeps running in the background after `esc`
             // returns here; animate the header's throbber for as long as it
-            // is in flight (see `ui::dialogs::draw_pr_review`).
-            AppMode::PrReview(_) => self.ai_review_bg.is_some(),
+            // is in flight (see `ui::dialogs::draw_ai_review`).
+            AppMode::AiReview(_) => self.ai_review_bg.is_some(),
             // Full-screen loading/running views: `redraw_signature()` only
             // hashes the mode's discriminant, not its stage, so without this
             // the throbber only advances on the rare frame something else
@@ -900,7 +908,7 @@ impl App {
             AppMode::PrReviewLoading(_)
             | AppMode::ReviewMemoryBootstrapRunning(_)
             | AppMode::ReviewMemoryCompactRunning(_)
-            | AppMode::AiPrReviewRunning(_) => true,
+            | AppMode::AiReviewRunning(_) => true,
             _ => false,
         };
         base || self.has_active_toasts()
@@ -2030,6 +2038,7 @@ impl App {
             review_memory_compact_pending: None,
             ai_review_bg: None,
             ai_review_pending: None,
+            ai_review_return_to: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
@@ -2103,6 +2112,7 @@ impl App {
             let _ = db.evict_stale_token_cache();
             let _ = db.evict_stale_pr_review_cache();
             let _ = db.evict_stale_pr_comment_triage();
+            let _ = db.evict_stale_ai_review_cache();
             if let Ok(entries) = db.load_token_cache() {
                 app.token_tracker.seed_from_db_cache(entries);
             }
@@ -2235,6 +2245,7 @@ impl App {
             review_memory_compact_pending: None,
             ai_review_bg: None,
             ai_review_pending: None,
+            ai_review_return_to: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),

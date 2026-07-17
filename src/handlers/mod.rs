@@ -1,3 +1,4 @@
+mod ai_review;
 mod batch_creation;
 mod browse;
 mod compose;
@@ -26,6 +27,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
 
+pub use ai_review::{handle_ai_review_key, handle_ai_review_running_key};
 pub use batch_creation::handle_create_batch_features_key;
 pub use browse::handle_browse_path_key;
 pub use compose::handle_compose_key;
@@ -58,8 +60,8 @@ pub use picker::{
 };
 pub use plan_interview::handle_plan_interview_key;
 pub use pr_review::{
-    handle_ai_pr_review_running_key, handle_pr_number_prompt_key, handle_pr_picker_key,
-    handle_pr_review_key, handle_pr_review_loading_key, handle_review_memory_bootstrap_running_key,
+    handle_pr_number_prompt_key, handle_pr_picker_key, handle_pr_review_key,
+    handle_pr_review_loading_key, handle_review_memory_bootstrap_running_key,
     handle_review_memory_compact_review_key, handle_review_memory_compact_running_key,
 };
 pub use prompt_library::{
@@ -122,7 +124,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
             handle_review_memory_compact_running_key(app, key)
         }
         AppMode::ReviewMemoryCompactReview(_) => handle_review_memory_compact_review_key(app, key),
-        AppMode::AiPrReviewRunning(_) => handle_ai_pr_review_running_key(app, key),
+        AppMode::AiReview(_) => handle_ai_review_key(app, key),
+        AppMode::AiReviewRunning(_) => handle_ai_review_running_key(app, key),
         AppMode::DiffReviewPrompt(_) => handle_diff_review_key(app, key),
         AppMode::RunningHook(_) => handle_running_hook_key(app, key.code),
         AppMode::DeletingFeatureInProgress(_) => handle_deleting_feature_key(app, key.code),

@@ -1608,25 +1608,6 @@ first), and the reviewer's output (plus comments triaged in the pane)
 
 ## Open questions
 
-- [ ] **Does "AI review of the PR diff" (`A`/`W`) belong in this pane, or
-  should it be its own workflow? — RECONSIDER.** Real use surfaced a
-  cluster of friction that traces back to one seam: this pane's data model
-  was built for *triaging comments other people/bots already left on
-  GitHub* (every `PrComment` was assumed to have a real GitHub identity,
-  resolution state, and a free `diff_hunk`), and bolting "the AI generates
-  its own draft comments" onto that model meant fighting the fit
-  repeatedly — a synthetic id range to avoid colliding with real GitHub
-  ids, a bot/human chip that had to special-case a third "AI-authored,
-  not-yet-posted" kind, a `diff_hunk` that has to be reverse-engineered
-  from the full PR diff instead of coming for free, and a background-job
-  lifecycle that doesn't compose cleanly with "merge results into
-  whichever pane state the user is looking at by the time it finishes"
-  (this last one caused a real bug — findings silently dropped after an
-  `esc`). None of this is unfixable — each has landed a patch — but decide
-  whether a dedicated "AI code review" workflow (its own view/state,
-  first-class findings, its own generate-then-review lifecycle) is the
-  better shape, keeping this pane focused on triaging what reviewers
-  *actually said*.
 - [ ] **Add an optional global review-memory layer (Epic E).** Per-project
   path configurability shipped (see the Epic E Progress item above — a
   project's `.amf/config.json` can now point `review_memory_path` at its
@@ -1641,11 +1622,74 @@ attribution on AMF-posted comments"), templated-reply channel disclosure
 (Epic C "posted via AMF" footer), conversation-comment grouping (Epic D's
 `PrSortMode::Conversations`), resolve-without-reply behavior (shipped as-is
 — `R` stays independent of `r`), outdated-comment badging (shipped in
-Epic D's pane-clarity item), and review-memory rot (Epic E "Prevent
-review-memory rot" — `c` in the PR picker). GitLab/Bitbucket support is an
-explicit non-goal for v1 (GitHub `gh` only), not an open question.
+Epic D's pane-clarity item), review-memory rot (Epic E "Prevent
+review-memory rot" — `c` in the PR picker), and whether AI review belongs in
+this pane (Backlog "Split AI Review into its own workflow" — it doesn't;
+shipped as a dedicated pane). GitLab/Bitbucket support is an explicit
+non-goal for v1 (GitHub `gh` only), not an open question.
 
 ## Backlog
+
+- [x] **Split AI Review into its own workflow (resolves the "does AI review
+      belong in this pane" open question).** AMF's own review of a PR's diff
+      (`A`/`W`) used to live inside PR Triage, converting each finding into a
+      synthetic `PrComment` merged into the same list real GitHub comments
+      live in — a fit that kept fighting the triage data model on every
+      follow-up: a synthetic id range kept clear of real GitHub ids, a
+      bot/human chip special-cased for a third "AI, not yet posted" kind, a
+      `diff_hunk` reconstructed from the full diff instead of coming for
+      free, and a background-job lifecycle that didn't compose with "merge
+      into whichever pane the user is looking at" (the real bug that started
+      this reconsideration — findings silently dropped after an `esc`).
+      Shipped as a fully separate pane instead: a new `src/app/ai_review.rs`
+      owns a first-class, persisted `AiReviewFinding` (`path`/`line`/`body`/
+      `diff_hunk`/`skipped`/`published`) and the whole generate → poll →
+      post lifecycle (moved verbatim from the old `pr_review.rs` methods,
+      retargeted at a new `AppMode::AiReview(AiReviewState)` /
+      `AppMode::AiReviewRunning(AiReviewRunState)` pair), with its own
+      `ai_review_cache` SQLite table (migration 012) keyed by `PR# + head
+      SHA` — no longer riding inside `pr_review_cache`'s blob. The shape is
+      deliberately **lean**: `W` posts every kept (not skipped, not already
+      posted) finding as one GitHub review and simply marks them
+      `published` locally — no reconciliation of GitHub identities back onto
+      the pane (the `reconcile_ai_publication`/`carry_forward_ai_drafts`
+      machinery that used to keep posted drafts alive in the triage list is
+      gone entirely). Following up on a posted finding (mark done, reply,
+      resolve, inject a fix) happens back in PR Triage once a manual refresh
+      picks it up as an ordinary fetched comment. New UI lives in
+      `src/ui/dialogs/ai_review.rs` (findings list + detail, the running
+      screen, harness/model pickers, post-confirm dialog — all moved out of
+      `dialogs/pr_review.rs`, which lost every AI-only code path: the
+      `[AI]`/`ai` chips, the header throbber/last-run badge, and the
+      `ai_generated`/`ai_published` fields on `PrComment`). Four entry
+      points, all wired to the same `App::open_ai_review_for_pr`: PR
+      Triage's `A` key (`open_ai_review_from_triage`, which additionally
+      stashes the triage pane so closing AI Review returns to it — the only
+      entry that does; the other three close straight to the dashboard,
+      matching how `close_pr_review` already behaves) — dashboard `W`
+      (`open_ai_review`), leader `W` from inside an agent session
+      (`open_ai_review_from_view`, peer to `leader G`), and `W` in the PR
+      picker (`pr_picker_choose_ai_review`, peer to `Enter`'s
+      `pr_picker_choose`). Unit-tested (parsing/prompt/build-review tests
+      carried over into `ai_review.rs`'s own test module; App-level tests
+      for all four entry points, the triage-pane stash/restore round trip,
+      the `AiReviewState`-shaped `has_visible_animation`/
+      `invalidate_pr_context_for_transition` regressions, and the
+      `ai_review_cache` DB round trip) — full suite green (1126 tests),
+      `cargo clippy`/`cargo fmt` clean. No migration needed: old
+      `pr_review_cache` rows with `ai_generated`/`ai_published`/
+      `last_ai_review` keys deserialize fine (serde ignores unknown fields);
+      their same-SHA AI drafts don't carry into the new table, so
+      regenerating with `A` after upgrading is the norm. →
+      `src/app/ai_review.rs`, `src/app/state.rs`, `src/app/mod.rs`,
+      `src/app/pr_review.rs`, `src/app/navigation.rs`, `src/db/ai_review_cache.rs`,
+      `src/db/migrations.rs`, `src/db/mod.rs`, `src/db/pr_review_cache.rs`,
+      `src/handlers/ai_review.rs`, `src/handlers/mod.rs`,
+      `src/handlers/pr_review.rs`, `src/handlers/normal.rs`,
+      `src/handlers/view.rs`, `src/ui/dialogs/ai_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/mod.rs`,
+      `src/ui/dialogs/help.rs`, `src/ui/dashboard.rs`, `src/ui/status.rs`,
+      `src/ui/pane.rs`, `src/app/tests.rs`, `README.md`, `CHANGELOG.md`.
 
 - [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit

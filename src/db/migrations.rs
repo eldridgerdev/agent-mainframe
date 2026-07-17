@@ -60,6 +60,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add todo_lists + todos tables for per-project TODO lists",
             MIGRATION_011,
         ),
+        (
+            "Cache AI PR-review findings keyed by PR# + head SHA (split from pr_review_cache)",
+            MIGRATION_012,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -234,6 +238,23 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 
 CREATE INDEX IF NOT EXISTS idx_todos_list ON todos(list_id);
+";
+
+// AI-review findings used to ride inside `pr_review_cache` (as `ai_generated`/
+// `ai_published` flags on ordinary `PrComment`s plus a `last_ai_review` field on
+// `PrReview`). Split into its own table when AI review became its own workflow
+// (see the plan doc's "does AI review belong in this pane" open question) —
+// AI-review storage no longer needs to fit the comment-triage row shape at all.
+const MIGRATION_012: &str = "
+CREATE TABLE IF NOT EXISTS ai_review_cache (
+    pr_number  INTEGER NOT NULL,
+    head_sha   TEXT NOT NULL,
+    json       TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (pr_number, head_sha)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_review_cache_updated
+    ON ai_review_cache(updated_at);
 ";
 
 const MIGRATION_001: &str = "

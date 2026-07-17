@@ -281,6 +281,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('G') => {
             app.open_pr_review();
         }
+        KeyCode::Char('W') => {
+            app.open_ai_review();
+        }
         KeyCode::Char('f') if crate::app::DASHBOARD_SESSION_FILTER_ENABLED => {
             app.session_filter = app.session_filter.next();
             app.push_toast_info(format!("Filter: {}", app.session_filter.display_name()));
@@ -309,6 +312,7 @@ pub(crate) const DASHBOARD_KEYBINDING_ACTIONS: &[(&str, char)] = &[
     ("refresh", 'r'),
     ("syntax_picker", 'p'),
     ("pr_review", 'G'),
+    ("ai_review", 'W'),
     ("session_config", 'u'),
     ("fork_feature", 'F'),
     ("mark_ready", 'y'),

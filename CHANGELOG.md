@@ -12,6 +12,24 @@ are tagged.
 
 ### Added
 
+- **AI Review is now its own pane, separate from PR Triage.** Generating
+  AMF's own review of a PR's diff (`A`/`W`) used to live inside the PR Triage
+  pane, converting each finding into a synthetic comment merged into the same
+  list real GitHub comments live in — a fit that kept fighting the triage
+  data model (a synthetic id range, a bot/human/AI three-way chip, a diff
+  hunk reconstructed from the full diff, a background-job lifecycle that
+  didn't compose with "merge into whichever pane is showing"). AI Review is
+  now a dedicated pane with its own findings list, its own cache
+  (`ai_review_cache`, keyed by PR# + head SHA, no longer riding inside the
+  triage cache), and a leaner loop: generate (`A`) → keep/skip/edit each
+  finding → post the kept ones as one GitHub review (`W`). Posted findings
+  don't reconcile back into this pane — return to PR Triage and refresh to
+  follow up on them (mark done, reply, resolve, inject a fix) as ordinary
+  fetched comments. Reachable four ways: `A` from inside PR Triage (returns
+  there on close), `W` on the dashboard for the selected feature, `W` in the
+  PR picker for the highlighted PR, and leader `W` from inside an agent
+  session. No migration needed — old cached AI drafts inside `pr_review_cache`
+  are simply left behind; press `A` in the new pane to regenerate.
 - **Compact the review-memory doc (`c` in the PR picker).** Findings
   accumulate one bullet at a time (`M`, the lookback bootstrap) but were
   never pruned — the doc could drift and bloat over time with near-duplicate

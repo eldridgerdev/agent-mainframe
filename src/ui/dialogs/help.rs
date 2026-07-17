@@ -34,6 +34,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("p", "Open syntax parser picker"),
         ("L", "Open prompt library"),
         ("G", "Open PR Triage (experimental)"),
+        ("W", "Open AI Review for this feature (experimental)"),
         ("T", "Theme picker"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
@@ -146,6 +147,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("A", "Manage agent harnesses"),
         ("P", "Back to PR Triage (if one is stashed)"),
         ("G", "Open PR Triage for this feature"),
+        ("W", "Open AI Review for this feature"),
     ];
 
     for (key, desc) in &view_keybinds {
@@ -230,14 +232,47 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("i", "Install syntax highlighting for file"),
         ("r", "Refresh comments from GitHub"),
         ("g", "Pick a different PR to triage"),
-        ("A", "AI review of the PR diff (draft findings)"),
-        ("", "(first run picks and remembers its harness)"),
-        ("W", "Post AI-review draft findings to GitHub"),
-        ("", "(e edit summary)"),
+        ("A", "Open the AI Review pane for this PR"),
         ("q / Esc", "Close PR Triage"),
     ];
 
     for (key, desc) in &pr_review_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  In AI Review:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let ai_review_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k", "Navigate findings"),
+        ("Ctrl+D/U", "Scroll detail down/up"),
+        ("s", "Skip/unskip finding (excludes it from W)"),
+        ("e", "Edit finding body"),
+        ("A", "Generate/regenerate the AI review"),
+        ("", "(first run picks harness + model)"),
+        ("W", "Post kept findings to GitHub as a review"),
+        ("", "(e edit summary)"),
+        (
+            "q / Esc",
+            "Close AI Review (back to PR Triage if opened from there)",
+        ),
+    ];
+
+    for (key, desc) in &ai_review_keybinds {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:>14}", key),
@@ -260,7 +295,8 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     let pr_picker_keybinds: Vec<(&str, &str)> = vec![
         ("j/k", "Navigate PRs"),
-        ("Enter", "Open highlighted PR for review"),
+        ("Enter", "Open highlighted PR in PR Triage"),
+        ("W", "Open highlighted PR in AI Review"),
         ("a", "Include/hide closed & merged PRs"),
         ("#", "Enter a PR number instead"),
         ("b", "Bootstrap review memory from recent PRs"),

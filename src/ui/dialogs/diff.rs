@@ -860,6 +860,19 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
                         .add_modifier(Modifier::BOLD),
                 ));
             }
+            if state.review
+                && let Some(comment) = state.file_comments.get(&file.path)
+            {
+                let (marker, color) = if comment.resolved {
+                    ("◇ ", theme.text_muted.to_color())
+                } else {
+                    ("◆ ", theme.info.to_color())
+                };
+                spans.push(Span::styled(
+                    marker,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            }
             spans.push(Span::styled(
                 file.path.clone(),
                 Style::default().fg(theme.text.to_color()),
@@ -1299,6 +1312,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
     if state.feedback_editing
         || state.editing_general
         || state.editing_line_comment
+        || state.editing_file_comment
         || state.editing_suggestion
     {
         draw_feedback_editor(frame, area, state, theme);
@@ -1553,6 +1567,8 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         Span::raw(" skip  "),
         key("f"),
         Span::raw(" general feedback  "),
+        key("m"),
+        Span::raw(" file comment  "),
         key("c"),
         Span::raw(" line comments  "),
         key("/"),
@@ -1563,6 +1579,30 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             " ✎ note set",
             Style::default().fg(theme.info.to_color()),
         ));
+    }
+    if let Some(comment) = state
+        .files
+        .get(state.selected_file)
+        .and_then(|file| state.file_comments.get(&file.path))
+    {
+        first_line.push(Span::styled(
+            if comment.resolved {
+                " ◇ file comment resolved  "
+            } else {
+                " ◆ file comment set  "
+            },
+            Style::default().fg(if comment.resolved {
+                theme.text_muted.to_color()
+            } else {
+                theme.info.to_color()
+            }),
+        ));
+        first_line.push(key("M"));
+        first_line.push(Span::raw(if comment.resolved {
+            " reopen"
+        } else {
+            " resolve"
+        }));
     }
     first_line.extend([
         Span::raw("  "),
@@ -1651,7 +1691,8 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
     };
     // The line-comment and rejection editors carry a conventional-comments
     // severity (cycled with Ctrl+E); surface the current one in the title.
-    let carries_severity = state.editing_line_comment || state.feedback_editing;
+    let carries_severity =
+        state.editing_line_comment || state.editing_file_comment || state.feedback_editing;
     let severity_title = if carries_severity {
         format!(" [{}]", state.comment_severity.label())
     } else {
@@ -1660,6 +1701,16 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
     let (title, border_color) = if state.editing_general {
         (
             format!(" General Feedback{mode_label} "),
+            theme.info.to_color(),
+        )
+    } else if state.editing_file_comment {
+        let path = state
+            .files
+            .get(state.selected_file)
+            .map(|file| file.path.as_str())
+            .unwrap_or("file");
+        (
+            format!(" File Comment — {path}{severity_title}{mode_label} "),
             theme.info.to_color(),
         )
     } else if state.editing_line_comment || state.editing_suggestion {

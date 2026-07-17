@@ -88,6 +88,7 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if state.feedback_editing
                 || state.editing_general
                 || state.editing_line_comment
+                || state.editing_file_comment
                 || state.editing_suggestion
     );
 
@@ -300,6 +301,14 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.diff_review_start_general_feedback();
                 return Ok(());
             }
+            KeyCode::Char('m') => {
+                app.diff_review_start_file_comment();
+                return Ok(());
+            }
+            KeyCode::Char('M') => {
+                app.diff_review_toggle_file_comment_resolved();
+                return Ok(());
+            }
             KeyCode::Char('/') => {
                 app.diff_review_start_search();
                 return Ok(());
@@ -449,7 +458,7 @@ fn handle_feedback_editor_key(app: &mut App, key: KeyEvent, editing_general: boo
     // suggestion inherits its comment's, and general feedback has none.
     if ctrl && key.code == KeyCode::Char('e') {
         if let AppMode::DiffViewer(state) = &mut app.mode
-            && (state.editing_line_comment || state.feedback_editing)
+            && (state.editing_line_comment || state.editing_file_comment || state.feedback_editing)
             && !state.editing_suggestion
             && !state.editing_general
         {
@@ -488,10 +497,13 @@ fn handle_feedback_editor_key(app: &mut App, key: KeyEvent, editing_general: boo
         matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_line_comment);
     let editing_suggestion =
         matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_suggestion);
+    let editing_file_comment =
+        matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_file_comment);
 
     match key.code {
         KeyCode::Tab if editing_general => app.diff_review_submit_general_feedback(),
         KeyCode::Tab if editing_line_comment => app.diff_review_submit_line_comment(),
+        KeyCode::Tab if editing_file_comment => app.diff_review_submit_file_comment(),
         KeyCode::Tab if editing_suggestion => app.diff_review_submit_suggestion(),
         KeyCode::Tab => app.diff_review_submit_feedback(),
         KeyCode::Esc
@@ -1778,6 +1790,56 @@ index 1111111..2222222 100644
         // F again wraps back to All (Changed is skipped with no prior review).
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
         assert_eq!(filter(&app), FileFilter::All);
+    }
+
+    #[test]
+    fn file_comment_is_verdict_free_filterable_and_written() {
+        use crate::app::FileFilter;
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('m'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.editing_file_comment
+        ));
+        for ch in "consider splitting this module".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(ch))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(
+                    !state.decisions.contains_key("a.rs"),
+                    "comment is verdict-free"
+                );
+                let comment = state.file_comments.get("a.rs").expect("comment stored");
+                assert_eq!(comment.text, "consider splitting this module");
+                assert!(!comment.resolved);
+            }
+            _ => panic!("expected diff viewer"),
+        }
+
+        // All -> Undecided -> Rejected -> Blockers -> FileComments. Empty
+        // filters remain valid states; the file-comment step selects this file.
+        for _ in 0..4 {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+        }
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.file_filter == FileFilter::FileComments
+        ));
+
+        // Approving remains independent of the comment and finishing emits a
+        // dedicated whole-file section.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        let feedback =
+            std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
+        assert!(feedback.contains("### File Comments"));
+        assert!(feedback.contains("#### a.rs — [suggestion]"));
+        assert!(feedback.contains("consider splitting this module"));
     }
 
     #[test]

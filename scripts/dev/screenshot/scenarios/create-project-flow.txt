@@ -1,0 +1,34 @@
+# create-project-flow: walks the "N" create-project wizard
+# (Name -> Path -> Agent steps, per src/handlers/dialog.rs) using
+# text: for typed input and key:Enter to advance steps, then cancels
+# with Esc instead of submitting -- so this is safe to run against a
+# scratch instance with no real repo path handy.
+#
+# Run with:
+#   ./amf-capture.sh --scenario scenarios/create-project-flow.txt --keep
+
+shot:dashboard-empty
+
+# 'N' opens the create-project dialog on the Name step.
+key:N
+wait:200
+text:demo-project
+wait:200
+shot:create-project-name
+
+# Enter advances Name -> Path.
+key:Enter
+wait:200
+text:/tmp/demo-project
+wait:200
+shot:create-project-path
+
+# Enter advances Path -> Agent.
+key:Enter
+wait:200
+shot:create-project-agent
+
+# Cancel rather than submit (the typed path likely doesn't exist).
+key:Escape
+wait:200
+shot:dashboard-after-cancel

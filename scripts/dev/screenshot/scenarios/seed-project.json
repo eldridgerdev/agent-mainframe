@@ -1,0 +1,5 @@
+{
+  "path": "/absolute/path/to/repo/or/directory",
+  "project_name": "screenshot-demo",
+  "dry_run": false
+}

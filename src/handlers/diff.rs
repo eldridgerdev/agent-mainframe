@@ -1901,6 +1901,10 @@ index 1111111..2222222 100644
     }
 
     #[test]
+    // The child is only waited on in the success-path match arm below; the
+    // `_ => panic!(...)` arm exists purely to fail the test and never
+    // reaches it, which clippy's static analysis can't prove is fine.
+    #[allow(clippy::zombie_processes)]
     fn esc_does_not_pause_while_finish_check_is_running() {
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs"]);

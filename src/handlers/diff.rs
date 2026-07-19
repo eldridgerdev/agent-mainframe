@@ -230,6 +230,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.diff_review_start_suggestion();
                     return Ok(());
                 }
+                KeyCode::Char('x') => {
+                    app.diff_review_apply_suggestion_under_cursor();
+                    return Ok(());
+                }
                 KeyCode::Char('R') => {
                     app.diff_review_toggle_resolved();
                     return Ok(());
@@ -343,6 +347,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             KeyCode::Char('t') => {
                 app.diff_review_toggle_fix_target();
+                return Ok(());
+            }
+            KeyCode::Char('X') => {
+                app.diff_review_toggle_apply_suggestions_on_finish();
                 return Ok(());
             }
             KeyCode::Char('q') | KeyCode::Esc => {
@@ -1135,6 +1143,142 @@ index 1111111..2222222 100644
                 ],
             }];
         }
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn make_git_suggestion_review(workdir: &Path) -> App {
+        run_git(workdir, &["init", "-q", "--initial-branch=main"]);
+        run_git(workdir, &["config", "user.name", "AMF Test"]);
+        run_git(workdir, &["config", "user.email", "amf@example.com"]);
+        std::fs::write(workdir.join("a.rs"), "ctx\n").unwrap();
+        std::fs::write(workdir.join(".gitignore"), ".claude/\n").unwrap();
+        run_git(workdir, &["add", "a.rs", ".gitignore"]);
+        run_git(workdir, &["commit", "-q", "-m", "base"]);
+        run_git(workdir, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(workdir.join("a.rs"), "ctx\nadded line\n").unwrap();
+
+        let snapshot = crate::diff::load_snapshot(workdir, None).unwrap();
+        let mut app = make_review_app(workdir, &["a.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files = snapshot.files;
+            state.branch = snapshot.branch;
+            state.base_ref = snapshot.base_ref;
+            state.base_commit = snapshot.base_commit;
+        }
+        app
+    }
+
+    fn add_replacement_suggestion(app: &mut App, replacement: &str) {
+        handle_diff_viewer_key(app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(app, key(KeyCode::Char('S'))).unwrap();
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.feedback_editor = crate::editor::TextEditor::new(replacement.to_string());
+        }
+        handle_diff_viewer_key(app, key(KeyCode::Tab)).unwrap();
+    }
+
+    #[test]
+    fn x_applies_the_suggestion_under_the_cursor_and_refreshes() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut app = make_git_suggestion_review(repo.path());
+        add_replacement_suggestion(&mut app, "replacement");
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('x'))).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.rs")).unwrap(),
+            "ctx\nreplacement\n"
+        );
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert_eq!(state.applied_suggestions, vec!["a.rs:2"]);
+                assert_eq!(state.pending_suggestion_count(), 0);
+                assert!(!state.decisions.contains_key("a.rs"));
+                let file = state
+                    .files
+                    .iter()
+                    .find(|file| file.path == "a.rs")
+                    .expect("refreshed source file");
+                assert_eq!(file.new_content.as_deref(), Some("ctx\nreplacement\n"));
+            }
+            _ => panic!("expected refreshed diff viewer"),
+        }
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("Applied suggestion locally"))
+        );
+    }
+
+    #[test]
+    fn finish_toggle_applies_all_suggestions_before_completing() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut app = make_git_suggestion_review(repo.path());
+        add_replacement_suggestion(&mut app, "replacement");
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('X'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.apply_suggestions_on_finish
+        ));
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.rs")).unwrap(),
+            "ctx\nreplacement\n"
+        );
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        let message = app.message.as_deref().unwrap_or_default();
+        assert!(
+            message.contains("1 suggestion(s) applied locally (a.rs:2)"),
+            "{message}"
+        );
+        assert!(
+            !repo
+                .path()
+                .join(".claude/final-review-feedback.md")
+                .exists(),
+            "a successfully applied suggestion should not be dispatched as feedback"
+        );
+    }
+
+    #[test]
+    fn finish_reports_dirty_file_and_leaves_suggestion_for_the_agent() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut app = make_git_suggestion_review(repo.path());
+        add_replacement_suggestion(&mut app, "replacement");
+        // Simulate an agent/user edit after the viewer loaded but before finish.
+        std::fs::write(repo.path().join("a.rs"), "ctx\nchanged concurrently\n").unwrap();
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('X'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.rs")).unwrap(),
+            "ctx\nchanged concurrently\n"
+        );
+        let message = app.message.as_deref().unwrap_or_default();
+        assert!(
+            message.contains("1 suggestion(s) not applied locally"),
+            "{message}"
+        );
+        let feedback =
+            std::fs::read_to_string(repo.path().join(".claude/final-review-feedback.md")).unwrap();
+        assert!(feedback.contains("file changed since the diff was loaded"));
+        assert!(feedback.contains("```suggestion\nreplacement\n```"));
     }
 
     #[test]

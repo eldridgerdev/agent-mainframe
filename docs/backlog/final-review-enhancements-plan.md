@@ -4,10 +4,11 @@
   **Progress → Round 1** and **Round 2** is implemented and merged
   (most recently Round 2's file-level PR comments). **Round 3** (captured
   2026-07-01) has started: first-class file-level comments, interdiff on
-  re-review, the "fixes ready — re-review?" notification, and a **Cost** batch
-  have shipped. The Cost batch makes bounded headless passes honor
-  `review_model`, caps `final-review-feedback.md` with an archive file, and
-  batches REVIEW MODE's note instruction per turn. The rest of the
+  re-review, the "fixes ready — re-review?" notification, local application of
+  suggestion blocks, and a **Cost** batch have shipped. The Cost batch makes
+  bounded headless passes honor `review_model`, caps
+  `final-review-feedback.md` with an archive file, and batches REVIEW MODE's
+  note instruction per turn. The rest of the
   loop-closing, viewer-ergonomics, AI co-review,
   and workflow items are not yet started. Three Cost follow-ups (per-action
   model overrides, capping `review-notes.md` the same way, and measuring the
@@ -717,7 +718,9 @@ Comments:
       escalation; resolved ones are retained for reopening but withheld from
       feedback and PR posting. `FileComment` / `file_comments` in
       `src/app/state.rs`; editor, persistence, finish and PR mapping in
-      `src/app/review.rs`.
+      `src/app/review.rs`. The shared review footer now expands for this editor
+      too, so pressing `m` visibly opens the same multi-line edit box used by
+      line comments and rejection feedback.
 
 Loop:
 
@@ -761,8 +764,26 @@ Loop:
       than just the pane — where the existing re-review snapshot machinery
       auto-filters to `Changed` files, so this composes with **interdiff**
       above for free. `AwaitingReviewFix` in `src/app/state.rs`.
-- [ ] Apply suggestions locally (patch the worktree directly from
-      suggestion blocks; per-comment and apply-all-at-finish)
+- [x] Apply suggestions locally — with the line cursor on a kept suggestion,
+      press `x` to apply that exact replacement to the worktree; press `X` from
+      the viewer to opt into applying every remaining open suggestion when the
+      review finishes (before the configured build/test gate runs). Application
+      is deliberately conservative: the target must be a regular file inside
+      the worktree, its full content must still equal the snapshot loaded into
+      the diff viewer, the comment must cover a contiguous current-side span
+      (not a deletion-only/mixed-side range), and the anchored source lines must
+      still match. Multi-suggestion batches validate once per file and patch
+      bottom-up so replacements that add/remove lines do not shift later
+      anchors; existing LF/CRLF and EOF-newline shape is preserved. A successful
+      application consumes the suggestion, settles its thread, clears a
+      suggestion-implied rejection when appropriate, persists progress, and
+      refreshes the diff. A stale/dirty or otherwise unsafe suggestion is left
+      open for the fixing agent instead of being overwritten. The finish
+      message and feedback round report the anchors applied locally plus the
+      count/reasons for anything skipped. Core plumbing is
+      `apply_suggestions_to_file` / `apply_review_suggestion_jobs` in
+      `src/app/review.rs`; key handling and discoverable footer hints live in
+      `src/handlers/diff.rs` and `src/ui/dialogs/diff.rs`.
 - [ ] Finish summary screen (editable overview of all verdicts /
       comments / suggestions before write + dispatch)
 

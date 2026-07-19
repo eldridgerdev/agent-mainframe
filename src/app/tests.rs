@@ -9813,7 +9813,7 @@ fn pr_review_switching_to_live_target_ignores_its_earlier_usage() {
         pick.selected = pick
             .rows
             .iter()
-            .position(|r| matches!(r, crate::app::pr_review::FixTargetPickRow::ExistingLive))
+            .position(|r| matches!(r, crate::app::pr_review::FixTargetPickRow::ExistingLive(_)))
             .expect("existing-live row should be present");
     }
     app.pr_review_harness_pick_confirm();
@@ -9854,7 +9854,7 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
             let pick = state.harness_pick.as_ref().unwrap();
             assert_eq!(
                 pick.rows[0],
-                crate::app::pr_review::FixTargetPickRow::ExistingLive
+                crate::app::pr_review::FixTargetPickRow::ExistingLive(None)
             );
             assert_eq!(
                 pick.rows[pick.selected],

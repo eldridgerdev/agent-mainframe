@@ -38,6 +38,7 @@ Options:
                                        (e.g. text:my feature name)
                           wait:<ms>    sleep this many milliseconds
                           shot:<label> capture-pane -> NNN-<label>.ansi
+                                       (+ escape-free NNN-<label>.txt)
                         Blank lines and lines starting with '#' are
                         skipped. Without --scenario, runs a small
                         built-in smoke test (dashboard-ready, press j,
@@ -198,6 +199,9 @@ shot() {
     local file
     file="$(printf '%s/%03d-%s.ansi' "$OUT_DIR" "$step" "$label")"
     tmux capture-pane -e -p -t "$SESSION" >"$file"
+    # Plain-text twin: escape-free, so an agent can grep/read it to verify
+    # content far more cheaply than reading the .ansi or the rendered PNG.
+    tmux capture-pane -p -t "$SESSION" >"${file%.ansi}.txt"
     echo "shot: $file" >&2
 }
 

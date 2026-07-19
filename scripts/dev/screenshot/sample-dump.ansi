@@ -1,0 +1,21 @@
+[0m[32mAGENTS.md[0m
+[32mCHANGELOG.md[0m
+[32mCLAUDE.md[0m
+[00mCargo.lock[0m
+[00mCargo.toml[0m
+[00mLICENSE[0m
+[32mREADME.md[0m
+[34mdocker[0m
+[34mdocs[0m
+[34mexamples[0m
+[32mllms.txt[0m
+[34mplugins[0m
+[34mscripts[0m
+[34mskills[0m
+[34msrc[0m
+[34mthemes[0m
+
+[38;2;255;100;50mTRUECOLOR FG[0m  [48;2;30;144;255mTRUECOLOR BG[0m
+[38;5;196m256-color red[0m  [48;5;22m256-color bg[0m
+[1mBOLD[22m normal [7mREVERSE[27m normal [4mUNDERLINE[24m normal
+plain text with no escapes at all

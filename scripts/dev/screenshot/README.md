@@ -1,0 +1,256 @@
+# AMF screenshot harness
+
+Tools for getting reviewable proof-of-work (PNG screenshots, optionally a
+GIF) out of a throwaway `amf` instance, without touching a real
+`~/.config/amf/amf.db` or any real `amf-*` tmux session. Background and
+design rationale: `docs/backlog/screenshot-review-plan.md`.
+
+Three scripts:
+
+- `amf-capture.sh` — the driver. Launches an isolated `amf`, drives it
+  through a scenario, dumps raw ANSI captures.
+- `render_ansi.py` — turns one `tmux capture-pane -e -p` dump into a PNG.
+- `assemble_gif.py` — stitches PNG frames into an animated GIF (used
+  internally by `amf-capture.sh --gif`; can also be run standalone).
+
+## Usage
+
+Basic smoke test, no flags — builds `amf` if needed, launches it in a
+scratch tmux session, presses `j` once, writes two `.ansi` captures, then
+tears everything down:
+
+```bash
+./scripts/dev/screenshot/amf-capture.sh
+```
+
+Output looks like:
+
+```
+scratch root: /tmp/amf-shots/20260719-121610-294766
+tmux session: amf-shot-20260719-121610-294766 (120x40)
+dashboard ready
+shot: /tmp/amf-shots/20260719-121610-294766/shots/001-dashboard-ready.ansi
+shot: /tmp/amf-shots/20260719-121610-294766/shots/002-after-j.ansi
+shots written to: /tmp/amf-shots/20260719-121610-294766/shots
+```
+
+On exit, the scratch root is deleted and the scratch tmux session is
+killed — nothing is left behind unless `--keep` is passed.
+
+Each flag:
+
+- `--scenario <file>` — drive a real workflow instead of the built-in
+  two-shot smoke test. See "Scenario format" below.
+
+  ```bash
+  ./scripts/dev/screenshot/amf-capture.sh \
+      --scenario scripts/dev/screenshot/scenarios/dashboard-tour.txt --keep
+  ```
+
+- `--seed <file>` — apply an automation JSON payload (same shape as
+  `docs/automation/*.template.json`) against the scratch instance right
+  after the dashboard becomes ready, before any `--scenario` steps run.
+  The action is inferred from the payload's keys: a top-level `path` key
+  means `create-project`, a top-level `branch` key means `create-feature`.
+
+  ```bash
+  ./scripts/dev/screenshot/amf-capture.sh \
+      --seed scripts/dev/screenshot/scenarios/seed-project.json --keep
+  ```
+
+- `--gif [path]` — after all `shot:` steps run, render every numbered
+  `.ansi` capture to a PNG and assemble them into an animated GIF. Off by
+  default (no ffmpeg needed either way — see "Rendering"). Path defaults
+  to `<out-dir>/capture.gif`.
+
+  ```bash
+  ./scripts/dev/screenshot/amf-capture.sh \
+      --scenario scripts/dev/screenshot/scenarios/dashboard-tour.txt --gif
+  ```
+
+- `--keep` — keep the scratch root (`config/`, `state/`, `shots/`) on
+  exit instead of deleting it. The scratch tmux session is still killed
+  either way; only the on-disk scratch root is affected.
+
+- `--geometry <WxH>` — tmux session geometry, must match `^[0-9]+x[0-9]+$`.
+  Default `120x40`. Fixed geometry keeps screenshots reproducible.
+
+  ```bash
+  ./scripts/dev/screenshot/amf-capture.sh --geometry 160x50 --keep
+  ```
+
+- `--out-dir <dir>` — where numbered `.ansi` captures land. Defaults to
+  `<scratch-root>/shots`, which is deleted with the rest of the scratch
+  root unless `--keep` is also passed — pass `--out-dir` explicitly if you
+  want captures to survive independent of `--keep`.
+
+  ```bash
+  ./scripts/dev/screenshot/amf-capture.sh --out-dir /tmp/my-shots
+  ```
+
+- `--amf-bin <path>` — path to the `amf` binary. Defaults to
+  `target/debug/amf` relative to the repo root; if that doesn't exist yet
+  the driver builds it with `cargo build -j 2` (capped at `-j 2` — see
+  the WSL2 OOM note if you're on a memory-constrained box) before
+  launching.
+
+  ```bash
+  ./scripts/dev/screenshot/amf-capture.sh --amf-bin target/release/amf
+  ```
+
+Also respected: the `AMF_SHOT_DIR` env var overrides the scratch root
+parent (default `/tmp/amf-shots`).
+
+## Scenario format
+
+A scenario file is newline-delimited steps. Each line is a `|`-separated
+list of one or more of:
+
+- `key:<name>` — `tmux send-keys` with a key name (e.g. `key:Enter`,
+  `key:j`, `key:Escape`, `key:?`).
+- `text:<text>` — `tmux send-keys -l` with literal text (special
+  characters are not interpreted as key names).
+- `wait:<ms>` — sleep this many milliseconds before the next step.
+- `shot:<label>` — `capture-pane -e -p` the current pane to
+  `NNN-<label>.ansi` in the output dir (`NNN` is a zero-padded, per-run
+  step counter, not tied to the line number).
+
+Blank lines and lines starting with `#` are skipped, so comments can
+explain what a step does or which real keybinding it exercises. Multiple
+`|`-delimited parts run in order on one line, e.g.:
+
+```
+key:N|wait:200|text:demo-project|wait:200|shot:create-project-name
+```
+
+Two ready-to-run templates live in `scenarios/`:
+
+- `dashboard-tour.txt` — pokes at read-only dashboard surfaces (help
+  overlay, search) without creating or mutating any project/feature
+  state.
+- `create-project-flow.txt` — walks the `N` create-project wizard
+  (Name → Path → Agent) with typed input, then cancels with `Esc` instead
+  of submitting, so it's safe to run with no real repo path handy.
+
+And two seed payloads for use with `--seed`, mirroring the
+`docs/automation/*.template.json` shape:
+
+- `seed-project.json` — a `create-project` payload (has a `path` key).
+- `seed-feature.json` — a `create-feature` payload (has a `branch` key).
+
+Copy any of these as a starting point for a new scenario or seed file.
+
+## Isolation model
+
+The driver is safe to run against a real, in-use AMF setup because it
+never touches the paths or process your real `amf` uses:
+
+- **Scratch XDG dirs.** `XDG_CONFIG_HOME` and `XDG_STATE_HOME` are
+  exported to fresh directories under `${AMF_SHOT_DIR:-/tmp/amf-shots}/<timestamp>-<pid>/`.
+  AMF resolves its config dir, state dir, DB, and IPC socket through the
+  `dirs` crate under these vars, so the scratch instance gets its own
+  `amf.db`, socket, and log — completely separate from
+  `~/.config/amf/amf.db`.
+- **Real `HOME` preserved.** Only `XDG_CONFIG_HOME`/`XDG_STATE_HOME` are
+  overridden; `HOME` itself is left alone, so `claude` auth and git
+  identity still work inside the scratch instance if a scenario actually
+  launches an agent session.
+- **Dedicated tmux session.** The scratch `amf` runs in its own session
+  named `amf-shot-<timestamp>-<pid>`, distinct from any real `amf-*`
+  session, and is killed on exit regardless of `--keep`.
+- **`-e` on `tmux new-session` is load-bearing, not decorative.** If a
+  tmux server is already running (e.g. because you have your own
+  `amf-*` sessions open), `new-session` attaches to that *existing*
+  server, and the new session's process environment is **not**
+  refreshed from the driver's just-exported vars — it inherits whatever
+  environment the server was originally started with. Without passing
+  `-e XDG_CONFIG_HOME=... -e XDG_STATE_HOME=...` explicitly on the
+  `tmux new-session` command, the scratch `amf` would silently launch
+  against your real `~/.config/amf` instead of the scratch one.
+- **The XDG amf subdir must exist before `amf` starts.** The driver runs
+  `mkdir -p "$CONFIG_DIR/amf" "$STATE_DIR/amf"` before launching, not
+  just the scratch root. AMF's `amf_config_dir_with()` falls back to the
+  legacy `~/.config/amf` path whenever the real `HOME` already has one
+  *and* the XDG-resolved dir doesn't exist yet — and since this harness
+  deliberately keeps the real `HOME`, skipping this pre-create would mean
+  the scratch instance silently opens the user's real database.
+- **Teardown.** On exit (`trap cleanup EXIT`), the scratch tmux session
+  is always killed; the scratch root directory is deleted unless
+  `--keep` was passed.
+
+One caveat worth knowing: a truly fresh scratch config shows AMF's
+one-time "Configure Agent Harnesses" onboarding dialog before the
+dashboard. The driver detects this and drives it automatically (selects
+the first harness entry, waits for its availability check, confirms with
+`c`) before running your scenario, so scenarios don't need to account for
+first-run onboarding themselves.
+
+## Rendering
+
+`render_ansi.py` turns a single `tmux capture-pane -e -p` dump into a
+PNG. It's a small SGR state machine, not a full terminal emulator —
+`capture-pane` already emits a laid-out grid with no cursor-movement
+escapes, so the renderer just walks the text tracking current SGR state
+(16/256/truecolor fg+bg, bold, reverse, underline) per cell and
+rasterizes onto a monospace canvas (`DejaVuSansMono.ttf`).
+
+```bash
+python3 scripts/dev/screenshot/render_ansi.py \
+    scripts/dev/screenshot/sample-dump.ansi --out /tmp/dashboard.png
+```
+
+Flags:
+
+- `--out <path>` — output PNG path (default `screenshot.png`).
+- `--cols` / `--rows` — override the inferred grid size. Without these,
+  the renderer infers grid dimensions from the highest row/column seen in
+  that specific frame, which can vary frame-to-frame (e.g. a dialog with
+  fewer visible rows) and produce mismatched canvas sizes — pass both
+  explicitly (matching the `--geometry` used to capture) whenever you
+  need same-size frames, as `--gif` below does.
+- `--font-size <n>` — font size in points (default 14).
+- `--theme dark|light` — background/default-foreground theme (default
+  `dark`).
+
+Known v1 limitation, documented in the file itself: double-width
+CJK/emoji cells are drawn single-width (one codepoint per cell), so wide
+glyphs will visually overlap or clip.
+
+`amf-capture.sh --gif` automates render+assemble for an entire scenario
+run: every `NNN-<label>.ansi` capture in the output dir is rendered to a
+same-size PNG (explicit `--cols`/`--rows` taken from `--geometry`, for
+exactly the mismatched-size reason above), then `assemble_gif.py` stitches
+them into one animated GIF via Pillow's native `save_all=True,
+append_images=...` — no ffmpeg dependency. Frame duration is fixed at
+`assemble_gif.py`'s default (800ms/frame) when invoked this way; run
+`assemble_gif.py` directly with `--duration-ms` for a different pace.
+
+## Future: high-fidelity via `vhs`
+
+Not built — documented here as a future option per the design doc's
+scope decision to ship the lightweight Pillow renderer now and defer a
+high-fidelity path.
+
+[`vhs`](https://github.com/charmbracelet/vhs) is a tool that drives a
+real terminal (via `ttyd`) inside a headless browser and records actual
+video frames, rather than reconstructing a grid from `capture-pane`
+text. The tradeoff versus the current renderer: real terminal
+rendering (accurate double-width glyphs, ligatures, true cursor
+blink/animation) at the cost of a much heavier dependency chain and
+slower capture.
+
+A `vhs` path would use a `.tape` script (vhs's own DSL: `Type`, `Enter`,
+`Sleep`, `Screenshot`, etc.) instead of this harness's scenario grammar,
+and would need, none of which are installed in this environment:
+
+- `ttyd` — serves a terminal over a local HTTP/WebSocket connection for
+  `vhs` to drive.
+- `ffmpeg` — `vhs` uses it to encode captured frames into GIF/MP4/WebM.
+- A headless browser (`vhs` bundles a Chromium via `go-rod`/
+  `chromedp`-style automation) to actually render the served terminal
+  and screenshot it.
+
+If double-width glyph fidelity or true video output ever becomes a hard
+requirement, revisit this path — but the lightweight ANSI-grid renderer
+covers AMF's actual dashboard UI (no wide glyphs in the chrome itself)
+today.

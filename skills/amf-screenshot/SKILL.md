@@ -26,10 +26,30 @@ scratch AMF instance**, never the user's real one:
   touched.
 - A dedicated tmux session (`amf-shot-<timestamp>`), separate from any
   `amf-*` session the user already has.
+- `gh` still authenticates as the real user (`GH_CONFIG_DIR` is pinned
+  to the real config before `XDG_CONFIG_HOME` is overridden) — needed
+  for any scenario that opens PR Triage or the PR picker. Same idea as
+  leaving `HOME` untouched for `claude` auth / git identity.
 - Fixed geometry, `120x40` by default (`--geometry WxH` to override) —
   reproducible pane layout across runs.
-- Teardown kills the scratch tmux session and deletes the scratch root
-  on exit; pass `--keep` to preserve it for debugging.
+- Teardown kills the scratch tmux session **and any other tmux session
+  AMF itself spawned during the run** (e.g. starting a feature creates
+  its own top-level `amf-<project>-<feature>` session, outside
+  `amf-shot-*`) — found by diffing tmux's session list against a
+  pre-run snapshot, not by name pattern, so it catches whatever the
+  scenario/seed named things. The scratch root is also deleted on
+  exit. Pass `--keep` to preserve both the scratch root and any
+  spawned sessions for debugging.
+
+**Not sandboxed:** reading PR comments (opening PR Triage / the PR
+picker) is a real, read-only `gh` call against GitHub — safe by
+default. But if a scenario also *confirms* a fix-target pick, posts a
+reply, or resolves a thread, that's a real write against the real
+repo — teardown cleans up the tmux session either way (see above), but
+it can't undo a posted GitHub comment or a resolved thread. Drive up
+to the interesting frame, `shot:`, then `key:Escape` out rather than
+confirming, unless the scenario is deliberately meant to exercise a
+write.
 
 ## Step 1: author a scenario for the feature you just built
 

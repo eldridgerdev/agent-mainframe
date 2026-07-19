@@ -1937,6 +1937,46 @@ mod tests {
         assert!(rendered.contains("posted via AMF"));
     }
 
+    fn render_harness_pick(existing_live_label: Option<String>) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let pick = crate::app::HarnessPickState {
+            rows: vec![
+                crate::app::pr_review::FixTargetPickRow::ExistingLive(existing_live_label),
+                crate::app::pr_review::FixTargetPickRow::Dedicated(
+                    crate::project::AgentKind::Claude,
+                ),
+            ],
+            selected: 0,
+        };
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_harness_pick(frame, &pick, &theme))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn harness_pick_names_the_existing_session_when_resolved() {
+        let rendered = render_harness_pick(Some("Claude 2".to_string()));
+        assert!(rendered.contains("Existing live session (Claude 2)"));
+    }
+
+    #[test]
+    fn harness_pick_falls_back_to_generic_label_when_unresolved() {
+        let rendered = render_harness_pick(None);
+        assert!(rendered.contains("Existing live session"));
+        assert!(!rendered.contains("Existing live session ("));
+    }
+
     fn pr_comment_of_kind(id: u64, kind: CommentKind) -> PrComment {
         PrComment {
             id,

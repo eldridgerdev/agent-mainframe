@@ -164,13 +164,43 @@ if [[ ! -x "$AMF_BIN" ]]; then
     exit 1
 fi
 
+# Snapshot tmux sessions that exist *before* we touch anything, so cleanup
+# can find whatever AMF itself spawns beyond $SESSION -- see the note by
+# `cleanup()` below.
+BASELINE_SESSIONS="$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)"
+
 cleanup() {
     tmux kill-session -t "$SESSION" >/dev/null 2>&1 || true
     if [[ "$KEEP" -ne 1 ]]; then
+        # AMF starting a real feature (via --seed or a scenario driving the
+        # creation wizard) spawns its own top-level tmux session
+        # (amf-<project>-<feature>), launching a real `claude`/`codex`/etc.
+        # process. That session lives on the shared tmux server, not nested
+        # under $SESSION, so killing $SESSION above doesn't reach it and it
+        # would otherwise run forever after this "throwaway" script exits.
+        # Diff against the pre-run snapshot (rather than pattern-matching
+        # names) so this works regardless of what the feature/project was
+        # named.
+        while IFS= read -r s; do
+            [[ -z "$s" || "$s" == "$SESSION" ]] && continue
+            if ! grep -qxF "$s" <<<"$BASELINE_SESSIONS"; then
+                tmux kill-session -t "$s" >/dev/null 2>&1 || true
+                echo "cleaned up spawned session: $s" >&2
+            fi
+        done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
         rm -rf "$SHOT_ROOT"
     fi
 }
 trap cleanup EXIT
+
+# gh keeps its own auth under XDG_CONFIG_HOME/gh by default. Resolve the
+# *real* one before we override XDG_CONFIG_HOME below for AMF's isolation --
+# otherwise every `gh` call AMF shells out to (PR Triage, PR picker, etc.)
+# would see an empty, unauthenticated config under the scratch root instead
+# of the user's real credentials. Pinning GH_CONFIG_DIR explicitly keeps gh
+# on the real config while AMF's own config/state stay isolated, the same
+# way HOME is left alone below for `claude` auth / git identity.
+REAL_GH_CONFIG_DIR="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
 
 export XDG_CONFIG_HOME="$CONFIG_DIR"
 export XDG_STATE_HOME="$STATE_DIR"
@@ -190,6 +220,7 @@ echo "tmux session: $SESSION ($GEOMETRY)" >&2
 tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" -c "$SHOT_ROOT" \
     -e "XDG_CONFIG_HOME=$CONFIG_DIR" \
     -e "XDG_STATE_HOME=$STATE_DIR" \
+    -e "GH_CONFIG_DIR=$REAL_GH_CONFIG_DIR" \
     "$AMF_BIN"
 
 step=0

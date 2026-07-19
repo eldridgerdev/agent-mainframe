@@ -311,8 +311,12 @@ impl FixTarget {
 /// dedicated case) `review_harness` in one step.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FixTargetPickRow {
-    /// Reuse the feature's existing live agent session.
-    ExistingLive,
+    /// Reuse the feature's existing live agent session. Carries that
+    /// session's label (e.g. "Claude 2") when one already exists, so the
+    /// picker names exactly where a fix lands instead of a generic
+    /// fallback; `None` when no live agent session exists yet to resolve a
+    /// name from.
+    ExistingLive(Option<String>),
     /// Spin up (or reuse) the dedicated triage session on this harness.
     Dedicated(AgentKind),
 }
@@ -321,7 +325,10 @@ impl FixTargetPickRow {
     /// Display label for the picker list.
     pub fn label(&self) -> String {
         match self {
-            FixTargetPickRow::ExistingLive => "Existing live session".to_string(),
+            FixTargetPickRow::ExistingLive(Some(name)) => {
+                format!("Existing live session ({name})")
+            }
+            FixTargetPickRow::ExistingLive(None) => "Existing live session".to_string(),
             FixTargetPickRow::Dedicated(agent) => {
                 format!("Dedicated triage session ({})", agent.display_name())
             }
@@ -2267,7 +2274,14 @@ impl App {
         let dedicated_default = preferred
             .and_then(|p| agents.iter().position(|a| *a == p))
             .unwrap_or(0);
-        let mut rows = vec![FixTargetPickRow::ExistingLive];
+        let existing_live_label =
+            self.feature_indices_for_workdir(&workdir)
+                .and_then(|(pi, fi)| {
+                    let feature = &self.store.projects[pi].features[fi];
+                    pr_triage_session_index(feature, FixTarget::ExistingLive)
+                        .map(|idx| feature.sessions[idx].label.clone())
+                });
+        let mut rows = vec![FixTargetPickRow::ExistingLive(existing_live_label)];
         rows.extend(agents.into_iter().map(FixTargetPickRow::Dedicated));
         // +1: rows[0] is the ExistingLive row, so the dedicated default shifts by one.
         let selected = dedicated_default + 1;
@@ -2338,7 +2352,7 @@ impl App {
             return;
         };
         match &row {
-            FixTargetPickRow::ExistingLive => {
+            FixTargetPickRow::ExistingLive(_) => {
                 self.pr_review_set_fix_target(FixTarget::ExistingLive);
                 if let AppMode::PrReview(state) = &mut self.mode {
                     state.harness_pick = None;
@@ -4347,8 +4361,12 @@ mod tests {
     #[test]
     fn fix_target_pick_row_labels_existing_live_and_dedicated() {
         assert_eq!(
-            FixTargetPickRow::ExistingLive.label(),
+            FixTargetPickRow::ExistingLive(None).label(),
             "Existing live session"
+        );
+        assert_eq!(
+            FixTargetPickRow::ExistingLive(Some("Claude 2".to_string())).label(),
+            "Existing live session (Claude 2)"
         );
         assert_eq!(
             FixTargetPickRow::Dedicated(AgentKind::Claude).label(),

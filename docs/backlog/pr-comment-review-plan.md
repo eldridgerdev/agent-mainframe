@@ -1881,16 +1881,22 @@ non-goal for v1 (GitHub `gh` only), not an open question.
     (1133 tests) and `cargo clippy` clean. `i`/`A`/`W` left untouched per the
     audit.
 
-- [ ] **Name the existing session in the `f`/`B` fix-target picker.** When a
-      batch update starts with `B`, the target menu currently offers a generic
-      `Existing session` row alongside the dedicated-session harness choices.
-      Render the actual existing session label in that row (for example,
-      `Existing session — Claude 2`) so the user knows exactly where the
-      combined fix prompt will be sent before confirming. Use the same label
-      in the shared single-fix (`f`) picker, since both actions resolve through
-      the same target menu; retain a clear generic fallback only when the
-      session name genuinely cannot be resolved. Add row-label and picker
-      render coverage for named and fallback cases.
+- [x] **Name the existing session in the `f`/`B` fix-target picker.** The
+      target menu's `Existing live session` row was a fixed string with no
+      way to tell which running session a fix would land in. `FixTargetPickRow`
+      now carries the resolved label (`ExistingLive(Option<String>)`);
+      `pr_review_open_harness_pick` resolves it via the same
+      `pr_triage_session_index(feature, FixTarget::ExistingLive)` lookup the
+      rest of the fix-target machinery already uses, so the row reads
+      `Existing live session (Claude 2)` once a live agent session exists.
+      Falls back to the unadorned `Existing live session` when none does yet
+      (e.g. the first fix of a stopped feature) — same picker, same lookup,
+      for both the single-fix (`f`) and combined-batch (`B`) flows, since both
+      resolve through this one menu. Unit-tested (`label()` for both the named
+      and fallback cases) plus render coverage for `draw_harness_pick` proving
+      the resolved name and the fallback actually appear in the rendered
+      picker. → `src/app/pr_review.rs`, `src/app/tests.rs`,
+      `src/ui/dialogs/pr_review.rs`.
 
 - [x] **AI review result persistence (UX — visibility).** When running an AI
       review (`A`), the user could escape back to the pane, navigate away, or

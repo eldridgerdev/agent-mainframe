@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,27 @@ struct CheckOutcome {
     output: String,
 }
 
+#[derive(Debug, Default)]
+struct SuggestionApplyReport {
+    applied: Vec<String>,
+    failures: Vec<String>,
+}
+
+#[derive(Debug)]
+struct PlannedSuggestion {
+    comment_index: usize,
+    anchor: String,
+    start_line: usize,
+    end_line: usize,
+    replacement: String,
+}
+
+#[derive(Debug, Default)]
+struct FileSuggestionApplyReport {
+    applied: Vec<(usize, String)>,
+    failures: Vec<String>,
+}
+
 /// Cap on how much of a check command's combined stdout/stderr is kept, so a
 /// noisy build/test failure can't blow up the feedback file or the agent
 /// prompt built from it.
@@ -48,6 +69,24 @@ fn truncate_check_output(output: &str) -> String {
         let truncated: String = output.chars().take(CHECK_OUTPUT_MAX_CHARS).collect();
         format!("{truncated}\n… (truncated)")
     }
+}
+
+fn local_suggestion_summary(applied: &[String], failures: &[String]) -> String {
+    let mut summary = String::new();
+    if !applied.is_empty() {
+        summary.push_str(&format!(
+            ", {} suggestion(s) applied locally ({})",
+            applied.len(),
+            applied.join(", ")
+        ));
+    }
+    if !failures.is_empty() {
+        summary.push_str(&format!(
+            ", {} suggestion(s) not applied locally",
+            failures.len()
+        ));
+    }
+    summary
 }
 
 /// The resumable parts of an in-flight final review, persisted to
@@ -68,6 +107,10 @@ struct ReviewProgress {
     file_comments: std::collections::HashMap<String, FileComment>,
     #[serde(default)]
     general_feedback: String,
+    #[serde(default)]
+    apply_suggestions_on_finish: bool,
+    #[serde(default)]
+    applied_suggestions: Vec<String>,
     #[serde(default)]
     selected_file: usize,
 }
@@ -219,6 +262,8 @@ impl App {
             line_comments: state.line_comments.clone(),
             file_comments: state.file_comments.clone(),
             general_feedback: state.general_feedback.clone(),
+            apply_suggestions_on_finish: state.apply_suggestions_on_finish,
+            applied_suggestions: state.applied_suggestions.clone(),
             selected_file: state.selected_file,
         };
         let path = review_progress_path(&state.workdir);
@@ -425,6 +470,8 @@ impl App {
             || !state.line_comments.is_empty()
             || !state.file_comments.is_empty()
             || !state.general_feedback.is_empty()
+            || state.apply_suggestions_on_finish
+            || !state.applied_suggestions.is_empty()
         {
             return;
         }
@@ -492,6 +539,8 @@ impl App {
             .filter(|(path, _)| known.contains(path.as_str()))
             .collect();
         state.general_feedback = progress.general_feedback;
+        state.apply_suggestions_on_finish = progress.apply_suggestions_on_finish;
+        state.applied_suggestions = progress.applied_suggestions;
         if !state.files.is_empty() {
             state.selected_file = progress.selected_file.min(state.files.len() - 1);
         }
@@ -546,6 +595,7 @@ impl App {
         let pristine = state.decisions.is_empty()
             && state.has_only_carried_comments()
             && state.general_feedback.is_empty()
+            && state.applied_suggestions.is_empty()
             && state.file_filter == FileFilter::All;
         if !pristine {
             return;
@@ -1352,6 +1402,183 @@ impl App {
             self.diff_review_sync_auto_reject(&path);
         }
         self.persist_review_progress();
+    }
+
+    /// Apply the kept suggestion under the line cursor directly to the
+    /// worktree. The write is guarded against a dirty/stale file and an anchor
+    /// that no longer matches. A successful application settles the thread,
+    /// removes the now-consumed suggestion block, and refreshes the diff.
+    pub fn diff_review_apply_suggestion_under_cursor(&mut self) {
+        let selected = match &self.mode {
+            AppMode::DiffViewer(state) if state.review => {
+                let Some(cursor) = state.comment_cursor else {
+                    self.message = Some("Activate the line cursor on a suggestion first".into());
+                    return;
+                };
+                let Some(file) = state.files.get(state.selected_file) else {
+                    return;
+                };
+                let locations = file.addressable_lines();
+                state.line_comments.get(&file.path).and_then(|comments| {
+                    comments.iter().enumerate().find_map(|(index, comment)| {
+                        (comment.is_open_thread()
+                            && comment.suggestion.is_some()
+                            && comment
+                                .covered_indices(&locations)
+                                .is_some_and(|range| range.contains(&cursor)))
+                        .then_some((file.path.clone(), index))
+                    })
+                })
+            }
+            _ => return,
+        };
+        let Some((path, index)) = selected else {
+            self.message = Some("No open suggested change under the cursor".to_string());
+            return;
+        };
+
+        let report = self.apply_review_suggestion_jobs(Some((&path, index)));
+        if report.applied.is_empty() {
+            self.message = Some(format!(
+                "Suggestion not applied: {}",
+                report
+                    .failures
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("the suggestion is no longer applicable")
+            ));
+        } else {
+            self.message = Some(format!(
+                "Applied suggestion locally: {}",
+                report.applied.join(", ")
+            ));
+        }
+    }
+
+    /// Toggle the explicit opt-in to apply all remaining suggestions immediately
+    /// before the finish-time check command. No suggestions are ever written by
+    /// merely pressing `q` unless this has been enabled.
+    pub fn diff_review_toggle_apply_suggestions_on_finish(&mut self) {
+        let message = if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let pending = state.pending_suggestion_count();
+            if pending == 0 {
+                state.apply_suggestions_on_finish = false;
+                "No open suggestions to apply".to_string()
+            } else {
+                state.apply_suggestions_on_finish = !state.apply_suggestions_on_finish;
+                if state.apply_suggestions_on_finish {
+                    format!("Will apply {pending} suggestion(s) locally when finishing")
+                } else {
+                    "Suggestions will be sent to the fixing agent without local application"
+                        .to_string()
+                }
+            }
+        } else {
+            return;
+        };
+        self.persist_review_progress();
+        self.message = Some(message);
+    }
+
+    /// Apply either one requested suggestion or every open suggestion. Groups
+    /// work by file so multiple replacements are validated against one reviewed
+    /// snapshot and committed in one bottom-up write. Successful comment indices
+    /// are then settled in live review state before the diff is refreshed.
+    fn apply_review_suggestion_jobs(
+        &mut self,
+        only: Option<(&str, usize)>,
+    ) -> SuggestionApplyReport {
+        let (workdir, jobs) = match &self.mode {
+            AppMode::DiffViewer(state) if state.review => {
+                let jobs = state
+                    .files
+                    .iter()
+                    .filter_map(|file| {
+                        let comments = state.line_comments.get(&file.path)?;
+                        let selected: Vec<(usize, LineComment)> = comments
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, comment)| {
+                                comment.is_open_thread()
+                                    && comment.suggestion.is_some()
+                                    && only.is_none_or(|(path, wanted)| {
+                                        file.path == path && *index == wanted
+                                    })
+                            })
+                            .map(|(index, comment)| (index, comment.clone()))
+                            .collect();
+                        (!selected.is_empty()).then_some((file.clone(), selected))
+                    })
+                    .collect::<Vec<_>>();
+                (state.workdir.clone(), jobs)
+            }
+            _ => return SuggestionApplyReport::default(),
+        };
+
+        let mut per_file = Vec::new();
+        let mut report = SuggestionApplyReport::default();
+        for (file, comments) in jobs {
+            let file_report = apply_suggestions_to_file(&workdir, &file, &comments);
+            report
+                .applied
+                .extend(file_report.applied.iter().map(|(_, anchor)| anchor.clone()));
+            report.failures.extend(file_report.failures.clone());
+            per_file.push((file.path, file_report));
+        }
+
+        let mut changed_paths = Vec::new();
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            for (path, file_report) in &per_file {
+                if file_report.applied.is_empty() {
+                    continue;
+                }
+                let applied_indices: std::collections::HashSet<usize> = file_report
+                    .applied
+                    .iter()
+                    .map(|(index, _)| *index)
+                    .collect();
+                let remove_comment_entry = if let Some(comments) = state.line_comments.get_mut(path)
+                {
+                    for (index, comment) in comments.iter_mut().enumerate() {
+                        if applied_indices.contains(&index) {
+                            comment.suggestion = None;
+                            comment.resolved = true;
+                        }
+                    }
+                    // A suggestion-only comment has no conversation left once
+                    // applied; prose comments remain as settled threads/history.
+                    comments.retain(|comment| {
+                        !comment.text.trim().is_empty() || comment.suggestion.is_some()
+                    });
+                    comments.is_empty()
+                } else {
+                    false
+                };
+                if remove_comment_entry {
+                    state.line_comments.remove(path);
+                }
+                changed_paths.push(path.clone());
+            }
+            state
+                .applied_suggestions
+                .extend(report.applied.iter().cloned());
+        }
+        for path in &changed_paths {
+            self.diff_review_sync_auto_reject(path);
+        }
+        self.persist_review_progress();
+
+        if !report.applied.is_empty() {
+            // Re-load immediately so subsequent comments and the finish snapshot
+            // use the source that was actually written, not the pre-apply patch.
+            self.refresh_diff_viewer();
+            self.complete_diff_viewer_loading();
+            self.persist_review_progress();
+        }
+        report
     }
 
     /// Generate a walkthrough for the current file when it has no developer
@@ -2249,6 +2476,21 @@ impl App {
     /// default: no command configured) completes immediately, unchanged from
     /// before this gate existed.
     pub fn finish_final_review(&mut self) -> Result<()> {
+        let apply_on_finish = matches!(&self.mode, AppMode::DiffViewer(state) if state.review && state.apply_suggestions_on_finish);
+        if apply_on_finish {
+            if let AppMode::DiffViewer(state) = &mut self.mode {
+                // Consume the opt-in before doing any work so a repeated finish
+                // attempt (for example after an async check) never applies twice.
+                state.apply_suggestions_on_finish = false;
+                state.suggestion_apply_failures.clear();
+            }
+            let report = self.apply_review_suggestion_jobs(None);
+            if let AppMode::DiffViewer(state) = &mut self.mode {
+                state.suggestion_apply_failures = report.failures;
+            }
+            self.persist_review_progress();
+        }
+
         let spawn_info = match &self.mode {
             AppMode::DiffViewer(state)
                 if state.review
@@ -2362,6 +2604,8 @@ impl App {
             general_feedback,
             from_view,
             fix_target,
+            applied_suggestions,
+            suggestion_apply_failures,
         ) = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::DiffViewer(state) => (
                 state.workdir,
@@ -2372,6 +2616,8 @@ impl App {
                 state.general_feedback,
                 state.from_view,
                 state.fix_target,
+                state.applied_suggestions,
+                state.suggestion_apply_failures,
             ),
             AppMode::DiffViewerLoading(state) => {
                 // Diff not loaded yet; nothing to summarize.
@@ -2460,8 +2706,10 @@ impl App {
                     Some(c) => format!(" (check `{}` passed)", c.command),
                     None => String::new(),
                 };
+                let local_note =
+                    local_suggestion_summary(&applied_suggestions, &suggestion_apply_failures);
                 format!(
-                    "Final review complete: all {approved} reviewed file(s) approved{}{check_note}",
+                    "Final review complete: all {approved} reviewed file(s) approved{}{check_note}{local_note}",
                     if skipped > 0 {
                         format!(", {skipped} skipped")
                     } else {
@@ -2505,6 +2753,28 @@ impl App {
                     round.push_str(&c.output);
                     round.push_str("\n```\n\n");
                 }
+            }
+
+            if !applied_suggestions.is_empty() || !suggestion_apply_failures.is_empty() {
+                round.push_str("**Local suggestion application:** ");
+                if !applied_suggestions.is_empty() {
+                    round.push_str(&format!(
+                        "{} applied ({})",
+                        applied_suggestions.len(),
+                        applied_suggestions.join(", ")
+                    ));
+                }
+                if !suggestion_apply_failures.is_empty() {
+                    if !applied_suggestions.is_empty() {
+                        round.push_str("; ");
+                    }
+                    round.push_str(&format!(
+                        "{} not applied ({})",
+                        suggestion_apply_failures.len(),
+                        suggestion_apply_failures.join("; ")
+                    ));
+                }
+                round.push_str("\n\n");
             }
 
             if !general_feedback.is_empty() {
@@ -2623,9 +2893,11 @@ impl App {
                 Some(c) => format!(", check `{}` FAILED", c.command),
                 None => String::new(),
             };
+            let local_note =
+                local_suggestion_summary(&applied_suggestions, &suggestion_apply_failures);
             let summary = format!(
                 "Final review: {approved} approved, {} need work, {skipped} skipped\
-                 {file_comment_note}{comment_note}{check_note} — feedback saved to .claude/final-review-feedback.md",
+                 {file_comment_note}{comment_note}{check_note}{local_note} — feedback saved to .claude/final-review-feedback.md",
                 rejected.len()
             );
             // Optionally mirror the feedback onto the branch's GitHub PR as a
@@ -2927,6 +3199,263 @@ fn span_current_text(texts: &[String], range: &std::ops::RangeInclusive<usize>) 
         .join("\n")
 }
 
+/// Byte bounds of an inclusive, one-based line span. The returned end includes
+/// the final line ending when one exists, which lets a replacement preserve the
+/// file's existing EOF/newline shape.
+fn content_line_bounds(
+    content: &str,
+    start_line: usize,
+    end_line: usize,
+) -> Option<(usize, usize)> {
+    if start_line == 0 || end_line < start_line {
+        return None;
+    }
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    for (idx, byte) in content.bytes().enumerate() {
+        if byte == b'\n' {
+            ranges.push((start, idx + 1));
+            start = idx + 1;
+        }
+    }
+    if start < content.len() {
+        ranges.push((start, content.len()));
+    }
+    let first = ranges.get(start_line - 1)?.0;
+    let last = ranges.get(end_line - 1)?.1;
+    Some((first, last))
+}
+
+fn line_text_without_ending(line: &str) -> &str {
+    line.strip_suffix("\r\n")
+        .or_else(|| line.strip_suffix('\n'))
+        .unwrap_or(line)
+}
+
+/// Validate that a suggestion still points at a contiguous current-side span
+/// and that the diff text under the anchor exactly matches the reviewed file
+/// content. Deletion-side and mixed old/new ranges are intentionally refused:
+/// they do not describe an unambiguous replacement in the worktree file.
+fn plan_local_suggestion(
+    file: &crate::diff::DiffFile,
+    comment_index: usize,
+    comment: &LineComment,
+) -> std::result::Result<PlannedSuggestion, String> {
+    let anchor = comment_anchor_label(&file.path, comment);
+    if comment.anchor_lost {
+        return Err("anchor is no longer present in the current diff".to_string());
+    }
+    let replacement = comment
+        .suggestion
+        .clone()
+        .ok_or_else(|| "comment has no suggested replacement".to_string())?;
+    let content = file
+        .new_content
+        .as_deref()
+        .ok_or_else(|| "file has no current text content".to_string())?;
+    let locations = file.addressable_lines();
+    let texts = file.addressable_line_texts();
+    let covered = comment
+        .covered_indices(&locations)
+        .ok_or_else(|| "suggestion span no longer resolves in the diff".to_string())?;
+
+    let mut new_lines = Vec::new();
+    let mut reviewed_lines = Vec::new();
+    for idx in covered {
+        let line = locations
+            .get(idx)
+            .and_then(|location| location.new_line)
+            .ok_or_else(|| {
+                "suggestion includes a deletion-only line and cannot be applied locally".to_string()
+            })?;
+        new_lines.push(line);
+        let reviewed = texts.get(idx).map(String::as_str).unwrap_or_default();
+        reviewed_lines.push(reviewed.strip_suffix('\r').unwrap_or(reviewed).to_string());
+    }
+    if new_lines
+        .windows(2)
+        .any(|pair| pair[1] != pair[0].saturating_add(1))
+    {
+        return Err("suggestion span is not contiguous in the current file".to_string());
+    }
+    let start_line = *new_lines
+        .first()
+        .ok_or_else(|| "suggestion span is empty".to_string())?;
+    let end_line = *new_lines.last().unwrap_or(&start_line);
+    let (start, end) = content_line_bounds(content, start_line, end_line)
+        .ok_or_else(|| "suggestion span falls outside the current file".to_string())?;
+    let current_lines: Vec<&str> = content[start..end]
+        .split_inclusive('\n')
+        .map(line_text_without_ending)
+        .collect();
+    if current_lines.len() != reviewed_lines.len()
+        || current_lines
+            .iter()
+            .zip(&reviewed_lines)
+            .any(|(current, reviewed)| *current != reviewed)
+    {
+        return Err("the anchored lines no longer match the reviewed diff".to_string());
+    }
+
+    Ok(PlannedSuggestion {
+        comment_index,
+        anchor,
+        start_line,
+        end_line,
+        replacement,
+    })
+}
+
+fn replacement_with_preserved_line_endings(replacement: &str, replaced: &str) -> String {
+    let line_ending = if replaced.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut normalized = replacement.replace("\r\n", "\n");
+    if line_ending == "\r\n" {
+        normalized = normalized.replace('\n', "\r\n");
+    }
+    if replaced.ends_with('\n') && !normalized.ends_with(line_ending) {
+        normalized.push_str(line_ending);
+    }
+    normalized
+}
+
+fn replace_content_line_span(
+    content: &mut String,
+    start_line: usize,
+    end_line: usize,
+    replacement: &str,
+) -> std::result::Result<(), String> {
+    let (start, end) = content_line_bounds(content, start_line, end_line)
+        .ok_or_else(|| "suggestion span falls outside the current file".to_string())?;
+    let replacement = replacement_with_preserved_line_endings(replacement, &content[start..end]);
+    content.replace_range(start..end, &replacement);
+    Ok(())
+}
+
+fn guarded_worktree_file(workdir: &Path, relative: &str) -> std::result::Result<PathBuf, String> {
+    let relative = Path::new(relative);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        return Err("file path is not a safe worktree-relative path".to_string());
+    }
+    let path = workdir.join(relative);
+    let metadata =
+        std::fs::symlink_metadata(&path).map_err(|err| format!("could not inspect file: {err}"))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err("target is not a regular worktree file".to_string());
+    }
+    let root = std::fs::canonicalize(workdir)
+        .map_err(|err| format!("could not resolve worktree path: {err}"))?;
+    let resolved = std::fs::canonicalize(&path)
+        .map_err(|err| format!("could not resolve file path: {err}"))?;
+    if !resolved.starts_with(&root) {
+        return Err("file resolves outside the worktree".to_string());
+    }
+    Ok(path)
+}
+
+/// Apply a set of suggestions for one file in a single write. The whole-file
+/// equality check is the dirty-file guard; bottom-up replacements keep the
+/// original line coordinates valid when earlier suggestions add/remove lines.
+fn apply_suggestions_to_file(
+    workdir: &Path,
+    file: &crate::diff::DiffFile,
+    comments: &[(usize, LineComment)],
+) -> FileSuggestionApplyReport {
+    let mut report = FileSuggestionApplyReport::default();
+    let fail_all = |reason: String, report: &mut FileSuggestionApplyReport| {
+        report.failures.extend(comments.iter().map(|(_, comment)| {
+            format!("{}: {reason}", comment_anchor_label(&file.path, comment))
+        }));
+    };
+
+    let Some(reviewed_content) = file.new_content.as_deref() else {
+        fail_all("file has no current text content".to_string(), &mut report);
+        return report;
+    };
+    let path = match guarded_worktree_file(workdir, &file.path) {
+        Ok(path) => path,
+        Err(reason) => {
+            fail_all(reason, &mut report);
+            return report;
+        }
+    };
+    let live_content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) => {
+            fail_all(format!("could not read file: {err}"), &mut report);
+            return report;
+        }
+    };
+    if live_content != reviewed_content {
+        fail_all(
+            "file changed since the diff was loaded; refresh before applying".to_string(),
+            &mut report,
+        );
+        return report;
+    }
+
+    let mut plans = Vec::new();
+    for (index, comment) in comments {
+        match plan_local_suggestion(file, *index, comment) {
+            Ok(plan) => plans.push(plan),
+            Err(reason) => report.failures.push(format!(
+                "{}: {reason}",
+                comment_anchor_label(&file.path, comment)
+            )),
+        }
+    }
+    plans.sort_by_key(|plan| (plan.start_line, plan.end_line));
+    let mut accepted: Vec<PlannedSuggestion> = Vec::new();
+    for plan in plans {
+        if let Some(previous) = accepted.last()
+            && plan.start_line <= previous.end_line
+        {
+            report.failures.push(format!(
+                "{}: suggestion overlaps another local suggestion",
+                plan.anchor
+            ));
+        } else {
+            accepted.push(plan);
+        }
+    }
+
+    let mut updated = live_content;
+    for plan in accepted.iter().rev() {
+        if let Err(reason) = replace_content_line_span(
+            &mut updated,
+            plan.start_line,
+            plan.end_line,
+            &plan.replacement,
+        ) {
+            report.failures.push(format!("{}: {reason}", plan.anchor));
+            return report;
+        }
+    }
+    if accepted.is_empty() {
+        return report;
+    }
+    if let Err(err) = std::fs::write(&path, updated) {
+        report.failures.extend(
+            accepted
+                .iter()
+                .map(|plan| format!("{}: could not write file: {err}", plan.anchor)),
+        );
+        return report;
+    }
+    report.applied = accepted
+        .into_iter()
+        .map(|plan| (plan.comment_index, plan.anchor))
+        .collect();
+    report
+}
+
 /// Indices into `file.addressable_lines()` whose text contains `query`
 /// (case-insensitive substring), ascending. Empty for a blank query. Matches
 /// against `addressable_line_texts()` (diff prefix stripped) so a query hits the
@@ -2961,8 +3490,26 @@ fn reanchor_file_comments(
     let texts = file.addressable_line_texts();
     let (mut moved, mut lost) = (0usize, 0usize);
     for comment in comments.iter_mut() {
-        let end_ok = locs.contains(&comment.location);
-        let start_ok = comment.start.is_none_or(|start| locs.contains(&start));
+        // A line number can remain present after an edit while now pointing at
+        // different text (especially when a local suggestion adds/removes
+        // lines). When a context snippet exists, require its anchor text to
+        // still match too; otherwise fall through to the fuzzy relocation pass.
+        let location_still_matches =
+            |location: crate::diff::DiffLineLocation, context: Option<&CommentAnchorContext>| {
+                locs.iter()
+                    .position(|candidate| *candidate == location)
+                    .is_some_and(|idx| {
+                        context.is_none_or(|context| {
+                            texts
+                                .get(idx)
+                                .is_some_and(|text| text.trim() == context.line.trim())
+                        })
+                    })
+            };
+        let end_ok = location_still_matches(comment.location, comment.anchor_context.as_ref());
+        let start_ok = comment.start.is_none_or(|start| {
+            location_still_matches(start, comment.start_anchor_context.as_ref())
+        });
         if end_ok && start_ok {
             comment.anchor_lost = false;
             continue;
@@ -3572,14 +4119,18 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::{
-        CHECK_OUTPUT_MAX_CHARS, anchor_file_path, build_pr_review, build_walkthrough_prompt,
-        comment_anchor_label, compose_feedback_log, compute_search_matches, parse_agent_responses,
-        parse_co_review_output, parse_review_notes, reanchor_file_comments, severity_review_event,
-        split_overflow_rounds, truncate_check_output,
+        CHECK_OUTPUT_MAX_CHARS, anchor_file_path, apply_suggestions_to_file, build_pr_review,
+        build_walkthrough_prompt, comment_anchor_label, compose_feedback_log,
+        compute_search_matches, parse_agent_responses, parse_co_review_output, parse_review_notes,
+        reanchor_file_comments, severity_review_event, split_overflow_rounds,
+        truncate_check_output,
     };
     use crate::app::state::DiffViewerState;
     use crate::app::{CommentAnchorContext, FileComment, LineComment, Severity};
-    use crate::diff::{DiffFile, DiffLineLocation, parse_unified_diff};
+    use crate::diff::{
+        DiffFile, DiffFileStatus, DiffHunk, DiffLine, DiffLineKind, DiffLineLocation,
+        parse_unified_diff,
+    };
 
     fn line_comment(new_line: Option<usize>, old_line: Option<usize>, text: &str) -> LineComment {
         LineComment {
@@ -3618,6 +4169,140 @@ mod tests {
             resolved: false,
             carried: false,
         }
+    }
+
+    fn local_apply_file(content: &str) -> DiffFile {
+        DiffFile {
+            old_path: Some("src/example.rs".to_string()),
+            path: "src/example.rs".to_string(),
+            status: DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            is_binary: false,
+            old_content: Some("old\ncontent\n".to_string()),
+            new_content: Some(content.to_string()),
+            patch: String::new(),
+            hunks: vec![DiffHunk {
+                header: "@@ -1,3 +1,3 @@".to_string(),
+                old_start: 1,
+                old_lines: 3,
+                new_start: 1,
+                new_lines: 3,
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        text: " one".to_string(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "+two".to_string(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        text: " three".to_string(),
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn local_suggestion_replaces_range_and_preserves_crlf() {
+        let workdir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(workdir.path().join("src")).unwrap();
+        let content = "one\r\ntwo\r\nthree\r\n";
+        std::fs::write(workdir.path().join("src/example.rs"), content).unwrap();
+        let file = local_apply_file(content);
+        let locations = file.addressable_lines();
+        let mut comment = line_comment(Some(3), Some(3), "replace both");
+        comment.start = Some(locations[1]);
+        comment.location = locations[2];
+        comment.suggestion = Some("TWO\nTHREE".to_string());
+
+        let report = apply_suggestions_to_file(workdir.path(), &file, &[(0, comment)]);
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(workdir.path().join("src/example.rs")).unwrap(),
+            "one\r\nTWO\r\nTHREE\r\n"
+        );
+    }
+
+    #[test]
+    fn local_suggestion_refuses_a_file_changed_since_diff_load() {
+        let workdir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(workdir.path().join("src")).unwrap();
+        let reviewed = "one\ntwo\nthree\n";
+        let live = "one\nchanged elsewhere\nthree\n";
+        std::fs::write(workdir.path().join("src/example.rs"), live).unwrap();
+        let file = local_apply_file(reviewed);
+        let mut comment = line_comment(Some(2), None, "replace it");
+        comment.suggestion = Some("TWO".to_string());
+
+        let report = apply_suggestions_to_file(workdir.path(), &file, &[(0, comment)]);
+
+        assert!(report.applied.is_empty());
+        assert!(report.failures[0].contains("changed since the diff was loaded"));
+        assert_eq!(
+            std::fs::read_to_string(workdir.path().join("src/example.rs")).unwrap(),
+            live
+        );
+    }
+
+    #[test]
+    fn local_suggestion_refuses_deletion_side_anchor() {
+        let workdir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(workdir.path().join("src")).unwrap();
+        std::fs::write(workdir.path().join("src/example.rs"), "one\n").unwrap();
+        let mut file = local_apply_file("one\n");
+        file.hunks = vec![DiffHunk {
+            header: "@@ -1,2 +1 @@".to_string(),
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec![DiffLine {
+                kind: DiffLineKind::Removed,
+                text: "-gone".to_string(),
+            }],
+        }];
+        let mut comment = line_comment(None, Some(1), "replace deletion");
+        comment.suggestion = Some("replacement".to_string());
+
+        let report = apply_suggestions_to_file(workdir.path(), &file, &[(0, comment)]);
+
+        assert!(report.applied.is_empty());
+        assert!(report.failures[0].contains("deletion-only line"));
+        assert_eq!(
+            std::fs::read_to_string(workdir.path().join("src/example.rs")).unwrap(),
+            "one\n"
+        );
+    }
+
+    #[test]
+    fn local_suggestion_batch_applies_bottom_up_when_line_counts_change() {
+        let workdir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(workdir.path().join("src")).unwrap();
+        let content = "one\ntwo\nthree\n";
+        std::fs::write(workdir.path().join("src/example.rs"), content).unwrap();
+        let file = local_apply_file(content);
+        let locations = file.addressable_lines();
+        let mut second = line_comment(Some(2), None, "expand two");
+        second.location = locations[1];
+        second.suggestion = Some("TWO-A\nTWO-B".to_string());
+        let mut third = line_comment(Some(3), Some(3), "replace three");
+        third.location = locations[2];
+        third.suggestion = Some("THREE".to_string());
+
+        let report = apply_suggestions_to_file(workdir.path(), &file, &[(0, second), (1, third)]);
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(report.applied.len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(workdir.path().join("src/example.rs")).unwrap(),
+            "one\nTWO-A\nTWO-B\nTHREE\n"
+        );
     }
 
     #[test]
@@ -4339,6 +5024,39 @@ index 1111111..2222222 100644
         assert_eq!(comments[0].location, after.addressable_lines()[2]);
         assert_eq!(comments[0].location.new_line, Some(21));
         assert!(!comments[0].anchor_lost);
+    }
+
+    #[test]
+    fn reanchor_does_not_trust_a_reused_line_number_with_different_text() {
+        let before = local_apply_file("one\ntwo\nthree\n");
+        let mut after = local_apply_file("one\ninserted\ntwo\nthree\n");
+        after.hunks[0].new_lines = 4;
+        after.hunks[0].lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Context,
+                text: " one".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Added,
+                text: "+inserted".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Added,
+                text: "+two".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Context,
+                text: " three".to_string(),
+            },
+        ];
+        let mut comment = line_comment(Some(2), None, "track two");
+        comment.location = before.addressable_lines()[1];
+        comment.anchor_context = CommentAnchorContext::capture(&before.addressable_line_texts(), 1);
+
+        let (moved, lost) = reanchor_file_comments(&after, std::slice::from_mut(&mut comment));
+
+        assert_eq!((moved, lost), (1, 0));
+        assert_eq!(comment.location.new_line, Some(3));
     }
 
     #[test]

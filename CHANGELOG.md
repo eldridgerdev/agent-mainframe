@@ -58,6 +58,13 @@ are tagged.
   carry severity, survive re-review rounds, appear in file filters and review
   feedback, and can be posted to GitHub as file-level PR comments when PR
   posting is enabled. No migration is required.
+- **Final Review can apply suggested changes directly to the worktree.** With
+  the line cursor on a suggestion, press `x` to apply just that replacement,
+  or press `X` to opt into applying all remaining suggestions when the review
+  finishes, before the configured build/test check runs. AMF refuses to
+  overwrite a file that changed after the diff loaded, leaves anything unsafe
+  or stale for the fixing agent, and reports what was applied or skipped.
+  No migration is required.
 - **The review-memory doc path can now be overridden per project, not just
   globally.** `review_memory_path` was already a config setting, but one
   value applied to every project. Set `review_memory_path` in a project's
@@ -158,6 +165,10 @@ are tagged.
 
 ### Fixed
 
+- **Pressing `m` in Final Review now shows the file-comment editor.** The
+  comment state opened correctly, but its footer stayed at the compact
+  two-line height, leaving no visible edit box. File comments now get the same
+  expanded multi-line editor as line comments and rejection feedback.
 - **The theme picker now keeps the selected theme visible when the list is
   longer than the dialog.** Navigating beyond the initially visible themes
   scrolls the list automatically, with a scrollbar showing the current

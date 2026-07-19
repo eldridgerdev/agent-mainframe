@@ -60,6 +60,7 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
         && (state.feedback_editing
             || state.editing_general
             || state.editing_line_comment
+            || state.editing_file_comment
             || state.editing_suggestion)
     {
         inner.height.saturating_sub(10).clamp(4, 12)
@@ -1428,6 +1429,8 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             Span::raw(" comment  "),
             key("S"),
             Span::raw(" suggest  "),
+            key("x"),
+            Span::raw(" apply suggestion  "),
             key("R"),
             Span::raw(" resolve/reopen  "),
             key("n"),
@@ -1460,10 +1463,10 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                 }
                 (false, false, true) => " resolved thread on this line (Enter to edit · R reopen) ",
                 (false, true, false) if comment.suggestion.is_some() => {
-                    " suggestion on these lines (Enter comment · S suggest · R resolve) "
+                    " suggestion on these lines (x apply · Enter comment · S edit · R resolve) "
                 }
                 (false, false, false) if comment.suggestion.is_some() => {
-                    " suggestion on this line (Enter comment · S suggest · R resolve) "
+                    " suggestion on this line (x apply · Enter comment · S edit · R resolve) "
                 }
                 (false, true, false) => " comment on these lines (Enter to edit · R resolve) ",
                 (false, false, false) => " comment on this line (Enter to edit · R resolve) ",
@@ -1555,6 +1558,22 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         target_label,
         Style::default().fg(target_color),
     ));
+    let pending_suggestions = state.pending_suggestion_count();
+    if pending_suggestions > 0 {
+        second_line.push(key("X"));
+        second_line.push(Span::styled(
+            if state.apply_suggestions_on_finish {
+                format!(" apply at finish: on ({pending_suggestions})  ")
+            } else {
+                format!(" apply {pending_suggestions} at finish  ")
+            },
+            Style::default().fg(if state.apply_suggestions_on_finish {
+                theme.info.to_color()
+            } else {
+                theme.text_muted.to_color()
+            }),
+        ));
+    }
     second_line.push(key("q"));
     second_line.push(Span::raw(" finish review (writes feedback)"));
 
@@ -3116,6 +3135,30 @@ mod tests {
         assert!(line_text(&lines[0]).contains("install tsx parser"));
         assert!(line_text(&lines[0]).contains("Esc close"));
         assert!(line_text(&lines[1]).contains("layout:unified (new file)"));
+    }
+
+    #[test]
+    fn file_comment_editor_expands_footer_and_renders_edit_box() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut state, _) = single_added_line_review_state();
+        state.editing_file_comment = true;
+        let backend = TestBackend::new(120, 36);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw_diff_viewer(frame, &mut state, &Theme::default()))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("File Comment — a.rs"));
+        assert!(rendered.contains("Write feedback for the agent. Markdown is fine."));
     }
 
     #[test]

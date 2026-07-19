@@ -681,6 +681,18 @@ pub struct DiffViewerState {
     /// (also reuses `feedback_editor`; mutually exclusive with
     /// `editing_line_comment`). The editor content is the replacement code.
     pub editing_suggestion: bool,
+    /// Opt-in toggle: apply every still-open suggested change directly to the
+    /// worktree before the build/test gate runs and the review finishes. Kept
+    /// separate from suggestion authoring so finishing never mutates source
+    /// files unless the reviewer explicitly enables it.
+    pub apply_suggestions_on_finish: bool,
+    /// Human-readable anchors of suggestions successfully applied during this
+    /// review (either individually or by the finish-time batch). Carried until
+    /// finish so the summary can say exactly what AMF changed locally.
+    pub applied_suggestions: Vec<String>,
+    /// Finish-time application failures (`anchor: reason`). The affected
+    /// suggestions remain open and are sent to the fixing agent normally.
+    pub suggestion_apply_failures: Vec<String>,
     /// Severity being composed in the line-comment or rejection editor. Seeded
     /// when the editor opens (from an existing comment/rejection, else a sensible
     /// default) and cycled with Ctrl+E; read on submit. Transient — not
@@ -832,6 +844,9 @@ impl DiffViewerState {
             editing_line_comment: false,
             editing_file_comment: false,
             editing_suggestion: false,
+            apply_suggestions_on_finish: false,
+            applied_suggestions: Vec::new(),
+            suggestion_apply_failures: Vec::new(),
             comment_severity: Severity::default(),
             cursor_sync_to_view: false,
             finish_confirm: false,
@@ -949,6 +964,17 @@ impl DiffViewerState {
             .file_comments
             .values()
             .filter(|c| c.is_open_thread())
+            .count()
+    }
+
+    /// Number of kept, unresolved suggested changes that could be applied to
+    /// the worktree. Lost anchors are included so an attempted batch reports
+    /// why they were skipped instead of silently hiding them.
+    pub fn pending_suggestion_count(&self) -> usize {
+        self.line_comments
+            .values()
+            .flatten()
+            .filter(|comment| comment.is_open_thread() && comment.suggestion.is_some())
             .count()
     }
 

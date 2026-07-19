@@ -77,8 +77,9 @@ Relevant flags:
 - `--keep` — preserve the scratch root instead of deleting it on exit
   (useful while iterating on a scenario).
 
-This produces numbered `.ansi` dumps (one per `shot:` step) in
-`--out-dir` (default `<scratch-root>/shots`).
+This produces, per `shot:` step, a numbered `.ansi` dump and a
+plain-text `.txt` twin (same capture, no escape codes) in `--out-dir`
+(default `<scratch-root>/shots`).
 
 ## Step 3: render PNGs
 
@@ -95,9 +96,15 @@ Pass `--cols`/`--rows` matching the `--geometry` used for the capture
 per `.ansi` file. If `--gif` was passed instead, the driver already
 renders and assembles the GIF — nothing further to do.
 
-## Step 4: verify and return the result
+## Step 4: verify cheaply, then return the result
 
-Read the generated PNG(s) (or the GIF) yourself to confirm they show
-what you intended before handing them to the user. Return the
-absolute file paths as the deliverable proof — that's the artifact the
-user is asking for, not a description of what should be visible.
+Verify content against the `.txt` twins, not the images: grep each
+one for the strings the frame should show (a dialog title, the typed
+text, a status line). The `.txt` files are small and escape-free —
+never read the `.ansi` files, whose escape codes waste tokens.
+
+Only after the text checks pass, Read **one or two representative
+PNGs** as images to confirm layout/colors look right — not every
+frame. Then return the absolute file paths of all PNGs (or the GIF)
+as the deliverable proof — that's the artifact the user is asking
+for, not a description of what should be visible.

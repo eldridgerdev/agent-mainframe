@@ -157,3 +157,10 @@ doc always says exactly what remains.
   replies/resolution → throughput epics, with a planned Epic E adding an
   AI code review of the diff and a committed `review-memory.md` of common
   findings (bootstrapped from the last N PRs, grown one comment at a time).
+- [Screenshot & video review harness](screenshot-review-plan.md) —
+  _All epics shipped._ Lets an agent run AMF in an isolated scratch
+  instance (private `XDG_CONFIG_HOME`/`XDG_STATE_HOME` + tmux session, no
+  Rust changes) and, only when asked, return screenshots proving a
+  feature works. A Python + Pillow ANSI→PNG renderer, a tmux driver
+  script, scenario/seed examples, and a screenshot skill; GIF on request,
+  high-fidelity `vhs` path left as future work.

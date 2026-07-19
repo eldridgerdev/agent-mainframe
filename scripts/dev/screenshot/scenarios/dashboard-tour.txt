@@ -1,0 +1,31 @@
+# dashboard-tour: a copyable template that pokes at the dashboard's
+# read-only surfaces (help overlay, search) without creating or
+# mutating any project/feature state. Real keybindings, see
+# src/handlers/normal.rs / CLAUDE.md's key dispatch section.
+#
+# Run with:
+#   ./amf-capture.sh --scenario scenarios/dashboard-tour.txt --keep
+
+shot:dashboard
+
+# '?' opens the keybindings help overlay.
+key:?
+wait:200
+shot:help-overlay
+
+# Esc/q/h all close help; use Esc here.
+key:Escape
+wait:200
+shot:dashboard-after-help
+
+# '/' opens the fuzzy search prompt, type a literal query with text:.
+key:/
+wait:200
+text:demo
+wait:200
+shot:search-typed
+
+# Esc cancels search and returns to the dashboard.
+key:Escape
+wait:200
+shot:dashboard-final

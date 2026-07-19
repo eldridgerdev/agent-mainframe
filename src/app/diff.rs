@@ -280,6 +280,8 @@ impl App {
 
     pub fn diff_viewer_toggle_layout(&mut self) {
         if self.diff_viewer_selected_file_is_new() {
+            self.message =
+                Some("Side-by-side isn't available for a new/untracked file".to_string());
             return;
         }
         let next_layout = match &self.mode {

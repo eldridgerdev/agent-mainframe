@@ -353,8 +353,12 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.diff_review_toggle_apply_suggestions_on_finish();
                 return Ok(());
             }
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('q') => {
                 app.confirm_or_finish_review()?;
+                return Ok(());
+            }
+            KeyCode::Esc => {
+                app.pause_final_review();
                 return Ok(());
             }
             _ => {}
@@ -1862,6 +1866,149 @@ index 1111111..2222222 100644
         // q now finishes immediately (all files decided).
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn esc_pauses_review_without_writing_feedback() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        // Both files are undecided; q here would only raise the finish
+        // confirmation, but top-level Esc pauses immediately without it.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert!(!dir.path().join(".claude/final-review-feedback.md").exists());
+    }
+
+    #[test]
+    fn esc_pauses_review_after_a_decision_and_keeps_progress_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        // Approving persists progress incrementally, independent of pause/finish.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        let progress_path = dir.path().join(".claude/final-review-progress.json");
+        assert!(progress_path.exists());
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert!(!dir.path().join(".claude/final-review-feedback.md").exists());
+        // Pausing must not clear the progress a reviewer will resume from.
+        let saved = std::fs::read_to_string(&progress_path).unwrap();
+        assert!(saved.contains("a.rs"));
+    }
+
+    #[test]
+    fn esc_does_not_pause_while_finish_check_is_running() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+
+        // Simulate `q` having already spawned a background finish-check
+        // command that hasn't reported back yet.
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let child_id = child.id();
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.finish_check_command = Some("sleep 30".to_string());
+            state.finish_check_child = Some(child);
+        }
+
+        // Esc must not drop the DiffViewerState here — doing so would orphan
+        // the check child and the review would never actually complete.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        match &mut app.mode {
+            AppMode::DiffViewer(state) => {
+                let child = state.finish_check_child.as_mut().expect("child kept");
+                assert_eq!(child.id(), child_id);
+                child.kill().ok();
+                child.wait().ok();
+            }
+            _ => panic!("expected the viewer to stay open while the check runs"),
+        }
+    }
+
+    #[test]
+    fn v_toggles_layout_in_final_review() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.layout == crate::app::DiffViewerLayout::Unified
+        ));
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('v'))).unwrap();
+
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.layout == crate::app::DiffViewerLayout::SideBySide
+        ));
+    }
+
+    #[test]
+    fn v_on_new_file_in_final_review_is_a_no_op_with_a_message() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[0].status = DiffFileStatus::Added;
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('v'))).unwrap();
+
+        // The toggle is a no-op (still Unified, the only layout new files can
+        // render), but unlike the pre-fix behavior it must explain why rather
+        // than silently doing nothing.
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.layout == crate::app::DiffViewerLayout::Unified
+        ));
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.contains("new/untracked"))
+        );
+    }
+
+    #[test]
+    fn layout_preference_survives_a_new_file_in_final_review() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[1].status = DiffFileStatus::Untracked;
+        }
+
+        // Choose side-by-side on the ordinary file.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('v'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.layout == crate::app::DiffViewerLayout::SideBySide
+        ));
+
+        // Moving onto the untracked file forces the *render* to unified, but
+        // must not overwrite the stored preference.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap();
+        assert!(app.diff_viewer_selected_file_is_new());
+        assert_eq!(
+            app.diff_viewer_layout(),
+            Some(crate::app::DiffViewerLayout::Unified)
+        );
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.layout == crate::app::DiffViewerLayout::SideBySide
+        ));
+
+        // Moving back restores the side-by-side render.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('p'))).unwrap();
+        assert!(!app.diff_viewer_selected_file_is_new());
+        assert_eq!(
+            app.diff_viewer_layout(),
+            Some(crate::app::DiffViewerLayout::SideBySide)
+        );
     }
 
     #[test]

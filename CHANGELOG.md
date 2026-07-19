@@ -65,6 +65,21 @@ are tagged.
   overwrite a file that changed after the diff loaded, leaves anything unsafe
   or stale for the fixing agent, and reports what was applied or skipped.
   No migration is required.
+- **Final Review can now be paused without finishing it.** `Esc` at the top
+  level of the review viewer returns to the feature view and writes nothing —
+  no feedback file, no PR post, no dispatched fix prompt, and the progress
+  file is left exactly as-is. `q` keeps finishing the review as before, and
+  reopening Final Review resumes the paused review's decisions, comments, and
+  filters. Nested `Esc` behavior is unchanged: it still dismisses an open
+  modal, editor, or cursor mode, and cancels the finish confirmation, before
+  a plain top-level `Esc` pauses. No migration is required.
+- **Final Review's layout toggle is now honest about what it's doing.**
+  Pressing `v` on a new or untracked file (which can only render unified)
+  used to silently do nothing — it now explains why. The footer's `v` hint
+  also now shows the layout actually being rendered (`layout:unified` /
+  `layout:side-by-side`), and switches to a plain `(new file)` label instead
+  of the `v` key hint on files that can't switch, matching how the plain
+  (non-review) diff viewer already labeled it. No migration is required.
 - **The review-memory doc path can now be overridden per project, not just
   globally.** `review_memory_path` was already a config setting, but one
   value applied to every project. Set `review_memory_path` in a project's

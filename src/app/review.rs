@@ -2369,6 +2369,22 @@ impl App {
         Ok(())
     }
 
+    /// Leave the review viewer without finishing it: no feedback file, no PR
+    /// post, no fix dispatch, and the progress/snapshot files are left
+    /// exactly as they are. Decisions/comments/filters are already persisted
+    /// incrementally by `persist_review_progress` on every mutation, so
+    /// pausing only needs to return to the feature view.
+    pub fn pause_final_review(&mut self) {
+        if let AppMode::DiffViewer(state) = &self.mode
+            && state.finish_check_child.is_some()
+        {
+            self.message = Some("Finish check still running — wait for it to finish".to_string());
+            return;
+        }
+        self.close_diff_viewer();
+        self.message = Some("Review paused — progress saved, press f to resume".to_string());
+    }
+
     /// Move the selection to the next file with no verdict (wrapping), so a
     /// reviewer can sweep up everything they skipped past.
     pub fn diff_review_jump_next_undecided(&mut self) {

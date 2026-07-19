@@ -5,7 +5,9 @@
   (most recently Round 2's file-level PR comments). **Round 3** (captured
   2026-07-01) has started: first-class file-level comments, interdiff on
   re-review, the "fixes ready — re-review?" notification, local application of
-  suggestion blocks, and a **Cost** batch have shipped. The Cost batch makes
+  suggestion blocks, a **Cost** batch, the high-priority **close / pause
+  without finishing** viewer item, and the **`v` layout toggle** fix have
+  shipped. The Cost batch makes
   bounded headless passes honor `review_model`, caps
   `final-review-feedback.md` with an archive file, and batches REVIEW MODE's
   note instruction per turn. The rest of the
@@ -867,13 +869,51 @@ Cost:
 
 Viewer:
 
-- [ ] **High priority:** close / pause Final Review without finishing — retain
-      persisted progress and return to the feature view without writing or
-      dispatching feedback, posting to the PR, clearing progress, or updating
-      the finished-review snapshot
-- [ ] Fix the `v` layout toggle so unified/side-by-side switching is reliable,
+- [x] **High priority:** close / pause Final Review without finishing — at the
+      top level of the review viewer, `Esc` now pauses (returns to the feature
+      view via the same zero-side-effect path plain non-review diff viewing
+      already used) while `q` keeps the existing finish behavior. Nothing is
+      written, posted, dispatched, or cleared: decisions, comments, filters
+      and general feedback are already saved continuously to
+      `.claude/final-review-progress.json` by `persist_review_progress` on
+      every mutation, so pausing only has to stop rendering the viewer — the
+      progress/snapshot files and `.claude/final-review-feedback.md` are left
+      untouched. Nested `Esc` behavior is unchanged and still takes priority:
+      it dismisses an open modal/editor, exits cursor mode, or cancels the
+      finish-confirmation prompt before a plain top-level `Esc` reaches pause.
+      One guard: if `q` already committed to finishing and a configured
+      `final_review_check_command` is running in the background
+      (`finish_check_child`), `Esc` does not pause — dropping the viewer state
+      mid-check would orphan that child process and the review would never
+      actually complete, so pausing is refused with a message until the check
+      finishes. The footer's `q finish review` hint now sits beside a paired
+      `Esc pause (keep progress)` hint so the two are visually distinct.
+      Reopening Final Review resumes the same file, decisions, comments and
+      filters via the existing `restore_review_progress` path — already true
+      before this item, since progress persistence shipped earlier.
+      `pause_final_review` in `src/app/review.rs`; key split in
+      `src/handlers/diff.rs`; footer hint in `src/ui/dialogs/diff.rs`.
+- [x] Fix the `v` layout toggle so unified/side-by-side switching is reliable,
       discoverable, and accurately labeled in review mode (including cursor
-      binding conflicts and added/untracked-file fallback behavior)
+      binding conflicts and added/untracked-file fallback behavior) — the two
+      concrete bugs the plan named. First: `v` on a new/untracked file (which
+      can only render unified) was a silent no-op; `diff_viewer_toggle_layout`
+      (`src/app/diff.rs`) now sets a message explaining why instead. Second:
+      the final-review footer's `v` hint always read a bare "layout" with no
+      current value, unlike the plain diff viewer's footer, which already
+      showed `layout:{unified|side-by-side}` and swapped in `(new file)` when
+      forced — `draw_review_footer` (`src/ui/dialogs/diff.rs`) now mirrors
+      that exact pattern. Investigated but found already correct, not bugs:
+      the stored layout preference already survives moving through a
+      new/untracked file back to an ordinary one (`on_file_changed` never
+      touches `state.layout`; only the *render* is forced via
+      `effective_layout`/`diff_viewer_layout()`), and cursor mode's `v`
+      (range-selection) vs top-level `v` (layout) is the same
+      context-dependent-rebinding pattern already used for `c`
+      (`toggle_line_cursor` outside, exit-cursor inside) — the cursor-mode
+      footer already labels `v` accurately as "select range" in that context,
+      so no rebind was needed, just the two fixes above plus regression tests
+      for both.
 - [ ] Review-round timeline/history browser (`Round 1 ─ Round 2 ─ Current`)
       with round selection, a scrollable read-only summary, carried-thread
       markers, and lazy access to archived rounds

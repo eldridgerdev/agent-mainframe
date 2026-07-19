@@ -1575,7 +1575,9 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         ));
     }
     second_line.push(key("q"));
-    second_line.push(Span::raw(" finish review (writes feedback)"));
+    second_line.push(Span::raw(" finish review (writes feedback)  "));
+    second_line.push(key("Esc"));
+    second_line.push(Span::raw(" pause (keep progress)"));
 
     let mut first_line = vec![
         key(" a"),
@@ -1637,9 +1639,22 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         }),
         key("Tab"),
         Span::raw(" focus  "),
-        key("v"),
-        Span::raw(" layout"),
     ]);
+    let layout_label = match effective_layout(state) {
+        DiffViewerLayout::Unified => "unified",
+        DiffViewerLayout::SideBySide => "side-by-side",
+    };
+    let new_file_selected = state
+        .files
+        .get(state.selected_file)
+        .map(is_new_diff_file)
+        .unwrap_or(false);
+    if new_file_selected {
+        first_line.push(Span::raw(format!(" layout:{layout_label} (new file)")));
+    } else {
+        first_line.push(key("v"));
+        first_line.push(Span::raw(format!(" layout:{layout_label}")));
+    }
 
     // Offer the on-demand walkthrough only when the current file has no
     // developer note (the case where the notes panel would otherwise be empty).

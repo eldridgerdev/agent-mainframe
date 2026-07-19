@@ -113,7 +113,10 @@ list of one or more of:
 - `wait:<ms>` — sleep this many milliseconds before the next step.
 - `shot:<label>` — `capture-pane -e -p` the current pane to
   `NNN-<label>.ansi` in the output dir (`NNN` is a zero-padded, per-run
-  step counter, not tied to the line number).
+  step counter, not tied to the line number). Each shot also writes an
+  escape-free `NNN-<label>.txt` twin (`capture-pane -p`) — the cheap
+  artifact for greppable content checks, so nothing has to parse or
+  read the ANSI dump just to verify text.
 
 Blank lines and lines starting with `#` are skipped, so comments can
 explain what a step does or which real keybinding it exercises. Multiple

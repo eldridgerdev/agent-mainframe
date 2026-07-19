@@ -158,9 +158,9 @@ doc always says exactly what remains.
   AI code review of the diff and a committed `review-memory.md` of common
   findings (bootstrapped from the last N PRs, grown one comment at a time).
 - [Screenshot & video review harness](screenshot-review-plan.md) —
-  _Ready._ Let an agent run AMF in an isolated scratch instance (private
-  `XDG_CONFIG_HOME`/`XDG_STATE_HOME` + tmux session, no Rust changes) and,
-  only when asked, return screenshots proving a feature works. A Python +
-  Pillow ANSI→PNG renderer plus a tmux driver script and a screenshot
-  skill; GIF on request, high-fidelity `vhs` path left as future work.
-  Two independent P0 epics (renderer, harness) with C–G layered on top.
+  _All epics shipped._ Lets an agent run AMF in an isolated scratch
+  instance (private `XDG_CONFIG_HOME`/`XDG_STATE_HOME` + tmux session, no
+  Rust changes) and, only when asked, return screenshots proving a
+  feature works. A Python + Pillow ANSI→PNG renderer, a tmux driver
+  script, scenario/seed examples, and a screenshot skill; GIF on request,
+  high-fidelity `vhs` path left as future work.

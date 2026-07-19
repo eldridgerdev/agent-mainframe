@@ -1,6 +1,6 @@
 # Screenshot & video review harness
 
-- **Status:** Ready
+- **Status:** All epics shipped
 - **Owner:** unassigned
 - **Relates to:** ANSI pane capture (`src/tmux.rs:1704`
   `capture_pane_ansi`); XDG config/state resolution
@@ -133,11 +133,11 @@ A and B are the two independent P0 tracks; everything else layers on top.
 - [x] Off by default; verify a multi-step scenario yields a valid GIF.
 
 ### Epic F — screenshot skill (P1; needs B, C)
-- [ ] `.claude/skills/amf-screenshot/SKILL.md` (mirror to `skills/`):
+- [x] `.claude/skills/amf-screenshot/SKILL.md` (mirror to `skills/`):
       invoke only when the user asks for proof a feature works; author a
       scenario for the just-built feature; run the driver; return PNG paths
       to the user; build a GIF only on request.
-- [ ] Document isolation guarantees + fixed geometry in the skill.
+- [x] Document isolation guarantees + fixed geometry in the skill.
 
 ### Epic G — docs + high-fidelity path (P2; needs B)
 - [x] `scripts/dev/screenshot/README.md`: usage, scenario format,

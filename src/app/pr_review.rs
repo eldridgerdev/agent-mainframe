@@ -739,6 +739,25 @@ pub enum ReplyTarget {
     Conversation,
 }
 
+/// Correlates one agent-written reply draft with the exact fix injection that
+/// requested it. A fresh UUID is generated every time `f`/`B` opens a confirm
+/// dialog; SQLite accepts a returned draft only after that dialog is injected
+/// and only while this request remains the comment's latest one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyDraftRequest {
+    pub comment_id: u64,
+    pub request_id: String,
+}
+
+impl ReplyDraftRequest {
+    fn new(comment_id: u64) -> Self {
+        Self {
+            comment_id,
+            request_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+}
+
 /// The two contextual replies the pane posts — both tied to a triage decision
 /// rather than free-form. A reply is never arbitrary: it either reports a fix
 /// or explains why one isn't needed.
@@ -930,13 +949,47 @@ pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
     out.trim_end().to_string()
 }
 
+/// Append the provider-neutral reply-draft handoff to the exact prompt shown
+/// in the fix confirmation dialog. Every built-in harness can run the hidden
+/// `amf reply-draft` CLI; the body travels over stdin and the command turns it
+/// into structured IPC, avoiding brittle terminal-output scraping.
+fn with_reply_draft_handoff(
+    mut prompt: String,
+    pr_number: u32,
+    requests: &[ReplyDraftRequest],
+) -> String {
+    prompt.push_str(
+        "\n\nAfter implementing and verifying each fix, draft a concise reviewer-facing \
+         reply explaining what changed and any relevant validation. Do not post \
+         replies to GitHub yourself. Return each draft to AMF by passing only the \
+         reply text on stdin to its matching command:",
+    );
+    for request in requests {
+        prompt.push_str(&format!(
+            "\n\nComment ID {comment_id}:\n\
+             amf reply-draft --pr-number {pr_number} --comment-id {comment_id} \
+             --request-id {request_id} <<'AMF_REPLY'\n\
+             <concise reply text>\n\
+             AMF_REPLY",
+            comment_id = request.comment_id,
+            request_id = request.request_id,
+        ));
+    }
+    prompt
+}
+
 /// Build a fresh fix-confirm dialog seeded with `prompt`. The editor opens with
 /// the vim keymap when `vim` is set (the pane-level remembered preference) so
 /// reopening the dialog for another comment keeps the user's chosen keymap.
 /// Build a fresh fix-confirm dialog. `batch` is `None` for an ordinary
 /// single-comment fix and `Some(ids)` for the combined-batch flow (`B`), where
 /// injecting marks every listed comment `Fixing`.
-fn new_fix_confirm(prompt: String, vim: bool, batch: Option<Vec<u64>>) -> FixConfirmState {
+fn new_fix_confirm(
+    prompt: String,
+    vim: bool,
+    batch: Option<Vec<u64>>,
+    reply_draft_requests: Vec<ReplyDraftRequest>,
+) -> FixConfirmState {
     FixConfirmState {
         editor: if vim {
             TextEditor::with_vim(prompt)
@@ -949,6 +1002,7 @@ fn new_fix_confirm(prompt: String, vim: bool, batch: Option<Vec<u64>>) -> FixCon
         // start for vim) so a tall prompt opens somewhere sensible.
         sync_to_cursor: true,
         batch,
+        reply_draft_requests,
     }
 }
 
@@ -1567,6 +1621,55 @@ impl App {
         }
     }
 
+    /// Make this injection's reply-draft request ids authoritative and clear
+    /// any previous draft for the same comments. A write failure is non-fatal:
+    /// the fix still runs and `R` falls back to its existing deterministic seed.
+    fn begin_reply_draft_requests(&mut self, pr_number: u32, requests: &[ReplyDraftRequest]) {
+        for request in requests {
+            let result = match self.db.as_ref() {
+                Some(db) => db.begin_pr_comment_reply_draft(
+                    pr_number,
+                    request.comment_id,
+                    &request.request_id,
+                ),
+                None => return,
+            };
+            if let Err(error) = result {
+                self.log_warn(
+                    "pr_review",
+                    format!(
+                        "reply-draft request persist failed for comment {}: {error}",
+                        request.comment_id
+                    ),
+                );
+            }
+        }
+    }
+
+    fn load_reply_draft(&mut self, pr_number: u32, comment_id: u64) -> Option<String> {
+        let result = self
+            .db
+            .as_ref()?
+            .load_pr_comment_reply_draft(pr_number, comment_id);
+        match result {
+            Ok(draft) => draft.filter(|body| !body.trim().is_empty()),
+            Err(error) => {
+                self.log_warn("pr_review", format!("reply-draft load failed: {error}"));
+                None
+            }
+        }
+    }
+
+    fn clear_reply_draft(&mut self, pr_number: u32, comment_id: u64) {
+        let result = match self.db.as_ref() {
+            Some(db) => db.clear_pr_comment_reply_draft(pr_number, comment_id),
+            None => return,
+        };
+        if let Err(error) = result {
+            self.log_warn("pr_review", format!("reply-draft clear failed: {error}"));
+        }
+    }
+
     /// Set the selected comment's triage state in-memory and persist it. The
     /// comment keeps its existing `local_note`. No-op outside PR Triage or
     /// with no selection.
@@ -2170,9 +2273,14 @@ impl App {
             self.message = Some("No comment selected".into());
             return;
         };
-        let prompt = comment.fix_prompt();
+        let request = ReplyDraftRequest::new(comment.id);
+        let prompt = with_reply_draft_handoff(
+            comment.fix_prompt(),
+            state.review.pr.number,
+            std::slice::from_ref(&request),
+        );
         let vim = state.fix_vim_enabled;
-        state.fix_confirm = Some(new_fix_confirm(prompt, vim, None));
+        state.fix_confirm = Some(new_fix_confirm(prompt, vim, None, vec![request]));
     }
 
     /// Open the **combined-batch** confirm dialog (`B`): assemble one numbered
@@ -2228,12 +2336,19 @@ impl App {
                     .collect();
                 (!selected.is_empty()).then(|| {
                     let ids: Vec<u64> = selected.iter().map(|c| c.id).collect();
-                    (combined_fix_prompt(&selected), ids)
+                    let requests: Vec<ReplyDraftRequest> =
+                        ids.iter().copied().map(ReplyDraftRequest::new).collect();
+                    let prompt = with_reply_draft_handoff(
+                        combined_fix_prompt(&selected),
+                        state.review.pr.number,
+                        &requests,
+                    );
+                    (prompt, ids, requests)
                 })
             }
             _ => return,
         };
-        let Some((prompt, ids)) = built else {
+        let Some((prompt, ids, requests)) = built else {
             self.message = Some("Marked comments are all resolved — nothing to batch".into());
             return;
         };
@@ -2251,7 +2366,7 @@ impl App {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.pending_batch = false;
             let vim = state.fix_vim_enabled;
-            state.fix_confirm = Some(new_fix_confirm(prompt, vim, Some(ids)));
+            state.fix_confirm = Some(new_fix_confirm(prompt, vim, Some(ids), requests));
         }
     }
 
@@ -2517,38 +2632,60 @@ impl App {
     /// `FixConfirmState::batch`): the batch injects one numbered prompt and marks
     /// every included comment `Fixing`, then clears the marked set.
     pub fn pr_review_inject_fix(&mut self) -> Result<()> {
-        let (prompt, pr_number, head_sha, fixing_ids, is_batch) = match &self.mode {
-            AppMode::PrReview(state) => {
-                let pr_number = state.review.pr.number;
-                let head_sha = state.review.pr.head_sha.clone();
-                let (prompt, ids, is_batch) = match &state.fix_confirm {
-                    // Confirming the open dialog uses its edited buffer. A batch
-                    // dialog carries every included comment id; a single one
-                    // targets the current selection.
-                    Some(confirm) => {
-                        let prompt = confirm.editor.text().trim().to_string();
-                        match &confirm.batch {
-                            Some(batch_ids) => (prompt, batch_ids.clone(), true),
-                            None => (
-                                prompt,
-                                state.selected_comment().map(|c| c.id).into_iter().collect(),
-                                false,
-                            ),
+        let (prompt, pr_number, head_sha, fixing_ids, is_batch, reply_draft_requests) =
+            match &self.mode {
+                AppMode::PrReview(state) => {
+                    let pr_number = state.review.pr.number;
+                    let head_sha = state.review.pr.head_sha.clone();
+                    let (prompt, ids, is_batch, reply_draft_requests) = match &state.fix_confirm {
+                        // Confirming the open dialog uses its edited buffer. A batch
+                        // dialog carries every included comment id; a single one
+                        // targets the current selection.
+                        Some(confirm) => {
+                            let prompt = confirm.editor.text().trim().to_string();
+                            match &confirm.batch {
+                                Some(batch_ids) => (
+                                    prompt,
+                                    batch_ids.clone(),
+                                    true,
+                                    confirm.reply_draft_requests.clone(),
+                                ),
+                                None => (
+                                    prompt,
+                                    state.selected_comment().map(|c| c.id).into_iter().collect(),
+                                    false,
+                                    confirm.reply_draft_requests.clone(),
+                                ),
+                            }
                         }
-                    }
-                    // No dialog open (e.g. empty pane): fall back to the selection.
-                    None => match state.selected_comment() {
-                        Some(c) => (c.fix_prompt(), vec![c.id], false),
-                        None => {
-                            self.message = Some("No comment selected".into());
-                            return Ok(());
-                        }
-                    },
-                };
-                (prompt, pr_number, head_sha, ids, is_batch)
-            }
-            _ => return Ok(()),
-        };
+                        // No dialog open (e.g. empty pane): fall back to the selection.
+                        None => match state.selected_comment() {
+                            Some(c) => {
+                                let request = ReplyDraftRequest::new(c.id);
+                                let prompt = with_reply_draft_handoff(
+                                    c.fix_prompt(),
+                                    pr_number,
+                                    std::slice::from_ref(&request),
+                                );
+                                (prompt, vec![c.id], false, vec![request])
+                            }
+                            None => {
+                                self.message = Some("No comment selected".into());
+                                return Ok(());
+                            }
+                        },
+                    };
+                    (
+                        prompt,
+                        pr_number,
+                        head_sha,
+                        ids,
+                        is_batch,
+                        reply_draft_requests,
+                    )
+                }
+                _ => return Ok(()),
+            };
 
         if prompt.is_empty() {
             self.message = Some("Nothing to inject — the prompt is empty".into());
@@ -2562,6 +2699,8 @@ impl App {
                 return Ok(());
             }
         };
+
+        self.begin_reply_draft_requests(pr_number, &reply_draft_requests);
 
         // The fix is committed: mark every targeted comment `Fixing` and persist
         // before we leave the pane, so re-opening the review (cache hit) shows
@@ -2748,12 +2887,12 @@ impl App {
         }
     }
 
-    /// Open a **"Done in `<sha>`"** reply for the selected comment, seeded from
-    /// the most recent commit that plausibly fixed it — a commit touching the
-    /// comment's file/line — falling back to bare `HEAD` (flagged "latest
-    /// commit") when history search comes up empty. Editable before posting;
-    /// posting marks the comment `Done`. Reached via the reply-kind picker
-    /// (`R`), or called directly by tests/internal flows.
+    /// Open a completed-fix reply for the selected comment. A draft returned by
+    /// the fixing agent takes priority; otherwise seed `Done in <sha>` from the
+    /// most recent commit that plausibly touched the comment's file/line,
+    /// falling back to bare `HEAD` (flagged "latest commit"). Editable before
+    /// posting; posting marks the comment `Done`. Reached via the reply-kind
+    /// picker (`R`), or called directly by tests/internal flows.
     pub fn pr_review_open_reply_done(&mut self) {
         let (workdir, comment) = match &self.mode {
             AppMode::PrReview(state) if state.reply.is_none() && state.fix_confirm.is_none() => {
@@ -2774,7 +2913,8 @@ impl App {
         self.open_reply(ReplyKind::Done, seed);
     }
 
-    /// Open a **"not needed"** reply for the selected comment: an empty editor
+    /// Open a **"not needed"** reply for the selected comment. A draft returned
+    /// by the agent is prefilled when present; otherwise the editor starts empty
     /// for the user to explain *why* a fix isn't needed. Posting marks the
     /// comment `Skipped` and stores the explanation as its local note.
     pub fn pr_review_open_reply_not_needed(&mut self) {
@@ -2782,22 +2922,28 @@ impl App {
     }
 
     /// Shared entry: open the reply dialog for the selected comment with a kind
-    /// and a seeded body. No-op if a fix/reply dialog is already open or nothing
-    /// is selected.
+    /// and fallback body. A captured agent draft wins over that fallback. No-op
+    /// if a fix/reply dialog is already open or nothing is selected.
     fn open_reply(&mut self, kind: ReplyKind, seed: String) {
-        let comment_id = match &self.mode {
+        let selected = match &self.mode {
             AppMode::PrReview(state) if state.reply.is_none() && state.fix_confirm.is_none() => {
-                state.selected_comment().map(|c| c.id)
+                state
+                    .selected_comment()
+                    .map(|comment| (state.review.pr.number, comment.id))
             }
             _ => return,
         };
-        let Some(comment_id) = comment_id else {
+        let Some((pr_number, comment_id)) = selected else {
             self.message = Some("No comment selected".into());
             return;
         };
-        // Not-needed replies start in edit mode (the user must type a reason);
-        // the done template is post-ready, so it opens in the confirm view.
-        let editing = matches!(kind, ReplyKind::NotNeeded);
+        let draft = self.load_reply_draft(pr_number, comment_id);
+        let has_draft = draft.is_some();
+        let seed = draft.unwrap_or(seed);
+        // A captured draft is post-ready and opens in confirm view. Without one,
+        // not-needed still starts in edit mode because the user must type a
+        // reason; the deterministic done template remains post-ready.
+        let editing = matches!(kind, ReplyKind::NotNeeded) && !has_draft;
         if let AppMode::PrReview(state) = &mut self.mode {
             state.reply = Some(ReplyState {
                 comment_id,
@@ -2930,6 +3076,7 @@ impl App {
             state.reply = None;
         }
         self.persist_triage(pr.number, &pr.head_sha, comment_id, triage, note.as_deref());
+        self.clear_reply_draft(pr.number, comment_id);
         // Posting can flip a thread's resolution (e.g. GitHub auto-resolves, or
         // the reviewer resolved meanwhile), so re-pull thread state to keep the
         // `✓` marker honest. Zero agent tokens — one GraphQL call.

@@ -2079,6 +2079,10 @@ pub struct FixConfirmState {
     /// injecting marks all of them `Fixing` and clears the marked set. `None`
     /// for an ordinary single-comment fix (only the selected comment is marked).
     pub batch: Option<Vec<u64>>,
+    /// Per-comment correlation ids embedded in the prompt's `amf reply-draft`
+    /// handoff commands. They become authoritative only when the user confirms
+    /// injection, at which point AMF invalidates any older stored draft.
+    pub reply_draft_requests: Vec<crate::app::pr_review::ReplyDraftRequest>,
 }
 
 impl PrReviewState {

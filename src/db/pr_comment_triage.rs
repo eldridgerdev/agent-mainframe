@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::app::pr_review::TriageState;
 
@@ -78,6 +78,79 @@ pub fn evict_stale(conn: &Connection) -> Result<()> {
          WHERE updated_at < datetime('now', '-7 days')",
         [],
     )?;
+    conn.execute(
+        "DELETE FROM pr_comment_reply_drafts
+         WHERE updated_at < datetime('now', '-7 days')",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Start a new reply-draft request for one comment. Replacing the request id
+/// and clearing `body` invalidates any prior draft before the fix prompt is
+/// delivered; a late response carrying the old id is ignored by [`capture_reply_draft`].
+pub fn begin_reply_draft(
+    conn: &Connection,
+    pr_number: u32,
+    comment_id: u64,
+    request_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pr_comment_reply_drafts
+            (pr_number, comment_id, request_id, body, updated_at)
+         VALUES (?1, ?2, ?3, NULL, datetime('now'))
+         ON CONFLICT(pr_number, comment_id) DO UPDATE SET
+            request_id = excluded.request_id,
+            body = NULL,
+            updated_at = excluded.updated_at",
+        params![pr_number as i64, comment_id as i64, request_id],
+    )?;
+    Ok(())
+}
+
+/// Store the agent's reply only when it belongs to the comment's latest fix
+/// request. Returns `false` for an expired/unknown request id.
+pub fn capture_reply_draft(
+    conn: &Connection,
+    pr_number: u32,
+    comment_id: u64,
+    request_id: &str,
+    body: &str,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE pr_comment_reply_drafts
+         SET body = ?4, updated_at = datetime('now')
+         WHERE pr_number = ?1 AND comment_id = ?2 AND request_id = ?3",
+        params![pr_number as i64, comment_id as i64, request_id, body],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Latest captured draft for a comment, if the current request has produced
+/// one. A freshly-started request deliberately reads as `None`.
+pub fn load_reply_draft(
+    conn: &Connection,
+    pr_number: u32,
+    comment_id: u64,
+) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT body FROM pr_comment_reply_drafts
+             WHERE pr_number = ?1 AND comment_id = ?2",
+            params![pr_number as i64, comment_id as i64],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+/// Remove a consumed reply draft after AMF successfully posts it.
+pub fn clear_reply_draft(conn: &Connection, pr_number: u32, comment_id: u64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM pr_comment_reply_drafts
+         WHERE pr_number = ?1 AND comment_id = ?2",
+        params![pr_number as i64, comment_id as i64],
+    )?;
     Ok(())
 }
 
@@ -140,5 +213,37 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert_eq!(map[&1].0, TriageState::Skipped);
         assert_eq!(map[&1].1.as_deref(), Some("nope"));
+    }
+
+    #[test]
+    fn reply_draft_only_accepts_the_latest_request() {
+        let (_tmp, db) = open_temp_db();
+        db.begin_pr_comment_reply_draft(7, 11, "old").unwrap();
+        assert!(
+            db.capture_pr_comment_reply_draft(7, 11, "old", "First draft")
+                .unwrap()
+        );
+        assert_eq!(
+            db.load_pr_comment_reply_draft(7, 11).unwrap().as_deref(),
+            Some("First draft")
+        );
+
+        db.begin_pr_comment_reply_draft(7, 11, "new").unwrap();
+        assert_eq!(db.load_pr_comment_reply_draft(7, 11).unwrap(), None);
+        assert!(
+            !db.capture_pr_comment_reply_draft(7, 11, "old", "Stale")
+                .unwrap()
+        );
+        assert!(
+            db.capture_pr_comment_reply_draft(7, 11, "new", "Current")
+                .unwrap()
+        );
+        assert_eq!(
+            db.load_pr_comment_reply_draft(7, 11).unwrap().as_deref(),
+            Some("Current")
+        );
+
+        db.clear_pr_comment_reply_draft(7, 11).unwrap();
+        assert_eq!(db.load_pr_comment_reply_draft(7, 11).unwrap(), None);
     }
 }

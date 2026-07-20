@@ -628,6 +628,65 @@ impl App {
             return;
         }
 
+        if matches!(msg_type.as_str(), "pr-reply-draft" | "pr_reply_draft") {
+            let parsed = raw
+                .get("pr_number")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+                .zip(raw.get("comment_id").and_then(|value| value.as_u64()))
+                .zip(
+                    raw.get("draft_request_id")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty()),
+                )
+                .zip(
+                    raw.get("body")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty()),
+                );
+            let Some((((pr_number, comment_id), request_id), body)) = parsed else {
+                self.log_warn(
+                    "pr_review",
+                    "Ignored invalid PR reply draft payload".to_string(),
+                );
+                return;
+            };
+
+            let result = match self.db.as_ref() {
+                Some(db) => {
+                    db.capture_pr_comment_reply_draft(pr_number, comment_id, request_id, body)
+                }
+                None => {
+                    self.log_warn(
+                        "pr_review",
+                        "Ignored PR reply draft because the database is unavailable".to_string(),
+                    );
+                    return;
+                }
+            };
+            match result {
+                Ok(true) => {
+                    self.log_info(
+                        "pr_review",
+                        format!("Captured reply draft for PR #{pr_number}, comment {comment_id}"),
+                    );
+                    self.push_toast_success(format!(
+                        "Reply draft ready for PR #{pr_number} comment {comment_id}"
+                    ));
+                }
+                Ok(false) => self.log_warn(
+                    "pr_review",
+                    format!("Ignored stale reply draft for PR #{pr_number}, comment {comment_id}"),
+                ),
+                Err(error) => self.log_warn(
+                    "pr_review",
+                    format!("Failed to persist PR reply draft: {error}"),
+                ),
+            }
+            return;
+        }
+
         if matches!(
             msg_type.as_str(),
             "opencode-sidebar-updated" | "sidebar-updated"

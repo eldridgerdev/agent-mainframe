@@ -22,6 +22,13 @@ are tagged.
   summary no longer means hunting it down again. `q` from the summary is the
   real finish; `Esc` just closes it and returns to reviewing, with nothing
   written, posted, or dispatched. No migration is required.
+- **PR Triage now carries an agent-written reply draft back from each fix.**
+  After addressing and verifying a comment sent with `f` or `B`, the fixing
+  agent prepares a concise reviewer-facing response without posting it. When
+  you return to PR Triage and press `R`, that draft is prefilled for review
+  and editing; if the agent did not provide one, the existing “Done in
+  `<sha>`” or not-needed starting text is unchanged. Posting still requires
+  explicit confirmation. No setup or migration is required.
 - **PR Triage's detail pane now shows a comment's replies, however they got
   posted.** A reply posted outside AMF's own `R`/`n` flow — e.g. an agent
   working the PR with its own `gh` access — previously left no trace next to

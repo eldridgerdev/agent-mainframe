@@ -1909,6 +1909,7 @@ mod tests {
             scroll: 0,
             sync_to_cursor: false,
             batch: None,
+            reply_draft_requests: Vec::new(),
         };
         let theme = Theme::default();
         let backend = TestBackend::new(100, 30);

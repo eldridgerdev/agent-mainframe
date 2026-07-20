@@ -8808,7 +8808,9 @@ fn pr_review_inject_fix_also_stashes_return_state() {
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
 
+    let db_dir = TempDir::new().unwrap();
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
     enter_pr_review_for_feature(&mut app, 2);
     if let AppMode::PrReview(state) = &mut app.mode {
         state.selected = 1;
@@ -8823,8 +8825,25 @@ fn pr_review_inject_fix_also_stashes_return_state() {
         matches!(&app.mode, AppMode::PrReview(state) if state.fix_confirm.is_some()),
         "confirm dialog should be open before injecting"
     );
+    let request_id = match &app.mode {
+        AppMode::PrReview(state) => state.fix_confirm.as_ref().unwrap().reply_draft_requests[0]
+            .request_id
+            .clone(),
+        _ => unreachable!(),
+    };
 
     app.pr_review_inject_fix().unwrap();
+
+    // Confirming the injection activates this dialog's request id. The agent
+    // can now return a draft through IPC; an id from an older dialog could not
+    // overwrite it.
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .capture_pr_comment_reply_draft(7, 2, &request_id, "Fixed the selected path.")
+            .unwrap()
+    );
 
     // Compose intercept is on by default, so `f` lands in the compose box
     // (seeded with the fix prompt) rather than bare Viewing — the stash must
@@ -8861,6 +8880,9 @@ fn pr_review_inject_fix_also_stashes_return_state() {
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
     assert!(app.pr_review_return.is_none());
+
+    app.pr_review_open_reply_done();
+    assert_eq!(reply_editor_text(&app), "Fixed the selected path.");
 }
 
 #[test]
@@ -10069,6 +10091,17 @@ fn pr_review_batch_confirm_opens_combined_dialog_for_marked() {
             assert!(text.contains("File: src/file1.rs:1"));
             assert!(text.contains("File: src/file3.rs:3"));
             assert!(!text.contains("File: src/file2.rs"));
+            assert_eq!(confirm.reply_draft_requests.len(), 2);
+            assert_eq!(
+                confirm
+                    .reply_draft_requests
+                    .iter()
+                    .map(|request| request.comment_id)
+                    .collect::<Vec<_>>(),
+                vec![1, 3]
+            );
+            assert!(text.contains("--comment-id 1 --request-id"));
+            assert!(text.contains("--comment-id 3 --request-id"));
         }
         _ => unreachable!(),
     }
@@ -10896,12 +10929,32 @@ fn pr_review_open_fix_confirm_seeds_editor_from_selection() {
         AppMode::PrReview(state) => state.selected_comment().unwrap().fix_prompt(),
         _ => unreachable!(),
     };
-    assert_eq!(confirm.editor.text(), expected);
+    assert!(confirm.editor.text().starts_with(&expected));
     assert!(
         confirm
             .editor
             .text()
             .contains("Address this PR review comment.")
+    );
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains("Do not post replies to GitHub")
+    );
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains("amf reply-draft --pr-number 7 --comment-id 1 --request-id")
+    );
+    assert_eq!(confirm.reply_draft_requests.len(), 1);
+    assert_eq!(confirm.reply_draft_requests[0].comment_id, 1);
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains(&confirm.reply_draft_requests[0].request_id)
     );
 }
 
@@ -11012,6 +11065,76 @@ fn pr_review_open_reply_done_seeds_template_in_confirm_view() {
     // view. The workdir isn't a git repo in tests, so it falls back to "Done.".
     assert_eq!(app.pr_review_reply_view(), Some(false));
     assert_eq!(reply_editor_text(&app), "Done.");
+}
+
+#[test]
+fn pr_review_reply_prefers_the_agent_draft_for_either_reply_kind() {
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review(&mut app, 1);
+
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Updated the lock scope and added a regression test."
+    }));
+
+    app.pr_review_open_reply_done();
+    assert_eq!(
+        reply_editor_text(&app),
+        "Updated the lock scope and added a regression test."
+    );
+    assert_eq!(app.pr_review_reply_view(), Some(false));
+
+    app.pr_review_cancel_reply();
+    app.pr_review_open_reply_not_needed();
+    assert_eq!(
+        reply_editor_text(&app),
+        "Updated the lock scope and added a regression test."
+    );
+    assert_eq!(
+        app.pr_review_reply_view(),
+        Some(false),
+        "a captured draft is post-ready even for the not-needed kind"
+    );
+}
+
+#[test]
+fn pr_review_reply_draft_ipc_ignores_an_expired_request() {
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "current")
+        .unwrap();
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "expired",
+        "body": "Stale reply"
+    }));
+
+    assert_eq!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .load_pr_comment_reply_draft(7, 1)
+            .unwrap(),
+        None
+    );
+    assert!(app.toasts.is_empty(), "stale drafts are ignored quietly");
 }
 
 #[test]

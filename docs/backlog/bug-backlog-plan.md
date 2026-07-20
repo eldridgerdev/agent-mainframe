@@ -81,18 +81,21 @@ Claude reports a non-blocking hook error like
 - **Relates to:** Claude hook setup (`src/app/setup.rs`)
 - **Root cause:** The managed-hook heuristic only recognized AMF helper
   scripts under a path ending in `/.config/amf` (the dotted XDG default) or
-  `/Library/Application Support/amf` (macOS). Tools that run AMF with a
-  custom `XDG_CONFIG_HOME` pointed at a plain (non-dotted) `config` dir — for
-  example the screenshot dev tool's isolated `<tmp>/config` root — produce
-  hook paths like `.../config/amf/<script>.sh`, which matched neither
-  pattern. `ensure_notification_hooks` never recognized these as
-  AMF-managed, so it never removed them on a later run with a different
-  config root, and every such run left a new stale hook block behind in
-  whatever `.claude/settings.local.json` it touched.
-- **Fix:** Also match `.../config/amf/<script>` (no leading dot) in
-  `is_amf_claude_hook_command`, so stale entries from any custom
-  `XDG_CONFIG_HOME` are recognized and replaced on the next hook refresh
-  like the existing dotted/macOS cases.
+  `/Library/Application Support/amf` (macOS). `XDG_CONFIG_HOME` can point
+  anywhere per the XDG spec — it isn't required to end in `config` at all
+  (e.g. `XDG_CONFIG_HOME=/tmp/foo` resolves the AMF config dir to
+  `/tmp/foo/amf`), and tools like the screenshot dev tool use an isolated
+  `<tmp>/config` root, producing hook paths like `.../config/amf/<script>.sh`.
+  Neither shape matched the hardcoded patterns, so `ensure_notification_hooks`
+  never recognized these as AMF-managed, never removed them on a later run
+  with a different config root, and every such run left a new stale hook
+  block behind in whatever `.claude/settings.local.json` it touched.
+- **Fix:** Generalized `is_amf_claude_hook_command` to match any parent
+  directory literally named `amf` (the invariant `amf_config_dir()` always
+  produces, regardless of what config root it's nested under), instead of
+  hardcoding specific parent path shapes. Stale entries from any custom
+  `XDG_CONFIG_HOME` — dotted, non-dotted, or unrelated to the word `config`
+  entirely — are now recognized and replaced on the next hook refresh.
 
 ### Repro
 

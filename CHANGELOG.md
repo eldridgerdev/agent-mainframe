@@ -169,13 +169,15 @@ are tagged.
   `XDG_CONFIG_HOME`** (as the screenshot dev tool does for its isolated
   captures). AMF only recognized its own managed hook scripts under the
   dotted `~/.config/amf` or macOS `Library/Application Support/amf` paths,
-  so a helper path like `<custom-dir>/config/amf/<script>.sh` was never
-  cleaned up on a later run — leaving Claude reporting a non-blocking hook
-  error (`/bin/sh: ... not found`) for each stale entry. AMF now recognizes
-  and replaces managed hooks under any `config/amf` directory, dotted or
-  not. Existing stale entries in a workdir's `.claude/settings.local.json`
-  are cleaned up automatically the next time AMF refreshes that feature's
-  hooks.
+  so a helper path under any other custom config root — e.g.
+  `<custom-dir>/config/amf/<script>.sh`, or a root not named `config` at
+  all such as `XDG_CONFIG_HOME=/tmp/foo` — was never cleaned up on a later
+  run, leaving Claude reporting a non-blocking hook error
+  (`/bin/sh: ... not found`) for each stale entry. AMF now recognizes and
+  replaces managed hooks under any `amf` config directory, regardless of
+  what its parent is named. Existing stale entries in a workdir's
+  `.claude/settings.local.json` are cleaned up automatically the next time
+  AMF refreshes that feature's hooks.
 - **Pressing `m` in Final Review now shows the file-comment editor.** The
   comment state opened correctly, but its footer stayed at the compact
   two-line height, leaving no visible edit box. File comments now get the same

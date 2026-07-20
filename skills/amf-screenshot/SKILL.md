@@ -3,10 +3,12 @@ name: amf:screenshot
 description: >
   Capture screenshots (PNG) or a GIF of AMF's own TUI running in an
   isolated, throwaway instance, as visual proof a feature/UI change
-  works. Use only when the user explicitly asks for visual proof
-  ("show me a screenshot of X", "prove the dashboard renders Y") —
-  not automatically after every UI change.
-allowed-tools: Bash(scripts/dev/screenshot/*) Bash(python3 *) Bash(mkdir *) Bash(cat *) Bash(ls *) Write Read
+  works, then publish them as a small viewable Artifact gallery page
+  (a terminal often won't render PNGs/GIFs inline, so the raw files
+  alone aren't a usable deliverable). Use only when the user explicitly
+  asks for visual proof ("show me a screenshot of X", "prove the
+  dashboard renders Y") — not automatically after every UI change.
+allowed-tools: Bash(scripts/dev/screenshot/*) Bash(python3 *) Bash(mkdir *) Bash(cat *) Bash(ls *) Write Read Skill Artifact
 ---
 
 ## When to use
@@ -125,6 +127,38 @@ never read the `.ansi` files, whose escape codes waste tokens.
 
 Only after the text checks pass, Read **one or two representative
 PNGs** as images to confirm layout/colors look right — not every
-frame. Then return the absolute file paths of all PNGs (or the GIF)
-as the deliverable proof — that's the artifact the user is asking
-for, not a description of what should be visible.
+frame.
+
+## Step 5: publish an Artifact gallery (the deliverable)
+
+Raw file paths are not the deliverable — most terminal environments
+don't render PNGs/GIFs inline for the user, so finish by publishing a
+small, self-contained HTML page with the shots embedded. Do this every
+time this skill runs, not just when asked.
+
+1. **Load the `artifact-design` skill** before writing the HTML (the
+   `Artifact` tool requires it). Treat this as a utilitarian proof
+   page, not a landing page: a short title naming the feature, one line
+   of context (branch, PR number, what was seeded — whatever grounds
+   the shots), then one `<figure>` per shot in story order, each with a
+   caption that says what's notable in that frame. No hero, no
+   flourish — a plain terminal-window chrome around each image (a
+   title-bar strip is enough) suits the subject better than decoration.
+2. **Base64-encode each PNG/GIF** (`python3 -c "import base64; ..."`),
+   writing the encoded string to a scratch `.b64` file — don't paste it
+   into the HTML through Edit/Write. A multi-shot gallery is tens to
+   hundreds of KB of base64; pushing that through the conversation
+   burns context for no benefit.
+3. **Write the HTML with placeholder tokens** (`IMG_1`, `IMG_2`, …) in
+   the `<img src="data:image/png;base64,IMG_1">` slots (or
+   `image/gif` for a `--gif` run), then substitute the real base64 in
+   directly on disk with a small Python `str.replace` script — the
+   encoded data itself never needs to pass through the model.
+4. **Publish with the `Artifact` tool** (`file_path` pointing at the
+   HTML, a `favicon` emoji fitting the feature, a one-line
+   `description`). If re-running this skill again for the *same*
+   feature/PR in the same conversation, reuse the same `file_path` so
+   republishing updates the existing URL instead of minting a new one.
+5. **Return the artifact URL as the primary deliverable.** Mention the
+   on-disk PNG/GIF paths too (useful if the user wants the raw files),
+   but the URL is what answers "show me."

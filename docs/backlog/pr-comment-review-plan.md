@@ -2149,7 +2149,7 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       "Prompt" section — the same discoverability pattern, just pointing at
       the shortcut that opens the pane this box is a preview of. → `src/ui/pane.rs`.
 
-- [ ] **Headless/agent-posted fixes need concrete UI around reply posting and
+- [x] **Headless/agent-posted fixes need concrete UI around reply posting and
       thread state (UX — visibility).** Surfaced while fixing three review
       comments on a branch: an already-running headless/automated path had
       posted `Done in <sha>` replies to all three threads, but the `<sha>` it
@@ -2173,6 +2173,46 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       failed, and later, once GitHub reprocesses it, outdated/resolved) next
       to the reply itself, so confirming a fix landed correctly is a glance
       in AMF instead of a manual GraphQL query.
+
+      **Scoped and shipped as two pieces, since the "headless path" that
+      posted the inaccurate reply isn't AMF code at all** — grep confirms
+      `Done in \`<sha>\`` is built in exactly one place
+      (`PrComment`'s `R`-flow reply seeding, `src/app/pr_review.rs`), so the
+      "headless/automated path" from the report is an agent working in a PR
+      Triage / `pr-continue` session, using its own `gh`/bash access to post a
+      reply on its own initiative — outside any AMF-owned code path. (1)
+      `.claude/commands/amf/pr-continue.md`, the skill this repo already ships
+      for "continue work on the PR by addressing review feedback," gained an
+      explicit instruction not to post a "done" GitHub reply on its own
+      initiative, and — if asked to reply — to reference a commit only after
+      it's pushed and confirmed (`git show <sha> -- <path>`) to touch the
+      comment's file, mirroring `commit_for_done_reply`'s own caveat logic
+      rather than assuming `HEAD` addressed every open comment; it also points
+      at AMF's own PR Triage pane as the preferred reply-posting path, since
+      that one already derives and caveats the commit. (2) Because a
+      headless-posted reply leaves **no local triage record** (it never went
+      through `pr_review_post_reply`), "failed" isn't a state AMF can observe
+      for it — there's no local attempt to have failed. What AMF *can* surface
+      irrespective of who posted the reply: a new `PrComment::replies_in(&self,
+      all: &[PrComment])` finds every already-fetched comment whose
+      `in_reply_to` targets the selected one (GitHub inline replies always
+      target the thread root directly, so this is a flat filter, not a chain
+      walk), and the detail pane's new **Replies** section renders each one —
+      author, a `[via AMF]` chip when the reply carries the "posted via AMF"
+      channel-disclosure footer (`reply_posted_via_amf`, the only local signal
+      distinguishing AMF's own post from anyone else's) and, per reply, its
+      thread's live `[outdated]`/`[✓ resolved]` chips — right on the original
+      comment. Previously this state only existed as a separate, easy-to-miss
+      entry lower in the flat comment list; now confirming "did this thread
+      already get an answer, and does GitHub still consider it current" is a
+      glance at the comment you're already looking at, on every manual refresh
+      (`r`), regardless of whether the reply came from `R`, `n`, or an agent's
+      own `gh` call. Unit-tested (`replies_in` finds only same-thread replies;
+      `reply_posted_via_amf` on/off the footer; detail-pane render tests for no
+      section when there are no replies, the via-AMF chip appearing/not
+      appearing, and the outdated/resolved chips showing next to the reply). →
+      `.claude/commands/amf/pr-continue.md`, `src/app/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`.
 
 ## Reasoning / when to build
 

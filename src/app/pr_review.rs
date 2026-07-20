@@ -704,6 +704,28 @@ impl PrComment {
             }
         }
     }
+
+    /// Replies to this comment within `all`, in fetch order. GitHub inline
+    /// replies always target the thread's root comment directly (see
+    /// [`PrComment::reply_target`]), so there's no multi-level chain to walk —
+    /// filtering `in_reply_to == Some(self.id)` finds every reply in the
+    /// thread, however it was posted (AMF's own `R`/`n` flow, or some other
+    /// actor — e.g. an agent using `gh` directly — that never went through
+    /// AMF's reply dialog and so left no local triage record).
+    pub fn replies_in<'a>(&self, all: &'a [PrComment]) -> Vec<&'a PrComment> {
+        all.iter()
+            .filter(|c| c.in_reply_to == Some(self.id))
+            .collect()
+    }
+}
+
+/// Whether `reply` carries the "posted via AMF" channel-disclosure footer
+/// ([`append_amf_attribution`]) — the only local signal distinguishing a
+/// reply AMF posted itself from one some other actor (a headless agent
+/// shelling out to `gh`, a human on GitHub) posted directly, since a reply
+/// posted outside AMF's `R`/`n` dialog leaves no local triage record at all.
+pub fn reply_posted_via_amf(reply: &PrComment) -> bool {
+    reply.body.trim_end().ends_with("— posted via AMF")
 }
 
 /// Where a reply is delivered on GitHub.
@@ -4298,6 +4320,36 @@ mod tests {
             state: "CHANGES_REQUESTED".into(),
         };
         assert_eq!(summary.reply_target(), ReplyTarget::Conversation);
+    }
+
+    #[test]
+    fn replies_in_finds_only_comments_targeting_this_ones_id() {
+        let root = sample_comment(1, "alice", false);
+        let mut reply = sample_comment(2, "bob", false);
+        reply.in_reply_to = Some(1);
+        let mut unrelated = sample_comment(3, "carol", false);
+        unrelated.in_reply_to = Some(99);
+        let all = vec![root.clone(), reply.clone(), unrelated];
+
+        let found = root.replies_in(&all);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, 2);
+        assert_eq!(found[0].author, "bob");
+
+        // A comment with no replies finds none.
+        assert!(reply.replies_in(&all).is_empty());
+    }
+
+    #[test]
+    fn reply_posted_via_amf_detects_the_channel_disclosure_footer() {
+        let mut reply = sample_comment(2, "amf-user", false);
+        reply.body = "Done in `abc123`.\n\n— posted via AMF".to_string();
+        assert!(reply_posted_via_amf(&reply));
+
+        // A reply posted through some other channel (a headless agent using
+        // `gh` directly, a human on GitHub) has no such footer.
+        reply.body = "Done in `abc123`.".to_string();
+        assert!(!reply_posted_via_amf(&reply));
     }
 
     #[test]

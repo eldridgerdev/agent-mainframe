@@ -95,6 +95,32 @@ pub fn draw_plan_interview_dialog(
             }
             None => {}
         },
+        PlanInterviewPhase::AiConsent => {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        "Adaptive follow-up questions are optional.",
+                        Style::default()
+                            .fg(theme.text.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                    Line::from(
+                        "AMF will send your brief, answers, and bounded repository context to an available agent harness.",
+                    ),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!(
+                            "No agent tokens are used unless you opt in. Opting in may run up to {} AI rounds.",
+                            crate::plan_interview::MAX_AI_ROUNDS
+                        ),
+                        Style::default().fg(theme.warning.to_color()),
+                    )),
+                ])
+                .wrap(Wrap { trim: false }),
+                chunks[2],
+            );
+        }
         PlanInterviewPhase::AiLoading => {
             draw_ai_loading(frame, chunks[2], state, theme, throbber_state)
         }
@@ -120,6 +146,17 @@ pub fn draw_plan_interview_dialog(
             message.to_string(),
             Style::default().fg(color),
         ))
+    } else if state.phase == PlanInterviewPhase::AiConsent {
+        Line::from(vec![
+            hint("a", theme),
+            Span::raw(" generate (uses tokens)  "),
+            hint("Enter", theme),
+            Span::raw(" finish without AI  "),
+            hint("Ctrl+B", theme),
+            Span::raw(" back  "),
+            hint("Esc", theme),
+            Span::raw(" cancel"),
+        ])
     } else {
         Line::from(vec![
             hint("Enter", theme),
@@ -155,6 +192,7 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
                 .unwrap_or_default();
             (state.question_index + 2, source)
         }
+        PlanInterviewPhase::AiConsent => (total, "Optional AI".to_string()),
         PlanInterviewPhase::AiLoading => (
             state.questions.len() + 1,
             format!("AI round {}", state.ai_rounds_completed + 1),
@@ -179,6 +217,9 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             .current_question()
             .map(|question| (question.text.clone(), question.optional))
             .unwrap_or_default(),
+        PlanInterviewPhase::AiConsent => {
+            ("Generate adaptive follow-up questions?".to_string(), false)
+        }
         PlanInterviewPhase::AiLoading => ("Generating follow-up questions".to_string(), false),
         PlanInterviewPhase::Done => ("Interview complete".to_string(), false),
     };

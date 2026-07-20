@@ -313,16 +313,19 @@ Create-project and batch-feature templates, examples, and the JSON response form
 
 When plan mode is enabled during feature creation, AMF collects a required
 feature brief followed by optional built-in discovery questions before the
-agent launches.
+agent launches. After those questions, AMF offers optional AI-adaptive
+follow-ups and clearly warns that they use agent tokens. No headless AI call
+runs unless you explicitly opt in.
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Save the current answer or selection and continue |
+| `Enter` | Save the current answer or selection; at the AI prompt, finish without AI |
+| `a` | At the optional AI prompt, opt in to adaptive follow-ups that use agent tokens |
 | `Alt+Enter` | Insert a newline in a free-text answer |
 | `j` / `k` / `↑` / `↓` | Navigate select-option answers |
 | `Ctrl+B` | Return to the previous question |
-| `Ctrl+S` | Skip an optional question |
-| `Ctrl+F` | Finish early and write the answers collected so far |
+| `Ctrl+S` | Skip an optional question or decline AI follow-ups |
+| `Ctrl+F` | Finish early without starting any remaining AI rounds |
 | `Esc` | Cancel, then choose whether to launch without a plan or cancel the feature |
 
 ### Viewing Mode (Embedded tmux)

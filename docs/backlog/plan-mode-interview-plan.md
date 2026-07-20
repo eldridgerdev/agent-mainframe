@@ -110,8 +110,9 @@ On-demand command on a feature ─┴─> PlanInterview mode
     Phase 1  Static questions, one dialog per question:
              built-in bank + project question templates
              (free-text or select-options; skippable; back-nav)
-    Phase 2  AI adaptive rounds (capped, e.g. 2 rounds × ≤5 questions):
-             a headless run of the feature's agent harness gets
+    Phase 2  Optional AI adaptive rounds (capped, e.g. 2 rounds × ≤5
+             questions): an explicit token-use prompt defaults to no
+             headless work; after opt-in, the feature's agent harness gets
              brief + answers + repo context, returns follow-up
              questions as JSON; loading overlay while it runs;
              failure falls back to "no follow-ups"
@@ -165,6 +166,9 @@ pub struct PlanQuestion {
   code) receives the feature brief, all prior Q&A, and cheap repo
   context (README head, top-level dir listing, CLAUDE.md if present)
   and must return `{"questions": [{id, text, kind, options?}]}`.
+  Before the first call, an explicit consent step explains that
+  adaptive rounds use agent tokens; declining completes the
+  interview without any headless request.
   Responses are parsed defensively; malformed output ⇒ skip the
   round, log to debug log, continue. Round cap and per-round question
   cap are constants (start 2 × 5).
@@ -367,11 +371,11 @@ interview shows them merged with (or replacing) the built-in bank.
 
 ### Epic 3 — AI adaptive questioning
 
-Demo: after static questions, a loading frame appears and AI
-follow-ups tailored to the answers get asked — powered by the
-feature's own harness (claude, codex, or opencode); failure or an
-environment with no headless-capable harness silently proceeds
-without them.
+Demo: after static questions, an explicit token-use prompt offers AI
+follow-ups. Opting in opens a loading frame and asks questions
+tailored to the answers — powered by the feature's own harness
+(claude, codex, or opencode); declining, failure, or an environment
+with no headless-capable harness silently proceeds without them.
 
 - [x] `src/headless.rs`: runner dispatching by `AgentKind`
       (`claude -p`, `codex exec`, `opencode run`), availability
@@ -380,6 +384,8 @@ without them.
 - [x] Interviewer prompt constant (fenced-JSON reply contract) +
       repo-context gatherer (bounded: README head, dir listing,
       CLAUDE.md)
+- [x] Explicit opt-in gate before any adaptive headless call;
+      declining or finishing completes with zero adaptive token use
 - [x] Off-UI-thread spawn + poll with loading stage frame showing
       the engine in use, elapsed time, and tokens where the harness
       reports them (via the usage subsystem; time-only otherwise) —
@@ -431,6 +437,10 @@ interview with prior answers pre-filled, get an updated
 
 ### Epic 6 — Polish
 
+- [ ] Re-evaluate the built-in question bank after dogfooding:
+      identify which questions consistently add useful planning
+      context, then remove or combine low-value prompts so the
+      default interview stays short
 - [ ] Preset interplay verified (preset with plan_mode → interview);
       batch creation explicitly skips with a notice
 - [ ] Empty/edge handling: zero-question config, brief-only fast path

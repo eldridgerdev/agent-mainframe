@@ -56,11 +56,11 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
         AppMode::PlanInterview(_) => {
             if let AppMode::PlanInterview(state) = &mut app.mode
                 && !state.abort_confirmation
-                && !matches!(
-                    state.current_question().map(|question| &question.kind),
-                    Some(crate::plan_interview::PlanQuestionKind::Select(_))
-                )
-                && state.phase != crate::app::PlanInterviewPhase::Done
+                && (state.phase == crate::app::PlanInterviewPhase::Brief
+                    || matches!(
+                        state.current_question().map(|question| &question.kind),
+                        Some(crate::plan_interview::PlanQuestionKind::FreeText)
+                    ))
             {
                 state.editor.insert_str(text);
             }

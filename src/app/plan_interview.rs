@@ -32,15 +32,17 @@ impl App {
         self.message = None;
     }
 
-    /// Called once the interview's static/AI question flow reaches `Done`
-    /// (a natural exhaustion of the current question list, not an abort).
-    /// Starts the next AI-adaptive round when one is owed, otherwise
-    /// completes the interview. No-op unless the mode is actually `Done`.
+    /// Called once the interview's question flow or AI consent step reaches
+    /// `Done`. Starts the next AI-adaptive round only after explicit user
+    /// opt-in; otherwise completes the interview without spending tokens.
+    /// No-op unless the mode is actually `Done`.
     pub(crate) fn continue_plan_interview_after_done(&mut self) -> Result<()> {
         let (is_done, should_start_next_round) = match &self.mode {
             AppMode::PlanInterview(state) => (
                 state.phase == PlanInterviewPhase::Done,
-                !state.skip_ai_rounds && state.ai_rounds_completed < plan_interview::MAX_AI_ROUNDS,
+                state.ai_followups_opted_in
+                    && !state.skip_ai_rounds
+                    && state.ai_rounds_completed < plan_interview::MAX_AI_ROUNDS,
             ),
             _ => (false, false),
         };

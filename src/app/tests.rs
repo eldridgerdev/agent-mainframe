@@ -2226,6 +2226,24 @@ fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile) {
 }
 
 #[test]
+fn plan_interview_done_without_ai_consent_never_starts_a_headless_round() {
+    let (mut app, _store_file) = app_with_deferred_plan_interview();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.brief = "A useful feature".into();
+        state.phase = PlanInterviewPhase::Done;
+        assert!(!state.ai_followups_opted_in);
+    } else {
+        panic!("expected plan interview mode");
+    }
+
+    app.continue_plan_interview_after_done().unwrap();
+
+    assert!(app.plan_interview_ai_bg.is_none());
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
 fn poll_plan_interview_ai_bg_appends_follow_ups_and_resumes_questions() {
     let (mut app, _store_file) = app_with_deferred_plan_interview();
 

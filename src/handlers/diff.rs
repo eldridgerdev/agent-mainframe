@@ -7,6 +7,17 @@ const PATCH_SCROLL_STEP: usize = 1;
 const PATCH_PAGE_STEP: usize = 20;
 const FEEDBACK_PAGE_STEP: usize = 10;
 
+pub fn handle_diff_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_diff_picker(),
+        KeyCode::Down | KeyCode::Char('j') => app.diff_picker_select_next(),
+        KeyCode::Up | KeyCode::Char('k') => app.diff_picker_select_prev(),
+        KeyCode::Enter => app.diff_picker_choose(),
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
 

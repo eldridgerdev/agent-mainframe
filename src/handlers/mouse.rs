@@ -67,7 +67,7 @@ fn handle_move(app: &mut App, row: u16, visible_rows: u16) {
 fn handle_scroll_up(app: &mut App, visible_rows: u16) {
     if matches!(
         app.mode,
-        AppMode::DiffViewer(_) | AppMode::DiffViewerLoading(_)
+        AppMode::DiffPicker(_) | AppMode::DiffViewer(_) | AppMode::DiffViewerLoading(_)
     ) {
         return;
     }
@@ -104,7 +104,7 @@ fn handle_scroll_up(app: &mut App, visible_rows: u16) {
 fn handle_scroll_down(app: &mut App, visible_rows: u16) {
     if matches!(
         app.mode,
-        AppMode::DiffViewer(_) | AppMode::DiffViewerLoading(_)
+        AppMode::DiffPicker(_) | AppMode::DiffViewer(_) | AppMode::DiffViewerLoading(_)
     ) {
         return;
     }
@@ -287,6 +287,7 @@ fn handle_click(
             | AppMode::SessionPicker(_)
             | AppMode::NamingNewSession(_)
             | AppMode::BookmarkPicker(_)
+            | AppMode::DiffPicker(_)
             | AppMode::DiffViewerLoading(_)
             | AppMode::DiffViewer(_)
             | AppMode::MarkdownLoading(_)

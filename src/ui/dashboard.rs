@@ -903,6 +903,7 @@ fn mode_view_context(mode: &AppMode) -> Option<&crate::app::ViewState> {
         AppMode::NotificationPicker(_, from_view) => from_view.as_ref(),
         AppMode::CommandPicker(state) => state.from_view.as_ref(),
         AppMode::BookmarkPicker(state) => state.from_view.as_ref(),
+        AppMode::DiffPicker(state) => Some(&state.from_view),
         AppMode::DiffViewerLoading(state) | AppMode::DiffViewer(state) => Some(&state.from_view),
         AppMode::SteeringPrompt(state) => Some(&state.view),
         AppMode::Compose(state) => Some(&state.view),
@@ -1204,6 +1205,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     {
         draw_view_pane(frame, app, view, false, false);
         super::dialogs::draw_prompt_library(frame, state, app.message.as_deref(), &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
+        return;
+    }
+
+    if let AppMode::DiffPicker(state) = &app.mode {
+        draw_view_pane(frame, app, &state.from_view, false, false);
+        super::dialogs::draw_diff_picker(frame, state, &app.theme);
         draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }

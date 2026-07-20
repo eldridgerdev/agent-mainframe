@@ -12,6 +12,10 @@ are tagged.
 
 ### Added
 
+- **The view-mode diff viewer can isolate a single commit.** Leader `d` now
+  opens a scope picker: keep the default to review every branch, staged,
+  unstaged, and untracked change, or choose a feature-branch commit to see only
+  what that commit introduced.
 - **Final Review shows a summary before it writes and dispatches anything.**
   `q` used to gate on undecided files and then finish immediately; it now
   opens a navigable summary listing every file's verdict, every open line/file

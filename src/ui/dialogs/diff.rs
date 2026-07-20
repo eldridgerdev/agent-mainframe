@@ -12,7 +12,10 @@ use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{DiffViewerFocus, DiffViewerLayout, DiffViewerState, ReviewDecision, SummaryItem},
+    app::{
+        DiffPickerState, DiffScope, DiffViewerFocus, DiffViewerLayout, DiffViewerState,
+        ReviewDecision, SummaryItem,
+    },
     diff::{DiffFile, DiffFileStatus, DiffLine, DiffLineKind, DiffLineLocation},
     editor::VimMode,
     highlight,
@@ -32,6 +35,101 @@ struct FileHighlights {
     new: Option<highlight::HighlightedText>,
 }
 
+pub fn draw_diff_picker(frame: &mut Frame, state: &DiffPickerState, theme: &Theme) {
+    let area = centered_rect(72, 70, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Choose Diff Scope ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(2),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(" View the whole branch and worktree, or isolate one commit."),
+            Line::from(Span::styled(
+                format!(" {} commit(s) on this feature branch", state.commits.len()),
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+        ]),
+        rows[0],
+    );
+
+    let mut items = vec![ListItem::new(Line::from(vec![
+        Span::styled(
+            "All current changes",
+            Style::default()
+                .fg(theme.text.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "  commits + staged + unstaged + untracked",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+    ]))];
+    items.extend(state.commits.iter().map(|commit| {
+        ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{}  ", commit.short_hash),
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                commit.subject.clone(),
+                Style::default().fg(theme.text.to_color()),
+            ),
+        ]))
+    }));
+
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected.min(state.commits.len())));
+    frame.render_stateful_widget(list, rows[1], &mut list_state);
+
+    if let Some(error) = &state.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" Could not list feature commits: {error}"),
+                Style::default().fg(theme.danger.to_color()),
+            )))
+            .wrap(Wrap { trim: false }),
+            rows[2],
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" move  "),
+            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" view  "),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" cancel"),
+        ])),
+        rows[3],
+    );
+}
+
 pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &Theme) {
     let area = centered_rect(96, 90, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
@@ -45,8 +143,10 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     let block = Block::default()
         .title(if state.review {
             " Final Review "
+        } else if matches!(&state.scope, DiffScope::Commit(_)) {
+            " Commit Diff "
         } else {
-            " Branch Diff "
+            " Current Changes "
         })
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
@@ -589,8 +689,16 @@ pub fn draw_diff_viewer_loading(
     let area = centered_rect(54, 28, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
+    let commit = match &state.scope {
+        DiffScope::Commit(commit) => Some(commit),
+        DiffScope::CurrentChanges => None,
+    };
     let block = Block::default()
-        .title(" Branch Diff ")
+        .title(if commit.is_some() {
+            " Commit Diff "
+        } else {
+            " Current Changes "
+        })
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -605,13 +713,21 @@ pub fn draw_diff_viewer_loading(
     } else {
         state.branch.as_str()
     };
+    let loading_label = if commit.is_some() {
+        " Loading commit diff..."
+    } else {
+        " Loading current changes..."
+    };
+    let detail = commit
+        .map(|commit| format!("{}  {}", commit.short_hash, commit.subject))
+        .unwrap_or_else(|| format!("Comparing all changes for {branch}"));
 
     let loading = Paragraph::new(vec![
         Line::from(""),
         Line::from(vec![
             spinner,
             Span::styled(
-                " Loading branch diff...",
+                loading_label,
                 Style::default()
                     .fg(theme.text.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -619,7 +735,7 @@ pub fn draw_diff_viewer_loading(
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            format!("Comparing changes for {branch}"),
+            detail,
             Style::default().fg(theme.text_muted.to_color()),
         )),
     ])
@@ -708,8 +824,8 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
         ));
     }
 
-    let header = Paragraph::new(vec![
-        Line::from(vec![
+    let scope_line = match &state.scope {
+        DiffScope::CurrentChanges => vec![
             Span::styled(" Branch ", Style::default().fg(theme.text_muted.to_color())),
             Span::styled(
                 branch.to_string(),
@@ -729,10 +845,26 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
             } else {
                 Span::raw("")
             },
-        ]),
-        Line::from(second_line),
-    ])
-    .wrap(Wrap { trim: false });
+        ],
+        DiffScope::Commit(commit) => vec![
+            Span::styled(" Commit ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                commit.short_hash.clone(),
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                commit.subject.clone(),
+                Style::default()
+                    .fg(theme.project_title.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ],
+    };
+    let header = Paragraph::new(vec![Line::from(scope_line), Line::from(second_line)])
+        .wrap(Wrap { trim: false });
 
     frame.render_widget(header, area);
 }
@@ -756,7 +888,11 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: 
         let error_widget = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
-                " Could not load branch diff ",
+                if matches!(&state.scope, DiffScope::Commit(_)) {
+                    " Could not load commit diff "
+                } else {
+                    " Could not load current changes "
+                },
                 Style::default()
                     .fg(theme.danger.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -776,14 +912,22 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: 
         let empty = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
-                " No changes against the selected base ",
+                if matches!(&state.scope, DiffScope::Commit(_)) {
+                    " The selected commit has no file changes "
+                } else {
+                    " No changes against the selected base "
+                },
                 Style::default()
                     .fg(theme.success.to_color())
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "Refresh with r after making more edits or commits.",
+                if matches!(&state.scope, DiffScope::Commit(_)) {
+                    "This can happen for an empty commit or some merge commits."
+                } else {
+                    "Refresh with r after making more edits or commits."
+                },
                 Style::default().fg(theme.text.to_color()),
             )),
         ]);
@@ -1528,6 +1672,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme
         layout,
         new_file_selected,
         syntax_status,
+        matches!(&state.scope, DiffScope::CurrentChanges),
         theme,
     ))
     .wrap(Wrap { trim: false });
@@ -2098,6 +2243,7 @@ fn diff_footer_lines(
         highlight::HighlightLanguage,
         highlight::HighlightInstallState,
     )>,
+    can_change_base: bool,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut primary = vec![
@@ -2154,9 +2300,14 @@ fn diff_footer_lines(
         Span::raw(" top/bottom  "),
         Span::styled("r", Style::default().fg(theme.warning.to_color())),
         Span::raw(" refresh  "),
-        Span::styled("b", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" base ref"),
     ]);
+    if can_change_base {
+        secondary.push(Span::styled(
+            "b",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        secondary.push(Span::raw(" base ref"));
+    }
 
     vec![Line::from(primary), Line::from(secondary)]
 }
@@ -3370,6 +3521,7 @@ mod tests {
                 highlight::HighlightLanguage::Tsx,
                 highlight::HighlightInstallState::Available,
             )),
+            true,
             &theme,
         );
 

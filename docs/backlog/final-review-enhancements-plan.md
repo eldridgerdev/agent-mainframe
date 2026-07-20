@@ -431,6 +431,8 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       cleared on finish)
 - [x] Choose base ref (press `b` in the diff viewer / final review to
       diff against any branch, tag, or commit; blank reverts to auto)
+- [x] Choose the view-mode diff scope (leader `d` opens a picker for all
+      current branch/worktree changes or one feature-branch commit)
 - [x] PR inline-comment integration — opt-in via the
       `final_review_post_to_pr` config flag. On finishing a review (with the
       flag on), AMF resolves the branch's PR and posts a single GitHub review:

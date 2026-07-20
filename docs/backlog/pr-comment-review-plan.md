@@ -2214,6 +2214,33 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `.claude/commands/amf/pr-continue.md`, `src/app/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`.
 
+- [ ] **Open PR Triage work in a new AMF feature with independently chosen
+      settings.** The current dedicated triage session may use a different
+      harness, but it still inherits the source feature's vibe mode and launch
+      flags. Add a `New feature…` fix-target option alongside the existing-live
+      and same-feature dedicated-session targets. Before the first fix, open a
+      compact feature-creation flow that can use a configured feature preset or
+      manually choose the harness, vibe mode, and other relevant feature
+      settings. This must support workflows such as implementing the original
+      feature in SuperVibe mode and doing review triage in a new Vibeless
+      feature.
+
+      Create an isolated worktree/tmux-backed AMF feature so worktree-local
+      hooks and permissions for the triage feature do not mutate the source
+      feature. Seed it from the PR head and retain an explicit link to the
+      source PR and source feature, because Git cannot check out the same branch
+      in two worktrees and branch-based PR auto-detection will not be sufficient
+      for the companion branch. Define a safe, visible integration path for
+      triage commits (for example, an explicit push to the PR head ref or a
+      guided cherry-pick back into the source feature); never silently overwrite
+      or diverge a dirty source worktree. Reuse the new feature for every fix in
+      that PR, preserve the existing return-to-triage navigation/status, and
+      show the selected feature and mode in the fix confirmation UI. Acceptance:
+      start from a SuperVibe PR feature, choose `New feature…` + Vibeless, inject
+      and complete multiple fixes in the isolated feature, land them on the
+      original PR branch through the confirmed integration path, and return to
+      the same PR Triage state.
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

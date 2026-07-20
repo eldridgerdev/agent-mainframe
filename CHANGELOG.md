@@ -10,243 +10,96 @@ are tagged.
 
 ## [Unreleased]
 
+### Backlog
+
+- Allow each review action to choose its own model instead of sharing one
+  `review_model` setting.
+- Cap or archive `.claude/review-notes.md` so long-running Review Mode
+  sessions do not repeatedly read an ever-growing history.
+
+## [v0.31.0] - 2026-07-20
+
 ### Added
 
-- **AI Review is now its own pane, separate from PR Triage.** Generating
-  AMF's own review of a PR's diff (`A`/`W`) used to live inside the PR Triage
-  pane, converting each finding into a synthetic comment merged into the same
-  list real GitHub comments live in — a fit that kept fighting the triage
-  data model (a synthetic id range, a bot/human/AI three-way chip, a diff
-  hunk reconstructed from the full diff, a background-job lifecycle that
-  didn't compose with "merge into whichever pane is showing"). AI Review is
-  now a dedicated pane with its own findings list, its own cache
-  (`ai_review_cache`, keyed by PR# + head SHA, no longer riding inside the
-  triage cache), and a leaner loop: generate (`A`) → keep/skip/edit each
-  finding → post the kept ones as one GitHub review (`W`). Posted findings
-  don't reconcile back into this pane — return to PR Triage and refresh to
-  follow up on them (mark done, reply, resolve, inject a fix) as ordinary
-  fetched comments. Reachable four ways: `A` from inside PR Triage (returns
-  there on close), `W` on the dashboard for the selected feature, `W` in the
-  PR picker for the highlighted PR, and leader `W` from inside an agent
-  session. No migration needed — old cached AI drafts inside `pr_review_cache`
-  are simply left behind; press `A` in the new pane to regenerate. PR Triage's
-  own header shows `[AI review running]` whenever a background pass for that
-  PR is still going, so leaving the AI Review pane (or opening PR Triage from
-  the dashboard/a session) doesn't lose track of it. Reviews powered by
-  Claude, Codex, Opencode, or Pi now show their current activity, elapsed
-  time, and reported token usage in the running pane, so long reviews no
-  longer look stuck regardless of the selected harness. After leaving that
-  pane with `Esc`, press `A` on the AI Review pane to return to the same live
-  progress view without resetting its timer. Older harness CLIs that lack
-  their structured progress mode now show an upgrade hint before a review
-  starts. No migration is required.
-- **Compact the review-memory doc (`c` in the PR picker).** Findings
-  accumulate one bullet at a time (`M`, the lookback bootstrap) but were
-  never pruned — the doc could drift and bloat over time with near-duplicate
-  or stale rules. `c` shows how many findings are in the doc today, then a
-  single headless agent pass merges near-duplicates and drops findings that
-  are stale, superseded, or too specific to a single past PR — preserving
-  section structure and any hand-written prose. Unlike every other
-  review-memory write, this proposes a wholesale rewrite rather than an
-  append, so nothing touches disk until you review the proposed doc
-  full-screen (editable) and explicitly write (`⏎`/`w`) or discard (`esc`).
-  `esc` from the running screen returns to the picker without losing the
-  in-flight pass, same as the bootstrap and `A`/AI-review running screens.
-- **Final Review now supports comments on an entire file without rejecting
-  it.** Press `m` on a file to leave a verdict-free observation, question,
-  nit, or praise, and `M` to resolve or reopen that thread. File comments
-  carry severity, survive re-review rounds, appear in file filters and review
-  feedback, and can be posted to GitHub as file-level PR comments when PR
-  posting is enabled. No migration is required.
-- **Final Review can apply suggested changes directly to the worktree.** With
-  the line cursor on a suggestion, press `x` to apply just that replacement,
-  or press `X` to opt into applying all remaining suggestions when the review
-  finishes, before the configured build/test check runs. AMF refuses to
-  overwrite a file that changed after the diff loaded, leaves anything unsafe
-  or stale for the fixing agent, and reports what was applied or skipped.
-  No migration is required.
-- **Final Review can now be paused without finishing it.** `Esc` at the top
-  level of the review viewer returns to the feature view and writes nothing —
-  no feedback file, no PR post, no dispatched fix prompt, and the progress
-  file is left exactly as-is. `q` keeps finishing the review as before, and
-  reopening Final Review resumes the paused review's decisions, comments, and
-  filters. Nested `Esc` behavior is unchanged: it still dismisses an open
-  modal, editor, or cursor mode, and cancels the finish confirmation, before
-  a plain top-level `Esc` pauses. No migration is required.
-- **Final Review's layout toggle is now honest about what it's doing.**
-  Pressing `v` on a new or untracked file (which can only render unified)
-  used to silently do nothing — it now explains why. The footer's `v` hint
-  also now shows the layout actually being rendered (`layout:unified` /
-  `layout:side-by-side`), and switches to a plain `(new file)` label instead
-  of the `v` key hint on files that can't switch, matching how the plain
-  (non-review) diff viewer already labeled it. No migration is required.
-- **The review-memory doc path can now be overridden per project, not just
-  globally.** `review_memory_path` was already a config setting, but one
-  value applied to every project. Set `review_memory_path` in a project's
-  `.amf/config.json` to point that repo's PR-review memory (AI review
-  context, the lookback bootstrap, and manual "add to memory") at its own
-  file, overriding the global default the same way `final_review_check_command`
-  already does. No setup or migration required — everything falls back to
-  the existing global setting, then `.amf/review-memory.md`, unchanged.
-  Note for anyone who already set the top-level `review_memory_path` in
-  `~/.config/amf/config.json`: this setting is also readable from the
-  config wizard's global scope, which writes it under that file's
-  `"extension"` block instead. If both are present, the `"extension"`
-  one wins.
-- **PR Triage's AI review can use a different model than the working
-  session, picked from a new in-pane picker.** Right after choosing the `A`
-  harness, a "Model for AI review" picker offers `Default` (the harness's
-  own model), verified presets for Claude (`sonnet`/`opus`/`haiku`/`fable`
-  — the only harness with a confirmed alias list), and `Custom…` for any
-  other model name/id, remembered for the rest of the PR. A new
-  `review_model` config setting still works as the picker's seeded default
-  (and covers the review-memory lookback bootstrap, which has no harness
-  picker of its own to hang a model picker off). Not offered for Pi, whose
-  headless model flag isn't verified — it skips straight to the review.
-- **Open PR Triage from inside the agent session, with an ambient status
-  indicator.** Previously `G` only worked from the dashboard; getting to PR
-  Triage from a live session meant exiting the view first. `leader G` now
-  resolves the current session's feature to its PR the same way the
-  dashboard's `G` does and opens the pane directly — falling through to the
-  PR picker when the branch has no open PR, same as before. Sessions whose
-  feature has an active PR also show its triage state without leaving the
-  session: with the sidebar hidden, an ambient `[PR #N · M open]` badge
-  appears in the top-right corner (alongside the existing remote-control /
-  direct-input / back-to-triage badges); with the sidebar visible, the same
-  information renders as a "PR Triage" sidebar box instead, so the badge and
-  the box never compete for the same space. Either surface appends a
-  `working` line/suffix while the dedicated triage session is thinking or
-  running a tool and an `AI review` line/suffix while an `A` review is
-  running in the background. The sidebar box's title carries a `<leader G>`
-  hint, matching the existing `<leader l>` hint on the "Prompt" box. No setup
-  or migration required.
-- **PR Triage's "Done in `<sha>`" and "not-needed" replies now disclose they
-  were posted through AMF.** Both are templated, user-edited text — not
-  AI-generated — so they get a lighter `— posted via AMF` footer, distinct
-  from the existing AI-attribution footer on AI-review findings. The reply
-  dialog shows this will happen before you post.
-- **PR Triage can group conversation comments into their own section.**
-  Top-level PR discussion (no `path`/resolution) used to interleave with
-  inline/review comments in every sort order, easy to lose in a busy PR. `o`
-  now cycles through a fifth sort mode — "conversations last" — that groups
-  every conversation comment after the code-anchored ones and draws a
-  "─ Conversation ─" divider ahead of the group, so it reads as a real
-  section rather than a silent reorder.
-- **PR Triage's "Done in `<sha>`" reply now points at a commit that
-  plausibly fixed the comment, not blindly at `HEAD`.** `R` searches the
-  comment's file/line history first (`git log -L`), falls back to the
-  file's most recent commit, and only falls back to bare `HEAD` — flagged
-  "(latest commit)" — when neither search finds anything.
+- **AI Review now has a dedicated pane, separate from PR Triage.** Open it
+  from PR Triage with `A`, from the dashboard or PR picker with `W`, or
+  from a live agent session with leader `W`. Review findings, edit or skip
+  them, and post the kept findings as one GitHub review. Long-running reviews
+  now show live activity, elapsed time, and token usage for Claude, Codex,
+  OpenCode, and Pi.
+- **Review memory can now be compacted from the PR picker.** Press `c` to
+  merge duplicate guidance and remove stale or overly specific findings.
+  AMF shows the proposed rewrite in an editable full-screen preview and does
+  not write it until you confirm.
+- **Final Review supports file-level comments.** Press `m` on a file to
+  leave an observation, question, nit, or praise without rejecting it, and
+  `M` to resolve or reopen the thread. File comments persist across review
+  rounds and can be posted to GitHub.
+- **Final Review can apply suggested changes.** Press `x` on a suggestion
+  to apply it immediately, or `X` to apply all remaining suggestions when
+  the review finishes. AMF skips files that changed after the diff loaded and
+  reports anything that still needs attention.
+- **Final Review can be paused and resumed.** Top-level `Esc` now returns to
+  the feature without writing feedback, posting to GitHub, or dispatching a
+  fix; reopening Final Review restores the same decisions, comments, and
+  filters. Press `q` to finish as before.
+- **Review memory paths can be configured per project.** Set
+  `review_memory_path` in `.amf/config.json` to override the global path
+  for that repository.
+- **AI Review has an in-pane model picker.** Choose the harness default, a
+  verified Claude preset, or a custom model before starting a review. The
+  existing `review_model` setting provides the initial selection.
+- **PR Triage is available inside live agent sessions.** Leader `G` opens
+  the current feature's PR, while an ambient badge or sidebar panel shows the
+  PR number, open-comment count, and whether triage or AI review work is
+  running.
+- **PR conversations can be grouped separately.** Press `o` to cycle to
+  “conversations last,” which places top-level discussion after code comments
+  under a visible divider.
 
 ### Changed
 
-- **The new-session Review toggle now warns that Review Mode has high token
-  usage.** The creator shows a prominent `HIGH TOKEN USAGE` label and repeats
-  the warning in the option help, so the cost is clear before Review Mode is
-  enabled. This is a labeling change only; existing sessions and defaults are
-  unchanged.
-- **PR Triage keymap simplified: three sets of top-level keys folded into
-  pickers.** Real use reported the pane as overwhelming (18+ top-level
-  action keys). First pass: (1) the standalone `t` fix-target toggle is
-  gone — the first `f`/`B` of a pane visit now opens a single picker
-  offering "existing live session" or a dedicated session on a chosen
-  harness, so the choice is made once, at the point it's needed. (2) `R`
-  and `n` (the two reply templates) are merged into one `R` that opens a
-  two-row picker ("Done" / "Not needed") before the existing reply dialog.
-  (3) `m`, `s`, and `x` (mark done, skip, resolve/reopen the GitHub thread)
-  are merged into one `m` "Mark" picker with three rows — the GitHub-write
-  row is explicitly labeled "Resolve/Reopen thread on GitHub" so it isn't
-  mistaken for the two local-only toggles next to it. No workflow was
-  removed; each action is still one keypress away, just reached through a
-  small picker instead of a dedicated letter.
-- **Review Mode uses noticeably fewer tokens.** Three independent cuts to
-  the same feature: (1) the `.claude/review-notes.md` instruction injected
-  into `CLAUDE.local.md` used to ask the agent to write a note before
-  *every* Edit/Write, doubling the write operations on a multi-file task —
-  it now asks for one note per touched file at the end of each logical
-  batch of changes instead (note format unchanged, so existing tooling
-  still parses it fine). (2) Final review's walkthrough (`w`), AI
-  co-review (`A`), and changeset overview (`O`) previously always ran on
-  the CLI's default model with no override, unlike PR Triage's AI review —
-  they now honor the existing `review_model` config setting too, so you
-  can point these bounded, single-purpose passes at a cheaper model. (3)
-  `.claude/final-review-feedback.md` kept every review round forever even
-  though only the newest round is ever read (by the agent or by AMF's own
-  parsing) — on a long-lived feature this meant re-reading the whole
-  accumulated history every round for nothing. The live file now keeps
-  just the newest 2 rounds; older ones move to a new, gitignored
-  `.claude/final-review-feedback-archive.md` so history is preserved
-  without the ongoing read cost. No migration required.
+- **PR Triage uses fewer top-level shortcuts.** Fix targets are chosen when
+  you first press `f` or `B`; `R` opens the reply-template picker; and
+  `m` opens the local/GitHub mark-action picker. All previous workflows
+  remain available through these focused pickers.
+- **Review Mode uses fewer tokens.** Review notes are batched per touched
+  file, bounded Final Review passes honor `review_model`, and only the two
+  newest feedback rounds stay in the live feedback file. Older rounds move
+  to a gitignored archive.
+- **New-session setup now labels Review Mode as high token usage.** Existing
+  sessions and defaults are unchanged.
+- **Templated PR replies now disclose that AMF posted them.** “Done” and
+  “Not needed” replies receive a lightweight attribution footer that is
+  previewed before posting.
+- **“Done” replies choose a more relevant commit.** AMF checks the commented
+  line and file history before falling back to the current `HEAD`.
+- **Final Review's layout status is clearer.** The footer shows the layout
+  actually in use, and AMF explains why new or untracked files cannot switch
+  away from unified view.
 
 ### Fixed
 
-- **Claude hook errors could pile up after running AMF with a custom
-  `XDG_CONFIG_HOME`** (as the screenshot dev tool does for its isolated
-  captures). AMF only recognized its own managed hook scripts under the
-  dotted `~/.config/amf` or macOS `Library/Application Support/amf` paths,
-  so a helper path under any other custom config root — e.g.
-  `<custom-dir>/config/amf/<script>.sh`, or a root not named `config` at
-  all such as `XDG_CONFIG_HOME=/tmp/foo` — was never cleaned up on a later
-  run, leaving Claude reporting a non-blocking hook error
-  (`/bin/sh: ... not found`) for each stale entry. AMF now recognizes and
-  replaces managed hooks under any `amf` config directory, regardless of
-  what its parent is named. Existing stale entries in a workdir's
-  `.claude/settings.local.json` are cleaned up automatically the next time
-  AMF refreshes that feature's hooks.
-- **Pressing `m` in Final Review now shows the file-comment editor.** The
-  comment state opened correctly, but its footer stayed at the compact
-  two-line height, leaving no visible edit box. File comments now get the same
-  expanded multi-line editor as line comments and rejection feedback.
-- **The theme picker now keeps the selected theme visible when the list is
-  longer than the dialog.** Navigating beyond the initially visible themes
-  scrolls the list automatically, with a scrollbar showing the current
-  position. No migration is required.
-- **The ambient PR badge disappeared while composing.** The badge was only
-  wired into `AppMode::Viewing`'s draw path; since compose interception is on
-  by default, entering a session normally lands straight in `AppMode::Compose`,
-  where the badge never rendered at all. It's now shared by both modes.
-- **The ambient PR badge/sidebar box could go stale (or never populate)
-  while sitting inside a session.** The background job that refreshes
-  `active_prs` only ran from the dashboard (`!is_viewing`), bundled with tmux
-  status reconciliation — so opening a PR for a feature while already inside
-  its session, or leaving a session open, meant the indicator never updated.
-  It now runs on its own independent cadence regardless of `AppMode`.
-- **Fix injection could silently target the wrong checked-out branch.**
-  PR Triage lets you open *any* PR in the repo (`G`'s picker, `g`/`#` inside
-  the pane), not just the one for the feature's own checked-out branch — but
-  `f`/`B` fix injection always read files from that feature's workdir
-  regardless of which PR was loaded, so a mismatch meant a fix could land on
-  the wrong branch with no warning. PR Triage now compares the PR's branch
-  against the workdir's actual checked-out branch and, on a mismatch, shows
-  a danger-colored banner in the pane header and repeats the warning inside
-  the fix confirm dialog before anything is injected.
-- **Pasting text or images into the composer did nothing on macOS.** AMF's
-  clipboard support only covered WSL, Wayland, and X11, so on macOS the
-  composer's Ctrl+V had no clipboard to read from. It worked if you bypassed
-  the composer and pasted straight into Claude Code, because that path never
-  went through AMF's clipboard handling. Composer paste now works on macOS
-  for both text and images. No setup required.
+- **Stale Claude hook entries are cleaned up with custom config roots.** AMF
+  now recognizes its managed hooks under any `amf` config directory and
+  automatically replaces obsolete paths the next time feature hooks refresh.
+- **File-level comment editing is visible in Final Review.** The editor now
+  receives the same expanded space as line comments and rejection feedback.
+- **Long theme lists keep the selection visible.** The picker scrolls as you
+  navigate and shows the current position.
+- **The ambient PR indicator remains visible and current while composing.**
+  It now refreshes independently while you stay inside an agent session.
+- **PR fixes warn before targeting the wrong branch.** When the loaded PR
+  branch differs from the worktree's checked-out branch, AMF shows the
+  mismatch both in the pane and before fix injection.
+- **Composer paste works on macOS.** Both text and image clipboard content can
+  now be pasted through AMF.
 
-### Backlog
+### Migration
 
-- **High priority: pause or close Final Review without finishing it.** A
-  reviewer should be able to leave an in-progress review and resume later
-  without writing or dispatching feedback, posting to the PR, or replacing the
-  finished-review snapshot.
-- Fix Final Review's layout toggle so switching between unified and
-  side-by-side views is reliable and clearly labeled, including while using
-  the line-comment cursor and when viewing added or untracked files.
-- Model selection independent of agent harness: allow per-action model selection
-  (e.g. powerful model for AI review, cheaper model for reply drafts) via config
-  map that falls back to harness default. (Partial: final review's walkthrough /
-  AI co-review / changeset overview now reuse the single `review_model` setting —
-  still open is letting different actions pick genuinely different models rather
-  than sharing one.)
-- Cap/archive `.claude/review-notes.md` the same way `final-review-feedback.md`
-  was capped: nothing trims it today, and the agent has to re-read the whole
-  file every batch (per the REVIEW MODE instructions) to check which files
-  already have a note — the same unbounded-history-reread cost the feedback
-  file had, on a file read even more often.
+- No migration is required. AMF upgrades its local database and cleans stale
+  managed hooks automatically. Existing AI Review drafts from PR Triage are
+  not moved into the new pane; regenerate any draft you still need with `A`.
 
 ## [v0.30.1] - 2026-07-14
 

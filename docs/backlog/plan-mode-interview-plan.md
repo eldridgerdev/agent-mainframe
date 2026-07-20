@@ -380,12 +380,16 @@ without them.
 - [x] Interviewer prompt constant (fenced-JSON reply contract) +
       repo-context gatherer (bounded: README head, dir listing,
       CLAUDE.md)
-- [ ] Off-UI-thread spawn + poll with loading stage frame showing
+- [x] Off-UI-thread spawn + poll with loading stage frame showing
       the engine in use, elapsed time, and tokens where the harness
-      reports them (via the usage subsystem; time-only otherwise)
-- [ ] Defensive fenced-JSON→`PlanQuestion` parsing, round/question
+      reports them (via the usage subsystem; time-only otherwise) —
+      landed as a cheap prompt-size token estimate
+      (`app::pr_review::estimate_tokens`, reused), not a real
+      harness-reported count; no headless call currently surfaces
+      actual usage
+- [x] Defensive fenced-JSON→`PlanQuestion` parsing, round/question
       caps, fallback-on-failure, debug-log breadcrumbs
-- [ ] Unit tests for parsing, cap enforcement, and fallback order
+- [x] Unit tests for parsing, cap enforcement, and fallback order
 
 ### Epic 4 — Synthesis + review gate
 

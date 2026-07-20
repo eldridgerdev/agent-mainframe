@@ -649,6 +649,11 @@ pub struct App {
     pub(crate) active_prs: HashMap<String, ActivePrStatus>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
+    /// Receiver for the background AI-adaptive plan-interview round (a
+    /// headless harness call). Carries the round number alongside the
+    /// result so a late-arriving response can be matched or discarded. See
+    /// `app::plan_interview::poll_plan_interview_ai_bg`.
+    pub plan_interview_ai_bg: Option<Receiver<(usize, Result<String>)>>,
     /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
@@ -913,6 +918,10 @@ impl App {
             | AppMode::ReviewMemoryBootstrapRunning(_)
             | AppMode::ReviewMemoryCompactRunning(_)
             | AppMode::AiReviewRunning(_) => true,
+            // Animates the loading frame's throbber and elapsed-time display
+            // while a plan interview's AI-adaptive round runs in the
+            // background (`app::plan_interview::poll_plan_interview_ai_bg`).
+            AppMode::PlanInterview(state) => state.phase == PlanInterviewPhase::AiLoading,
             _ => false,
         };
         base || self.has_active_toasts()
@@ -2036,6 +2045,7 @@ impl App {
             active_pr_bg: None,
             active_prs: HashMap::new(),
             pr_review_bg: None,
+            plan_interview_ai_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
@@ -2244,6 +2254,7 @@ impl App {
             active_pr_bg: None,
             active_prs: HashMap::new(),
             pr_review_bg: None,
+            plan_interview_ai_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,

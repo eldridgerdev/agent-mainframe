@@ -3,11 +3,16 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 
-use super::{App, AppMode, PlanInterviewState, PreparedFeatureLaunch, Selection};
-use crate::plan_interview::PlanQuestion;
+use super::pr_review::estimate_tokens;
+use super::{
+    App, AppMode, PlanInterviewPhase, PlanInterviewState, PreparedFeatureLaunch, Selection,
+};
+use crate::headless::HeadlessRunner;
+use crate::plan_interview::{self, PlanQuestion};
 
 const PLAN_FILE_NAME: &str = "plan.md";
 
@@ -25,6 +30,188 @@ impl App {
             prepared, questions,
         ));
         self.message = None;
+    }
+
+    /// Called once the interview's static/AI question flow reaches `Done`
+    /// (a natural exhaustion of the current question list, not an abort).
+    /// Starts the next AI-adaptive round when one is owed, otherwise
+    /// completes the interview. No-op unless the mode is actually `Done`.
+    pub(crate) fn continue_plan_interview_after_done(&mut self) -> Result<()> {
+        let (is_done, should_start_next_round) = match &self.mode {
+            AppMode::PlanInterview(state) => (
+                state.phase == PlanInterviewPhase::Done,
+                !state.skip_ai_rounds && state.ai_rounds_completed < plan_interview::MAX_AI_ROUNDS,
+            ),
+            _ => (false, false),
+        };
+        if !is_done {
+            return Ok(());
+        }
+        if should_start_next_round {
+            self.start_next_plan_interview_ai_round()
+        } else {
+            self.complete_plan_interview()
+        }
+    }
+
+    /// Resolve the interview engine (lazily, once) and spawn one AI-adaptive
+    /// round off the UI thread. Falls straight through to completion when no
+    /// headless-capable harness is available — AI rounds are best-effort.
+    fn start_next_plan_interview_ai_round(&mut self) -> Result<()> {
+        let (
+            preferred_harness,
+            resolved_harness,
+            round,
+            feature_name,
+            brief,
+            questions,
+            answers,
+            workdir,
+        ) = match &self.mode {
+            AppMode::PlanInterview(state) => (
+                state.preferred_harness.clone(),
+                state.ai_harness.clone(),
+                state.ai_rounds_completed + 1,
+                state.feature_name.clone(),
+                state.brief.clone(),
+                state.questions.clone(),
+                state.answers.clone(),
+                state
+                    .pending_launch
+                    .as_ref()
+                    .map(|prepared| prepared.workdir.clone())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+            ),
+            _ => return Ok(()),
+        };
+
+        let harness = match resolved_harness {
+            Some(resolved) => resolved,
+            None => HeadlessRunner::select_for_interview(&preferred_harness),
+        };
+        // Cache the resolution (even `None`) so later rounds don't re-probe.
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.ai_harness = Some(harness.clone());
+        }
+
+        let Some(harness) = harness else {
+            self.log_info(
+                "plan_interview",
+                "no headless-capable harness available; skipping AI rounds".to_string(),
+            );
+            return self.complete_plan_interview();
+        };
+
+        let context = plan_interview::gather_repository_context(&workdir);
+        let prompt = plan_interview::build_interviewer_prompt(
+            &feature_name,
+            &brief,
+            &questions,
+            &answers,
+            &context,
+            round,
+        );
+        let token_estimate = estimate_tokens(&prompt);
+
+        self.log_info(
+            "plan_interview",
+            format!(
+                "starting AI round {round} with {} (~{token_estimate} tokens)",
+                harness.display_name()
+            ),
+        );
+
+        let (tx, rx) = mpsc::channel();
+        self.plan_interview_ai_bg = Some(rx);
+        let thread_harness = harness;
+        let thread_workdir = workdir;
+        std::thread::spawn(move || {
+            let result = HeadlessRunner::run(&thread_harness, &thread_workdir, &prompt, None);
+            let _ = tx.send((round, result));
+        });
+
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.begin_ai_round(token_estimate);
+        }
+        Ok(())
+    }
+
+    /// Poll the in-flight AI-adaptive round. Returns `true` when a redraw is
+    /// warranted.
+    pub fn poll_plan_interview_ai_bg(&mut self) -> bool {
+        let Some(rx) = self.plan_interview_ai_bg.as_ref() else {
+            return false;
+        };
+        let (round, result) = match rx.try_recv() {
+            Ok(message) => message,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.plan_interview_ai_bg = None;
+                self.log_warn(
+                    "plan_interview",
+                    "AI round worker thread ended unexpectedly".to_string(),
+                );
+                let was_loading = matches!(
+                    &self.mode,
+                    AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::AiLoading
+                );
+                if was_loading {
+                    if let AppMode::PlanInterview(state) = &mut self.mode {
+                        state.ai_round_started_at = None;
+                        state.ai_rounds_completed = plan_interview::MAX_AI_ROUNDS;
+                        state.phase = PlanInterviewPhase::Done;
+                    }
+                    let _ = self.complete_plan_interview();
+                }
+                return true;
+            }
+        };
+        self.plan_interview_ai_bg = None;
+
+        let is_loading = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::AiLoading
+        );
+        if !is_loading {
+            // The user navigated or aborted away from the loading screen;
+            // the background call already finished, nothing to apply.
+            return false;
+        }
+
+        let existing_ids: Vec<String> = match &self.mode {
+            AppMode::PlanInterview(state) => state.questions.iter().map(|q| q.id.clone()).collect(),
+            _ => return false,
+        };
+
+        let new_questions = match result {
+            Ok(response) => {
+                let parsed = plan_interview::parse_ai_questions(&response, &existing_ids, round);
+                if parsed.is_empty() {
+                    self.log_debug(
+                        "plan_interview",
+                        format!("AI round {round} returned no usable follow-up questions"),
+                    );
+                }
+                parsed
+            }
+            Err(e) => {
+                self.log_warn("plan_interview", format!("AI round {round} failed: {e}"));
+                Vec::new()
+            }
+        };
+
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.apply_ai_round(round, new_questions);
+        }
+
+        let reached_done = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Done
+        );
+        if reached_done {
+            let _ = self.continue_plan_interview_after_done();
+        }
+        true
     }
 
     /// Complete the interview and execute the launch it has been holding.

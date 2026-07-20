@@ -47,7 +47,7 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 && matches!(&app.mode, AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Done);
             set_advance_message(app, result);
             if completed {
-                app.complete_plan_interview()?;
+                app.continue_plan_interview_after_done()?;
             }
         }
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) && !is_select => {
@@ -75,7 +75,7 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 && matches!(&app.mode, AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Done);
             set_advance_message(app, result);
             if completed {
-                app.complete_plan_interview()?;
+                app.continue_plan_interview_after_done()?;
             }
         }
         KeyCode::Char('f') if control => {
@@ -87,7 +87,7 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 && matches!(&app.mode, AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Done);
             set_advance_message(app, result);
             if completed {
-                app.complete_plan_interview()?;
+                app.continue_plan_interview_after_done()?;
             }
         }
         KeyCode::Up | KeyCode::Char('k') if is_select => {
@@ -102,7 +102,10 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         _ if !is_select => {
             if let AppMode::PlanInterview(state) = &mut app.mode
-                && state.phase != PlanInterviewPhase::Done
+                && !matches!(
+                    state.phase,
+                    PlanInterviewPhase::Done | PlanInterviewPhase::AiLoading
+                )
             {
                 state.editor.handle_key(key);
             }

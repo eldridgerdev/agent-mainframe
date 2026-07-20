@@ -166,7 +166,6 @@ impl HeadlessRunner {
     /// can still be picked ahead of a working fallback. Pi is deliberately
     /// excluded until its headless contract is verified; a Pi feature can
     /// still be implemented by Pi while another harness powers discovery.
-    #[allow(dead_code)] // Wired into the interview state machine by the next Epic 3 item.
     pub fn select_for_interview(preferred: &AgentKind) -> Option<AgentKind> {
         select_interview_harness_with(preferred, |harness| Self::check_available(harness).is_ok())
     }

@@ -4710,8 +4710,7 @@ fn cleanup_recognizes_quoted_temp_xdg_config_managed_claude_hooks() {
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "Stop");
     assert!(
-        cmds.iter()
-            .all(|cmd| !cmd.contains("/tmp/amf-shots/")),
+        cmds.iter().all(|cmd| !cmd.contains("/tmp/amf-shots/")),
         "stale temp-XDG-config AMF hooks should be removed, got: {cmds:?}"
     );
     assert_eq!(

@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Final Review shows a summary before it writes and dispatches anything.**
+  `q` used to gate on undecided files and then finish immediately; it now
+  opens a navigable summary listing every file's verdict, every open line/file
+  comment (and suggestion), and the general feedback, in one place. `j`/`k`
+  (and `g`/`G`) move through the list, `Enter` jumps back into the diff at
+  that item and opens its editor pre-filled — a rejection's feedback, a line
+  or file comment, or the general note — so fixing something you spot in the
+  summary no longer means hunting it down again. `q` from the summary is the
+  real finish; `Esc` just closes it and returns to reviewing, with nothing
+  written, posted, or dispatched. No migration is required.
 - **PR Triage's detail pane now shows a comment's replies, however they got
   posted.** A reply posted outside AMF's own `R`/`n` flow — e.g. an agent
   working the PR with its own `gh` access — previously left no trace next to

@@ -628,6 +628,23 @@ pub struct AgentResponse {
     pub response: String,
 }
 
+/// One row of the pre-finish summary list (`summary_items`): every verdict,
+/// open comment and suggestion in the review, in file order. Built fresh from
+/// `DiffViewerState` each time the modal is opened or navigated — nothing here
+/// is persisted separately from the decisions/comments it's derived from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryItem {
+    /// A file's verdict row (approved / needs work / skipped / no verdict).
+    File { file_idx: usize },
+    /// An open (kept, unresolved) line comment or suggestion, in the same
+    /// order as the file's `line_comments` vec (already sorted by line).
+    LineComment { file_idx: usize, comment_idx: usize },
+    /// An open whole-file comment.
+    FileComment { file_idx: usize },
+    /// The overall (non-file) review feedback. Only present when non-empty.
+    General,
+}
+
 // Not `Clone`: holds a `std::process::Child` for the in-flight walkthrough
 // generation (matching `DiffReviewState`). Nothing clones this state wholesale.
 pub struct DiffViewerState {
@@ -815,6 +832,15 @@ pub struct DiffViewerState {
     /// while open, mirroring `changeset_overview_open`.
     pub interdiff_open: bool,
     pub interdiff_scroll: usize,
+    /// True while the pre-finish summary modal is shown: every verdict, open
+    /// comment and suggestion in one navigable list, so `q` gives one last
+    /// look before feedback is written and dispatched. Opened by
+    /// `confirm_or_finish_review` once the undecided-files gate (if any) has
+    /// been cleared; takes full key precedence while open, mirroring
+    /// `changeset_overview_open`.
+    pub summary_open: bool,
+    /// Selected row in `summary_items()`, clamped to its length on navigation.
+    pub summary_selected: usize,
 }
 
 impl DiffViewerState {
@@ -886,6 +912,8 @@ impl DiffViewerState {
             interdiff_file: None,
             interdiff_open: false,
             interdiff_scroll: 0,
+            summary_open: false,
+            summary_selected: 0,
         }
     }
 
@@ -1019,6 +1047,41 @@ impl DiffViewerState {
             .filter(|(_, file)| self.file_passes_filter(file))
             .map(|(i, _)| i)
             .collect()
+    }
+
+    /// Every row of the pre-finish summary, in file order: each file's verdict
+    /// row, then its open line comments (already sorted by line) and open file
+    /// comment, followed by the overall feedback if any was written. Ignores
+    /// the active file-list filter — the summary is deliberately everything,
+    /// not just what's currently visible. Rebuilt fresh on every open/jump
+    /// rather than cached, since it's cheap and always derived from state that
+    /// can change underneath it (a jump-to-edit round-trip).
+    pub fn summary_items(&self) -> Vec<SummaryItem> {
+        let mut items = Vec::new();
+        for (file_idx, file) in self.files.iter().enumerate() {
+            items.push(SummaryItem::File { file_idx });
+            if let Some(comments) = self.line_comments.get(&file.path) {
+                for (comment_idx, comment) in comments.iter().enumerate() {
+                    if comment.is_open_thread() {
+                        items.push(SummaryItem::LineComment {
+                            file_idx,
+                            comment_idx,
+                        });
+                    }
+                }
+            }
+            if self
+                .file_comments
+                .get(&file.path)
+                .is_some_and(FileComment::is_open_thread)
+            {
+                items.push(SummaryItem::FileComment { file_idx });
+            }
+        }
+        if !self.general_feedback.trim().is_empty() {
+            items.push(SummaryItem::General);
+        }
+        items
     }
 }
 

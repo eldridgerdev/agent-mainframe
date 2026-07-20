@@ -12,7 +12,7 @@ use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{DiffViewerFocus, DiffViewerLayout, DiffViewerState},
+    app::{DiffViewerFocus, DiffViewerLayout, DiffViewerState, ReviewDecision, SummaryItem},
     diff::{DiffFile, DiffFileStatus, DiffLine, DiffLineKind, DiffLineLocation},
     editor::VimMode,
     highlight,
@@ -95,6 +95,9 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     }
     if state.interdiff_open {
         draw_interdiff_modal(frame, state, theme);
+    }
+    if state.summary_open {
+        draw_review_summary_modal(frame, state, theme);
     }
 }
 
@@ -219,6 +222,230 @@ fn draw_changeset_overview_modal(frame: &mut Frame, state: &mut DiffViewerState,
         Span::raw(" close"),
     ]);
     frame.render_widget(Paragraph::new(hint), rows[1]);
+}
+
+/// A centered modal listing every verdict, open comment/suggestion and the
+/// general feedback in one navigable list — the pre-finish "one last look"
+/// (`q` on an undecided-free review, or `y`/`q` past the undecided-files
+/// confirmation). `Enter` on a row jumps back into the diff to edit it
+/// (closing the modal); `q` here is the real finish, `Esc` just closes the
+/// modal and returns to reviewing. Selection scrolling is `List`/`ListState`'s
+/// built-in keep-selection-visible behavior, unlike the markdown-scroll
+/// modals above.
+fn draw_review_summary_modal(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
+    let area = centered_rect(84, 82, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let rows_data = state.summary_items();
+    let (approved, rejected, undecided) = summary_verdict_counts(state);
+    let title = format!(
+        " Finish Review — Summary  ({approved} approved · {rejected} needs work · {undecided} no verdict) "
+    );
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(inner);
+
+    let mut items: Vec<ListItem> = rows_data
+        .iter()
+        .map(|item| ListItem::new(summary_item_line(*item, state, theme)))
+        .collect();
+    if items.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "Nothing to review — no changes against the base branch.",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))));
+    }
+
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .bg(theme.shortcut_background.to_color())
+                .fg(theme.shortcut_text.to_color())
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut list_state = ListState::default();
+    if !rows_data.is_empty() {
+        list_state.select(Some(state.summary_selected.min(rows_data.len() - 1)));
+    }
+    frame.render_stateful_widget(list, rows[0], &mut list_state);
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    let hint = Line::from(vec![
+        key("j"),
+        Span::raw("/"),
+        key("k"),
+        Span::raw(" move  "),
+        key("Enter"),
+        Span::raw(" jump to edit  "),
+        key("q"),
+        Span::raw(" finish review  "),
+        key("Esc"),
+        Span::raw(" back to review"),
+    ]);
+    frame.render_widget(Paragraph::new(hint), rows[1]);
+}
+
+/// (approved, needs-work, no-verdict) counts across every file, for the
+/// summary modal's title.
+fn summary_verdict_counts(state: &DiffViewerState) -> (usize, usize, usize) {
+    let mut approved = 0;
+    let mut rejected = 0;
+    for file in &state.files {
+        match state.decisions.get(&file.path) {
+            Some(ReviewDecision::Approve) => approved += 1,
+            Some(ReviewDecision::Reject { .. }) => rejected += 1,
+            None => {}
+        }
+    }
+    let undecided = state
+        .files
+        .len()
+        .saturating_sub(approved)
+        .saturating_sub(rejected);
+    (approved, rejected, undecided)
+}
+
+/// Truncate free text to a single flattened line for a summary row: collapse
+/// whitespace/newlines and cap the length so a long comment doesn't blow out
+/// the list.
+fn truncate_summary(text: &str) -> String {
+    const MAX_CHARS: usize = 100;
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return "(no text)".to_string();
+    }
+    if flat.chars().count() > MAX_CHARS {
+        format!("{}…", flat.chars().take(MAX_CHARS).collect::<String>())
+    } else {
+        flat
+    }
+}
+
+fn summary_item_line(item: SummaryItem, state: &DiffViewerState, theme: &Theme) -> Line<'static> {
+    match item {
+        SummaryItem::File { file_idx } => {
+            let Some(file) = state.files.get(file_idx) else {
+                return Line::from("");
+            };
+            let (icon, color, detail) = match state.decisions.get(&file.path) {
+                Some(ReviewDecision::Approve) => {
+                    ("✓", theme.success.to_color(), "approved".to_string())
+                }
+                Some(ReviewDecision::Reject { feedback, severity }) => {
+                    let text = if feedback.trim().is_empty() {
+                        "needs revision — see line/file comments below".to_string()
+                    } else {
+                        format!("needs revision: {}", truncate_summary(feedback))
+                    };
+                    (
+                        "✗",
+                        theme.danger.to_color(),
+                        format!("[{}] {}", severity.label(), text),
+                    )
+                }
+                None => ("·", theme.text_muted.to_color(), "no verdict".to_string()),
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!("{icon} "),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    file.path.clone(),
+                    Style::default().fg(theme.text.to_color()),
+                ),
+                Span::raw("  "),
+                Span::styled(detail, Style::default().fg(color)),
+            ])
+        }
+        SummaryItem::LineComment {
+            file_idx,
+            comment_idx,
+        } => {
+            let Some(file) = state.files.get(file_idx) else {
+                return Line::from("");
+            };
+            let Some(comment) = state
+                .line_comments
+                .get(&file.path)
+                .and_then(|comments| comments.get(comment_idx))
+            else {
+                return Line::from("");
+            };
+            let line_no = comment
+                .location
+                .new_line
+                .or(comment.location.old_line)
+                .unwrap_or(0);
+            let text = if comment.text.trim().is_empty() {
+                "(suggested change, no comment)".to_string()
+            } else {
+                truncate_summary(&comment.text)
+            };
+            let suffix = if comment.suggestion.is_some() {
+                " · suggestion"
+            } else {
+                ""
+            };
+            Line::from(vec![
+                Span::raw("    "),
+                Span::styled(
+                    format!("L{line_no} "),
+                    Style::default().fg(theme.info.to_color()),
+                ),
+                Span::styled(
+                    format!("[{}] ", comment.severity.label()),
+                    Style::default().fg(theme.text_muted.to_color()),
+                ),
+                Span::styled(text, Style::default().fg(theme.text.to_color())),
+                Span::styled(suffix, Style::default().fg(theme.text_muted.to_color())),
+            ])
+        }
+        SummaryItem::FileComment { file_idx } => {
+            let Some(file) = state.files.get(file_idx) else {
+                return Line::from("");
+            };
+            let Some(comment) = state.file_comments.get(&file.path) else {
+                return Line::from("");
+            };
+            Line::from(vec![
+                Span::raw("    "),
+                Span::styled("file comment ", Style::default().fg(theme.info.to_color())),
+                Span::styled(
+                    format!("[{}] ", comment.severity.label()),
+                    Style::default().fg(theme.text_muted.to_color()),
+                ),
+                Span::styled(
+                    truncate_summary(&comment.text),
+                    Style::default().fg(theme.text.to_color()),
+                ),
+            ])
+        }
+        SummaryItem::General => Line::from(vec![
+            Span::styled(
+                "General feedback: ",
+                Style::default()
+                    .fg(theme.info.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                truncate_summary(&state.general_feedback),
+                Style::default().fg(theme.text.to_color()),
+            ),
+        ]),
+    }
 }
 
 /// A small centered input overlay for searching the current file's diff. Matches
@@ -1575,7 +1802,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         ));
     }
     second_line.push(key("q"));
-    second_line.push(Span::raw(" finish review (writes feedback)  "));
+    second_line.push(Span::raw(" review summary → finish  "));
     second_line.push(key("Esc"));
     second_line.push(Span::raw(" pause (keep progress)"));
 

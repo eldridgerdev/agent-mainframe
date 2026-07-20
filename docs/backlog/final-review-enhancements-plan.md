@@ -5,13 +5,14 @@
   (most recently Round 2's file-level PR comments). **Round 3** (captured
   2026-07-01) has started: first-class file-level comments, interdiff on
   re-review, the "fixes ready — re-review?" notification, local application of
-  suggestion blocks, a **Cost** batch, the high-priority **close / pause
-  without finishing** viewer item, and the **`v` layout toggle** fix have
-  shipped. The Cost batch makes
+  suggestion blocks, the **finish summary screen**, a **Cost** batch, the
+  high-priority **close / pause without finishing** viewer item, and the
+  **`v` layout toggle** fix have shipped — that closes out every item in the
+  Loop group. The Cost batch makes
   bounded headless passes honor `review_model`, caps
   `final-review-feedback.md` with an archive file, and batches REVIEW MODE's
   note instruction per turn. The rest of the
-  loop-closing, viewer-ergonomics, AI co-review,
+  viewer-ergonomics, AI co-review,
   and workflow items are not yet started. Three Cost follow-ups (per-action
   model overrides, capping `review-notes.md` the same way, and measuring the
   most token-efficient way to dispatch review fixes) are added below.
@@ -786,8 +787,30 @@ Loop:
       `apply_suggestions_to_file` / `apply_review_suggestion_jobs` in
       `src/app/review.rs`; key handling and discoverable footer hints live in
       `src/handlers/diff.rs` and `src/ui/dialogs/diff.rs`.
-- [ ] Finish summary screen (editable overview of all verdicts /
-      comments / suggestions before write + dispatch)
+- [x] Finish summary screen — `q` on a fully-decided review (or `y`/`q` past
+      the undecided-files confirmation) now opens a navigable summary instead
+      of finishing outright: every file's verdict, every open line/file
+      comment (with its suggestion, if any), and the general feedback, in
+      file order, in one `List`/`ListState` modal that takes full key
+      precedence like the changeset-overview/interdiff modals
+      (`draw_review_summary_modal`, `src/ui/dialogs/diff.rs`). `j`/`k`,
+      `PageUp`/`PageDown` and `g`/`G` move the selection; `Enter`
+      (`review_summary_jump_to_selected`, `src/app/review.rs`) closes the
+      modal, jumps `selected_file` to that row's file, and — where there's
+      exactly one unambiguous thing to edit — opens it pre-filled: a
+      rejection's feedback, a line comment (cursor repositioned onto its span
+      via `covered_indices`), a file comment, or the general note. An
+      approved/undecided file with nothing to edit just navigates there. `q`
+      from the summary is the real finish (`finish_final_review`, unchanged);
+      `Esc` only closes the summary (`close_review_summary`) and returns to
+      reviewing — nothing is written, posted, or dispatched, and decisions/
+      comments are untouched, so a round-trip through the summary to fix
+      something is free. The list itself (`DiffViewerState::summary_items`,
+      `src/app/state.rs`) is rebuilt fresh from state on every open/jump
+      rather than cached, so it can never drift from what finishing would
+      actually send. `confirm_or_finish_review` and the undecided-files
+      confirm's `y`/`q` handler both now route to `open_review_summary`
+      instead of finishing directly.
 
 Cost:
 

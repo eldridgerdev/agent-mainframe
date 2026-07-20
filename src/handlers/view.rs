@@ -577,6 +577,8 @@ mod tests {
 
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffPicker(state) if state.commits.len() == 1));
+        crate::handlers::handle_diff_picker_key(&mut app, key(KeyCode::Enter)).unwrap();
         // Opening the diff viewer is async (DiffViewerLoading); drive the
         // load to completion as the event loop does before asserting.
         app.complete_diff_viewer_loading();
@@ -601,6 +603,7 @@ mod tests {
 
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        crate::handlers::handle_diff_picker_key(&mut app, key(KeyCode::Enter)).unwrap();
         // Opening the diff viewer is async (DiffViewerLoading); drive the
         // load to completion as the event loop does before asserting.
         app.complete_diff_viewer_loading();
@@ -615,12 +618,37 @@ mod tests {
     }
 
     #[test]
+    fn leader_d_can_open_only_the_selected_commit() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        crate::handlers::handle_diff_picker_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        crate::handlers::handle_diff_picker_key(&mut app, key(KeyCode::Enter)).unwrap();
+        app.complete_diff_viewer_loading();
+
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if matches!(&state.scope, crate::app::DiffScope::Commit(commit)
+                    if commit.subject == "feature change")
+                    && state.files.iter().any(|file| file.path == "src.txt")
+                    && state.files.iter().all(|file| file.path != "z_new.txt")
+        ));
+
+        crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
     fn new_file_forces_unified_without_losing_side_by_side_preference() {
         let repo = init_repo_with_branch_change();
         let mut app = app_for_viewing_repo(repo.path());
 
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        crate::handlers::handle_diff_picker_key(&mut app, key(KeyCode::Enter)).unwrap();
         // Opening the diff viewer is async (DiffViewerLoading); drive the
         // load to completion as the event loop does before asserting.
         app.complete_diff_viewer_loading();
@@ -662,6 +690,7 @@ mod tests {
         crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        crate::handlers::handle_diff_picker_key(&mut app, key(KeyCode::Enter)).unwrap();
         // Opening the diff viewer is async (DiffViewerLoading); drive the
         // load to completion as the event loop does before asserting.
         app.complete_diff_viewer_loading();
@@ -1322,6 +1351,7 @@ mod tests {
         git(repo.path(), &["commit", "-m", "initial"]);
         git(repo.path(), &["checkout", "-b", "feature"]);
         std::fs::write(repo.path().join("src.txt"), "base\nfeature\n").unwrap();
+        git(repo.path(), &["commit", "-am", "feature change"]);
         std::fs::write(repo.path().join("z_new.txt"), "brand new\n").unwrap();
         repo
     }

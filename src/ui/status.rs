@@ -367,6 +367,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::DiffPicker(_) => Line::from(vec![
+            Span::styled("j/k or \u{2191}/\u{2193}", key_style()),
+            Span::raw(" choose scope  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" view  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::NotificationPicker(_, _)
         | AppMode::SessionSwitcher(_)
         | AppMode::Searching(_)

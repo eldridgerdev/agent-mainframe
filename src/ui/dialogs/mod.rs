@@ -27,7 +27,7 @@ pub use browse::draw_browse_path_dialog;
 pub use compose::draw_compose_dialog;
 pub use config_wizard::draw_config_wizard_dialog;
 pub use debug::draw_debug_log;
-pub use diff::{draw_diff_viewer, draw_diff_viewer_loading};
+pub use diff::{draw_diff_picker, draw_diff_viewer, draw_diff_viewer_loading};
 pub use feature::{
     draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
     draw_deleting_feature_dialog, draw_fork_feature_dialog, draw_steering_prompt_dialog,

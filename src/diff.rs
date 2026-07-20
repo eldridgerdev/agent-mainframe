@@ -17,6 +17,16 @@ pub struct DiffSnapshot {
     pub total_deletions: usize,
 }
 
+/// A commit offered by the diff scope picker. Commits are limited to the
+/// current branch's first-parent history after its resolved base, which keeps
+/// the picker focused on changes that belong to the active feature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffCommit {
+    pub hash: String,
+    pub short_hash: String,
+    pub subject: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedBase {
     pub branch: String,
@@ -226,6 +236,105 @@ pub fn load_snapshot(workdir: &Path, override_ref: Option<&str>) -> Result<DiffS
     })
 }
 
+/// List the commits that make up the active branch diff, newest first.
+pub fn list_diff_commits(workdir: &Path) -> Result<Vec<DiffCommit>> {
+    let base = resolve_base_ref(workdir, None)?;
+    let range = format!("{}..HEAD", base.base_commit);
+    let stdout = git_capture(
+        workdir,
+        &["log", "--first-parent", "--format=%H%x1f%h%x1f%s", &range],
+        false,
+    )?;
+
+    stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let mut fields = line.splitn(3, '\u{1f}');
+            let hash = fields.next().unwrap_or_default().to_string();
+            let short_hash = fields.next().unwrap_or_default().to_string();
+            let subject = fields.next().unwrap_or_default().to_string();
+            if hash.is_empty() || short_hash.is_empty() {
+                bail!("unexpected git log entry: {line}");
+            }
+            Ok(DiffCommit {
+                hash,
+                short_hash,
+                subject,
+            })
+        })
+        .collect()
+}
+
+/// Load only the changes introduced by one commit, excluding later commits and
+/// any staged, unstaged, or untracked worktree changes.
+pub fn load_commit_snapshot(workdir: &Path, commit_ref: &str) -> Result<DiffSnapshot> {
+    let verify_ref = format!("{}^{{commit}}", commit_ref.trim());
+    let commit = git_capture(workdir, &["rev-parse", "--verify", &verify_ref], false)?
+        .trim()
+        .to_string();
+    if commit.is_empty() {
+        bail!("Commit '{commit_ref}' was not found in this repository");
+    }
+
+    let branch = WorktreeManager::current_branch(workdir)?
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or_else(|| "(detached HEAD)".to_string());
+    let subject = git_capture(workdir, &["show", "-s", "--format=%s", &commit], false)?
+        .trim()
+        .to_string();
+    let parent = git_optional_trimmed(workdir, &["rev-parse", &format!("{commit}^1")])?;
+
+    let patch = if let Some(parent) = &parent {
+        git_capture(
+            workdir,
+            &[
+                "diff",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-color",
+                "--unified=3",
+                "--relative",
+                parent,
+                &commit,
+            ],
+            false,
+        )?
+    } else {
+        git_capture(
+            workdir,
+            &[
+                "diff-tree",
+                "--root",
+                "--no-commit-id",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-color",
+                "--unified=3",
+                "--relative",
+                "-p",
+                &commit,
+            ],
+            false,
+        )?
+    };
+
+    let mut files = parse_unified_diff(&patch)?;
+    hydrate_commit_file_contents(workdir, parent.as_deref(), &commit, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let total_additions = files.iter().map(|file| file.additions).sum();
+    let total_deletions = files.iter().map(|file| file.deletions).sum();
+
+    Ok(DiffSnapshot {
+        branch,
+        base_ref: subject,
+        base_commit: parent.unwrap_or_default(),
+        files,
+        total_additions,
+        total_deletions,
+    })
+}
+
 pub fn load_review_file(original: &Path, proposed: &Path, display_path: &str) -> Result<DiffFile> {
     let output = Command::new("git")
         .args([
@@ -307,6 +416,48 @@ fn hydrate_file_contents(workdir: &Path, base_commit: &str, files: &mut [DiffFil
             | DiffFileStatus::Renamed
             | DiffFileStatus::Copied
             | DiffFileStatus::TypeChanged => read_worktree_file(workdir, &file.path)?,
+        };
+    }
+
+    Ok(())
+}
+
+fn hydrate_commit_file_contents(
+    workdir: &Path,
+    parent: Option<&str>,
+    commit: &str,
+    files: &mut [DiffFile],
+) -> Result<()> {
+    for file in files {
+        if file.is_binary {
+            file.old_content = None;
+            file.new_content = None;
+            continue;
+        }
+
+        file.old_content = match file.status {
+            DiffFileStatus::Added | DiffFileStatus::Untracked => None,
+            DiffFileStatus::Deleted
+            | DiffFileStatus::Modified
+            | DiffFileStatus::Renamed
+            | DiffFileStatus::Copied
+            | DiffFileStatus::TypeChanged => {
+                let path = file.old_path.as_deref().unwrap_or(file.path.as_str());
+                match parent {
+                    Some(parent) => git_show_file(workdir, parent, path)?,
+                    None => None,
+                }
+            }
+        };
+
+        file.new_content = match file.status {
+            DiffFileStatus::Deleted => None,
+            DiffFileStatus::Added
+            | DiffFileStatus::Untracked
+            | DiffFileStatus::Modified
+            | DiffFileStatus::Renamed
+            | DiffFileStatus::Copied
+            | DiffFileStatus::TypeChanged => git_show_file(workdir, commit, &file.path)?,
         };
     }
 
@@ -950,6 +1101,56 @@ index 1111111..2222222 100644
         assert_eq!(snapshot.files[1].status, DiffFileStatus::Modified);
         assert!(snapshot.total_additions >= 2);
         assert_eq!(snapshot.total_deletions, 0);
+    }
+
+    #[test]
+    fn list_diff_commits_returns_only_feature_commits_newest_first() {
+        let repo = init_repo_with_main();
+        git(repo.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(repo.path().join("src.txt"), "base\none\n").unwrap();
+        git(repo.path(), &["commit", "-am", "first feature commit"]);
+        std::fs::write(repo.path().join("src.txt"), "base\none\ntwo\n").unwrap();
+        git(repo.path(), &["commit", "-am", "second feature commit"]);
+
+        let commits = list_diff_commits(repo.path()).unwrap();
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "second feature commit");
+        assert_eq!(commits[1].subject, "first feature commit");
+        assert_eq!(commits[0].hash, rev_parse(repo.path(), "HEAD"));
+    }
+
+    #[test]
+    fn load_commit_snapshot_excludes_other_commits_and_worktree_changes() {
+        let repo = init_repo_with_main();
+        git(repo.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(repo.path().join("src.txt"), "base\nfirst\n").unwrap();
+        git(repo.path(), &["commit", "-am", "first feature commit"]);
+        let first = rev_parse(repo.path(), "HEAD");
+
+        std::fs::write(repo.path().join("src.txt"), "base\nfirst\nsecond\n").unwrap();
+        git(repo.path(), &["commit", "-am", "second feature commit"]);
+        std::fs::write(
+            repo.path().join("src.txt"),
+            "base\nfirst\nsecond\nuncommitted\n",
+        )
+        .unwrap();
+        std::fs::write(repo.path().join("untracked.txt"), "not part of commit\n").unwrap();
+
+        let snapshot = load_commit_snapshot(repo.path(), &first).unwrap();
+        let file = snapshot
+            .files
+            .iter()
+            .find(|file| file.path == "src.txt")
+            .unwrap();
+
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.base_ref, "first feature commit");
+        assert_eq!(file.old_content.as_deref(), Some("base\n"));
+        assert_eq!(file.new_content.as_deref(), Some("base\nfirst\n"));
+        assert!(file.patch.contains("+first"));
+        assert!(!file.patch.contains("second"));
+        assert!(!file.patch.contains("uncommitted"));
     }
 
     fn init_repo_with_main() -> TempDir {

@@ -289,6 +289,24 @@ pub enum DiffViewerLayout {
     SideBySide,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffScope {
+    /// The existing branch snapshot: every commit since the resolved base plus
+    /// staged, unstaged, and untracked worktree changes.
+    CurrentChanges,
+    /// Exactly one commit, compared with its first parent.
+    Commit(crate::diff::DiffCommit),
+}
+
+pub struct DiffPickerState {
+    pub from_view: ViewState,
+    pub workdir: PathBuf,
+    pub commits: Vec<crate::diff::DiffCommit>,
+    /// Zero is "all current changes"; commit rows start at one.
+    pub selected: usize,
+    pub error: Option<String>,
+}
+
 /// Severity tag on a line comment or file rejection, conventional-comments
 /// style. Drives three things: the GitHub review *event* (any `Blocker` →
 /// `REQUEST_CHANGES`), the agent prompt's mandatory-vs-optional framing, and
@@ -650,6 +668,7 @@ pub enum SummaryItem {
 pub struct DiffViewerState {
     pub from_view: ViewState,
     pub workdir: PathBuf,
+    pub scope: DiffScope,
     pub branch: String,
     pub base_ref: String,
     pub base_commit: String,
@@ -848,6 +867,7 @@ impl DiffViewerState {
         Self {
             from_view,
             workdir,
+            scope: DiffScope::CurrentChanges,
             branch: String::new(),
             base_ref: String::new(),
             base_commit: String::new(),
@@ -2317,6 +2337,7 @@ pub enum AppMode {
         workdir: PathBuf,
     },
     BookmarkPicker(BookmarkPickerState),
+    DiffPicker(DiffPickerState),
     DiffViewerLoading(DiffViewerState),
     DiffViewer(DiffViewerState),
     /// Prompting for a PR number when the branch has no auto-detectable PR.

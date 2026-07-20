@@ -129,7 +129,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("any text key", "Open compose input (agent sessions)"),
         ("s", "Steering coach (experimental)"),
         ("e", "Toggle compose/direct input (agent sessions)"),
-        ("d", "Diff viewer"),
+        ("d", "Diff viewer (all changes / commit)"),
         ("m", "Markdown file picker/viewer"),
         ("b", "Show/hide sidebar"),
         ("v", "Expand/collapse todos"),

@@ -26,7 +26,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("g", "Generate summary"),
     ("l", "Latest prompt"),
     ("p", "Prompt library"),
-    ("d", "Diff viewer"),
+    ("d", "Diff viewer (all changes / commit)"),
     ("m", "Markdown viewer"),
     ("b", "Show / hide sidebar"),
     ("v", "Expand / collapse todos"),

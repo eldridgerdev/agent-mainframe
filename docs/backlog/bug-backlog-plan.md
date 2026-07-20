@@ -14,6 +14,44 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## AI Review pane doesn't refresh PR Triage after posting
+
+- **Status:** Backlog
+- **Reported:** 2026-07-20
+- **Relates to:** AI Review posting (`src/app/ai_review.rs::ai_review_post`), PR
+  Triage refresh (`src/app/pr_review.rs::refresh_pr_review`,
+  `start_pr_review_fetch`, `pr_review_cache`)
+- **Root cause (by design, currently):** `ai_review_post` marks the kept
+  findings `published` and re-caches the AI Review pane's own state, but it
+  never touches PR Triage's cached comments (`pr_review_cache`) or triggers
+  a re-fetch. `refresh_pr_review` only runs while `self.mode` is already
+  `AppMode::PrReview`, so nothing re-fetches on the AI Review pane's behalf.
+  The success toast even says so explicitly: "follow up in PR Triage after
+  a refresh." Returning to PR Triage (`Esc`) shows the same stale cached
+  comment list until the user manually triggers a refresh.
+- **Ask:** After a successful `W` post from the AI Review pane, kick off the
+  same background comment re-fetch `refresh_pr_review`/
+  `start_pr_review_fetch` do, keyed by the workdir + PR number, so that by
+  the time the user returns to (or next opens) PR Triage for that PR, the
+  newly posted review comments are already there — no manual refresh
+  keypress required.
+
+### Repro
+
+1. Open a feature's PR, press `A` to generate an AI review.
+2. Keep one or more findings, press `W` to post them as a GitHub review.
+3. Return to PR Triage (`Esc`) for the same PR without pressing refresh.
+
+### Expected
+
+The newly posted AI review comments show up in PR Triage's comment list
+right away.
+
+### Actual
+
+PR Triage still shows its last-cached comment list; the new comments only
+appear after an explicit manual refresh.
+
 ## ~~Agent launch commands are cut off on macOS~~ (Fixed)
 
 - **Status:** Fixed (2026-07-09)
@@ -73,6 +111,48 @@ Claude hooks run without shell path errors.
 
 Claude reports a non-blocking hook error like
 `/bin/sh: /Users/.../Library/Application: no such file or directory`.
+
+## ~~Stale Claude hooks accumulate under a custom XDG_CONFIG_HOME~~ (Fixed)
+
+- **Status:** Fixed (2026-07-20)
+- **Reported:** 2026-07-20
+- **Relates to:** Claude hook setup (`src/app/setup.rs`)
+- **Root cause:** The managed-hook heuristic only recognized AMF helper
+  scripts under a path ending in `/.config/amf` (the dotted XDG default) or
+  `/Library/Application Support/amf` (macOS). `XDG_CONFIG_HOME` can point
+  anywhere per the XDG spec — it isn't required to end in `config` at all
+  (e.g. `XDG_CONFIG_HOME=/tmp/foo` resolves the AMF config dir to
+  `/tmp/foo/amf`), and tools like the screenshot dev tool use an isolated
+  `<tmp>/config` root, producing hook paths like `.../config/amf/<script>.sh`.
+  Neither shape matched the hardcoded patterns, so `ensure_notification_hooks`
+  never recognized these as AMF-managed, never removed them on a later run
+  with a different config root, and every such run left a new stale hook
+  block behind in whatever `.claude/settings.local.json` it touched.
+- **Fix:** Generalized `is_amf_claude_hook_command` to match any parent
+  directory literally named `amf` (the invariant `amf_config_dir()` always
+  produces, regardless of what config root it's nested under), instead of
+  hardcoding specific parent path shapes. Stale entries from any custom
+  `XDG_CONFIG_HOME` — dotted, non-dotted, or unrelated to the word `config`
+  entirely — are now recognized and replaced on the next hook refresh.
+
+### Repro
+
+1. Run AMF once with `XDG_CONFIG_HOME` pointed at `/tmp/some-dir/config`
+   (as the screenshot dev tool does) against a feature's workdir.
+2. Run AMF again normally (real `~/.config/amf`) against the same workdir.
+3. Inspect `.claude/settings.local.json` in that workdir.
+
+### Expected
+
+Only one set of AMF-managed hook commands remains, pointing at the current
+config directory.
+
+### Actual
+
+Both the stale temp-path hook commands and the current ones are present.
+Claude reports non-blocking `UserPromptSubmit`/`PreToolUse`/etc. hook
+errors like `/bin/sh: 1: /tmp/.../config/amf/thinking-start.sh: not found`
+for every leftover temp-path entry.
 
 ## ~~macOS build fails in tmux PTY setup~~ (Fixed)
 

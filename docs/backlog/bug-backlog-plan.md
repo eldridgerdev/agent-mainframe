@@ -14,6 +14,44 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## AI Review pane doesn't refresh PR Triage after posting
+
+- **Status:** Backlog
+- **Reported:** 2026-07-20
+- **Relates to:** AI Review posting (`src/app/ai_review.rs::ai_review_post`), PR
+  Triage refresh (`src/app/pr_review.rs::refresh_pr_review`,
+  `start_pr_review_fetch`, `pr_review_cache`)
+- **Root cause (by design, currently):** `ai_review_post` marks the kept
+  findings `published` and re-caches the AI Review pane's own state, but it
+  never touches PR Triage's cached comments (`pr_review_cache`) or triggers
+  a re-fetch. `refresh_pr_review` only runs while `self.mode` is already
+  `AppMode::PrReview`, so nothing re-fetches on the AI Review pane's behalf.
+  The success toast even says so explicitly: "follow up in PR Triage after
+  a refresh." Returning to PR Triage (`Esc`) shows the same stale cached
+  comment list until the user manually triggers a refresh.
+- **Ask:** After a successful `W` post from the AI Review pane, kick off the
+  same background comment re-fetch `refresh_pr_review`/
+  `start_pr_review_fetch` do, keyed by the workdir + PR number, so that by
+  the time the user returns to (or next opens) PR Triage for that PR, the
+  newly posted review comments are already there — no manual refresh
+  keypress required.
+
+### Repro
+
+1. Open a feature's PR, press `A` to generate an AI review.
+2. Keep one or more findings, press `W` to post them as a GitHub review.
+3. Return to PR Triage (`Esc`) for the same PR without pressing refresh.
+
+### Expected
+
+The newly posted AI review comments show up in PR Triage's comment list
+right away.
+
+### Actual
+
+PR Triage still shows its last-cached comment list; the new comments only
+appear after an explicit manual refresh.
+
 ## ~~Agent launch commands are cut off on macOS~~ (Fixed)
 
 - **Status:** Fixed (2026-07-09)

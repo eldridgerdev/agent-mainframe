@@ -2272,22 +2272,30 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       on stdin to the hidden `amf reply-draft` command; that command sends
       structured IPC to AMF, so the TUI never scrapes agent terminal prose.
       `ReplyDraftRequest` gives each comment a fresh UUID when the dialog is
-      built, and confirming the injection activates those ids in the new
-      `pr_comment_reply_drafts` SQLite table (migration 013), clearing any
-      older body. IPC updates only the currently active id, so a late agent
-      response from an earlier fix cannot overwrite the latest draft. Drafts
-      age out with the rest of local triage state.
+      built and records the PR head that existed before the fix. Confirming the
+      injection activates those ids in the new `pr_comment_reply_drafts`
+      SQLite table (migrations 013–014), clearing any older body. IPC updates
+      only the currently active id, so a late agent response from an earlier
+      fix cannot overwrite the latest draft. Drafts age out with the rest of
+      local triage state.
 
       `R` now loads the selected comment's captured draft before opening either
       reply kind. A captured draft opens post-ready in the existing editable
-      confirm view; without one, Done still uses `commit_for_done_reply` and
-      Not needed still opens empty in edit mode. Successful posting consumes
-      the stored draft, continues to append AMF's attribution footer, and still
-      requires the user's explicit GitHub-write confirmation. Tests cover the
-      CLI contract, single/batch prompt correlation, request replacement and
-      stale-response rejection, IPC persistence, injection activation, draft
-      preference for both reply kinds, and unchanged no-draft fallbacks. Full
-      suite green (1181 passed, 1 ignored); strict clippy and formatting clean. →
+      confirm view. Done drafts append `Done in <sha>` only when AMF finds a
+      commit after the recorded pre-fix head that touched the comment's file;
+      this catches adjacent insertions without mislabeling the older commit
+      that originally introduced an unchanged commented line. The handoff
+      prompt tells the agent not to guess a hash.
+      Without a draft, Done still uses `commit_for_done_reply` and Not needed
+      still opens empty in edit mode. Successful posting consumes the stored
+      draft and uses the accurate `— drafted by AI via AMF` footer, while
+      non-agent templates retain `— posted via AMF`; both still require the
+      user's explicit GitHub-write confirmation. Tests cover the CLI contract,
+      single/batch prompt correlation, request replacement and stale-response
+      rejection, IPC persistence, injection activation, draft preference for
+      both reply kinds, commit-reference composition, attribution selection,
+      and unchanged no-draft fallbacks. Full suite green (1184 passed, 1
+      ignored); strict clippy and formatting clean. →
       `src/main.rs`, `src/app/notifications.rs`, `src/app/pr_review.rs`,
       `src/app/state.rs`, `src/db/migrations.rs`,
       `src/db/pr_comment_triage.rs`, `src/db/mod.rs`, `src/app/tests.rs`,

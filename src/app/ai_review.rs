@@ -26,6 +26,7 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
+use super::pr_review::append_ai_attribution;
 use super::*;
 use crate::editor::TextEditor;
 use crate::github::{GhCli, PrRef, PrResolution, PrReviewComment as GhPrReviewComment};
@@ -304,15 +305,6 @@ fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) ->
     })?;
 
     super::pr_review::window_parsed_hunk(hunk, line, false, AI_FINDING_HUNK_CONTEXT_LINES)
-}
-
-/// Attribution appended to GitHub content the agent harness generated on the
-/// user's behalf, as opposed to text the user typed. AI-review generation can
-/// run through any supported headless harness, independent of whichever
-/// harness a PR Triage "fix" gets injected into, so the marker stays provider
-/// neutral rather than incorrectly attributing another harness to Claude.
-fn append_ai_attribution(body: &str) -> String {
-    format!("{}\n\n— drafted by AI via AMF", body.trim_end())
 }
 
 /// Build the `(summary, inline comments)` GitHub review payload from a set of

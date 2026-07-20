@@ -27,8 +27,11 @@ are tagged.
   agent prepares a concise reviewer-facing response without posting it. When
   you return to PR Triage and press `R`, that draft is prefilled for review
   and editing; if the agent did not provide one, the existing “Done in
-  `<sha>`” or not-needed starting text is unchanged. Posting still requires
-  explicit confirmation. No setup or migration is required.
+  `<sha>`” or not-needed starting text is unchanged. Completed-fix drafts cite
+  a later commit that touched the comment's file when AMF can identify one,
+  rather than guessing from older line history, and GitHub marks the reply as
+  AI-drafted via AMF. Posting still requires explicit confirmation. No setup
+  or migration is required.
 - **PR Triage's detail pane now shows a comment's replies, however they got
   posted.** A reply posted outside AMF's own `R`/`n` flow — e.g. an agent
   working the PR with its own `gh` access — previously left no trace next to

@@ -269,10 +269,25 @@ pub(crate) fn window_parsed_hunk(
 /// post time (not part of the editable seed) so composing a "not needed"
 /// reason — which starts from an empty buffer — isn't complicated by a
 /// footer already sitting in the editor.
-const AMF_ATTRIBUTION_FOOTER: &str = "— posted via AMF";
+pub(crate) const AMF_ATTRIBUTION_FOOTER: &str = "— posted via AMF";
+pub(crate) const AI_ATTRIBUTION_FOOTER: &str = "— drafted by AI via AMF";
 
 fn append_amf_attribution(body: &str) -> String {
     format!("{}\n\n{}", body.trim_end(), AMF_ATTRIBUTION_FOOTER)
+}
+
+/// Attribution for reply text or review findings drafted by an agent harness.
+/// Provider-neutral wording stays accurate for Claude, Codex, OpenCode, and Pi.
+pub(crate) fn append_ai_attribution(body: &str) -> String {
+    format!("{}\n\n{}", body.trim_end(), AI_ATTRIBUTION_FOOTER)
+}
+
+fn append_reply_attribution(body: &str, agent_drafted: bool) -> String {
+    if agent_drafted {
+        append_ai_attribution(body)
+    } else {
+        append_amf_attribution(body)
+    }
 }
 
 /// Which agent session a "fix" prompt is injected into.
@@ -721,13 +736,12 @@ impl PrComment {
     }
 }
 
-/// Whether `reply` carries the "posted via AMF" channel-disclosure footer
-/// ([`append_amf_attribution`]) — the only local signal distinguishing a
-/// reply AMF posted itself from one some other actor (a headless agent
-/// shelling out to `gh`, a human on GitHub) posted directly, since a reply
-/// posted outside AMF's `R`/`n` dialog leaves no local triage record at all.
+/// Whether `reply` carries either exact AMF attribution footer — the local
+/// signal distinguishing a reply AMF posted itself from one some other actor
+/// posted directly.
 pub fn reply_posted_via_amf(reply: &PrComment) -> bool {
-    reply.body.trim_end().ends_with(AMF_ATTRIBUTION_FOOTER)
+    let body = reply.body.trim_end();
+    body.ends_with(AMF_ATTRIBUTION_FOOTER) || body.ends_with(AI_ATTRIBUTION_FOOTER)
 }
 
 /// Where a reply is delivered on GitHub.
@@ -747,13 +761,15 @@ pub enum ReplyTarget {
 pub struct ReplyDraftRequest {
     pub comment_id: u64,
     pub request_id: String,
+    pub base_head_sha: String,
 }
 
 impl ReplyDraftRequest {
-    fn new(comment_id: u64) -> Self {
+    fn new(comment_id: u64, base_head_sha: &str) -> Self {
         Self {
             comment_id,
             request_id: uuid::Uuid::new_v4().to_string(),
+            base_head_sha: base_head_sha.to_string(),
         }
     }
 }
@@ -919,6 +935,35 @@ fn commit_for_done_reply(workdir: &Path, comment: &PrComment) -> (Option<String>
     (latest_commit_short_sha(workdir), false)
 }
 
+/// Most recent commit after the fix injection's recorded PR head that touched
+/// the selected comment's file. Unlike line history, this also finds fixes that
+/// insert a guard beside an unchanged commented line. If the base is unknown,
+/// no later commit exists, or no later commit touched an inline comment's file,
+/// return None rather than citing an older or unrelated commit.
+fn commit_after_fix_request(
+    workdir: &Path,
+    comment: &PrComment,
+    base_head_sha: &str,
+) -> Option<String> {
+    if base_head_sha.trim().is_empty() {
+        return None;
+    }
+    let range = format!("{}..HEAD", base_head_sha.trim());
+    let mut command = std::process::Command::new("git");
+    command
+        .args(["log", "-1", "--format=%h", &range])
+        .current_dir(workdir);
+    if let Some(path) = &comment.path {
+        command.args(["--", path]);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
 /// Rough token estimate for a prompt preview (~4 chars/token, the usual
 /// English-text heuristic). Approximate by design — it backs the "~N tokens"
 /// hint in the fix-confirmation dialog, not a billing figure.
@@ -962,7 +1007,8 @@ fn with_reply_draft_handoff(
         "\n\nAfter implementing and verifying each fix, draft a concise reviewer-facing \
          reply explaining what changed and any relevant validation. Do not post \
          replies to GitHub yourself. Return each draft to AMF by passing only the \
-         reply text on stdin to its matching command:",
+         reply text on stdin to its matching command. Do not include a commit \
+         hash; AMF will add the best-matching commit reference:",
     );
     for request in requests {
         prompt.push_str(&format!(
@@ -1631,6 +1677,7 @@ impl App {
                     pr_number,
                     request.comment_id,
                     &request.request_id,
+                    &request.base_head_sha,
                 ),
                 None => return,
             };
@@ -1646,13 +1693,13 @@ impl App {
         }
     }
 
-    fn load_reply_draft(&mut self, pr_number: u32, comment_id: u64) -> Option<String> {
+    fn load_reply_draft(&mut self, pr_number: u32, comment_id: u64) -> Option<(String, String)> {
         let result = self
             .db
             .as_ref()?
-            .load_pr_comment_reply_draft(pr_number, comment_id);
+            .load_pr_comment_reply_draft_with_base(pr_number, comment_id);
         match result {
-            Ok(draft) => draft.filter(|body| !body.trim().is_empty()),
+            Ok(draft) => draft.filter(|(body, _)| !body.trim().is_empty()),
             Err(error) => {
                 self.log_warn("pr_review", format!("reply-draft load failed: {error}"));
                 None
@@ -2273,7 +2320,7 @@ impl App {
             self.message = Some("No comment selected".into());
             return;
         };
-        let request = ReplyDraftRequest::new(comment.id);
+        let request = ReplyDraftRequest::new(comment.id, &state.review.pr.head_sha);
         let prompt = with_reply_draft_handoff(
             comment.fix_prompt(),
             state.review.pr.number,
@@ -2336,8 +2383,11 @@ impl App {
                     .collect();
                 (!selected.is_empty()).then(|| {
                     let ids: Vec<u64> = selected.iter().map(|c| c.id).collect();
-                    let requests: Vec<ReplyDraftRequest> =
-                        ids.iter().copied().map(ReplyDraftRequest::new).collect();
+                    let requests: Vec<ReplyDraftRequest> = ids
+                        .iter()
+                        .copied()
+                        .map(|id| ReplyDraftRequest::new(id, &state.review.pr.head_sha))
+                        .collect();
                     let prompt = with_reply_draft_handoff(
                         combined_fix_prompt(&selected),
                         state.review.pr.number,
@@ -2661,7 +2711,7 @@ impl App {
                         // No dialog open (e.g. empty pane): fall back to the selection.
                         None => match state.selected_comment() {
                             Some(c) => {
-                                let request = ReplyDraftRequest::new(c.id);
+                                let request = ReplyDraftRequest::new(c.id, &head_sha);
                                 let prompt = with_reply_draft_handoff(
                                     c.fix_prompt(),
                                     pr_number,
@@ -2906,8 +2956,6 @@ impl App {
                 (Some(sha), false) => format!("Done in `{sha}` (latest commit)."),
                 (None, _) => "Done.".to_string(),
             },
-            // No comment selected: `open_reply` below reports "No comment
-            // selected" — the seed is unused in that path.
             None => String::new(),
         };
         self.open_reply(ReplyKind::Done, seed);
@@ -2927,19 +2975,35 @@ impl App {
     fn open_reply(&mut self, kind: ReplyKind, seed: String) {
         let selected = match &self.mode {
             AppMode::PrReview(state) if state.reply.is_none() && state.fix_confirm.is_none() => {
-                state
-                    .selected_comment()
-                    .map(|comment| (state.review.pr.number, comment.id))
+                state.selected_comment().map(|comment| {
+                    (
+                        state.review.pr.number,
+                        comment.id,
+                        state.workdir.clone(),
+                        comment.clone(),
+                    )
+                })
             }
             _ => return,
         };
-        let Some((pr_number, comment_id)) = selected else {
+        let Some((pr_number, comment_id, workdir, comment)) = selected else {
             self.message = Some("No comment selected".into());
             return;
         };
         let draft = self.load_reply_draft(pr_number, comment_id);
         let has_draft = draft.is_some();
-        let seed = draft.unwrap_or(seed);
+        let seed = match draft {
+            Some((draft, base_head_sha)) => {
+                if matches!(kind, ReplyKind::Done)
+                    && let Some(sha) = commit_after_fix_request(&workdir, &comment, &base_head_sha)
+                {
+                    format!("{}\n\nDone in `{sha}`.", draft.trim_end())
+                } else {
+                    draft
+                }
+            }
+            None => seed,
+        };
         // A captured draft is post-ready and opens in confirm view. Without one,
         // not-needed still starts in edit mode because the user must type a
         // reason; the deterministic done template remains post-ready.
@@ -2950,6 +3014,7 @@ impl App {
                 kind,
                 editor: TextEditor::new(seed),
                 editing,
+                agent_drafted: has_draft,
             });
         }
     }
@@ -3019,11 +3084,12 @@ impl App {
                     reply.kind,
                     reply.comment_id,
                     reply.editor.text().trim().to_string(),
+                    reply.agent_drafted,
                 ))
             }),
             _ => return Ok(()),
         };
-        let Some((workdir, pr, target, kind, comment_id, body)) = prep else {
+        let Some((workdir, pr, target, kind, comment_id, body, agent_drafted)) = prep else {
             return Ok(());
         };
 
@@ -3036,10 +3102,11 @@ impl App {
             return Ok(());
         }
 
-        // The posted body carries the "posted via AMF" disclosure; the local
-        // note (kept below for `NotNeeded`) stays the user's unmarked text —
-        // it's AMF's own record, not something read on GitHub.
-        let posted_body = append_amf_attribution(&body);
+        // The posted body carries AI authorship attribution for a captured
+        // agent draft and channel-only AMF attribution for a deterministic or
+        // user-written reply. The local note stays unmarked because it is
+        // AMF's own record, not content read back from GitHub.
+        let posted_body = append_reply_attribution(&body, agent_drafted);
         let result = match target {
             ReplyTarget::InlineThread { root_comment_id } => GhCli::reply_to_review_comment(
                 &workdir,
@@ -4495,6 +4562,9 @@ mod tests {
         reply.body = format!("Done in `abc123`.\n\n{}", AMF_ATTRIBUTION_FOOTER);
         assert!(reply_posted_via_amf(&reply));
 
+        reply.body = format!("Fixed the guard.\n\n{}", AI_ATTRIBUTION_FOOTER);
+        assert!(reply_posted_via_amf(&reply));
+
         // A reply posted through some other channel (a headless agent using
         // `gh` directly, a human on GitHub) has no such footer.
         reply.body = "Done in `abc123`.".to_string();
@@ -4852,6 +4922,18 @@ mod tests {
         assert_eq!(
             append_amf_attribution("Trailing newline.\n\n"),
             "Trailing newline.\n\n— posted via AMF"
+        );
+    }
+
+    #[test]
+    fn agent_drafted_replies_use_ai_attribution() {
+        assert_eq!(
+            append_reply_attribution("Fixed the guard.", true),
+            "Fixed the guard.\n\n— drafted by AI via AMF"
+        );
+        assert_eq!(
+            append_reply_attribution("Done in `abc123`.", false),
+            "Done in `abc123`.\n\n— posted via AMF"
         );
     }
 }

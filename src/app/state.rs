@@ -2032,6 +2032,10 @@ pub struct ReplyState {
     pub kind: crate::app::pr_review::ReplyKind,
     /// The reply body, editable before posting.
     pub editor: TextEditor,
+    /// Whether the initial body came back from an agent fix session. Agent
+    /// drafts receive AI-authorship attribution; deterministic templates and
+    /// user-written not-needed replies receive channel-only AMF attribution.
+    pub agent_drafted: bool,
     /// True while keystrokes go to the editor (`e` to enter); false in the
     /// confirm view (`⏎` post / `e` edit / `esc` cancel).
     pub editing: bool,

@@ -10100,6 +10100,12 @@ fn pr_review_batch_confirm_opens_combined_dialog_for_marked() {
                     .collect::<Vec<_>>(),
                 vec![1, 3]
             );
+            assert!(
+                confirm
+                    .reply_draft_requests
+                    .iter()
+                    .all(|request| request.base_head_sha == "sha")
+            );
             assert!(text.contains("--comment-id 1 --request-id"));
             assert!(text.contains("--comment-id 3 --request-id"));
         }
@@ -10950,6 +10956,7 @@ fn pr_review_open_fix_confirm_seeds_editor_from_selection() {
     );
     assert_eq!(confirm.reply_draft_requests.len(), 1);
     assert_eq!(confirm.reply_draft_requests[0].comment_id, 1);
+    assert_eq!(confirm.reply_draft_requests[0].base_head_sha, "sha");
     assert!(
         confirm
             .editor
@@ -11043,6 +11050,13 @@ fn reply_editor_text(app: &App) -> String {
     }
 }
 
+fn reply_is_agent_drafted(app: &App) -> bool {
+    match &app.mode {
+        AppMode::PrReview(state) => state.reply.as_ref().unwrap().agent_drafted,
+        _ => unreachable!(),
+    }
+}
+
 #[test]
 fn pr_review_open_reply_not_needed_starts_in_edit_mode() {
     let mut app = pr_review_test_app();
@@ -11077,7 +11091,7 @@ fn pr_review_reply_prefers_the_agent_draft_for_either_reply_kind() {
     app.db
         .as_ref()
         .unwrap()
-        .begin_pr_comment_reply_draft(7, 1, "request-1")
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
         .unwrap();
     app.handle_ipc_message_value(serde_json::json!({
         "type": "pr-reply-draft",
@@ -11092,6 +11106,7 @@ fn pr_review_reply_prefers_the_agent_draft_for_either_reply_kind() {
         reply_editor_text(&app),
         "Updated the lock scope and added a regression test."
     );
+    assert!(reply_is_agent_drafted(&app));
     assert_eq!(app.pr_review_reply_view(), Some(false));
 
     app.pr_review_cancel_reply();
@@ -11100,6 +11115,7 @@ fn pr_review_reply_prefers_the_agent_draft_for_either_reply_kind() {
         reply_editor_text(&app),
         "Updated the lock scope and added a regression test."
     );
+    assert!(reply_is_agent_drafted(&app));
     assert_eq!(
         app.pr_review_reply_view(),
         Some(false),
@@ -11115,7 +11131,7 @@ fn pr_review_reply_draft_ipc_ignores_an_expired_request() {
     app.db
         .as_ref()
         .unwrap()
-        .begin_pr_comment_reply_draft(7, 1, "current")
+        .begin_pr_comment_reply_draft(7, 1, "current", "sha")
         .unwrap();
 
     app.handle_ipc_message_value(serde_json::json!({
@@ -11270,6 +11286,66 @@ fn pr_review_open_reply_done_seeds_the_commit_that_touched_the_comments_line() {
 
     app.pr_review_open_reply_done();
     assert_eq!(reply_editor_text(&app), format!("Done in `{fix_sha}`."));
+    assert!(!reply_is_agent_drafted(&app));
+}
+
+#[test]
+fn pr_review_agent_draft_includes_the_post_injection_commit_that_touched_the_file() {
+    let repo = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    let file = repo.path().join("src/file1.rs");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "line1\nreturn value\nline3\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "first"]);
+    let base_sha = git(&["rev-parse", "HEAD"]);
+    // The fix inserts a guard beside the unchanged commented line. Plain
+    // line history would cite the first commit; the recorded injection head
+    // makes the later file-touching commit unambiguous.
+    std::fs::write(&file, "line1\nguard\nreturn value\nline3\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "second"]);
+    let fix_sha = git(&["rev-parse", "--short", "HEAD"]);
+
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.workdir = repo.path().to_path_buf();
+        state.review.comments[0].line = Some(3);
+    }
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", &base_sha)
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Guarded zero divisors and added regression coverage."
+    }));
+
+    app.pr_review_open_reply_done();
+
+    assert_eq!(
+        reply_editor_text(&app),
+        format!("Guarded zero divisors and added regression coverage.\n\nDone in `{fix_sha}`.")
+    );
+    assert!(reply_is_agent_drafted(&app));
 }
 
 #[test]

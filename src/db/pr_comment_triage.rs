@@ -94,16 +94,23 @@ pub fn begin_reply_draft(
     pr_number: u32,
     comment_id: u64,
     request_id: &str,
+    base_head_sha: &str,
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO pr_comment_reply_drafts
-            (pr_number, comment_id, request_id, body, updated_at)
-         VALUES (?1, ?2, ?3, NULL, datetime('now'))
+            (pr_number, comment_id, request_id, body, updated_at, base_head_sha)
+         VALUES (?1, ?2, ?3, NULL, datetime('now'), ?4)
          ON CONFLICT(pr_number, comment_id) DO UPDATE SET
             request_id = excluded.request_id,
             body = NULL,
-            updated_at = excluded.updated_at",
-        params![pr_number as i64, comment_id as i64, request_id],
+            updated_at = excluded.updated_at,
+            base_head_sha = excluded.base_head_sha",
+        params![
+            pr_number as i64,
+            comment_id as i64,
+            request_id,
+            base_head_sha
+        ],
     )?;
     Ok(())
 }
@@ -132,16 +139,16 @@ pub fn load_reply_draft(
     conn: &Connection,
     pr_number: u32,
     comment_id: u64,
-) -> Result<Option<String>> {
-    Ok(conn
+) -> Result<Option<(String, String)>> {
+    let row = conn
         .query_row(
-            "SELECT body FROM pr_comment_reply_drafts
+            "SELECT body, base_head_sha FROM pr_comment_reply_drafts
              WHERE pr_number = ?1 AND comment_id = ?2",
             params![pr_number as i64, comment_id as i64],
-            |row| row.get::<_, Option<String>>(0),
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
         )
-        .optional()?
-        .flatten())
+        .optional()?;
+    Ok(row.and_then(|(body, base_head_sha)| body.map(|body| (body, base_head_sha))))
 }
 
 /// Remove a consumed reply draft after AMF successfully posts it.
@@ -218,7 +225,8 @@ mod tests {
     #[test]
     fn reply_draft_only_accepts_the_latest_request() {
         let (_tmp, db) = open_temp_db();
-        db.begin_pr_comment_reply_draft(7, 11, "old").unwrap();
+        db.begin_pr_comment_reply_draft(7, 11, "old", "base-old")
+            .unwrap();
         assert!(
             db.capture_pr_comment_reply_draft(7, 11, "old", "First draft")
                 .unwrap()
@@ -228,7 +236,8 @@ mod tests {
             Some("First draft")
         );
 
-        db.begin_pr_comment_reply_draft(7, 11, "new").unwrap();
+        db.begin_pr_comment_reply_draft(7, 11, "new", "base-new")
+            .unwrap();
         assert_eq!(db.load_pr_comment_reply_draft(7, 11).unwrap(), None);
         assert!(
             !db.capture_pr_comment_reply_draft(7, 11, "old", "Stale")
@@ -241,6 +250,10 @@ mod tests {
         assert_eq!(
             db.load_pr_comment_reply_draft(7, 11).unwrap().as_deref(),
             Some("Current")
+        );
+        assert_eq!(
+            db.load_pr_comment_reply_draft_with_base(7, 11).unwrap(),
+            Some(("Current".to_string(), "base-new".to_string()))
         );
 
         db.clear_pr_comment_reply_draft(7, 11).unwrap();

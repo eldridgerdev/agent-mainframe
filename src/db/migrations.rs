@@ -68,6 +68,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist agent-written PR comment reply drafts",
             MIGRATION_013,
         ),
+        (
+            "Track the pre-fix PR head for accurate reply commit references",
+            MIGRATION_014,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -276,6 +280,11 @@ CREATE TABLE IF NOT EXISTS pr_comment_reply_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_pr_comment_reply_drafts_updated
     ON pr_comment_reply_drafts(updated_at);
+";
+
+const MIGRATION_014: &str = "
+ALTER TABLE pr_comment_reply_drafts
+    ADD COLUMN base_head_sha TEXT NOT NULL DEFAULT '';
 ";
 
 const MIGRATION_001: &str = "

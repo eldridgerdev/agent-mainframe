@@ -14,7 +14,8 @@ use std::path::Path;
 
 use crate::{
     app::pr_review::{
-        BootstrapDepth, BootstrapStage, CommentKind, CompactStage, MarkAction, PrComment, ReplyKind,
+        BootstrapDepth, BootstrapStage, CommentKind, CompactStage, MarkAction, PrComment,
+        ReplyKind, reply_posted_via_amf,
     },
     app::{
         BootstrapPickState, BootstrapRunState, CompactConfirmState, CompactReviewState,
@@ -743,6 +744,7 @@ pub fn draw_pr_review(
         frame,
         body[1],
         state.selected_comment(),
+        &state.review.comments,
         state.detail_scroll,
         theme,
     );
@@ -1428,6 +1430,7 @@ fn draw_comment_detail(
     frame: &mut Frame,
     area: Rect,
     comment: Option<&PrComment>,
+    all_comments: &[PrComment],
     scroll: usize,
     theme: &Theme,
 ) -> usize {
@@ -1526,6 +1529,39 @@ fn draw_comment_detail(
         for nl in note.lines() {
             lines.push(Line::from(Span::styled(
                 nl.to_string(),
+                Style::default().fg(theme.text.to_color()),
+            )));
+        }
+    }
+
+    // Replies already posted to this thread — however they got there. AMF's
+    // own `R`/`n` flow marks the comment `Done`/`Skipped` locally, but a reply
+    // posted some other way (a headless agent shelling out to `gh` directly)
+    // leaves no local triage record at all — the reply is just another fetched
+    // comment in the list. Surfacing it here means confirming a thread already
+    // got an answer is a glance at the original comment, not a hunt through the
+    // flat list for a same-thread entry.
+    let replies = c.replies_in(all_comments);
+    if !replies.is_empty() {
+        lines.push(divider(width, theme));
+        lines.push(section_label("Replies", theme));
+        for reply in &replies {
+            let mut spans = vec![Span::styled(
+                format!("↳ @{}", reply.author),
+                Style::default().fg(theme.secondary.to_color()),
+            )];
+            if reply_posted_via_amf(reply) {
+                spans.push(chip("via AMF", theme.text_muted.to_color()));
+            }
+            if reply.outdated {
+                spans.push(chip("outdated", theme.warning.to_color()));
+            }
+            if reply.is_resolved {
+                spans.push(chip("✓ resolved", theme.success.to_color()));
+            }
+            lines.push(Line::from(spans));
+            lines.push(Line::from(Span::styled(
+                format!("   {}", reply.snippet),
                 Style::default().fg(theme.text.to_color()),
             )));
         }
@@ -2084,5 +2120,81 @@ mod tests {
             pr_review_state_with_comments(comments, crate::app::pr_review::PrSortMode::FetchOrder);
         let rendered = render_comment_list(&state);
         assert!(!rendered.contains("Conversation"));
+    }
+
+    fn render_comment_detail(comment: &PrComment, all_comments: &[PrComment]) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_comment_detail(frame, frame.area(), Some(comment), all_comments, 0, &theme);
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn detail_pane_shows_no_replies_section_when_thread_has_no_replies() {
+        let root = pr_comment_of_kind(1, CommentKind::Inline);
+        let rendered = render_comment_detail(&root, std::slice::from_ref(&root));
+        // "↳ @" is the reply marker itself (see draw_comment_detail), so this
+        // can't false-pass on a renamed section header or false-fail on a
+        // comment body that happens to contain the word "Replies".
+        assert!(!rendered.contains("↳ @"));
+    }
+
+    #[test]
+    fn detail_pane_surfaces_a_reply_posted_via_amf() {
+        let root = pr_comment_of_kind(1, CommentKind::Inline);
+        let mut reply = pr_comment_of_kind(2, CommentKind::Inline);
+        reply.author = "amf-user".into();
+        reply.in_reply_to = Some(1);
+        reply.body = "Done in `abc123`.\n\n— posted via AMF".into();
+        reply.snippet = "Done in `abc123`.".into();
+        let all = vec![root.clone(), reply];
+
+        let rendered = render_comment_detail(&root, &all);
+        assert!(rendered.contains("↳ @amf-user"));
+        assert!(rendered.contains("via AMF"));
+        assert!(rendered.contains("Done in `abc123`."));
+    }
+
+    #[test]
+    fn detail_pane_surfaces_a_reply_posted_outside_amf_without_the_via_amf_chip() {
+        let root = pr_comment_of_kind(1, CommentKind::Inline);
+        let mut reply = pr_comment_of_kind(2, CommentKind::Inline);
+        reply.author = "headless-agent".into();
+        reply.in_reply_to = Some(1);
+        reply.body = "Done in `abc123`.".into();
+        reply.snippet = "Done in `abc123`.".into();
+        let all = vec![root.clone(), reply];
+
+        let rendered = render_comment_detail(&root, &all);
+        assert!(rendered.contains("↳ @headless-agent"));
+        assert!(!rendered.contains("via AMF"));
+    }
+
+    #[test]
+    fn detail_pane_shows_resolved_and_outdated_chips_next_to_the_reply() {
+        let root = pr_comment_of_kind(1, CommentKind::Inline);
+        let mut reply = pr_comment_of_kind(2, CommentKind::Inline);
+        reply.author = "bob".into();
+        reply.in_reply_to = Some(1);
+        reply.is_resolved = true;
+        reply.outdated = true;
+        let all = vec![root.clone(), reply];
+
+        let rendered = render_comment_detail(&root, &all);
+        assert!(rendered.contains("resolved"));
+        assert!(rendered.contains("outdated"));
     }
 }

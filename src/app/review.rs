@@ -2350,14 +2350,16 @@ impl App {
 
     /// Finish the review, but if some files still have no verdict, gate the
     /// finish behind a confirmation rather than ending silently. A second
-    /// confirm (handled in the key layer) calls `finish_final_review` directly.
+    /// confirm (handled in the key layer) opens the pre-finish summary, same
+    /// as when nothing is undecided.
     pub fn confirm_or_finish_review(&mut self) -> Result<()> {
         let undecided = match &self.mode {
             AppMode::DiffViewer(state) if state.review => Self::diff_review_undecided_count(state),
             _ => return self.finish_final_review(),
         };
         if undecided == 0 {
-            return self.finish_final_review();
+            self.open_review_summary();
+            return Ok(());
         }
         if let AppMode::DiffViewer(state) = &mut self.mode {
             state.finish_confirm = true;
@@ -2367,6 +2369,121 @@ impl App {
              Esc to keep reviewing"
         ));
         Ok(())
+    }
+
+    /// Open the pre-finish summary: every file's verdict, every open comment
+    /// and suggestion, and the general feedback, in one navigable list — a
+    /// last look before `q` from here actually writes the feedback file and
+    /// dispatches it. Clears any pending undecided-files confirmation, since
+    /// reaching the summary means that gate (if any) has already been passed.
+    pub fn open_review_summary(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            state.finish_confirm = false;
+            state.summary_selected = 0;
+            state.summary_open = true;
+        }
+    }
+
+    pub fn close_review_summary(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.summary_open = false;
+        }
+    }
+
+    /// Move the summary selection by `delta` rows, clamped to the list.
+    /// `isize::MIN/2` / `isize::MAX/2` jump to the top/bottom, mirroring
+    /// `diff_review_cursor_move`'s g/G handling.
+    pub fn review_summary_move(&mut self, delta: isize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.summary_open {
+                return;
+            }
+            let len = state.summary_items().len();
+            if len == 0 {
+                return;
+            }
+            let next = (state.summary_selected as isize)
+                .saturating_add(delta)
+                .clamp(0, len as isize - 1);
+            state.summary_selected = next as usize;
+        }
+    }
+
+    /// Jump back into the diff at the selected summary row and close the
+    /// summary. Where there's exactly one unambiguous thing to edit — a line
+    /// comment, a file comment, a rejection's feedback, or the general
+    /// feedback — open that editor directly, pre-filled, so the reviewer lands
+    /// ready to type rather than having to re-find and re-press the key.
+    pub fn review_summary_jump_to_selected(&mut self) {
+        let item = if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.summary_open {
+                return;
+            }
+            let item = state.summary_items().get(state.summary_selected).copied();
+            state.summary_open = false;
+            item
+        } else {
+            return;
+        };
+        let Some(item) = item else {
+            return;
+        };
+        match item {
+            SummaryItem::General => self.diff_review_start_general_feedback(),
+            SummaryItem::File { file_idx } => {
+                let is_reject = if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.selected_file = file_idx;
+                    state.on_file_changed();
+                    matches!(
+                        state
+                            .files
+                            .get(file_idx)
+                            .and_then(|f| state.decisions.get(&f.path)),
+                        Some(ReviewDecision::Reject { .. })
+                    )
+                } else {
+                    false
+                };
+                if is_reject {
+                    self.diff_review_start_feedback();
+                }
+            }
+            SummaryItem::FileComment { file_idx } => {
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.selected_file = file_idx;
+                    state.on_file_changed();
+                }
+                self.diff_review_start_file_comment();
+            }
+            SummaryItem::LineComment {
+                file_idx,
+                comment_idx,
+            } => {
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.selected_file = file_idx;
+                    state.on_file_changed();
+                    if let Some(file) = state.files.get(file_idx) {
+                        let path = file.path.clone();
+                        let locs = file.addressable_lines();
+                        if let Some(range) = state
+                            .line_comments
+                            .get(&path)
+                            .and_then(|comments| comments.get(comment_idx))
+                            .and_then(|comment| comment.covered_indices(&locs))
+                        {
+                            state.comment_anchor =
+                                (*range.start() != *range.end()).then_some(*range.start());
+                            state.comment_cursor = Some(*range.end());
+                            state.cursor_sync_to_view = true;
+                        }
+                    }
+                }
+                self.diff_review_start_line_comment();
+            }
+        }
     }
 
     /// Leave the review viewer without finishing it: no feedback file, no PR

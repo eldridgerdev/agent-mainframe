@@ -10,6 +10,7 @@ GEOMETRY="120x40"
 KEEP=0
 SCENARIO=""
 SEED=""
+SEED_FEATURE=""
 GIF=0
 GIF_PATH=""
 READY_TIMEOUT_SECS=15
@@ -39,6 +40,14 @@ Options:
                           wait:<ms>    sleep this many milliseconds
                           shot:<label> capture-pane -> NNN-<label>.ansi
                                        (+ escape-free NNN-<label>.txt)
+                          run:<cmd>    eval an arbitrary shell command
+                                       (this shell already has AMF_BIN and
+                                       the scratch instance's env
+                                       exported -- use it for a second
+                                       automation call, or to seed
+                                       working-tree content a JSON seed
+                                       file can't carry, e.g. uncommitted
+                                       changes for a diff/review demo)
                         Blank lines and lines starting with '#' are
                         skipped. Without --scenario, runs a small
                         built-in smoke test (dashboard-ready, press j,
@@ -47,9 +56,28 @@ Options:
                         applied against the scratch instance once the
                         dashboard is ready, before any --scenario steps
                         run. The action (create-project vs
-                        create-feature) is inferred from the payload's
-                        top-level keys ('path' -> create-project,
-                        'branch' -> create-feature).
+                        create-feature vs create-batch-features) is
+                        inferred from the payload's top-level keys
+                        ('path' -> create-project, 'branch' ->
+                        create-feature, 'workspace_path' ->
+                        create-batch-features -- use this one seed to
+                        get a project *and* a feature in a single
+                        --seed).
+  --seed-feature <file> A second automation JSON payload, always applied
+                        as create-feature, right after --seed. Lets a
+                        project (--seed) and its first feature be seeded
+                        together in one scratch instance -- e.g.
+                        scenarios/seed-project.json paired with
+                        scenarios/seed-feature.json, whose project_name
+                        must match. A plain --seed only ever runs one
+                        automation call, so a scenario needing a feature
+                        already present (a project with no features has
+                        nothing for most scenarios to show) needs this.
+                        (create-batch-features above is the other way to
+                        get both in one call; --seed-feature is for when
+                        the project and feature need separate payloads,
+                        e.g. different use_worktree/create_terminal
+                        settings than create-batch-features supports.)
   --gif [path]          After all shot: steps, render every numbered
                         .ansi capture to a PNG and assemble them into
                         an animated GIF. Path defaults to
@@ -83,6 +111,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --seed)
             SEED="$2"
+            shift 2
+            ;;
+        --seed-feature)
+            SEED_FEATURE="$2"
             shift 2
             ;;
         --gif)
@@ -130,6 +162,16 @@ fi
 
 if [[ -n "$SEED" && ! -f "$SEED" ]]; then
     echo "error: seed file not found: $SEED" >&2
+    exit 1
+fi
+
+if [[ -n "$SEED_FEATURE" && ! -f "$SEED_FEATURE" ]]; then
+    echo "error: seed-feature file not found: $SEED_FEATURE" >&2
+    exit 1
+fi
+
+if [[ -n "$SEED_FEATURE" && -z "$SEED" ]]; then
+    echo "error: --seed-feature requires --seed (it seeds the project the feature is created under)" >&2
     exit 1
 fi
 
@@ -294,9 +336,13 @@ echo "dashboard ready" >&2
 
 # The automation JSON shape (docs/automation/*.template.json) has no
 # "action" field of its own -- the CLI subcommand IS the action, so we
-# infer create-project vs create-feature from which distinguishing key
-# is present ('path' only on create-project, 'branch' only on
-# create-feature). python3 is already a hard dependency (render_ansi.py).
+# infer create-project vs create-feature vs create-batch-features from
+# which distinguishing key is present ('path' only on create-project,
+# 'branch' only on create-feature, 'workspace_path' only on
+# create-batch-features -- the one seed that creates a project *and* a
+# feature in a single call, useful when a scenario needs both but only
+# gets one --seed). python3 is already a hard dependency
+# (render_ansi.py).
 seed_kind() {
     python3 - "$1" <<'PY'
 import json
@@ -306,6 +352,8 @@ with open(sys.argv[1]) as f:
     data = json.load(f)
 if "path" in data:
     print("create-project")
+elif "workspace_path" in data:
+    print("create-batch-features")
 elif "branch" in data:
     print("create-feature")
 else:
@@ -316,11 +364,16 @@ PY
 if [[ -n "$SEED" ]]; then
     kind="$(seed_kind "$SEED")"
     if [[ "$kind" == "unknown" ]]; then
-        echo "error: could not infer automation action from seed file '$SEED' (expected a 'path' key for create-project or a 'branch' key for create-feature)" >&2
+        echo "error: could not infer automation action from seed file '$SEED' (expected a 'path' key for create-project, a 'branch' key for create-feature, or a 'workspace_path' key for create-batch-features)" >&2
         exit 1
     fi
     echo "seeding: $AMF_BIN automation $kind --file $SEED" >&2
     "$AMF_BIN" automation "$kind" --file "$SEED"
+fi
+
+if [[ -n "$SEED_FEATURE" ]]; then
+    echo "seeding: $AMF_BIN automation create-feature --file $SEED_FEATURE" >&2
+    "$AMF_BIN" automation create-feature --file "$SEED_FEATURE"
 fi
 
 run_scenario() {
@@ -349,6 +402,18 @@ run_scenario() {
                     ;;
                 shot:*)
                     shot "${part#shot:}"
+                    ;;
+                run:*)
+                    # Escape hatch for anything the key/text/wait/shot
+                    # grammar can't express mid-scenario -- e.g. a second
+                    # automation call (this shell already has AMF_BIN and
+                    # the scratch instance's XDG_CONFIG_HOME/XDG_STATE_HOME
+                    # exported, so it talks to the same running instance) or
+                    # seeding working-tree content a plain seed file can't
+                    # carry (uncommitted changes for a diff/review demo).
+                    local cmd="${part#run:}"
+                    echo "run: $cmd" >&2
+                    eval "$cmd"
                     ;;
                 "")
                     ;;

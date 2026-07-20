@@ -80,6 +80,29 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // The pre-finish summary is a read-only (except for jumping out to edit)
+    // overview layered over the diff, taking full key precedence while open —
+    // same shape as the changeset-overview and interdiff modals above.
+    let summary_open = matches!(&app.mode, AppMode::DiffViewer(state) if state.summary_open);
+    if summary_open {
+        match code {
+            KeyCode::Esc => app.close_review_summary(),
+            KeyCode::Char('q') => {
+                app.close_review_summary();
+                app.finish_final_review()?;
+            }
+            KeyCode::Enter => app.review_summary_jump_to_selected(),
+            KeyCode::Char('j') | KeyCode::Down => app.review_summary_move(1),
+            KeyCode::Char('k') | KeyCode::Up => app.review_summary_move(-1),
+            KeyCode::PageDown => app.review_summary_move(PATCH_PAGE_STEP as isize),
+            KeyCode::PageUp => app.review_summary_move(-(PATCH_PAGE_STEP as isize)),
+            KeyCode::Home | KeyCode::Char('g') => app.review_summary_move(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => app.review_summary_move(isize::MAX / 2),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     let review = matches!(&app.mode, AppMode::DiffViewer(state) if state.review);
     let editing_general = matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_general);
     let editing_feedback = matches!(
@@ -105,7 +128,8 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
     if review {
         // A pending finish confirmation (some files have no verdict) takes
-        // precedence: y/q finish anyway, Esc cancels, and any other key clears
+        // precedence: y/q finish anyway (opening the pre-finish summary, same
+        // as when nothing is undecided), Esc cancels, and any other key clears
         // the prompt and is handled normally (so e.g. deciding the last file
         // then pressing q finishes cleanly).
         let finish_confirm =
@@ -113,7 +137,7 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         if finish_confirm {
             match code {
                 KeyCode::Char('y') | KeyCode::Char('q') => {
-                    app.finish_final_review()?;
+                    app.open_review_summary();
                     return Ok(());
                 }
                 KeyCode::Esc => {
@@ -569,6 +593,19 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// Finish a fully-decided review: the first `q` opens the pre-finish
+    /// summary, the second (`q` again, now handled by the summary modal)
+    /// actually writes/dispatches. Tests that only care about the end state
+    /// use this instead of a single `q` press.
+    fn finish_review(app: &mut App) {
+        handle_diff_viewer_key(app, key(KeyCode::Char('q'))).unwrap();
+        assert!(
+            matches!(&app.mode, AppMode::DiffViewer(s) if s.summary_open),
+            "expected the pre-finish summary to open"
+        );
+        handle_diff_viewer_key(app, key(KeyCode::Char('q'))).unwrap();
+    }
+
     fn make_review_app(workdir: &Path, paths: &[&str]) -> App {
         let mut app = crate::app::App::new_for_test(
             ProjectStore {
@@ -749,7 +786,7 @@ index 1111111..2222222 100644
 
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve a.rs -> b.rs
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve b.rs
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // finish
+        finish_review(&mut app);
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
         assert!(!dir.path().join(".claude/final-review-feedback.md").exists());
@@ -767,7 +804,7 @@ index 1111111..2222222 100644
         }
         handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap(); // submit -> advance to b.rs
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve b.rs
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // finish
+        finish_review(&mut app);
 
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
@@ -834,7 +871,7 @@ index 1111111..2222222 100644
             handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
         }
         handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap(); // submit rejection
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // finish
+        finish_review(&mut app);
 
         // The feedback file is written and, because the dedicated session must be
         // spun up, the harness picker is shown rather than returning to the view.
@@ -907,7 +944,7 @@ index 1111111..2222222 100644
             _ => panic!("expected diff viewer"),
         }
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve a.rs
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // finish
+        finish_review(&mut app);
 
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
@@ -1004,7 +1041,7 @@ index 1111111..2222222 100644
             handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
         }
         handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        finish_review(&mut app);
 
         assert!(dir.path().join(".claude/final-review-feedback.md").exists());
         assert!(matches!(app.mode, AppMode::Viewing(_)));
@@ -1096,7 +1133,7 @@ index 1111111..2222222 100644
             handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
         }
         handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        finish_review(&mut app);
 
         assert!(dir.path().join(".claude/final-review-feedback.md").exists());
         assert!(matches!(app.mode, AppMode::Viewing(_)));
@@ -1238,7 +1275,7 @@ index 1111111..2222222 100644
             &app.mode,
             AppMode::DiffViewer(state) if state.apply_suggestions_on_finish
         ));
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        finish_review(&mut app);
 
         assert_eq!(
             std::fs::read_to_string(repo.path().join("a.rs")).unwrap(),
@@ -1268,7 +1305,7 @@ index 1111111..2222222 100644
         std::fs::write(repo.path().join("a.rs"), "ctx\nchanged concurrently\n").unwrap();
 
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('X'))).unwrap();
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        finish_review(&mut app);
 
         assert_eq!(
             std::fs::read_to_string(repo.path().join("a.rs")).unwrap(),
@@ -1343,9 +1380,10 @@ index 1111111..2222222 100644
             _ => panic!("expected diff viewer"),
         }
 
-        // The comment auto-rejected the file (it now has a verdict), so a
-        // single q finishes and writes the feedback file.
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        // The comment auto-rejected the file (it now has a verdict), so q
+        // opens the summary rather than the undecided-files confirmation, and
+        // a second q writes the feedback file.
+        finish_review(&mut app);
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
         assert!(feedback.contains("## Line Comments"));
@@ -1395,7 +1433,7 @@ index 1111111..2222222 100644
         // Resolve again, then approve explicitly so the file has a verdict.
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('R'))).unwrap();
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        finish_review(&mut app);
 
         // A resolved thread never reaches the feedback file, so an
         // all-approved round with nothing else to say writes nothing.
@@ -1463,7 +1501,7 @@ index 1111111..2222222 100644
             state.line_comments.get_mut("a.rs").unwrap()[0].carried = true;
         }
 
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        finish_review(&mut app);
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
         assert!(
@@ -1508,8 +1546,9 @@ index 1111111..2222222 100644
         }
 
         // Finishing writes the suggestion as a fenced block in the feedback
-        // file. The suggestion auto-rejected the file, so one q suffices.
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        // file. The suggestion auto-rejected the file, so q opens the summary
+        // (rather than the undecided confirmation) and a second q finishes.
+        finish_review(&mut app);
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
         assert!(feedback.contains("### a.rs:2"));
@@ -1644,8 +1683,9 @@ index 1111111..2222222 100644
         }
 
         // The feedback file records the range anchor `a.rs:2-3`. The comment
-        // auto-rejected the file, so one q finishes without a confirm prompt.
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        // auto-rejected the file, so q opens the summary without the
+        // undecided-files confirm prompt, and a second q finishes.
+        finish_review(&mut app);
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
         assert!(feedback.contains("### a.rs:2-3"));
@@ -1828,7 +1868,12 @@ index 1111111..2222222 100644
         // q shows the confirmation rather than finishing.
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
         assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.finish_confirm));
-        // A second q finishes.
+        // A second q (finish-anyway) opens the pre-finish summary instead of
+        // finishing outright.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.summary_open));
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if !s.finish_confirm));
+        // A third q, from the summary, actually finishes.
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
         assert!(matches!(app.mode, AppMode::Viewing(_)));
     }
@@ -1863,9 +1908,223 @@ index 1111111..2222222 100644
             }
             _ => panic!("expected diff viewer"),
         }
-        // q now finishes immediately (all files decided).
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        // q now opens the pre-finish summary immediately (all files decided,
+        // no undecided-files confirmation needed).
+        finish_review(&mut app);
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn summary_lists_every_verdict_and_general_feedback_in_order() {
+        use crate::app::SummaryItem;
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        // Reject a.rs with feedback, approve b.rs, then write general feedback.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        for c in "fix it".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap(); // advance to b.rs
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('f'))).unwrap();
+        for c in "nice work overall".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.summary_open);
+                assert_eq!(
+                    state.summary_items(),
+                    vec![
+                        SummaryItem::File { file_idx: 0 },
+                        SummaryItem::File { file_idx: 1 },
+                        SummaryItem::General,
+                    ]
+                );
+            }
+            _ => panic!("expected diff viewer with summary open"),
+        }
+    }
+
+    #[test]
+    fn esc_closes_summary_without_finishing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.summary_open));
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.summary_open);
+                // Nothing about the review itself changed.
+                assert!(state.decisions.contains_key("a.rs"));
+            }
+            _ => panic!("expected the review to still be open, not finished"),
+        }
+        assert!(!dir.path().join(".claude/final-review-feedback.md").exists());
+    }
+
+    #[test]
+    fn summary_navigation_clamps_at_both_ends() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs", "c.rs"]);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+
+        let selected = |app: &App| match &app.mode {
+            AppMode::DiffViewer(s) => s.summary_selected,
+            _ => panic!("expected diff viewer"),
+        };
+        assert_eq!(selected(&app), 0);
+        // k at the top stays put.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('k'))).unwrap();
+        assert_eq!(selected(&app), 0);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('G'))).unwrap();
+        assert_eq!(selected(&app), 2);
+        // j at the bottom stays put.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(selected(&app), 2);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('g'))).unwrap();
+        assert_eq!(selected(&app), 0);
+    }
+
+    #[test]
+    fn summary_enter_on_line_comment_jumps_and_opens_editor_prefilled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        for c in "bug here".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        // The comment auto-rejected the file, so summary_items is
+        // [File { 0 }, LineComment { 0, 0 }].
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.summary_open);
+                assert!(state.editing_line_comment);
+                assert_eq!(state.feedback_editor.text(), "bug here");
+                assert_eq!(state.selected_file, 0);
+            }
+            _ => panic!("expected diff viewer back in the line-comment editor"),
+        }
+    }
+
+    #[test]
+    fn summary_enter_on_rejected_file_jumps_and_opens_feedback_editor_prefilled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        for c in "needs work".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap(); // -> b.rs
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        // Selection starts on the a.rs row (its rejection).
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.summary_open);
+                assert!(state.feedback_editing);
+                assert_eq!(state.feedback_editor.text(), "needs work");
+                assert_eq!(state.selected_file, 0);
+            }
+            _ => panic!("expected diff viewer back in the rejection editor"),
+        }
+    }
+
+    #[test]
+    fn summary_enter_on_approved_file_just_navigates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap(); // jump to a.rs's row
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.summary_open);
+                assert!(!state.feedback_editing);
+                assert!(!state.editing_general);
+                assert_eq!(state.selected_file, 0);
+            }
+            _ => panic!("expected diff viewer, no editor opened"),
+        }
+    }
+
+    #[test]
+    fn summary_enter_on_file_comment_jumps_and_opens_editor_prefilled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('m'))).unwrap();
+        for c in "consider splitting".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        // File comments are verdict-free, so a.rs is still undecided: q raises
+        // the confirmation first.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('y'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap(); // -> FileComment row
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.summary_open);
+                assert!(state.editing_file_comment);
+                assert_eq!(state.feedback_editor.text(), "consider splitting");
+            }
+            _ => panic!("expected diff viewer back in the file-comment editor"),
+        }
+    }
+
+    #[test]
+    fn summary_enter_on_general_feedback_jumps_and_opens_editor_prefilled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('f'))).unwrap();
+        for c in "great work".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap(); // -> General row
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.summary_open);
+                assert!(state.editing_general);
+                assert_eq!(state.feedback_editor.text(), "great work");
+            }
+            _ => panic!("expected diff viewer back in the general-feedback editor"),
+        }
     }
 
     #[test]
@@ -2129,7 +2388,7 @@ index 1111111..2222222 100644
         // Approving remains independent of the comment and finishing emits a
         // dedicated whole-file section.
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        finish_review(&mut app);
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
         assert!(feedback.contains("### File Comments"));
@@ -2470,8 +2729,9 @@ index 1111111..2222222 100644
             handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
         }
         handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
-        // Auto-rejected, so the review is fully decided and one q finishes.
-        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        // Auto-rejected, so the review is fully decided: q opens the summary
+        // and a second q finishes.
+        finish_review(&mut app);
 
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();

@@ -10,6 +10,15 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Plan-mode interviews now ask AI-generated follow-up questions.** After
+  the configured questions, AMF uses the feature's agent harness (or an
+  available fallback) to tailor up to two more rounds to the brief and prior
+  answers, with a progress screen while each round runs. Finishing early
+  skips the remaining AI rounds, and an unavailable or failed harness lets
+  the interview complete normally. No setup or migration is required.
+
 ### Backlog
 
 - Allow each review action to choose its own model instead of sharing one

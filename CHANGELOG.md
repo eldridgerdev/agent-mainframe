@@ -80,6 +80,16 @@ are tagged.
   `layout:side-by-side`), and switches to a plain `(new file)` label instead
   of the `v` key hint on files that can't switch, matching how the plain
   (non-review) diff viewer already labeled it. No migration is required.
+- **Final Review shows a summary before it writes and dispatches anything.**
+  `q` used to gate on undecided files and then finish immediately; it now
+  opens a navigable summary listing every file's verdict, every open line/file
+  comment (and suggestion), and the general feedback, in one place. `j`/`k`
+  (and `g`/`G`) move through the list, `Enter` jumps back into the diff at
+  that item and opens its editor pre-filled — a rejection's feedback, a line
+  or file comment, or the general note — so fixing something you spot in the
+  summary no longer means hunting it down again. `q` from the summary is the
+  real finish; `Esc` just closes it and returns to reviewing, with nothing
+  written, posted, or dispatched. No migration is required.
 - **The review-memory doc path can now be overridden per project, not just
   globally.** `review_memory_path` was already a config setting, but one
   value applied to every project. Set `review_memory_path` in a project's

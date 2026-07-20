@@ -2146,7 +2146,10 @@ mod tests {
     fn detail_pane_shows_no_replies_section_when_thread_has_no_replies() {
         let root = pr_comment_of_kind(1, CommentKind::Inline);
         let rendered = render_comment_detail(&root, std::slice::from_ref(&root));
-        assert!(!rendered.contains("Replies"));
+        // "↳ @" is the reply marker itself (see draw_comment_detail), so this
+        // can't false-pass on a renamed section header or false-fail on a
+        // comment body that happens to contain the word "Replies".
+        assert!(!rendered.contains("↳ @"));
     }
 
     #[test]
@@ -2160,8 +2163,7 @@ mod tests {
         let all = vec![root.clone(), reply];
 
         let rendered = render_comment_detail(&root, &all);
-        assert!(rendered.contains("Replies"));
-        assert!(rendered.contains("@amf-user"));
+        assert!(rendered.contains("↳ @amf-user"));
         assert!(rendered.contains("via AMF"));
         assert!(rendered.contains("Done in `abc123`."));
     }
@@ -2177,8 +2179,7 @@ mod tests {
         let all = vec![root.clone(), reply];
 
         let rendered = render_comment_detail(&root, &all);
-        assert!(rendered.contains("Replies"));
-        assert!(rendered.contains("@headless-agent"));
+        assert!(rendered.contains("↳ @headless-agent"));
         assert!(!rendered.contains("via AMF"));
     }
 

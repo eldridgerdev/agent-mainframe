@@ -153,6 +153,11 @@ if [[ -n "$SEED_FEATURE" && ! -f "$SEED_FEATURE" ]]; then
     exit 1
 fi
 
+if [[ -n "$SEED_FEATURE" && -z "$SEED" ]]; then
+    echo "error: --seed-feature requires --seed (it seeds the project the feature is created under)" >&2
+    exit 1
+fi
+
 TS="$(date +%Y%m%d-%H%M%S)-$$"
 SHOT_ROOT="${AMF_SHOT_DIR:-/tmp/amf-shots}/$TS"
 CONFIG_DIR="$SHOT_ROOT/config"

@@ -269,8 +269,10 @@ pub(crate) fn window_parsed_hunk(
 /// post time (not part of the editable seed) so composing a "not needed"
 /// reason — which starts from an empty buffer — isn't complicated by a
 /// footer already sitting in the editor.
+const AMF_ATTRIBUTION_FOOTER: &str = "— posted via AMF";
+
 fn append_amf_attribution(body: &str) -> String {
-    format!("{}\n\n— posted via AMF", body.trim_end())
+    format!("{}\n\n{}", body.trim_end(), AMF_ATTRIBUTION_FOOTER)
 }
 
 /// Which agent session a "fix" prompt is injected into.
@@ -725,7 +727,7 @@ impl PrComment {
 /// shelling out to `gh`, a human on GitHub) posted directly, since a reply
 /// posted outside AMF's `R`/`n` dialog leaves no local triage record at all.
 pub fn reply_posted_via_amf(reply: &PrComment) -> bool {
-    reply.body.trim_end().ends_with("— posted via AMF")
+    reply.body.trim_end().ends_with(AMF_ATTRIBUTION_FOOTER)
 }
 
 /// Where a reply is delivered on GitHub.
@@ -4343,7 +4345,7 @@ mod tests {
     #[test]
     fn reply_posted_via_amf_detects_the_channel_disclosure_footer() {
         let mut reply = sample_comment(2, "amf-user", false);
-        reply.body = "Done in `abc123`.\n\n— posted via AMF".to_string();
+        reply.body = format!("Done in `abc123`.\n\n{}", AMF_ATTRIBUTION_FOOTER);
         assert!(reply_posted_via_amf(&reply));
 
         // A reply posted through some other channel (a headless agent using

@@ -176,7 +176,9 @@ fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> boo
 
     // The config-dir resolver depends on HOME/XDG_CONFIG_HOME and can differ
     // across platforms. Older runs may leave helper paths from a previous AMF
-    // config root, including macOS' Library/Application Support path.
+    // config root, including macOS' Library/Application Support path, or a
+    // custom XDG_CONFIG_HOME (e.g. the screenshot dev tool's isolated
+    // `<tmp>/config/amf`, which has no leading dot on `config`).
     // Treat only AMF's known helper names under a recognized AMF config
     // directory as managed so unrelated user hooks with the same basename are
     // preserved.
@@ -185,6 +187,7 @@ fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> boo
     };
     CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name)
         && (parent.ends_with("/.config/amf")
+            || parent.ends_with("/config/amf")
             || parent.ends_with("/Library/Application Support/amf"))
 }
 

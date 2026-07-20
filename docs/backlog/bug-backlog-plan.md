@@ -74,6 +74,45 @@ Claude hooks run without shell path errors.
 Claude reports a non-blocking hook error like
 `/bin/sh: /Users/.../Library/Application: no such file or directory`.
 
+## ~~Stale Claude hooks accumulate under a custom XDG_CONFIG_HOME~~ (Fixed)
+
+- **Status:** Fixed (2026-07-20)
+- **Reported:** 2026-07-20
+- **Relates to:** Claude hook setup (`src/app/setup.rs`)
+- **Root cause:** The managed-hook heuristic only recognized AMF helper
+  scripts under a path ending in `/.config/amf` (the dotted XDG default) or
+  `/Library/Application Support/amf` (macOS). Tools that run AMF with a
+  custom `XDG_CONFIG_HOME` pointed at a plain (non-dotted) `config` dir — for
+  example the screenshot dev tool's isolated `<tmp>/config` root — produce
+  hook paths like `.../config/amf/<script>.sh`, which matched neither
+  pattern. `ensure_notification_hooks` never recognized these as
+  AMF-managed, so it never removed them on a later run with a different
+  config root, and every such run left a new stale hook block behind in
+  whatever `.claude/settings.local.json` it touched.
+- **Fix:** Also match `.../config/amf/<script>` (no leading dot) in
+  `is_amf_claude_hook_command`, so stale entries from any custom
+  `XDG_CONFIG_HOME` are recognized and replaced on the next hook refresh
+  like the existing dotted/macOS cases.
+
+### Repro
+
+1. Run AMF once with `XDG_CONFIG_HOME` pointed at `/tmp/some-dir/config`
+   (as the screenshot dev tool does) against a feature's workdir.
+2. Run AMF again normally (real `~/.config/amf`) against the same workdir.
+3. Inspect `.claude/settings.local.json` in that workdir.
+
+### Expected
+
+Only one set of AMF-managed hook commands remains, pointing at the current
+config directory.
+
+### Actual
+
+Both the stale temp-path hook commands and the current ones are present.
+Claude reports non-blocking `UserPromptSubmit`/`PreToolUse`/etc. hook
+errors like `/bin/sh: 1: /tmp/.../config/amf/thinking-start.sh: not found`
+for every leftover temp-path entry.
+
 ## ~~macOS build fails in tmux PTY setup~~ (Fixed)
 
 - **Status:** Fixed (2026-07-09)

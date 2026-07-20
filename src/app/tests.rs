@@ -4680,6 +4680,50 @@ fn cleanup_recognizes_unquoted_macos_managed_claude_hooks() {
 }
 
 #[test]
+fn cleanup_recognizes_quoted_temp_xdg_config_managed_claude_hooks() {
+    // Regression test: the screenshot dev tool runs AMF with XDG_CONFIG_HOME
+    // pointed at an isolated temp dir (e.g. /tmp/amf-shots/<ts>/config), so
+    // AMF's own quoted hook commands land under `.../config/amf/<script>`
+    // with no leading dot on `config`. These must still be recognized as
+    // AMF-managed and replaced rather than accumulating forever.
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        r#"{
+          "hooks": {
+            "Stop": [{
+              "matcher": "",
+              "hooks": [{
+                "type": "command",
+                "command": "'/tmp/amf-shots/20260719-124607-366569/config/amf/thinking-stop.sh'"
+              }]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "Stop");
+    assert!(
+        cmds.iter()
+            .all(|cmd| !cmd.contains("/tmp/amf-shots/")),
+        "stale temp-XDG-config AMF hooks should be removed, got: {cmds:?}"
+    );
+    assert_eq!(
+        cmds.iter()
+            .filter(|cmd| cmd.contains("thinking-stop.sh"))
+            .count(),
+        1,
+        "current quoted Stop hook should be the only thinking-stop hook: {cmds:?}"
+    );
+}
+
+#[test]
 fn repair_unquoted_claude_hooks_refreshes_stale_stored_features() {
     let repo = TempDir::new().unwrap();
     let workdir = TempDir::new().unwrap();

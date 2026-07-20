@@ -126,6 +126,14 @@ A and B are the two independent P0 tracks; everything else layers on top.
       create-project|create-feature` against the scratch socket.
 - [x] Example seed payloads under `scenarios/` reusing
       `docs/automation/*.template.json` shape.
+- [x] **Follow-up, from real use.** `--seed` only ever applies one
+      payload, but the example `seed-project.json`/`seed-feature.json`
+      pair (same `project_name`) clearly intends to compose — a project
+      alone has nothing in it for most scenarios to show. Added a second
+      `--seed-feature <file>`, always applied as `create-feature` right
+      after `--seed`, so a project and its first feature can be seeded
+      together in one scratch run. → `scripts/dev/screenshot/amf-capture.sh`,
+      `scripts/dev/screenshot/README.md`.
 
 ### Epic E — GIF assembly (P2; needs A, B)
 - [x] Driver `--gif`: collect rendered frames, Pillow `save_all=True,
@@ -138,6 +146,15 @@ A and B are the two independent P0 tracks; everything else layers on top.
       scenario for the just-built feature; run the driver; return PNG paths
       to the user; build a GIF only on request.
 - [x] Document isolation guarantees + fixed geometry in the skill.
+- [x] **Follow-up, from real use.** Returning raw PNG/GIF paths wasn't a
+      usable deliverable — many terminal environments don't render images
+      inline, so the user had to ask separately for a viewable version. The
+      skill's last step now always publishes a small, self-contained
+      Artifact HTML gallery (one `<figure>` per shot, terminal-window
+      chrome, images inlined as base64 so nothing external loads) via the
+      `Artifact` tool, loading `artifact-design` first, and returns the
+      published URL as the primary deliverable instead of file paths. →
+      `skills/amf-screenshot/SKILL.md`.
 
 ### Epic G — docs + high-fidelity path (P2; needs B)
 - [x] `scripts/dev/screenshot/README.md`: usage, scenario format,

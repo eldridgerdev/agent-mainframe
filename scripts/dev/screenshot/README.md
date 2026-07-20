@@ -58,6 +58,17 @@ Each flag:
       --seed scripts/dev/screenshot/scenarios/seed-project.json --keep
   ```
 
+- `--seed-feature <file>` — a second automation payload, always applied as
+  `create-feature`, right after `--seed`. Most scenarios that need a
+  feature to already exist (a project alone has nothing in it) want both
+  flags together, `project_name` matching between the two files:
+
+  ```bash
+  ./scripts/dev/screenshot/amf-capture.sh \
+      --seed scripts/dev/screenshot/scenarios/seed-project.json \
+      --seed-feature scripts/dev/screenshot/scenarios/seed-feature.json --keep
+  ```
+
 - `--gif [path]` — after all `shot:` steps run, render every numbered
   `.ansi` capture to a PNG and assemble them into an animated GIF. Off by
   default (no ffmpeg needed either way — see "Rendering"). Path defaults

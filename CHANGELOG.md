@@ -22,6 +22,17 @@ are tagged.
   summary no longer means hunting it down again. `q` from the summary is the
   real finish; `Esc` just closes it and returns to reviewing, with nothing
   written, posted, or dispatched. No migration is required.
+- **PR Triage's detail pane now shows a comment's replies, however they got
+  posted.** A reply posted outside AMF's own `R`/`n` flow — e.g. an agent
+  working the PR with its own `gh` access — previously left no trace next to
+  the original comment; you had to hunt the flat list for the reply entry. A
+  new "Replies" section lists each reply with its author, a `[via AMF]` chip
+  when it carries AMF's own posting disclosure, and the thread's current
+  `[outdated]`/`[✓ resolved]` chips, so confirming a thread already got
+  answered is a glance at the comment, refreshed on demand with `r`. The
+  `pr-continue` skill also now explicitly avoids posting a "done" reply on
+  its own initiative, and only cites a commit after confirming it actually
+  touches the comment's file.
 
 ### Backlog
 

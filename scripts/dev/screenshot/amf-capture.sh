@@ -10,6 +10,7 @@ GEOMETRY="120x40"
 KEEP=0
 SCENARIO=""
 SEED=""
+SEED_FEATURE=""
 GIF=0
 GIF_PATH=""
 READY_TIMEOUT_SECS=15
@@ -62,6 +63,21 @@ Options:
                         create-batch-features -- use this one seed to
                         get a project *and* a feature in a single
                         --seed).
+  --seed-feature <file> A second automation JSON payload, always applied
+                        as create-feature, right after --seed. Lets a
+                        project (--seed) and its first feature be seeded
+                        together in one scratch instance -- e.g.
+                        scenarios/seed-project.json paired with
+                        scenarios/seed-feature.json, whose project_name
+                        must match. A plain --seed only ever runs one
+                        automation call, so a scenario needing a feature
+                        already present (a project with no features has
+                        nothing for most scenarios to show) needs this.
+                        (create-batch-features above is the other way to
+                        get both in one call; --seed-feature is for when
+                        the project and feature need separate payloads,
+                        e.g. different use_worktree/create_terminal
+                        settings than create-batch-features supports.)
   --gif [path]          After all shot: steps, render every numbered
                         .ansi capture to a PNG and assemble them into
                         an animated GIF. Path defaults to
@@ -95,6 +111,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --seed)
             SEED="$2"
+            shift 2
+            ;;
+        --seed-feature)
+            SEED_FEATURE="$2"
             shift 2
             ;;
         --gif)
@@ -142,6 +162,16 @@ fi
 
 if [[ -n "$SEED" && ! -f "$SEED" ]]; then
     echo "error: seed file not found: $SEED" >&2
+    exit 1
+fi
+
+if [[ -n "$SEED_FEATURE" && ! -f "$SEED_FEATURE" ]]; then
+    echo "error: seed-feature file not found: $SEED_FEATURE" >&2
+    exit 1
+fi
+
+if [[ -n "$SEED_FEATURE" && -z "$SEED" ]]; then
+    echo "error: --seed-feature requires --seed (it seeds the project the feature is created under)" >&2
     exit 1
 fi
 
@@ -339,6 +369,11 @@ if [[ -n "$SEED" ]]; then
     fi
     echo "seeding: $AMF_BIN automation $kind --file $SEED" >&2
     "$AMF_BIN" automation "$kind" --file "$SEED"
+fi
+
+if [[ -n "$SEED_FEATURE" ]]; then
+    echo "seeding: $AMF_BIN automation create-feature --file $SEED_FEATURE" >&2
+    "$AMF_BIN" automation create-feature --file "$SEED_FEATURE"
 fi
 
 run_scenario() {

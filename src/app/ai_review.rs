@@ -46,6 +46,19 @@ const AI_FINDING_HEADING_PREFIX: &str = "### ";
 /// lines this finding is about."
 const AI_FINDING_HUNK_CONTEXT_LINES: usize = 6;
 
+/// Attribution for an AI review finding posted as an inline GitHub comment.
+/// Deliberately distinct text from [`super::pr_review::AI_ATTRIBUTION_FOOTER`]
+/// even though both disclose AI authorship: [`super::pr_review::reply_posted_via_amf`]
+/// matches on that other footer to detect a reply posted through PR Triage's
+/// `R`/`n` dialog, and an AI-review finding is never that — it's a fresh
+/// review comment, not a reply, and if GitHub auto-threads it under an
+/// existing comment on the same line, it must not be mistaken for one.
+const AI_REVIEW_FINDING_FOOTER: &str = "— AI review via AMF";
+
+fn append_ai_review_attribution(body: &str) -> String {
+    format!("{}\n\n{}", body.trim_end(), AI_REVIEW_FINDING_FOOTER)
+}
+
 /// Soft ceiling on the AI review's assembled prompt (diff + memory doc +
 /// instructions): past this, a warning toast fires once the token estimate is
 /// known, but the review still runs — chunking or an outright refusal isn't
@@ -306,15 +319,6 @@ fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) ->
     super::pr_review::window_parsed_hunk(hunk, line, false, AI_FINDING_HUNK_CONTEXT_LINES)
 }
 
-/// Attribution appended to GitHub content the agent harness generated on the
-/// user's behalf, as opposed to text the user typed. AI-review generation can
-/// run through any supported headless harness, independent of whichever
-/// harness a PR Triage "fix" gets injected into, so the marker stays provider
-/// neutral rather than incorrectly attributing another harness to Claude.
-fn append_ai_attribution(body: &str) -> String {
-    format!("{}\n\n— drafted by AI via AMF", body.trim_end())
-}
-
 /// Build the `(summary, inline comments)` GitHub review payload from a set of
 /// kept findings (`W` — "post as GitHub review"). A finding with a
 /// `path`+`line` anchor *and* a matched `diff_hunk` becomes an inline
@@ -344,7 +348,7 @@ fn build_ai_review(findings: &[&AiReviewFinding]) -> (String, Vec<GhPrReviewComm
                 side: "RIGHT",
                 start_line: None,
                 start_side: None,
-                body: append_ai_attribution(&f.body),
+                body: append_ai_review_attribution(&f.body),
             }),
             (Some(path), Some(line)) => general.push(format!("- **{path}:{line}**: {}", f.body)),
             (Some(path), None) => general.push(format!("- **{path}**: {}", f.body)),
@@ -1488,7 +1492,7 @@ mod tests {
         let (summary, inline) = build_ai_review(&[&anchored, &general]);
         assert_eq!(inline.len(), 1);
         assert_eq!(inline[0].path, "src/lib.rs");
-        assert!(inline[0].body.contains("drafted by AI via AMF"));
+        assert!(inline[0].body.contains("AI review via AMF"));
         assert!(summary.contains("general note"));
         assert!(summary.starts_with("AI review, via AMF."));
     }
@@ -1518,9 +1522,38 @@ mod tests {
     }
 
     #[test]
-    fn append_ai_attribution_appends_footer_and_trims_trailing_whitespace() {
-        let body = append_ai_attribution("finding text  \n\n");
-        assert_eq!(body, "finding text\n\n— drafted by AI via AMF");
+    fn append_ai_review_attribution_appends_footer_and_trims_trailing_whitespace() {
+        let body = append_ai_review_attribution("finding text  \n\n");
+        assert_eq!(body, "finding text\n\n— AI review via AMF");
+    }
+
+    #[test]
+    fn ai_review_finding_footer_is_distinct_from_the_reply_flow_ai_footer() {
+        // A finding posted by this module must not be mistaken for a reply
+        // AMF's `R`/`n` dialog posted (see `reply_posted_via_amf`), even
+        // though both disclose AI authorship.
+        let comment = crate::app::pr_review::PrComment {
+            id: 1,
+            kind: crate::app::pr_review::CommentKind::Inline,
+            author: "amf".into(),
+            is_bot: false,
+            path: Some("src/lib.rs".into()),
+            line: Some(10),
+            side: Some("RIGHT".into()),
+            outdated: false,
+            file_level: false,
+            diff_hunk: None,
+            body: append_ai_review_attribution("fix this"),
+            snippet: String::new(),
+            in_reply_to: Some(2),
+            thread_id: None,
+            is_resolved: false,
+            triage: crate::app::pr_review::TriageState::Untriaged,
+            local_note: None,
+            github_id: None,
+            github_review_id: None,
+        };
+        assert!(!crate::app::pr_review::reply_posted_via_amf(&comment));
     }
 
     fn sample_diff_files() -> Vec<crate::diff::DiffFile> {

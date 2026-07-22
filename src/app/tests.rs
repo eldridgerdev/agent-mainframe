@@ -8808,7 +8808,9 @@ fn pr_review_inject_fix_also_stashes_return_state() {
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
 
+    let db_dir = TempDir::new().unwrap();
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
     enter_pr_review_for_feature(&mut app, 2);
     if let AppMode::PrReview(state) = &mut app.mode {
         state.selected = 1;
@@ -8823,8 +8825,25 @@ fn pr_review_inject_fix_also_stashes_return_state() {
         matches!(&app.mode, AppMode::PrReview(state) if state.fix_confirm.is_some()),
         "confirm dialog should be open before injecting"
     );
+    let request_id = match &app.mode {
+        AppMode::PrReview(state) => state.fix_confirm.as_ref().unwrap().reply_draft_requests[0]
+            .request_id
+            .clone(),
+        _ => unreachable!(),
+    };
 
     app.pr_review_inject_fix().unwrap();
+
+    // Confirming the injection activates this dialog's request id. The agent
+    // can now return a draft through IPC; an id from an older dialog could not
+    // overwrite it.
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .capture_pr_comment_reply_draft(7, 2, &request_id, "Fixed the selected path.")
+            .unwrap()
+    );
 
     // Compose intercept is on by default, so `f` lands in the compose box
     // (seeded with the fix prompt) rather than bare Viewing — the stash must
@@ -8861,6 +8880,9 @@ fn pr_review_inject_fix_also_stashes_return_state() {
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
     assert!(app.pr_review_return.is_none());
+
+    app.pr_review_open_reply_done();
+    assert_eq!(reply_editor_text(&app), "Fixed the selected path.");
 }
 
 #[test]
@@ -10069,6 +10091,23 @@ fn pr_review_batch_confirm_opens_combined_dialog_for_marked() {
             assert!(text.contains("File: src/file1.rs:1"));
             assert!(text.contains("File: src/file3.rs:3"));
             assert!(!text.contains("File: src/file2.rs"));
+            assert_eq!(confirm.reply_draft_requests.len(), 2);
+            assert_eq!(
+                confirm
+                    .reply_draft_requests
+                    .iter()
+                    .map(|request| request.comment_id)
+                    .collect::<Vec<_>>(),
+                vec![1, 3]
+            );
+            assert!(
+                confirm
+                    .reply_draft_requests
+                    .iter()
+                    .all(|request| request.base_head_sha == "sha")
+            );
+            assert!(text.contains("--comment-id 1 --request-id"));
+            assert!(text.contains("--comment-id 3 --request-id"));
         }
         _ => unreachable!(),
     }
@@ -10896,12 +10935,33 @@ fn pr_review_open_fix_confirm_seeds_editor_from_selection() {
         AppMode::PrReview(state) => state.selected_comment().unwrap().fix_prompt(),
         _ => unreachable!(),
     };
-    assert_eq!(confirm.editor.text(), expected);
+    assert!(confirm.editor.text().starts_with(&expected));
     assert!(
         confirm
             .editor
             .text()
             .contains("Address this PR review comment.")
+    );
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains("Do not post replies to GitHub")
+    );
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains("amf reply-draft --pr-number 7 --comment-id 1 --request-id")
+    );
+    assert_eq!(confirm.reply_draft_requests.len(), 1);
+    assert_eq!(confirm.reply_draft_requests[0].comment_id, 1);
+    assert_eq!(confirm.reply_draft_requests[0].base_head_sha, "sha");
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains(&confirm.reply_draft_requests[0].request_id)
     );
 }
 
@@ -10990,6 +11050,22 @@ fn reply_editor_text(app: &App) -> String {
     }
 }
 
+fn reply_is_agent_drafted(app: &App) -> bool {
+    match &app.mode {
+        AppMode::PrReview(state) => state.reply.as_ref().unwrap().agent_drafted,
+        _ => unreachable!(),
+    }
+}
+
+fn reply_effective_agent_drafted(app: &App) -> bool {
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            crate::app::pr_review::reply_effective_agent_drafted(state.reply.as_ref().unwrap())
+        }
+        _ => unreachable!(),
+    }
+}
+
 #[test]
 fn pr_review_open_reply_not_needed_starts_in_edit_mode() {
     let mut app = pr_review_test_app();
@@ -11012,6 +11088,155 @@ fn pr_review_open_reply_done_seeds_template_in_confirm_view() {
     // view. The workdir isn't a git repo in tests, so it falls back to "Done.".
     assert_eq!(app.pr_review_reply_view(), Some(false));
     assert_eq!(reply_editor_text(&app), "Done.");
+}
+
+#[test]
+fn pr_review_reply_done_prefers_the_agent_draft() {
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review(&mut app, 1);
+
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Updated the lock scope and added a regression test."
+    }));
+
+    app.pr_review_open_reply_done();
+    assert_eq!(
+        reply_editor_text(&app),
+        "Updated the lock scope and added a regression test."
+    );
+    assert!(reply_is_agent_drafted(&app));
+    assert_eq!(app.pr_review_reply_view(), Some(false));
+}
+
+#[test]
+fn pr_review_reply_not_needed_ignores_a_captured_fix_draft() {
+    // A captured draft is the fixing agent's description of what it *did* —
+    // not a rationale for why a fix isn't needed. NotNeeded must never seed
+    // from it, or a single confirm keystroke would post the fix summary as
+    // the not-needed explanation.
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review(&mut app, 1);
+
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Updated the lock scope and added a regression test."
+    }));
+
+    app.pr_review_open_reply_not_needed();
+    assert_eq!(reply_editor_text(&app), "");
+    assert!(!reply_is_agent_drafted(&app));
+    assert_eq!(
+        app.pr_review_reply_view(),
+        Some(true),
+        "not-needed always starts in edit mode so the user types their own reason"
+    );
+}
+
+#[test]
+fn reply_draft_toast_context_uses_the_cached_comments_path_and_snippet() {
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+
+    let review = pr_review_with_comments(1);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_review_cache(&review)
+        .unwrap();
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Fixed it."
+    }));
+
+    // A toast fired while the user is elsewhere (dashboard, unrelated tmux
+    // view) needs more than bare numbers to mean anything — pull the file
+    // path from the review cached at fix-injection time.
+    let context = app.reply_draft_toast_context(7, 1).unwrap();
+    assert!(context.contains("src/file1.rs"));
+}
+
+#[test]
+fn reply_draft_toast_context_none_without_a_cached_review() {
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Fixed it."
+    }));
+
+    // No review was ever cached for PR #7 / head "sha" — falls back to
+    // `None` so the caller uses the bare-numbers message instead of panicking
+    // or showing a broken context string.
+    assert_eq!(app.reply_draft_toast_context(7, 1), None);
+}
+
+#[test]
+fn pr_review_reply_draft_ipc_ignores_an_expired_request() {
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "current", "sha")
+        .unwrap();
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "expired",
+        "body": "Stale reply"
+    }));
+
+    assert_eq!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .load_pr_comment_reply_draft(7, 1)
+            .unwrap(),
+        None
+    );
+    assert!(app.toasts.is_empty(), "stale drafts are ignored quietly");
 }
 
 #[test]
@@ -11147,6 +11372,66 @@ fn pr_review_open_reply_done_seeds_the_commit_that_touched_the_comments_line() {
 
     app.pr_review_open_reply_done();
     assert_eq!(reply_editor_text(&app), format!("Done in `{fix_sha}`."));
+    assert!(!reply_is_agent_drafted(&app));
+}
+
+#[test]
+fn pr_review_agent_draft_includes_the_post_injection_commit_that_touched_the_file() {
+    let repo = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    let file = repo.path().join("src/file1.rs");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "line1\nreturn value\nline3\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "first"]);
+    let base_sha = git(&["rev-parse", "HEAD"]);
+    // The fix inserts a guard beside the unchanged commented line. Plain
+    // line history would cite the first commit; the recorded injection head
+    // makes the later file-touching commit unambiguous.
+    std::fs::write(&file, "line1\nguard\nreturn value\nline3\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "second"]);
+    let fix_sha = git(&["rev-parse", "--short", "HEAD"]);
+
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.workdir = repo.path().to_path_buf();
+        state.review.comments[0].line = Some(3);
+    }
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", &base_sha)
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Guarded zero divisors and added regression coverage."
+    }));
+
+    app.pr_review_open_reply_done();
+
+    assert_eq!(
+        reply_editor_text(&app),
+        format!("Guarded zero divisors and added regression coverage.\n\nDone in `{fix_sha}`.")
+    );
+    assert!(reply_is_agent_drafted(&app));
 }
 
 #[test]
@@ -11206,6 +11491,44 @@ fn pr_review_reply_edit_forwards_keys_and_cancel_closes() {
     assert_eq!(app.pr_review_reply_view(), Some(false));
     app.pr_review_cancel_reply();
     assert_eq!(app.pr_review_reply_view(), None);
+}
+
+#[test]
+fn pr_review_editing_a_captured_draft_drops_ai_attribution() {
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review(&mut app, 1);
+
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Updated the lock scope and added a regression test."
+    }));
+
+    app.pr_review_open_reply_done();
+    assert!(reply_is_agent_drafted(&app));
+    assert!(reply_effective_agent_drafted(&app));
+
+    app.pr_review_reply_edit();
+    app.pr_review_reply_editor_key(KeyEvent::from(KeyCode::Char('!')));
+    app.pr_review_reply_stop_edit();
+
+    // `agent_drafted` stays true — it's a historical fact about how the reply
+    // was seeded — but the *effective* attribution (what actually gets
+    // posted) drops to AMF's channel-only footer now that the user has
+    // changed the agent's words.
+    assert!(reply_is_agent_drafted(&app));
+    assert!(!reply_effective_agent_drafted(&app));
 }
 
 #[test]

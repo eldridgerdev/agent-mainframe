@@ -2214,6 +2214,126 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `.claude/commands/amf/pr-continue.md`, `src/app/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`.
 
+- [ ] **Open PR Triage work in a new AMF feature with independently chosen
+      settings.** The current dedicated triage session may use a different
+      harness, but it still inherits the source feature's vibe mode and launch
+      flags. Add a `New feature…` fix-target option alongside the existing-live
+      and same-feature dedicated-session targets. Before the first fix, open a
+      compact feature-creation flow that can use a configured feature preset or
+      manually choose the harness, vibe mode, and other relevant feature
+      settings. This must support workflows such as implementing the original
+      feature in SuperVibe mode and doing review triage in a new Vibeless
+      feature.
+
+      Create an isolated worktree/tmux-backed AMF feature so worktree-local
+      hooks and permissions for the triage feature do not mutate the source
+      feature. Seed it from the PR head and retain an explicit link to the
+      source PR and source feature, because Git cannot check out the same branch
+      in two worktrees and branch-based PR auto-detection will not be sufficient
+      for the companion branch. Define a safe, visible integration path for
+      triage commits (for example, an explicit push to the PR head ref or a
+      guided cherry-pick back into the source feature); never silently overwrite
+      or diverge a dirty source worktree. Reuse the new feature for every fix in
+      that PR, preserve the existing return-to-triage navigation/status, and
+      show the selected feature and mode in the fix confirmation UI. Acceptance:
+      start from a SuperVibe PR feature, choose `New feature…` + Vibeless, inject
+      and complete multiple fixes in the isolated feature, land them on the
+      original PR branch through the confirmed integration path, and return to
+      the same PR Triage state.
+
+- [x] **Carry an agent-written reply draft from fix injection into the Reply
+      flow.** Extend the prompt injected by `f` (and each entry in `B`'s
+      combined prompt) so the agent does two things in order: make and verify
+      the requested change, then write a concise reviewer-facing reply that
+      explains what it changed. The agent must hand that text back to AMF as a
+      draft, not post it to GitHub itself. Capture the latest non-empty draft
+      per `PR# + comment id` through a provider-neutral, machine-readable
+      handoff (do not scrape free-form terminal output), and persist it in the
+      local triage layer so it survives the round trip from the fix session
+      back to PR Triage. Starting a new fix for the same comment should replace
+      or invalidate the older draft; batch replies must stay correlated with
+      their individual comment ids.
+
+      When the user presses `R` and chooses a reply kind, seed the editable
+      reply dialog with that comment's captured agent draft when one exists.
+      If no draft exists, preserve the current seed for that reply kind:
+      `Done` still uses `commit_for_done_reply` (`Done in \`<sha>\`.` with its
+      existing fallback caveat), while `Not needed` still opens with its
+      current empty seed. This only changes autofill: the user still reviews
+      and edits the text, explicitly confirms the GitHub write, and separately
+      chooses whether to resolve the thread. Acceptance: inject a fix, let the
+      agent complete it and supply a draft, return with `leader+P`, press `R`,
+      and see that draft prefilled; repeat without an agent draft and see the
+      existing reply seed unchanged.
+
+      **Shipped, 2026-07-20.** Every single or combined fix-confirm prompt now
+      appends one correlated handoff command per comment. After making and
+      validating the change, any built-in harness can pass its proposed reply
+      on stdin to the hidden `amf reply-draft` command; that command sends
+      structured IPC to AMF, so the TUI never scrapes agent terminal prose.
+      `ReplyDraftRequest` gives each comment a fresh UUID when the dialog is
+      built and records the PR head that existed before the fix. Confirming the
+      injection activates those ids in the new `pr_comment_reply_drafts`
+      SQLite table (migrations 013–014), clearing any older body. IPC updates
+      only the currently active id, so a late agent response from an earlier
+      fix cannot overwrite the latest draft. Drafts age out with the rest of
+      local triage state.
+
+      `R` now loads the selected comment's captured draft before opening either
+      reply kind. A captured draft opens post-ready in the existing editable
+      confirm view. Done drafts append `Done in <sha>` only when AMF finds a
+      commit after the recorded pre-fix head that touched the comment's file;
+      this catches adjacent insertions without mislabeling the older commit
+      that originally introduced an unchanged commented line. The handoff
+      prompt tells the agent not to guess a hash.
+      Without a draft, Done still uses `commit_for_done_reply` and Not needed
+      still opens empty in edit mode. Successful posting consumes the stored
+      draft and uses the accurate `— drafted by AI via AMF` footer, while
+      non-agent templates retain `— posted via AMF`; both still require the
+      user's explicit GitHub-write confirmation. Tests cover the CLI contract,
+      single/batch prompt correlation, request replacement and stale-response
+      rejection, IPC persistence, injection activation, draft preference for
+      both reply kinds, commit-reference composition, attribution selection,
+      and unchanged no-draft fallbacks. Full suite green (1184 passed, 1
+      ignored); strict clippy and formatting clean. →
+      `src/main.rs`, `src/app/notifications.rs`, `src/app/pr_review.rs`,
+      `src/app/state.rs`, `src/db/migrations.rs`,
+      `src/db/pr_comment_triage.rs`, `src/db/mod.rs`, `src/app/tests.rs`,
+      `src/ui/dialogs/pr_review.rs`, `CHANGELOG.md`.
+
+- [ ] **BUG — the AI Review model picker cannot go back to change the
+      harness.** In the `A` generation flow, choosing Claude/Codex/Opencode/etc.
+      immediately advances to the model picker. `Esc` from that model list
+      currently closes only the model picker while leaving the harness locked
+      in, so a mistaken harness choice cannot be corrected without abandoning
+      and reopening the pane. Make the two pickers behave like adjacent wizard
+      steps: `Esc`/`q` from the model **list** returns to the harness picker,
+      with the current harness highlighted; `Esc` while editing a custom model
+      keeps its existing behavior of returning to the model list first. Picking
+      a different harness must rebuild the available model rows for that
+      harness and must not retain an incompatible model choice. Keep Pi's
+      intentional model-picker bypass. Add App/key-handler regression coverage
+      for custom editor → model list → harness list, changing the harness, and
+      continuing through the rebuilt model list.
+
+- [ ] **Hide or de-emphasize AMF's own outbound comments in the PR Triage
+      list.** Replies posted by the `R` flow already end with the exact
+      `— posted via AMF` footer, and AI Review findings posted by AMF carry the
+      corresponding `— drafted by AI via AMF` footer. Use these durable markers
+      to classify tool-authored outbound comments separately from incoming
+      feedback after a refresh. An inline `Done in \`<sha>\`.`/not-needed reply
+      should remain visible under its root comment's existing **Replies**
+      section, but should not also appear as a normal actionable row, inflate
+      the open-comment count, or be offered back to the agent as another fix.
+      For AMF-authored top-level conversation comments or orphaned replies that
+      have no parent row, retain access in a muted/gray presentation (or behind
+      an explicit show-tool-comments toggle) rather than silently discarding
+      them. Match only AMF's exact attribution footers so ordinary comments
+      that merely mention AMF are not hidden. Add normalization/filter/count
+      and render coverage, including a refresh after posting through `R`, an AI
+      Review-authored comment, and an unrelated human reply that must remain
+      visible and actionable.
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

@@ -854,13 +854,20 @@ fn draw_reply_dialog(
         chunks[0],
     );
 
-    // The "— posted via AMF" footer is appended at post time, not part of the
-    // editable buffer above (an empty "not needed" reason would otherwise
-    // start with a footer already sitting in it) — this line is the
-    // token-preview-style disclosure of what will actually be sent.
+    // Attribution is appended at post time, not part of the editable buffer
+    // above (an empty "not needed" reason would otherwise start with a footer
+    // already sitting in it) — this line previews what will actually be sent.
+    // Re-evaluated against the live editor text (not the stored flag alone) so
+    // editing a captured draft away from the agent's own words drops the AI
+    // attribution in the preview too.
+    let attribution = if crate::app::pr_review::reply_effective_agent_drafted(reply) {
+        crate::app::pr_review::AI_ATTRIBUTION_FOOTER
+    } else {
+        crate::app::pr_review::AMF_ATTRIBUTION_FOOTER
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "will post with a \"— posted via AMF\" footer",
+            format!("will post with a \"{attribution}\" footer"),
             Style::default().fg(theme.text_muted.to_color()),
         ))),
         chunks[1],
@@ -1909,6 +1916,7 @@ mod tests {
             scroll: 0,
             sync_to_cursor: false,
             batch: None,
+            reply_draft_requests: Vec::new(),
         };
         let theme = Theme::default();
         let backend = TestBackend::new(100, 30);
@@ -1954,6 +1962,8 @@ mod tests {
             comment_id: 1,
             kind: crate::app::pr_review::ReplyKind::Done,
             editor: crate::editor::TextEditor::new("Done in `abc123`.".to_string()),
+            agent_drafted: false,
+            original_seed: "Done in `abc123`.".to_string(),
             editing: false,
         };
         let theme = Theme::default();
@@ -1971,6 +1981,38 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("posted via AMF"));
+    }
+
+    #[test]
+    fn agent_drafted_reply_dialog_discloses_ai_attribution() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let reply = crate::app::ReplyState {
+            comment_id: 1,
+            kind: crate::app::pr_review::ReplyKind::Done,
+            editor: crate::editor::TextEditor::new(
+                "Fixed the guard.\n\nDone in `abc123`.".to_string(),
+            ),
+            agent_drafted: true,
+            original_seed: "Fixed the guard.\n\nDone in `abc123`.".to_string(),
+            editing: false,
+        };
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_reply_dialog(frame, &reply, "alice", &theme))
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("drafted by AI via AMF"));
+        assert!(!rendered.contains("posted via AMF"));
     }
 
     fn render_harness_pick(existing_live_label: Option<String>) -> String {

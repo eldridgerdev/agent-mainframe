@@ -124,6 +124,56 @@ impl AmfDb {
         pr_comment_triage::upsert(&self.conn, pr_number, head_sha, comment_id, state, note)
     }
 
+    pub fn begin_pr_comment_reply_draft(
+        &self,
+        pr_number: u32,
+        comment_id: u64,
+        request_id: &str,
+        base_head_sha: &str,
+    ) -> Result<()> {
+        pr_comment_triage::begin_reply_draft(
+            &self.conn,
+            pr_number,
+            comment_id,
+            request_id,
+            base_head_sha,
+        )
+    }
+
+    pub fn capture_pr_comment_reply_draft(
+        &self,
+        pr_number: u32,
+        comment_id: u64,
+        request_id: &str,
+        body: &str,
+    ) -> Result<bool> {
+        pr_comment_triage::capture_reply_draft(&self.conn, pr_number, comment_id, request_id, body)
+    }
+
+    #[cfg(test)]
+    pub fn load_pr_comment_reply_draft(
+        &self,
+        pr_number: u32,
+        comment_id: u64,
+    ) -> Result<Option<String>> {
+        Ok(
+            pr_comment_triage::load_reply_draft(&self.conn, pr_number, comment_id)?
+                .map(|(body, _)| body),
+        )
+    }
+
+    pub fn load_pr_comment_reply_draft_with_base(
+        &self,
+        pr_number: u32,
+        comment_id: u64,
+    ) -> Result<Option<(String, String)>> {
+        pr_comment_triage::load_reply_draft(&self.conn, pr_number, comment_id)
+    }
+
+    pub fn clear_pr_comment_reply_draft(&self, pr_number: u32, comment_id: u64) -> Result<()> {
+        pr_comment_triage::clear_reply_draft(&self.conn, pr_number, comment_id)
+    }
+
     pub fn evict_stale_pr_comment_triage(&self) -> Result<()> {
         pr_comment_triage::evict_stale(&self.conn)
     }

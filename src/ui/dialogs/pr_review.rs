@@ -857,7 +857,10 @@ fn draw_reply_dialog(
     // Attribution is appended at post time, not part of the editable buffer
     // above (an empty "not needed" reason would otherwise start with a footer
     // already sitting in it) — this line previews what will actually be sent.
-    let attribution = if reply.agent_drafted {
+    // Re-evaluated against the live editor text (not the stored flag alone) so
+    // editing a captured draft away from the agent's own words drops the AI
+    // attribution in the preview too.
+    let attribution = if crate::app::pr_review::reply_effective_agent_drafted(reply) {
         crate::app::pr_review::AI_ATTRIBUTION_FOOTER
     } else {
         crate::app::pr_review::AMF_ATTRIBUTION_FOOTER
@@ -1960,6 +1963,7 @@ mod tests {
             kind: crate::app::pr_review::ReplyKind::Done,
             editor: crate::editor::TextEditor::new("Done in `abc123`.".to_string()),
             agent_drafted: false,
+            original_seed: "Done in `abc123`.".to_string(),
             editing: false,
         };
         let theme = Theme::default();
@@ -1990,6 +1994,7 @@ mod tests {
                 "Fixed the guard.\n\nDone in `abc123`.".to_string(),
             ),
             agent_drafted: true,
+            original_seed: "Fixed the guard.\n\nDone in `abc123`.".to_string(),
             editing: false,
         };
         let theme = Theme::default();

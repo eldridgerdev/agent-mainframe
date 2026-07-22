@@ -11057,6 +11057,15 @@ fn reply_is_agent_drafted(app: &App) -> bool {
     }
 }
 
+fn reply_effective_agent_drafted(app: &App) -> bool {
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            crate::app::pr_review::reply_effective_agent_drafted(state.reply.as_ref().unwrap())
+        }
+        _ => unreachable!(),
+    }
+}
+
 #[test]
 fn pr_review_open_reply_not_needed_starts_in_edit_mode() {
     let mut app = pr_review_test_app();
@@ -11082,7 +11091,7 @@ fn pr_review_open_reply_done_seeds_template_in_confirm_view() {
 }
 
 #[test]
-fn pr_review_reply_prefers_the_agent_draft_for_either_reply_kind() {
+fn pr_review_reply_done_prefers_the_agent_draft() {
     let db_dir = TempDir::new().unwrap();
     let mut app = pr_review_test_app();
     app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
@@ -11108,19 +11117,96 @@ fn pr_review_reply_prefers_the_agent_draft_for_either_reply_kind() {
     );
     assert!(reply_is_agent_drafted(&app));
     assert_eq!(app.pr_review_reply_view(), Some(false));
+}
 
-    app.pr_review_cancel_reply();
+#[test]
+fn pr_review_reply_not_needed_ignores_a_captured_fix_draft() {
+    // A captured draft is the fixing agent's description of what it *did* —
+    // not a rationale for why a fix isn't needed. NotNeeded must never seed
+    // from it, or a single confirm keystroke would post the fix summary as
+    // the not-needed explanation.
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review(&mut app, 1);
+
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Updated the lock scope and added a regression test."
+    }));
+
     app.pr_review_open_reply_not_needed();
-    assert_eq!(
-        reply_editor_text(&app),
-        "Updated the lock scope and added a regression test."
-    );
-    assert!(reply_is_agent_drafted(&app));
+    assert_eq!(reply_editor_text(&app), "");
+    assert!(!reply_is_agent_drafted(&app));
     assert_eq!(
         app.pr_review_reply_view(),
-        Some(false),
-        "a captured draft is post-ready even for the not-needed kind"
+        Some(true),
+        "not-needed always starts in edit mode so the user types their own reason"
     );
+}
+
+#[test]
+fn reply_draft_toast_context_uses_the_cached_comments_path_and_snippet() {
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+
+    let review = pr_review_with_comments(1);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_review_cache(&review)
+        .unwrap();
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Fixed it."
+    }));
+
+    // A toast fired while the user is elsewhere (dashboard, unrelated tmux
+    // view) needs more than bare numbers to mean anything — pull the file
+    // path from the review cached at fix-injection time.
+    let context = app.reply_draft_toast_context(7, 1).unwrap();
+    assert!(context.contains("src/file1.rs"));
+}
+
+#[test]
+fn reply_draft_toast_context_none_without_a_cached_review() {
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Fixed it."
+    }));
+
+    // No review was ever cached for PR #7 / head "sha" — falls back to
+    // `None` so the caller uses the bare-numbers message instead of panicking
+    // or showing a broken context string.
+    assert_eq!(app.reply_draft_toast_context(7, 1), None);
 }
 
 #[test]
@@ -11405,6 +11491,44 @@ fn pr_review_reply_edit_forwards_keys_and_cancel_closes() {
     assert_eq!(app.pr_review_reply_view(), Some(false));
     app.pr_review_cancel_reply();
     assert_eq!(app.pr_review_reply_view(), None);
+}
+
+#[test]
+fn pr_review_editing_a_captured_draft_drops_ai_attribution() {
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let db_dir = TempDir::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review(&mut app, 1);
+
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "pr-reply-draft",
+        "pr_number": 7,
+        "comment_id": 1,
+        "draft_request_id": "request-1",
+        "body": "Updated the lock scope and added a regression test."
+    }));
+
+    app.pr_review_open_reply_done();
+    assert!(reply_is_agent_drafted(&app));
+    assert!(reply_effective_agent_drafted(&app));
+
+    app.pr_review_reply_edit();
+    app.pr_review_reply_editor_key(KeyEvent::from(KeyCode::Char('!')));
+    app.pr_review_reply_stop_edit();
+
+    // `agent_drafted` stays true — it's a historical fact about how the reply
+    // was seeded — but the *effective* attribution (what actually gets
+    // posted) drops to AMF's channel-only footer now that the user has
+    // changed the agent's words.
+    assert!(reply_is_agent_drafted(&app));
+    assert!(!reply_effective_agent_drafted(&app));
 }
 
 #[test]

@@ -2035,7 +2035,15 @@ pub struct ReplyState {
     /// Whether the initial body came back from an agent fix session. Agent
     /// drafts receive AI-authorship attribution; deterministic templates and
     /// user-written not-needed replies receive channel-only AMF attribution.
+    /// Only ever `true` for [`super::pr_review::ReplyKind::Done`] — see
+    /// [`super::pr_review::App::open_reply`].
     pub agent_drafted: bool,
+    /// The exact body the editor was seeded with when the dialog opened.
+    /// Compared against the current editor text at post time: if the user has
+    /// changed it, the draft is no longer purely the agent's own words, so
+    /// `agent_drafted` attribution no longer applies (see
+    /// [`super::pr_review::reply_effective_agent_drafted`]).
+    pub original_seed: String,
     /// True while keystrokes go to the editor (`e` to enter); false in the
     /// confirm view (`⏎` post / `e` edit / `esc` cancel).
     pub editing: bool,

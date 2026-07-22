@@ -276,8 +276,14 @@ fn append_amf_attribution(body: &str) -> String {
     format!("{}\n\n{}", body.trim_end(), AMF_ATTRIBUTION_FOOTER)
 }
 
-/// Attribution for reply text or review findings drafted by an agent harness.
-/// Provider-neutral wording stays accurate for Claude, Codex, OpenCode, and Pi.
+/// Attribution for reply text drafted by an agent harness. Provider-neutral
+/// wording stays accurate for Claude, Codex, OpenCode, and Pi.
+///
+/// Reply-flow only — [`reply_posted_via_amf`] treats this footer as proof a
+/// reply went through AMF's `R`/`n` dialog, so anything else that wants
+/// AI-authorship attribution (e.g. `ai_review`'s posted findings) needs its
+/// own distinct footer rather than reusing this one, or it would falsely
+/// register as an AMF-posted reply.
 pub(crate) fn append_ai_attribution(body: &str) -> String {
     format!("{}\n\n{}", body.trim_end(), AI_ATTRIBUTION_FOOTER)
 }
@@ -288,6 +294,15 @@ fn append_reply_attribution(body: &str, agent_drafted: bool) -> String {
     } else {
         append_amf_attribution(body)
     }
+}
+
+/// Whether `reply`'s current text still matches what it was seeded with. A
+/// captured agent draft only earns AI-authorship attribution while it stays
+/// unedited; once the user changes it — even down to entirely their own
+/// words — the posted text is no longer purely the agent's own, so it falls
+/// back to channel-only AMF attribution.
+pub fn reply_effective_agent_drafted(reply: &ReplyState) -> bool {
+    reply.agent_drafted && reply.editor.text().trim() == reply.original_seed.trim()
 }
 
 /// Which agent session a "fix" prompt is injected into.
@@ -935,28 +950,46 @@ fn commit_for_done_reply(workdir: &Path, comment: &PrComment) -> (Option<String>
     (latest_commit_short_sha(workdir), false)
 }
 
+/// Whether `ancestor` is reachable from `descendant` — guards against citing a
+/// commit from `{base}..HEAD` when `HEAD` isn't actually a descendant of the
+/// recorded PR head (branch switched, force-push, rebase, or a triage session
+/// on a different feature), where that range would otherwise silently return
+/// unrelated history instead of nothing.
+fn is_ancestor(workdir: &Path, ancestor: &str, descendant: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(workdir)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 /// Most recent commit after the fix injection's recorded PR head that touched
 /// the selected comment's file. Unlike line history, this also finds fixes that
 /// insert a guard beside an unchanged commented line. If the base is unknown,
-/// no later commit exists, or no later commit touched an inline comment's file,
-/// return None rather than citing an older or unrelated commit.
+/// `HEAD` isn't a descendant of it, no later commit exists, or no later commit
+/// touched an inline comment's file, return None rather than citing an older
+/// or unrelated commit.
+///
+/// Conversation-level comments (no `path`) have no file to check "touched-ness"
+/// against, so they always return `None` here rather than citing whatever
+/// commit happens to be newest.
 fn commit_after_fix_request(
     workdir: &Path,
     comment: &PrComment,
     base_head_sha: &str,
 ) -> Option<String> {
-    if base_head_sha.trim().is_empty() {
+    let path = comment.path.as_ref()?;
+    let base_head_sha = base_head_sha.trim();
+    if base_head_sha.is_empty() || !is_ancestor(workdir, base_head_sha, "HEAD") {
         return None;
     }
-    let range = format!("{}..HEAD", base_head_sha.trim());
-    let mut command = std::process::Command::new("git");
-    command
-        .args(["log", "-1", "--format=%h", &range])
-        .current_dir(workdir);
-    if let Some(path) = &comment.path {
-        command.args(["--", path]);
-    }
-    let output = command.output().ok()?;
+    let range = format!("{base_head_sha}..HEAD");
+    let output = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%h", &range, "--", path])
+        .current_dir(workdir)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -2990,13 +3023,19 @@ impl App {
             self.message = Some("No comment selected".into());
             return;
         };
-        let draft = self.load_reply_draft(pr_number, comment_id);
+        // A captured draft is the fixing agent's description of what it
+        // changed — meaningful only for a `Done` reply. NotNeeded always
+        // starts from the fallback (empty, for the user to fill in) so a fix
+        // description can never be posted as a "not needed" rationale.
+        let draft = if matches!(kind, ReplyKind::Done) {
+            self.load_reply_draft(pr_number, comment_id)
+        } else {
+            None
+        };
         let has_draft = draft.is_some();
         let seed = match draft {
             Some((draft, base_head_sha)) => {
-                if matches!(kind, ReplyKind::Done)
-                    && let Some(sha) = commit_after_fix_request(&workdir, &comment, &base_head_sha)
-                {
+                if let Some(sha) = commit_after_fix_request(&workdir, &comment, &base_head_sha) {
                     format!("{}\n\nDone in `{sha}`.", draft.trim_end())
                 } else {
                     draft
@@ -3012,9 +3051,10 @@ impl App {
             state.reply = Some(ReplyState {
                 comment_id,
                 kind,
-                editor: TextEditor::new(seed),
+                editor: TextEditor::new(seed.clone()),
                 editing,
                 agent_drafted: has_draft,
+                original_seed: seed,
             });
         }
     }
@@ -3084,7 +3124,7 @@ impl App {
                     reply.kind,
                     reply.comment_id,
                     reply.editor.text().trim().to_string(),
-                    reply.agent_drafted,
+                    reply_effective_agent_drafted(reply),
                 ))
             }),
             _ => return Ok(()),
@@ -4227,6 +4267,61 @@ mod tests {
     }
 
     #[test]
+    fn commit_after_fix_request_finds_a_commit_made_since_the_base() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let shas =
+            git_repo_with_history(repo.path(), "src/file.rs", &["line1\n", "line1\nline2\n"]);
+        let mut comment = inline_comment("needs a fix", false);
+        comment.path = Some("src/file.rs".into());
+
+        assert_eq!(
+            commit_after_fix_request(repo.path(), &comment, &shas[0]),
+            Some(shas[1].clone())
+        );
+    }
+
+    #[test]
+    fn commit_after_fix_request_none_for_a_conversation_level_comment() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let shas = git_repo_with_history(repo.path(), "src/file.rs", &["a\n", "b\n"]);
+        let mut comment = inline_comment("no path here", false);
+        comment.path = None;
+
+        // No file to check "touched-ness" against, so any commit after the
+        // base would be an unverified guess — decline rather than cite one.
+        assert_eq!(
+            commit_after_fix_request(repo.path(), &comment, &shas[0]),
+            None
+        );
+    }
+
+    #[test]
+    fn commit_after_fix_request_none_when_head_is_not_a_descendant_of_base() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let shas = git_repo_with_history(repo.path(), "src/file.rs", &["a\n"]);
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+        };
+        // Move to an unrelated branch history so HEAD no longer descends from
+        // the recorded base — e.g. a force-push or rebase moved the branch.
+        git(&["checkout", "-q", "--orphan", "other"]);
+        std::fs::write(repo.path().join("src/file.rs"), "unrelated\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "unrelated history"]);
+        let mut comment = inline_comment("needs a fix", false);
+        comment.path = Some("src/file.rs".into());
+
+        assert_eq!(
+            commit_after_fix_request(repo.path(), &comment, &shas[0]),
+            None
+        );
+    }
+
+    #[test]
     fn snippet_truncates_with_ellipsis() {
         let long = "x".repeat(200);
         let s = truncate_chars(&long, SNIPPET_LEN);
@@ -4935,5 +5030,36 @@ mod tests {
             append_reply_attribution("Done in `abc123`.", false),
             "Done in `abc123`.\n\n— posted via AMF"
         );
+    }
+
+    fn reply_state(agent_drafted: bool, seed: &str, current: &str) -> ReplyState {
+        ReplyState {
+            comment_id: 1,
+            kind: ReplyKind::Done,
+            editor: TextEditor::new(current.to_string()),
+            agent_drafted,
+            original_seed: seed.to_string(),
+            editing: false,
+        }
+    }
+
+    #[test]
+    fn reply_effective_agent_drafted_holds_for_an_unedited_draft() {
+        let reply = reply_state(true, "Fixed the guard.", "Fixed the guard.");
+        assert!(reply_effective_agent_drafted(&reply));
+    }
+
+    #[test]
+    fn reply_effective_agent_drafted_drops_once_the_user_edits_the_draft() {
+        // The user rewrote the seeded draft in their own words — no longer
+        // purely the agent's, so AI attribution no longer applies.
+        let reply = reply_state(true, "Fixed the guard.", "Not needed, already handled.");
+        assert!(!reply_effective_agent_drafted(&reply));
+    }
+
+    #[test]
+    fn reply_effective_agent_drafted_false_without_a_draft() {
+        let reply = reply_state(false, "", "Done.");
+        assert!(!reply_effective_agent_drafted(&reply));
     }
 }

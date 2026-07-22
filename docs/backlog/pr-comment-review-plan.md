@@ -2301,6 +2301,50 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/db/pr_comment_triage.rs`, `src/db/mod.rs`, `src/app/tests.rs`,
       `src/ui/dialogs/pr_review.rs`, `CHANGELOG.md`.
 
+- [ ] **Surface a completed, pending AI Review in PR Triage and refresh
+      Triage automatically after posting it.** Splitting AI Review into its
+      own pane restored an in-progress `[AI review running]` badge in PR
+      Triage, but the signal disappears when generation completes. If the
+      current PR and head SHA have a completed AI Review with one or more
+      publishable findings, PR Triage must show an obvious pending-review
+      badge (including the finding count) until those findings are posted,
+      skipped, invalidated by a new head SHA, or otherwise no longer
+      publishable. The indicator must be backed by the persisted
+      `ai_review_cache`, not only in-memory background-job state, so it also
+      appears after leaving the pane or restarting AMF. It should be
+      actionable through PR Triage's existing `A` entry point, reopening the
+      matching AI Review rather than starting a duplicate run. Do not show a
+      pending badge for a zero-finding, failed, fully skipped, or fully
+      published review, or for another PR/worktree.
+
+      The generation pass must also produce and persist a short overall
+      summary of the full review (one to three useful sentences covering the
+      main themes or risk), and `W` must use that as the GitHub review body
+      instead of the fixed `AI review, via AMF.` placeholder. Show the summary
+      in the existing editable post-confirm dialog so the user can revise it
+      before the GitHub write, and retain clear AI-via-AMF attribution without
+      making the attribution itself the summary. Generate it in the same
+      agent pass as the findings rather than spending a second review call;
+      persist it beside the findings so reopening a pending review does not
+      regenerate it. Older cached reviews or malformed output that lack a
+      summary may fall back to the current placeholder rather than blocking
+      posting.
+
+      After `W` successfully posts an AI Review to GitHub, automatically run
+      PR Triage's normal network refresh for that PR (bypassing its cached
+      comment blob) so the newly created review comments and thread state are
+      available without requiring a manual `r`. If AI Review was opened from
+      PR Triage, refresh the stashed pane while preserving its local triage
+      state and return navigation; if it was opened elsewhere, invalidate or
+      update the matching PR Triage cache so the next entry is fresh. Start
+      this only after GitHub confirms the post, never after a failed/cancelled
+      post, and keep the posted/pending marker durable before beginning the
+      fetch so a refresh failure cannot make `W` post the same review twice.
+      Acceptance: generate an AI Review, leave it unposted, and see a pending
+      count in PR Triage (including after restart); reopen it from Triage,
+      post with `W`, return to Triage, and see the pending badge clear and the
+      posted GitHub comments appear without pressing `r`.
+
 - [ ] **BUG — the AI Review model picker cannot go back to change the
       harness.** In the `A` generation flow, choosing Claude/Codex/Opencode/etc.
       immediately advances to the model picker. `Esc` from that model list

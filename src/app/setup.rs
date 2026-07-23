@@ -1072,6 +1072,7 @@ pub fn ensure_notification_hooks(
     let claude_gitignore = claude_dir.join(".gitignore");
     ensure_gitignore_entry(&claude_gitignore, "notifications/");
     ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
+    ensure_gitignore_entry(&claude_gitignore, "review-notes-archive.md");
     ensure_gitignore_entry(&claude_gitignore, "final-review-feedback.md");
     ensure_gitignore_entry(&claude_gitignore, "final-review-feedback-archive.md");
     ensure_gitignore_entry(&claude_gitignore, "latest-prompt.txt");
@@ -1189,6 +1190,10 @@ pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
         "each note to 1-2 sentences: what changed and why. Skip a ",
         "file if it already has a note from an earlier batch and ",
         "there is nothing new to add.\n\n",
+        "AMF automatically moves older and superseded notes to ",
+        "`.claude/review-notes-archive.md` after each turn. Only ",
+        "inspect the bounded live file when deciding what to append; ",
+        "the archive is reviewer history and does not need to be read.\n\n",
         "Use this exact format per file:\n\n",
         "```\n",
         "## <relative-file-path> — <brief title>\n\n",
@@ -1211,15 +1216,35 @@ pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
     ensure_gitignore_entry(&gitignore_path, "CLAUDE.local.md");
 
     if enabled {
-        if has_block {
-            return; // already injected
+        let claude_dir = workdir.join(".claude");
+        let _ = std::fs::create_dir_all(&claude_dir);
+        let claude_gitignore = claude_dir.join(".gitignore");
+        ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
+        ensure_gitignore_entry(&claude_gitignore, "review-notes-archive.md");
+        if let Err(err) = super::review::archive_review_notes(workdir) {
+            crate::debug::log_to_file(
+                crate::debug::LogLevel::Warn,
+                "review",
+                &format!("failed to cap review notes during setup: {err}"),
+            );
         }
-        let content = if current.is_empty() {
+
+        // Replace an older AMF-managed block as well as injecting a missing
+        // one, so existing Review Mode features receive current retention
+        // guidance after an AMF upgrade.
+        let unmanaged = if has_block {
+            strip_between_markers(&current, BEGIN, END)
+        } else {
+            current.clone()
+        };
+        let content = if unmanaged.trim().is_empty() {
             BLOCK.to_string()
         } else {
-            format!("{}\n{}", current.trim_end(), BLOCK)
+            format!("{}\n{}", unmanaged.trim_end(), BLOCK)
         };
-        let _ = std::fs::write(&md_path, content);
+        if content != current {
+            let _ = std::fs::write(&md_path, content);
+        }
     } else if has_block {
         let stripped = strip_between_markers(&current, BEGIN, END);
         if stripped.trim().is_empty() {

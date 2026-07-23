@@ -62,6 +62,12 @@ struct FileSuggestionApplyReport {
 /// prompt built from it.
 const CHECK_OUTPUT_MAX_CHARS: usize = 4000;
 
+/// Review-note sections kept in `.claude/review-notes.md`. The file is read by
+/// the feature agent after each logical batch, so its cost must stay bounded.
+/// Older and superseded sections remain available to AMF in the archive.
+const MAX_LIVE_REVIEW_NOTE_FILES: usize = 50;
+const REVIEW_NOTES_ARCHIVE_TITLE: &str = "# Review Notes Archive\n\n";
+
 fn truncate_check_output(output: &str) -> String {
     if output.chars().count() <= CHECK_OUTPUT_MAX_CHARS {
         output.to_string()
@@ -1615,7 +1621,7 @@ impl App {
             (state.workdir.clone(), path, build_walkthrough_prompt(file))
         };
 
-        let model = self.config.review_model.clone();
+        let model = self.config.review_model_for(ReviewAction::Walkthrough);
         match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
                 if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -1708,7 +1714,7 @@ impl App {
             )
         };
 
-        let model = self.config.review_model.clone();
+        let model = self.config.review_model_for(ReviewAction::CoReview);
         match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
                 self.message = Some(format!("AI co-review running on {path}…"));
@@ -1836,7 +1842,9 @@ impl App {
             )
         };
 
-        let model = self.config.review_model.clone();
+        let model = self
+            .config
+            .review_model_for(ReviewAction::ChangesetOverview);
         match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
                 self.message = Some("Changeset overview running…".to_string());
@@ -4193,6 +4201,172 @@ fn parse_co_review_output(
     out
 }
 
+fn review_note_path_from_heading(line: &str) -> Option<String> {
+    let heading = line
+        .strip_prefix("### ")
+        .or_else(|| line.strip_prefix("## "))?
+        .trim();
+    Some(
+        heading
+            .split(" — ")
+            .next()
+            .unwrap_or(heading)
+            .split(" - ")
+            .next()
+            .unwrap_or(heading)
+            .trim()
+            .to_string(),
+    )
+}
+
+/// Split a review-notes document into its non-section preamble and raw note
+/// sections. A section starts at the same `##` / `###` headings recognized by
+/// [`parse_review_notes`] and retains its original markdown verbatim.
+fn review_note_sections(content: &str) -> (String, Vec<(String, String)>) {
+    let mut preamble = String::new();
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, String)> = None;
+
+    for line in content.split_inclusive('\n') {
+        let heading_line = line.trim_end_matches(['\r', '\n']);
+        if let Some(path) = review_note_path_from_heading(heading_line) {
+            if let Some(section) = current.take() {
+                sections.push(section);
+            }
+            current = Some((path, line.to_string()));
+        } else if let Some((_, body)) = current.as_mut() {
+            body.push_str(line);
+        } else {
+            preamble.push_str(line);
+        }
+    }
+    if let Some(section) = current {
+        sections.push(section);
+    }
+
+    (preamble, sections)
+}
+
+fn push_review_note_chunk(out: &mut String, chunk: &str) {
+    if chunk.is_empty() {
+        return;
+    }
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(chunk);
+}
+
+fn write_review_notes_atomic(path: &Path, content: &str) -> Result<()> {
+    use anyhow::Context as _;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("failed to stage {}", path.display()))?;
+    staged
+        .write_all(content.as_bytes())
+        .with_context(|| format!("failed to stage {}", path.display()))?;
+    staged
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync {}", path.display()))?;
+    staged
+        .persist(path)
+        .map_err(|err| err.error)
+        .with_context(|| format!("failed to replace {}", path.display()))?;
+    Ok(())
+}
+
+/// Keep the latest note for each of the `keep` most recently documented files
+/// in the live document. Older duplicates are archived too: `parse_review_notes`
+/// already exposes only the newest section for a path, so retaining superseded
+/// copies live adds read cost without changing the reviewer-visible result.
+fn split_overflow_review_notes(content: &str, keep: usize) -> (String, Option<String>) {
+    let (preamble, sections) = review_note_sections(content);
+    let mut seen = std::collections::HashSet::new();
+    let mut live_indices = std::collections::HashSet::new();
+
+    for (index, (path, _)) in sections.iter().enumerate().rev() {
+        if seen.insert(path.as_str()) && live_indices.len() < keep {
+            live_indices.insert(index);
+        }
+    }
+
+    if preamble.is_empty() && live_indices.len() == sections.len() {
+        return (content.to_string(), None);
+    }
+
+    let mut live = String::new();
+    let mut overflow = preamble;
+    for (index, (_, section)) in sections.iter().enumerate() {
+        if live_indices.contains(&index) {
+            push_review_note_chunk(&mut live, section);
+        } else {
+            push_review_note_chunk(&mut overflow, section);
+        }
+    }
+
+    let overflow = (!overflow.trim().is_empty()).then_some(overflow);
+    (live, overflow)
+}
+
+/// Bound `.claude/review-notes.md`, moving older/superseded sections into
+/// `.claude/review-notes-archive.md`. The archive is written first so a failed
+/// archive write never removes history from the live file.
+pub(crate) fn archive_review_notes(workdir: &Path) -> Result<usize> {
+    use anyhow::Context as _;
+    use std::io::ErrorKind;
+
+    let claude_dir = workdir.join(".claude");
+    let live_path = claude_dir.join("review-notes.md");
+    let content = match std::fs::read_to_string(&live_path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", live_path.display()));
+        }
+    };
+    let (live, Some(overflow)) = split_overflow_review_notes(&content, MAX_LIVE_REVIEW_NOTE_FILES)
+    else {
+        return Ok(0);
+    };
+    let archived_count = review_note_sections(&overflow).1.len();
+
+    let archive_path = claude_dir.join("review-notes-archive.md");
+    let mut archive = match std::fs::read_to_string(&archive_path) {
+        Ok(archive) => archive,
+        Err(err) if err.kind() == ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", archive_path.display()));
+        }
+    };
+    if archive.is_empty() {
+        archive.push_str(REVIEW_NOTES_ARCHIVE_TITLE);
+    } else if !archive.ends_with('\n') {
+        archive.push('\n');
+    }
+    push_review_note_chunk(&mut archive, &overflow);
+
+    write_review_notes_atomic(&archive_path, &archive)?;
+    write_review_notes_atomic(&live_path, &live)?;
+    Ok(archived_count)
+}
+
+/// Load all developer notes for AMF's review surfaces. The feature agent only
+/// reads the bounded live file, while AMF also folds in archived sections so
+/// older files keep their walkthrough context. Live notes win over archived
+/// notes for the same path.
+pub(crate) fn load_review_notes(workdir: &Path) -> std::collections::HashMap<String, String> {
+    let claude_dir = workdir.join(".claude");
+    let mut notes = std::fs::read_to_string(claude_dir.join("review-notes-archive.md"))
+        .map(|content| parse_review_notes(&content))
+        .unwrap_or_default();
+    if let Ok(content) = std::fs::read_to_string(claude_dir.join("review-notes.md")) {
+        notes.extend(parse_review_notes(&content));
+    }
+    notes
+}
+
 /// Parse `.claude/review-notes.md` into a map of file path -> note body.
 ///
 /// Review mode writes one section per changed file, headed either `## <path> —
@@ -4215,21 +4389,8 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
     let mut current: Option<(String, String)> = None;
 
     for line in content.lines() {
-        if let Some(heading) = line
-            .strip_prefix("### ")
-            .or_else(|| line.strip_prefix("## "))
-        {
+        if let Some(path) = review_note_path_from_heading(line) {
             flush(&mut current, &mut map);
-            let heading = heading.trim();
-            let path = heading
-                .split(" — ")
-                .next()
-                .unwrap_or(heading)
-                .split(" - ")
-                .next()
-                .unwrap_or(heading)
-                .trim()
-                .to_string();
             current = Some((path, String::new()));
             continue;
         }
@@ -4252,11 +4413,11 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::{
-        CHECK_OUTPUT_MAX_CHARS, anchor_file_path, apply_suggestions_to_file, build_pr_review,
-        build_walkthrough_prompt, comment_anchor_label, compose_feedback_log,
-        compute_search_matches, parse_agent_responses, parse_co_review_output, parse_review_notes,
-        reanchor_file_comments, severity_review_event, split_overflow_rounds,
-        truncate_check_output,
+        CHECK_OUTPUT_MAX_CHARS, anchor_file_path, apply_suggestions_to_file, archive_review_notes,
+        build_pr_review, build_walkthrough_prompt, comment_anchor_label, compose_feedback_log,
+        compute_search_matches, load_review_notes, parse_agent_responses, parse_co_review_output,
+        parse_review_notes, reanchor_file_comments, severity_review_event,
+        split_overflow_review_notes, split_overflow_rounds, truncate_check_output,
     };
     use crate::app::state::DiffViewerState;
     use crate::app::{CommentAnchorContext, FileComment, LineComment, Severity};
@@ -4946,6 +5107,113 @@ ignored body
             notes.get("src/main.rs").map(String::as_str),
             Some("Did a thing.")
         );
+    }
+
+    #[test]
+    fn review_notes_cap_keeps_latest_unique_files_and_archives_superseded_notes() {
+        let content = "\
+# Optional preamble
+
+## src/old.rs — first
+
+Old note.
+
+---
+
+## src/keep.rs — first
+
+Superseded note.
+
+---
+
+## src/new.rs — current
+
+Newest file.
+
+---
+
+## src/keep.rs — updated
+
+Current note.
+
+---
+";
+        let (live, overflow) = split_overflow_review_notes(content, 2);
+
+        assert!(live.contains("## src/new.rs — current"));
+        assert!(live.contains("## src/keep.rs — updated"));
+        assert!(!live.contains("Superseded note."));
+        assert!(!live.contains("Old note."));
+
+        let overflow = overflow.expect("old and superseded notes should overflow");
+        assert!(overflow.starts_with("# Optional preamble"));
+        assert!(overflow.contains("## src/old.rs — first"));
+        assert!(overflow.contains("## src/keep.rs — first"));
+        assert!(!overflow.contains("## src/keep.rs — updated"));
+    }
+
+    #[test]
+    fn review_notes_cap_is_noop_when_unique_notes_fit() {
+        let content = "## src/a.rs — a\n\nA.\n\n---\n\n## src/b.rs — b\n\nB.\n";
+        let (live, overflow) = split_overflow_review_notes(content, 2);
+        assert_eq!(live, content);
+        assert!(overflow.is_none());
+    }
+
+    #[test]
+    fn archived_review_notes_remain_visible_but_live_note_wins() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("review-notes-archive.md"),
+            "# Review Notes Archive\n\n\
+             ## src/archived.rs — old\n\nArchived context.\n\n---\n\n\
+             ## src/live.rs — stale\n\nStale context.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            claude.join("review-notes.md"),
+            "## src/live.rs — current\n\nCurrent context.\n",
+        )
+        .unwrap();
+
+        let notes = load_review_notes(dir.path());
+        assert_eq!(
+            notes.get("src/archived.rs").map(String::as_str),
+            Some("Archived context.")
+        );
+        assert_eq!(
+            notes.get("src/live.rs").map(String::as_str),
+            Some("Current context.")
+        );
+    }
+
+    #[test]
+    fn archive_review_notes_moves_overflow_and_is_idempotent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let mut content = String::new();
+        for index in 0..=super::MAX_LIVE_REVIEW_NOTE_FILES {
+            content.push_str(&format!(
+                "## src/file-{index}.rs — note\n\nNote {index}.\n\n---\n\n"
+            ));
+        }
+        std::fs::write(claude.join("review-notes.md"), content).unwrap();
+
+        assert_eq!(archive_review_notes(dir.path()).unwrap(), 1);
+        assert_eq!(archive_review_notes(dir.path()).unwrap(), 0);
+
+        let live = std::fs::read_to_string(claude.join("review-notes.md")).unwrap();
+        assert!(!live.contains("## src/file-0.rs"));
+        assert!(live.contains(&format!(
+            "## src/file-{}.rs",
+            super::MAX_LIVE_REVIEW_NOTE_FILES
+        )));
+        let archive = std::fs::read_to_string(claude.join("review-notes-archive.md")).unwrap();
+        assert_eq!(archive.matches("# Review Notes Archive").count(), 1);
+        assert!(archive.contains("## src/file-0.rs"));
     }
 
     const SEARCH_PATCH: &str = "\

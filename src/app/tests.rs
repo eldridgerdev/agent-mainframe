@@ -1,6 +1,6 @@
 use super::setup::{
     cleanup_agent_injected_files, ensure_notification_hooks, ensure_plan_mode_instructions,
-    strip_between_markers,
+    ensure_review_claude_md, strip_between_markers,
 };
 use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
@@ -407,6 +407,49 @@ fn app_config_default_diff_viewer_layout_is_unified() {
 }
 
 #[test]
+fn review_model_for_falls_back_to_shared_default_when_unset() {
+    let config = AppConfig {
+        review_model: Some("opus".to_string()),
+        ..AppConfig::default()
+    };
+    assert_eq!(
+        config.review_model_for(ReviewAction::Walkthrough),
+        Some("opus".to_string())
+    );
+    assert_eq!(
+        config.review_model_for(ReviewAction::ChangesetOverview),
+        Some("opus".to_string())
+    );
+}
+
+#[test]
+fn review_model_for_prefers_per_action_override() {
+    let mut config = AppConfig {
+        review_model: Some("opus".to_string()),
+        ..AppConfig::default()
+    };
+    config.review_models.insert(
+        ReviewAction::Walkthrough.config_key().to_string(),
+        "haiku".to_string(),
+    );
+    assert_eq!(
+        config.review_model_for(ReviewAction::Walkthrough),
+        Some("haiku".to_string())
+    );
+    // Unaffected actions still see the shared default.
+    assert_eq!(
+        config.review_model_for(ReviewAction::CoReview),
+        Some("opus".to_string())
+    );
+}
+
+#[test]
+fn review_model_for_is_none_when_nothing_configured() {
+    let config = AppConfig::default();
+    assert_eq!(config.review_model_for(ReviewAction::PrReview), None);
+}
+
+#[test]
 fn app_config_missing_leader_timeout_uses_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.leader_timeout_seconds, 5);
@@ -685,6 +728,39 @@ fn plan_mode_instructions_use_claude_local_and_per_workdir_plan() {
         std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap(),
         "# Existing\n"
     );
+}
+
+#[test]
+fn review_mode_instructions_refresh_managed_block_and_ignore_archives() {
+    let workdir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        workdir.path().join("CLAUDE.local.md"),
+        "# Existing\n\n\
+         <!-- AMF:review-instructions:begin -->\n\n\
+         stale managed text\n\n\
+         <!-- AMF:review-instructions:end -->\n",
+    )
+    .unwrap();
+
+    ensure_review_claude_md(workdir.path(), true);
+    ensure_review_claude_md(workdir.path(), true);
+
+    let instructions = std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap();
+    assert!(instructions.starts_with("# Existing\n"));
+    assert!(!instructions.contains("stale managed text"));
+    assert!(instructions.contains("review-notes-archive.md"));
+    assert_eq!(
+        instructions
+            .matches("<!-- AMF:review-instructions:begin -->")
+            .count(),
+        1,
+        "managed instruction replacement should be idempotent"
+    );
+
+    let ignore =
+        std::fs::read_to_string(workdir.path().join(".claude").join(".gitignore")).unwrap();
+    assert!(ignore.lines().any(|line| line == "review-notes.md"));
+    assert!(ignore.lines().any(|line| line == "review-notes-archive.md"));
 }
 
 #[test]
@@ -6426,6 +6502,42 @@ fn ipc_input_request_updates_codex_live_work_state() {
             .message
             .contains("New input request from my-feat")
     );
+}
+
+#[test]
+fn ipc_turn_end_archives_superseded_review_notes_for_review_features() {
+    let workdir = TempDir::new().unwrap();
+    let claude = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(
+        claude.join("review-notes.md"),
+        "## src/main.rs — first\n\nOld context.\n\n---\n\n\
+         ## src/main.rs — current\n\nCurrent context.\n\n---\n",
+    )
+    .unwrap();
+
+    let mut store = store_with_codex_session(workdir.path(), false);
+    store.projects[0].features[0].review = true;
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "input-request",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Codex finished and is waiting for input"
+    }));
+
+    let live = std::fs::read_to_string(claude.join("review-notes.md")).unwrap();
+    assert!(live.contains("Current context."));
+    assert!(!live.contains("Old context."));
+    let archive = std::fs::read_to_string(claude.join("review-notes-archive.md")).unwrap();
+    assert!(archive.contains("Old context."));
+    assert!(!archive.contains("Current context."));
 }
 
 #[test]

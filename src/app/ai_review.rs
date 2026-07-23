@@ -457,8 +457,9 @@ fn model_pick_rows(harness: &AgentKind) -> Vec<ModelPickRow> {
 /// `diff` + `memory` (+ optional `skill`), report a token estimate, then make
 /// **one** headless agent pass and parse its response into findings. Runs off
 /// the UI thread; progress and the final result are reported over `tx`.
-/// `model`, when set (`AppConfig::review_model`), picks the review's model
-/// independent of whichever model the feature's interactive session runs.
+/// `model`, when set (`AppConfig::review_model_for(ReviewAction::PrReview)`),
+/// picks the review's model independent of whichever model the feature's
+/// interactive session runs.
 fn run_ai_pr_review(
     harness: AgentKind,
     workdir: PathBuf,
@@ -917,7 +918,7 @@ impl App {
                 return;
             }
             let rows = model_pick_rows(&harness);
-            let configured = self.config.review_model.clone();
+            let configured = self.config.review_model_for(ReviewAction::PrReview);
             let preset_match = configured.as_ref().and_then(|configured| {
                 rows.iter().position(
                     |row| matches!(row, ModelPickRow::Preset(preset) if preset == configured),
@@ -961,12 +962,12 @@ impl App {
         let workdir = origin.workdir.clone();
         let number = origin.pr.number;
         // The pane's own pick (from the model picker) takes priority over the
-        // `AppConfig::review_model` default it was seeded from — picking
+        // `review_model_for(PrReview)` default it was seeded from — picking
         // "Default" in the picker clears it back to `None` explicitly.
         let model = origin
             .model
             .clone()
-            .or_else(|| self.config.review_model.clone());
+            .or_else(|| self.config.review_model_for(ReviewAction::PrReview));
         self.log_info(
             "pr_review",
             format!(

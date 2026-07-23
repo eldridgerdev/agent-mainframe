@@ -150,11 +150,7 @@ impl App {
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
                 state.patch_scroll = 0;
                 if state.review {
-                    state.review_notes = std::fs::read_to_string(
-                        state.workdir.join(".claude").join("review-notes.md"),
-                    )
-                    .map(|content| crate::app::review::parse_review_notes(&content))
-                    .unwrap_or_default();
+                    state.review_notes = crate::app::review::load_review_notes(&state.workdir);
                 }
             }
             Err(err) => {

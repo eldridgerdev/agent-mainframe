@@ -1,6 +1,5 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::fs;
 
 use crate::app::{App, AppMode};
 use crate::claude::ClaudeLauncher;
@@ -284,7 +283,9 @@ fn generate_diff_review_explanation(app: &mut App) {
         "Explain these code changes concisely. What is being changed and why?\n\nFile: {relative_path}\n\nOld:\n```\n{old_snippet}\n```\n\nNew:\n```\n{new_snippet}\n```"
     );
 
-    let model = app.config.review_model.clone();
+    let model = app
+        .config
+        .review_model_for(crate::app::ReviewAction::DiffExplain);
     match ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
         Ok(child) => {
             if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
@@ -301,8 +302,7 @@ fn generate_diff_review_explanation(app: &mut App) {
 }
 
 fn find_review_note(workdir: &std::path::Path, relative_path: &str) -> Option<String> {
-    let notes = fs::read_to_string(workdir.join(".claude").join("review-notes.md")).ok()?;
-    crate::app::review::parse_review_notes(&notes).remove(relative_path)
+    crate::app::review::load_review_notes(workdir).remove(relative_path)
 }
 
 #[cfg(test)]

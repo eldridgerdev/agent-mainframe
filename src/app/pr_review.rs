@@ -3664,7 +3664,7 @@ impl App {
             ),
         );
 
-        let model = self.config.review_model.clone();
+        let model = self.config.review_model_for(ReviewAction::ReviewMemory);
         let (tx, rx) = std::sync::mpsc::channel();
         self.review_memory_bootstrap_bg = Some(rx);
         let thread_workdir = workdir.clone();
@@ -3828,7 +3828,7 @@ impl App {
 
         self.log_info("pr_review", "compacting review memory doc".to_string());
 
-        let model = self.config.review_model.clone();
+        let model = self.config.review_model_for(ReviewAction::ReviewMemory);
         let (tx, rx) = std::sync::mpsc::channel();
         self.review_memory_compact_bg = Some(rx);
         let thread_workdir = workdir.clone();

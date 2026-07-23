@@ -9164,6 +9164,80 @@ fn enter_ai_review_for_feature(app: &mut App) {
     ));
 }
 
+#[test]
+fn ai_review_model_picker_backs_through_custom_editor_and_rebuilds_for_new_harness() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(|_| Ok(std::path::PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    app.config.review_model = Some("sonnet".to_string());
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        state.harness = Some(AgentKind::Claude);
+        state.model = Some("sonnet".to_string());
+        state.model_pick = Some(AiModelPickState {
+            rows: vec![
+                ModelPickRow::Default,
+                ModelPickRow::Preset("sonnet"),
+                ModelPickRow::Custom,
+            ],
+            selected: 2,
+            custom_input: "claude-custom".to_string(),
+            editing_custom: true,
+        });
+    }
+
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            let pick = state.model_pick.as_ref().expect("model list should remain");
+            assert!(!pick.editing_custom);
+            assert_eq!(pick.custom_input, "claude-custom");
+            assert!(state.harness_pick.is_none());
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            let pick = state
+                .harness_pick
+                .as_ref()
+                .expect("model list should return to harness picker");
+            assert_eq!(pick.agents[pick.selected], AgentKind::Claude);
+            assert!(state.harness.is_none());
+            assert!(state.model.is_none());
+            assert!(!state.model_picked);
+            assert!(state.model_pick.is_none());
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Down)).unwrap();
+    app.accept_selected_ai_review_harness_for_test();
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.harness, Some(AgentKind::Opencode));
+            assert!(state.harness_pick.is_none());
+            assert!(state.model.is_none());
+            assert!(!state.model_picked);
+            let pick = state
+                .model_pick
+                .as_ref()
+                .expect("new harness should open a rebuilt model picker");
+            assert_eq!(pick.rows, vec![ModelPickRow::Default, ModelPickRow::Custom]);
+            assert_eq!(pick.selected, 0);
+            assert!(pick.custom_input.is_empty());
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+}
+
 /// Enter the PR picker directly (bypassing the real `gh pr list` call
 /// `open_pr_picker` would make) so bootstrap-pick tests can exercise the
 /// overlay's state transitions without hitting the network.

@@ -2378,7 +2378,7 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/ui/dialogs/ai_review.rs`, `src/ui/dialogs/pr_review.rs`,
       `src/app/tests.rs`, `CHANGELOG.md`.
 
-- [ ] **BUG — the AI Review model picker cannot go back to change the
+- [x] **BUG — the AI Review model picker cannot go back to change the
       harness.** In the `A` generation flow, choosing Claude/Codex/Opencode/etc.
       immediately advances to the model picker. `Esc` from that model list
       currently closes only the model picker while leaving the harness locked
@@ -2392,6 +2392,20 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       intentional model-picker bypass. Add App/key-handler regression coverage
       for custom editor → model list → harness list, changing the harness, and
       continuing through the rebuilt model list.
+
+      **Shipped, 2026-07-23.** The model list's `Esc`/`q` path now restores the
+      harness picker with the current harness highlighted, while `Esc` from
+      custom-model editing still returns to the model list first. Confirming a
+      harness clears the previous harness's model state and rebuilds the rows;
+      Pi still follows its direct default-model path. The dialog hints now call
+      out the harness back-step. App/key-handler regression coverage exercises
+      custom editor → model list → harness list, switches from Claude to
+      Opencode, and verifies the rebuilt picker contains no Claude-only preset.
+      An isolated seven-frame walkthrough is recorded under
+      `docs/screenshots/ai-review-picker-back-navigation/`. AI Review tests,
+      strict Clippy, and formatting are green. → `src/app/ai_review.rs`,
+      `src/app/state.rs`, `src/ui/dialogs/ai_review.rs`, `src/app/tests.rs`,
+      `docs/screenshots/ai-review-picker-back-navigation/`, `CHANGELOG.md`.
 
 - [ ] **Hide or de-emphasize AMF's own outbound comments in the PR Triage
       list.** Replies posted by the `R` flow already end with the exact

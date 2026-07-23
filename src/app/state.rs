@@ -2000,6 +2000,10 @@ pub struct AiHarnessPickState {
     pub agents: Vec<AgentKind>,
     pub selected: usize,
     pub error: Option<String>,
+    /// Harness selected before returning here from the model picker. `None`
+    /// on the initial harness step; used to avoid seeding one harness's model
+    /// choice into a different harness's rebuilt model picker.
+    pub previous_harness: Option<AgentKind>,
 }
 
 /// One row of the model picker: either "use the default", a known-good

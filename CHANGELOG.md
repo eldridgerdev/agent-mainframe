@@ -27,6 +27,16 @@ are tagged.
   surfaces merge both files, while agents only re-read the small live file.
   No migration is required; AMF archives existing notes automatically.
 
+### Fixed
+
+- **AI Review's model picker can now go back to harness selection.** Pressing
+  `Esc` or `q` from the model list returns to the harness picker with the
+  current harness highlighted, so a mistaken harness choice can be corrected
+  without leaving AI Review. Changing the harness rebuilds its model choices
+  instead of carrying over an incompatible selection. Repeatedly switching
+  harnesses and backing out no longer resurrects a model choice that isn't
+  valid for the newly chosen harness. No migration is required.
+
 ## [v0.32.0] - 2026-07-24
 
 ### Added

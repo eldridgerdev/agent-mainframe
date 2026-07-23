@@ -2301,7 +2301,7 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/db/pr_comment_triage.rs`, `src/db/mod.rs`, `src/app/tests.rs`,
       `src/ui/dialogs/pr_review.rs`, `CHANGELOG.md`.
 
-- [ ] **Surface a completed, pending AI Review in PR Triage and refresh
+- [x] **Surface a completed, pending AI Review in PR Triage and refresh
       Triage automatically after posting it.** Splitting AI Review into its
       own pane restored an in-progress `[AI review running]` badge in PR
       Triage, but the signal disappears when generation completes. If the
@@ -2344,6 +2344,39 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       count in PR Triage (including after restart); reopen it from Triage,
       post with `W`, return to Triage, and see the pending badge clear and the
       posted GitHub comments appear without pressing `r`.
+
+      **Shipped, 2026-07-22.** PR Triage now loads an exact publishable-finding
+      count from the persisted `ai_review_cache` for the current PR/head SHA
+      and renders `[AI review pending: N]` whenever no run is in progress. The
+      count follows generation, skip/unskip, publication, pane stashes, and
+      restarts; zero-finding, failed, fully skipped/published, other-PR, and
+      stale-head results do not surface. `A` continues through the shared
+      cached AI Review entry point, so the badge opens the matching findings
+      without regenerating them.
+
+      The same headless pass now emits a one-to-three sentence summary before
+      its findings. AMF parses and persists that summary beside the findings,
+      seeds the existing editable `W` confirmation with it, and adds separate
+      AI-via-AMF attribution to the final GitHub body. Summary-only clean
+      reviews no longer look like parse failures; older/malformed cached
+      output without a summary retains the legacy placeholder.
+
+      A successful GitHub write durably marks every included finding published
+      before starting a separate background PR Triage refresh. The refresh
+      bypasses and invalidates the old comment cache, preserves the stashed
+      pane's selection, filters, marks, fix-target state, and return navigation,
+      and caches the fresh snapshot even when AI Review was opened elsewhere.
+      Failures leave the published marker intact and surface a warning instead
+      of making the review postable again. Regression coverage includes summary
+      parsing/fallback and cache compatibility, durable publishable counts,
+      the pending badge, cached `A` reopen, editable `W` body, stashed-pane
+      refresh, cache-only refresh, and precise cache invalidation. Full suite
+      green (1209 passed, 1 ignored); strict Clippy and formatting clean. →
+      `src/app/ai_review.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/app/mod.rs`, `src/main.rs`, `src/db/ai_review_cache.rs`,
+      `src/db/pr_review_cache.rs`, `src/db/mod.rs`, `src/ui/dashboard.rs`,
+      `src/ui/dialogs/ai_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/app/tests.rs`, `CHANGELOG.md`.
 
 - [ ] **BUG — the AI Review model picker cannot go back to change the
       harness.** In the `A` generation flow, choosing Claude/Codex/Opencode/etc.

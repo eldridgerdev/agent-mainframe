@@ -1542,6 +1542,7 @@ impl App {
             );
             self.apply_persisted_triage(&mut review);
             let usage_baselines = self.pr_review_initial_usage_baselines(&workdir);
+            let pending_ai_review_findings = self.pending_ai_review_count(&review.pr);
             let checked_out_branch =
                 crate::worktree::WorktreeManager::current_branch(&workdir).unwrap_or(None);
             self.mode = AppMode::PrReview(PrReviewState {
@@ -1566,6 +1567,7 @@ impl App {
                 marked: std::collections::HashSet::new(),
                 pending_batch: false,
                 checked_out_branch,
+                pending_ai_review_findings,
             });
             return;
         }
@@ -1604,6 +1606,18 @@ impl App {
             self.ai_review_pending = None;
             self.ai_review_bg = None;
             self.ai_review_progress = None;
+            changed = true;
+        }
+
+        if self
+            .ai_review_triage_refresh_pending
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.workdir == workdir && pending.pr.number == predecessor_pr_number
+            })
+        {
+            self.ai_review_triage_refresh_pending = None;
+            self.ai_review_triage_refresh_bg = None;
             changed = true;
         }
 
@@ -1646,7 +1660,7 @@ impl App {
 
     /// Persist a freshly-fetched review under its `PR# + head SHA` key so the
     /// next open is a cache hit. A write failure is non-fatal (logged, not shown).
-    fn cache_pr_review(&mut self, review: &PrReview) {
+    pub(crate) fn cache_pr_review(&mut self, review: &PrReview) {
         let result = match self.db.as_ref() {
             Some(db) => db.save_pr_review_cache(review),
             None => return,
@@ -1662,7 +1676,7 @@ impl App {
     /// the PR's head) — is authoritative for local triage, so it wins over
     /// whatever the cache blob happened to serialize. A read failure (or no DB)
     /// is non-fatal: comments just stay [`TriageState::Untriaged`].
-    fn apply_persisted_triage(&mut self, review: &mut PrReview) {
+    pub(crate) fn apply_persisted_triage(&mut self, review: &mut PrReview) {
         let Some(db) = self.db.as_ref() else {
             return;
         };
@@ -2174,6 +2188,7 @@ impl App {
                         );
                         self.cache_pr_review(&review);
                         self.apply_persisted_triage(&mut review);
+                        let pending_ai_review_findings = self.pending_ai_review_count(&review.pr);
                         let checked_out_branch =
                             crate::worktree::WorktreeManager::current_branch(&workdir)
                                 .unwrap_or(None);
@@ -2199,6 +2214,7 @@ impl App {
                             marked: std::collections::HashSet::new(),
                             pending_batch: false,
                             checked_out_branch,
+                            pending_ai_review_findings,
                         });
                     }
                     Err(e) => {
@@ -2263,23 +2279,7 @@ impl App {
     pub fn pr_review_toggle_resolved(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.hide_resolved = !state.hide_resolved;
-            let visible = state.visible_indices();
-            if visible.is_empty() {
-                return;
-            }
-            if !visible.contains(&state.selected) {
-                let order = state.all_sorted_indices();
-                let pos = order.iter().position(|&i| i == state.selected);
-                let snapped = pos
-                    .and_then(|p| order[p..].iter().find(|i| visible.contains(i)))
-                    .or_else(|| {
-                        pos.and_then(|p| order[..p].iter().rev().find(|i| visible.contains(i)))
-                    })
-                    .copied()
-                    .unwrap_or(visible[0]);
-                state.selected = snapped;
-                state.detail_scroll = 0;
-            }
+            state.snap_selection_to_visible();
         }
     }
 
@@ -2721,25 +2721,25 @@ impl App {
                     let pr_number = state.review.pr.number;
                     let head_sha = state.review.pr.head_sha.clone();
                     let (prompt, ids, is_batch, reply_draft_requests) = match &state.fix_confirm {
-                        // Confirming the open dialog uses its edited buffer. A batch
-                        // dialog carries every included comment id; a single one
-                        // targets the current selection.
+                        // Confirming the open dialog uses its edited buffer. The
+                        // target ids come from the dialog's own reply-draft
+                        // requests — captured when the dialog was built — rather
+                        // than the *current* selection, which a PR Triage refresh
+                        // received while the dialog sat open can have moved onto
+                        // an unrelated comment the injected prompt never mentions.
                         Some(confirm) => {
                             let prompt = confirm.editor.text().trim().to_string();
-                            match &confirm.batch {
-                                Some(batch_ids) => (
-                                    prompt,
-                                    batch_ids.clone(),
-                                    true,
-                                    confirm.reply_draft_requests.clone(),
-                                ),
-                                None => (
-                                    prompt,
-                                    state.selected_comment().map(|c| c.id).into_iter().collect(),
-                                    false,
-                                    confirm.reply_draft_requests.clone(),
-                                ),
-                            }
+                            let ids: Vec<u64> = confirm
+                                .reply_draft_requests
+                                .iter()
+                                .map(|r| r.comment_id)
+                                .collect();
+                            (
+                                prompt,
+                                ids,
+                                confirm.batch.is_some(),
+                                confirm.reply_draft_requests.clone(),
+                            )
                         }
                         // No dialog open (e.g. empty pane): fall back to the selection.
                         None => match state.selected_comment() {

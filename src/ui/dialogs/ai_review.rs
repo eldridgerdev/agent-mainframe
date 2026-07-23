@@ -701,6 +701,7 @@ mod tests {
                     head_ref: "feature".to_string(),
                 },
                 findings: Vec::new(),
+                summary: None,
                 selected: 0,
                 detail_scroll: 0,
                 detail_content_lines: 0,

@@ -694,6 +694,12 @@ pub struct App {
     /// agent session, the PR picker), which close straight to `Normal` —
     /// matching how `close_pr_review` already behaves for those.
     pub ai_review_return_to: Option<Box<AppMode>>,
+    /// Background PR Triage refresh kicked off only after GitHub confirms an
+    /// AI Review post. Separate from `pr_review_bg` so it can update a stashed
+    /// pane without changing the current AI Review mode.
+    pub ai_review_triage_refresh_bg: Option<Receiver<Result<pr_review::PrReview>>>,
+    /// PR/workdir identity paired with `ai_review_triage_refresh_bg`.
+    pub ai_review_triage_refresh_pending: Option<AiReviewTriageRefresh>,
     /// Memoized `GhCli::current_user` result for the session, so opening or
     /// refreshing the PR picker doesn't repeat the `gh api user` call every
     /// time. `None` = not yet resolved; `Some(None)` = resolution was
@@ -2044,6 +2050,8 @@ impl App {
             ai_review_progress: None,
             ai_review_pending: None,
             ai_review_return_to: None,
+            ai_review_triage_refresh_bg: None,
+            ai_review_triage_refresh_pending: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
@@ -2252,6 +2260,8 @@ impl App {
             ai_review_progress: None,
             ai_review_pending: None,
             ai_review_return_to: None,
+            ai_review_triage_refresh_bg: None,
+            ai_review_triage_refresh_pending: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),

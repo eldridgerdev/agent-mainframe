@@ -1806,6 +1806,10 @@ pub struct AiReviewState {
     /// Findings from the most recent `A` run (or loaded from `ai_review_cache`
     /// on entry), in generation order.
     pub findings: Vec<crate::app::ai_review::AiReviewFinding>,
+    /// Overall one-to-three sentence review summary generated in the same
+    /// pass as `findings`, and loaded from the same cache row. Older cache
+    /// entries may not have one.
+    pub summary: Option<String>,
     /// Index into `findings` of the highlighted finding.
     pub selected: usize,
     /// Scroll offset (in lines) for the detail pane of the selected finding.
@@ -1926,6 +1930,19 @@ pub struct PrReviewState {
     /// wrong branch — see [`Self::branch_mismatch`]. `None` when the branch
     /// couldn't be determined (e.g. detached HEAD).
     pub checked_out_branch: Option<String>,
+    /// Completed AI-review findings for this exact PR/head SHA that are still
+    /// publishable. Loaded from `ai_review_cache` on entry and kept in sync as
+    /// the linked AI Review is generated, skipped, or posted.
+    pub pending_ai_review_findings: usize,
+}
+
+/// Identity of the PR Triage refresh started after a successful AI Review
+/// post. Kept outside `AppMode` so the refresh can update a stashed triage
+/// pane while the user remains in AI Review.
+#[derive(Debug, Clone)]
+pub struct AiReviewTriageRefresh {
+    pub workdir: PathBuf,
+    pub pr: crate::github::PrRef,
 }
 
 /// Confirm/edit dialog for posting the kept AI-review findings to GitHub as a
@@ -2154,6 +2171,29 @@ impl PrReviewState {
     /// remove from it, so this is the same order `visible_indices` would use.
     pub(crate) fn all_sorted_indices(&self) -> Vec<usize> {
         self.sort_indices((0..self.review.comments.len()).collect())
+    }
+
+    /// If `selected` is currently hidden by `hide_resolved`, snap it to the
+    /// nearest remaining visible comment in sort order (forward first, then
+    /// backward, then the first visible comment). No-op when `selected` is
+    /// already visible, or nothing is visible at all. Shared by the `x`
+    /// toggle and by a PR Triage refresh, either of which can newly hide the
+    /// selected comment (resolved on GitHub, in the toggle case; refreshed
+    /// into a resolved state, in the refresh case).
+    pub fn snap_selection_to_visible(&mut self) {
+        let visible = self.visible_indices();
+        if visible.is_empty() || visible.contains(&self.selected) {
+            return;
+        }
+        let order = self.all_sorted_indices();
+        let pos = order.iter().position(|&i| i == self.selected);
+        let snapped = pos
+            .and_then(|p| order[p..].iter().find(|i| visible.contains(i)))
+            .or_else(|| pos.and_then(|p| order[..p].iter().rev().find(|i| visible.contains(i))))
+            .copied()
+            .unwrap_or(visible[0]);
+        self.selected = snapped;
+        self.detail_scroll = 0;
     }
 
     /// Apply `sort_mode` to a set of comment indices. Stable, so ties keep

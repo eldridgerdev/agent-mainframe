@@ -79,6 +79,7 @@ mod tests {
                 ran_at: Local::now(),
                 outcome: AiReviewRunOutcome::Findings(1),
             }),
+            summary: Some("One concurrency risk needs attention.".into()),
         }
     }
 
@@ -97,6 +98,10 @@ mod tests {
         let loaded = db.load_ai_review_cache(321, "abc123").unwrap().unwrap();
         assert_eq!(loaded.findings.len(), 1);
         assert_eq!(loaded.findings[0].body, "guard this");
+        assert_eq!(
+            loaded.summary.as_deref(),
+            Some("One concurrency risk needs attention.")
+        );
         assert!(matches!(
             loaded.last_run.unwrap().outcome,
             AiReviewRunOutcome::Findings(1)
@@ -119,5 +124,15 @@ mod tests {
 
         let loaded = db.load_ai_review_cache(7, "sha").unwrap().unwrap();
         assert_eq!(loaded.findings[0].body, "second");
+    }
+
+    #[test]
+    fn cache_json_without_summary_remains_readable() {
+        let legacy = serde_json::json!({
+            "findings": [],
+            "last_run": null
+        });
+        let entry: AiReviewCacheEntry = serde_json::from_value(legacy).unwrap();
+        assert!(entry.summary.is_none());
     }
 }

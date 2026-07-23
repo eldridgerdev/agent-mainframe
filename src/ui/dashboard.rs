@@ -2178,6 +2178,7 @@ mod tests {
             workdir: feature.workdir.clone(),
             pr,
             findings: Vec::new(),
+            summary: None,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
@@ -2294,6 +2295,7 @@ mod tests {
             marked: std::collections::HashSet::new(),
             pending_batch: false,
             checked_out_branch: Some(checked_out.to_string()),
+            pending_ai_review_findings: 0,
         }
     }
 
@@ -2323,6 +2325,7 @@ mod tests {
             workdir,
             pr,
             findings: Vec::new(),
+            summary: None,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
@@ -2372,6 +2375,33 @@ mod tests {
             .collect();
 
         assert!(!rendered.contains("AI review running"));
+        assert!(!rendered.contains("AI review pending"));
+    }
+
+    #[test]
+    fn pr_review_pane_shows_completed_pending_ai_review_count() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.pending_ai_review_findings = 3;
+        app.mode = crate::app::AppMode::PrReview(state);
+
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("AI review pending: 3"));
     }
 
     #[test]

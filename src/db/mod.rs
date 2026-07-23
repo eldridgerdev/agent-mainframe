@@ -100,6 +100,10 @@ impl AmfDb {
         pr_review_cache::save(&self.conn, review)
     }
 
+    pub fn delete_pr_review_cache(&self, pr_number: u32, head_sha: &str) -> Result<()> {
+        pr_review_cache::delete(&self.conn, pr_number, head_sha)
+    }
+
     pub fn evict_stale_pr_review_cache(&self) -> Result<()> {
         pr_review_cache::evict_stale(&self.conn)
     }

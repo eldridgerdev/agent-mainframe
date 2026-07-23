@@ -36,6 +36,14 @@ are tagged.
   rather than guessing from older line history, and GitHub marks the reply as
   AI-drafted via AMF. Posting still requires explicit confirmation. No setup
   or migration is required.
+- **Completed AI Reviews now remain visible and actionable in PR Triage.** A
+  pending badge shows exactly how many findings are still publishable, survives
+  leaving the pane or restarting AMF, and reopens the cached review with `A`
+  instead of spending tokens on a duplicate run. Each review now generates an
+  editable overall summary for the GitHub review body, and after `W` posts it,
+  AMF refreshes PR Triage automatically so the new comments appear without
+  pressing `r`. No migration is required; older cached reviews without a
+  summary continue to use the existing fallback text.
 - **PR Triage's detail pane now shows a comment's replies, however they got
   posted.** A reply posted outside AMF's own `R`/`n` flow — e.g. an agent
   working the PR with its own `gh` access — previously left no trace next to

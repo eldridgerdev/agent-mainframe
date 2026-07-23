@@ -8633,6 +8633,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         marked: std::collections::HashSet::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
+        pending_ai_review_findings: 0,
     });
 }
 
@@ -8886,6 +8887,64 @@ fn pr_review_inject_fix_also_stashes_return_state() {
 }
 
 #[test]
+fn pr_review_inject_fix_targets_dialogs_original_comment_after_selection_moves() {
+    // Regression: a PR Triage refresh (e.g. the automatic one after posting
+    // an AI review) can drop the comment a still-open fix-confirm dialog was
+    // built for, falling the selection back onto a different comment while
+    // the stale dialog stays open. Confirming must still mark — and route
+    // the reply-draft handoff to — the dialog's original comment, never
+    // whatever the refresh happened to leave selected.
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    let db_dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1; // comment id 2
+    }
+    app.pr_review_open_fix_confirm();
+    let request_id = match &app.mode {
+        AppMode::PrReview(state) => state.fix_confirm.as_ref().unwrap().reply_draft_requests[0]
+            .request_id
+            .clone(),
+        _ => unreachable!(),
+    };
+
+    // Simulate the refresh: comment 2's thread resolved upstream and dropped
+    // out of the fetched set, so selection fell back to comment 1. The dialog
+    // (still targeting comment 2 via its own `reply_draft_requests`) is left
+    // open, exactly as `apply_refreshed_pr_review_state` leaves it.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.comments.retain(|c| c.id != 2);
+        state.selected = 0;
+    }
+
+    app.pr_review_inject_fix().unwrap();
+
+    let triage = app.db.as_ref().unwrap().load_pr_comment_triage(7).unwrap();
+    assert!(
+        !triage.contains_key(&1),
+        "the newly-selected comment must not be marked Fixing"
+    );
+    assert_eq!(
+        triage.get(&2).map(|(state, _)| *state),
+        Some(crate::app::pr_review::TriageState::Fixing),
+        "the dialog's original comment must still be marked Fixing"
+    );
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .capture_pr_comment_reply_draft(7, 2, &request_id, "Fixed the selected path.")
+            .unwrap(),
+        "the reply-draft handoff must still route to the dialog's original comment"
+    );
+}
+
+#[test]
 fn pr_review_i_opens_syntax_picker_for_selected_comment_file() {
     let mut app = pr_review_test_app();
     enter_pr_review(&mut app, 2); // comments have paths src/file{id}.rs (Rust)
@@ -8936,6 +8995,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         marked: std::collections::HashSet::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
+        pending_ai_review_findings: 0,
     });
 }
 
@@ -8949,6 +9009,7 @@ fn sample_ai_review_state(
         workdir,
         pr,
         findings: Vec::new(),
+        summary: None,
         selected: 0,
         detail_scroll: 0,
         detail_content_lines: 0,
@@ -8960,6 +9021,17 @@ fn sample_ai_review_state(
         model_pick: None,
         finding_editor: None,
         post_confirm: None,
+    }
+}
+
+fn sample_ai_review_finding(body: &str) -> crate::app::ai_review::AiReviewFinding {
+    crate::app::ai_review::AiReviewFinding {
+        path: None,
+        line: None,
+        body: body.to_string(),
+        diff_hunk: None,
+        skipped: false,
+        published: false,
     }
 }
 
@@ -10313,6 +10385,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         marked: std::collections::HashSet::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
+        pending_ai_review_findings: 0,
     });
 }
 
@@ -10384,6 +10457,7 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         marked: std::collections::HashSet::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
+        pending_ai_review_findings: 0,
     });
 }
 
@@ -10827,6 +10901,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         marked: std::collections::HashSet::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
+        pending_ai_review_findings: 0,
     });
 }
 
@@ -13186,6 +13261,7 @@ fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
     tx.send(crate::app::ai_review::AiReviewProgress::Done(Ok(
         crate::app::ai_review::AiReviewOutcome {
             findings: vec![],
+            summary: Some("No actionable issues found.".to_string()),
             raw_output: String::new(),
         },
     )))
@@ -13198,6 +13274,74 @@ fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
         "toasts: {:?}",
         app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
     );
+    assert!(
+        !app.toasts
+            .iter()
+            .any(|toast| toast.message.contains("check the debug log")),
+        "a valid summary-only response is a clean zero-finding review"
+    );
+}
+
+#[test]
+fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    app.open_ai_review_from_triage();
+    let origin = match &app.mode {
+        AppMode::AiReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        progress: crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
+        },
+    });
+    tx.send(crate::app::ai_review::AiReviewProgress::Done(Ok(
+        crate::app::ai_review::AiReviewOutcome {
+            findings: vec![
+                sample_ai_review_finding("first"),
+                sample_ai_review_finding("second"),
+            ],
+            summary: Some("Two correctness risks need attention.".to_string()),
+            raw_output: "review output".to_string(),
+        },
+    )))
+    .unwrap();
+
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(
+                state.summary.as_deref(),
+                Some("Two correctness risks need attention.")
+            );
+            assert_eq!(state.findings.len(), 2);
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+    match app.ai_review_return_to.as_deref() {
+        Some(AppMode::PrReview(state)) => assert_eq!(state.pending_ai_review_findings, 2),
+        _ => panic!("expected stashed PR Triage pane"),
+    }
+
+    app.ai_review_toggle_skip();
+    match app.ai_review_return_to.as_deref() {
+        Some(AppMode::PrReview(state)) => assert_eq!(state.pending_ai_review_findings, 1),
+        _ => panic!("expected stashed PR Triage pane"),
+    }
 }
 
 #[test]
@@ -13341,6 +13485,120 @@ fn open_ai_review_for_pr_starts_empty_with_no_stashed_return() {
 }
 
 #[test]
+fn open_ai_review_for_pr_reopens_cached_findings_and_summary() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    let pr = pr_review_with_comments(1).pr;
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_ai_review_cache(
+            pr.number,
+            &pr.head_sha,
+            &crate::app::ai_review::AiReviewCacheEntry {
+                findings: vec![sample_ai_review_finding("cached finding")],
+                last_run: Some(crate::app::ai_review::AiReviewRun {
+                    ran_at: chrono::Local::now(),
+                    outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(1),
+                }),
+                summary: Some("Cached review summary.".to_string()),
+            },
+        )
+        .unwrap();
+    assert_eq!(app.pending_ai_review_count(&pr), 1);
+
+    app.open_ai_review_for_pr(PathBuf::from("/tmp/test-workdir"), pr);
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.findings[0].body, "cached finding");
+            assert_eq!(state.summary.as_deref(), Some("Cached review summary."));
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
+fn ai_review_post_dialog_is_seeded_with_generated_summary_and_attribution() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        state.findings = vec![sample_ai_review_finding("A general finding")];
+        state.summary = Some("The patch has one correctness risk.".to_string());
+        state.last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(1),
+        });
+    }
+
+    app.ai_review_open_post_confirm();
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            let body = state.post_confirm.as_ref().unwrap().editor.text();
+            assert!(body.starts_with("The patch has one correctness risk."));
+            assert!(body.contains("A general finding"));
+            assert!(body.ends_with("— AI review via AMF"));
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
+fn ai_review_post_dialog_drops_generated_summary_when_a_finding_is_skipped() {
+    // Regression: `state.summary` is model prose written over the *complete*
+    // finding set, so it can still describe a finding the user has since
+    // skipped (a false positive, or one too sensitive to post) even though
+    // that finding is excluded from the posted findings below it. Once
+    // anything's skipped, the dialog must fall back to the generic
+    // placeholder rather than risk republishing what `skipped` was meant to
+    // suppress.
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        let mut skipped = sample_ai_review_finding("A sensitive finding");
+        skipped.skipped = true;
+        state.findings = vec![skipped, sample_ai_review_finding("A kept finding")];
+        state.summary = Some("The patch has a sensitive issue plus a kept finding.".to_string());
+        state.last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(2),
+        });
+    }
+
+    app.ai_review_open_post_confirm();
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            let body = state.post_confirm.as_ref().unwrap().editor.text();
+            assert!(
+                !body.contains("sensitive issue"),
+                "the model summary describing the skipped finding must not be posted: {body}"
+            );
+            assert!(body.starts_with("AI review, via AMF."));
+            assert!(body.contains("A kept finding"));
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
 fn open_ai_review_from_triage_stashes_the_pane_and_close_restores_it() {
     let store = store_with_feature(ProjectStatus::Idle);
     let mut app = App::new_for_test(
@@ -13365,6 +13623,161 @@ fn open_ai_review_from_triage_stashes_the_pane_and_close_restores_it() {
     app.close_ai_review();
     assert!(matches!(&app.mode, AppMode::PrReview(_)));
     assert!(app.ai_review_return_to.is_none());
+}
+
+#[test]
+fn post_success_refresh_updates_stashed_triage_without_leaving_ai_review() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1;
+        state.hide_resolved = true;
+        state.marked.insert(2);
+    }
+    app.open_ai_review_from_triage();
+    let (workdir, pr) = match &app.mode {
+        AppMode::AiReview(state) => (state.workdir.clone(), state.pr.clone()),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_triage_refresh_bg = Some(rx);
+    app.ai_review_triage_refresh_pending = Some(crate::app::AiReviewTriageRefresh { workdir, pr });
+    tx.send(Ok(pr_review_with_comments(3))).unwrap();
+
+    assert!(app.poll_ai_review_triage_refresh_bg());
+    assert!(matches!(app.mode, AppMode::AiReview(_)));
+    match app.ai_review_return_to.as_deref() {
+        Some(AppMode::PrReview(state)) => {
+            assert_eq!(state.review.comments.len(), 3);
+            assert_eq!(state.selected_comment().map(|comment| comment.id), Some(2));
+            assert!(state.hide_resolved);
+            assert!(state.marked.contains(&2));
+            assert_eq!(state.pending_ai_review_findings, 0);
+        }
+        _ => panic!("expected refreshed stashed PR Triage pane"),
+    }
+}
+
+#[test]
+fn post_success_refresh_snaps_selection_off_a_newly_resolved_comment() {
+    // Regression: restoring the selection by id after a refresh can land it
+    // on a comment that `hide_resolved` now excludes (its thread resolved
+    // upstream since the last fetch), leaving `selected` pointing at a row
+    // `visible_indices()` doesn't include.
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 3);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1; // comment id 2, not yet resolved
+        state.hide_resolved = true;
+    }
+    app.open_ai_review_from_triage();
+    let (workdir, pr) = match &app.mode {
+        AppMode::AiReview(state) => (state.workdir.clone(), state.pr.clone()),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_triage_refresh_bg = Some(rx);
+    app.ai_review_triage_refresh_pending = Some(crate::app::AiReviewTriageRefresh { workdir, pr });
+
+    // The refresh comes back with comment 2's thread now resolved.
+    let comments: Vec<crate::github::ReviewComment> = (1..=3u64)
+        .map(|id| crate::github::ReviewComment {
+            id,
+            path: Some(format!("src/file{id}.rs")),
+            line: Some(id as u32),
+            original_line: Some(id as u32),
+            side: Some("RIGHT".into()),
+            subject_type: None,
+            diff_hunk: Some("@@".to_string()),
+            body: format!("comment {id}"),
+            user: crate::github::GhUser {
+                login: "alice".to_string(),
+                kind: "User".to_string(),
+            },
+            in_reply_to_id: None,
+            pull_request_review_id: None,
+        })
+        .collect();
+    let threads = vec![crate::github::ReviewThread {
+        id: "T2".to_string(),
+        is_resolved: true,
+        comment_ids: vec![2],
+    }];
+    let refreshed_pr = crate::github::PrRef {
+        number: 7,
+        head_sha: "sha".to_string(),
+        url: "https://github.com/o/r/pull/7".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+        head_ref: "main".to_string(),
+    };
+    let refreshed =
+        crate::app::pr_review::normalize(refreshed_pr, comments, vec![], vec![], threads);
+    tx.send(Ok(refreshed)).unwrap();
+
+    assert!(app.poll_ai_review_triage_refresh_bg());
+    match app.ai_review_return_to.as_deref() {
+        Some(AppMode::PrReview(state)) => {
+            assert_ne!(
+                state.selected_comment().map(|comment| comment.id),
+                Some(2),
+                "selection must not stay on a comment hide_resolved now excludes"
+            );
+            assert!(
+                state.visible_indices().contains(&state.selected),
+                "selection must land on a row the current filter shows"
+            );
+        }
+        _ => panic!("expected refreshed stashed PR Triage pane"),
+    }
+}
+
+#[test]
+fn post_success_refresh_caches_fresh_triage_when_ai_review_has_no_return_pane() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    let stale = pr_review_with_comments(1);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_review_cache(&stale)
+        .unwrap();
+    app.open_ai_review_for_pr(PathBuf::from("/tmp/test-workdir"), stale.pr.clone());
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_triage_refresh_bg = Some(rx);
+    app.ai_review_triage_refresh_pending = Some(crate::app::AiReviewTriageRefresh {
+        workdir: PathBuf::from("/tmp/test-workdir"),
+        pr: stale.pr.clone(),
+    });
+    tx.send(Ok(pr_review_with_comments(3))).unwrap();
+
+    assert!(app.poll_ai_review_triage_refresh_bg());
+    assert!(matches!(app.mode, AppMode::AiReview(_)));
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_pr_review_cache(stale.pr.number, &stale.pr.head_sha)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cached.comments.len(), 3);
 }
 
 #[test]

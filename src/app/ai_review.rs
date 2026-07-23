@@ -16,9 +16,10 @@
 //! This module is fully independent instead: [`AiReviewFinding`] is a
 //! first-class, persisted type (its own `ai_review_cache` SQLite table, not a
 //! disguised `PrComment`), and posting (`W`) doesn't reconcile anything back
-//! onto itself — once posted, a finding simply exists on GitHub and shows up
-//! in PR Triage's own fetch on the next refresh. Reachable from PR Triage
-//! (`A`), the dashboard, an agent session (leader key), and the PR picker.
+//! onto itself — once posted, a finding simply exists on GitHub and the
+//! automatic post-success PR Triage refresh fetches it as an ordinary
+//! comment. Reachable from PR Triage (`A`), the dashboard, an agent session
+//! (leader key), and the PR picker.
 
 use std::path::PathBuf;
 
@@ -57,6 +58,21 @@ const AI_REVIEW_FINDING_FOOTER: &str = "— AI review via AMF";
 
 fn append_ai_review_attribution(body: &str) -> String {
     format!("{}\n\n{}", body.trim_end(), AI_REVIEW_FINDING_FOOTER)
+}
+
+/// Guarantee the footer survives into the posted body even though the
+/// confirm dialog's summary editor is free-form text the user can edit —
+/// including deleting the footer [`build_ai_review`] seeded it with. Called
+/// right before [`GhCli::create_review`] rather than trusted from dialog
+/// build time, so an edited-out footer is restored instead of silently
+/// publishing an unattributed review.
+fn ensure_ai_review_attribution(body: &str) -> String {
+    let trimmed = body.trim_end();
+    if trimmed.ends_with(AI_REVIEW_FINDING_FOOTER) {
+        trimmed.to_string()
+    } else {
+        append_ai_review_attribution(trimmed)
+    }
 }
 
 /// Soft ceiling on the AI review's assembled prompt (diff + memory doc +
@@ -119,6 +135,10 @@ pub enum AiReviewProgress {
 /// a genuinely clean diff, which also parses to zero findings).
 pub struct AiReviewOutcome {
     pub findings: Vec<AiReviewFinding>,
+    /// One-to-three sentence overview produced in the same agent pass as the
+    /// findings. `None` when an older/malformed response omitted the summary;
+    /// posting falls back to the legacy placeholder instead of blocking.
+    pub summary: Option<String>,
     pub raw_output: String,
 }
 
@@ -159,6 +179,27 @@ pub enum AiReviewStage {
 pub struct AiReviewCacheEntry {
     pub findings: Vec<AiReviewFinding>,
     pub last_run: Option<AiReviewRun>,
+    /// Overall review summary generated alongside `findings`. The default
+    /// keeps cache rows written before this field was introduced readable.
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+impl AiReviewCacheEntry {
+    /// Number of findings that `W` can still publish. A failed latest run is
+    /// deliberately not pending even if an older draft set remains cached.
+    pub fn publishable_finding_count(&self) -> usize {
+        if !matches!(
+            self.last_run.as_ref().map(|run| &run.outcome),
+            Some(AiReviewRunOutcome::Findings(_))
+        ) {
+            return 0;
+        }
+        self.findings
+            .iter()
+            .filter(|finding| !finding.skipped && !finding.published)
+            .count()
+    }
 }
 
 /// Assemble the AI code-review prompt: the PR diff, the review-memory doc's
@@ -195,8 +236,11 @@ pub fn ai_review_prompt(diff: &str, memory: &str, skill: Option<&str>) -> String
     out.push_str("Diff:\n\n");
     out.push_str(diff.trim_end());
     out.push_str(&format!(
-        "\n\n---\n\nOutput ONLY a list of findings, one per heading, in this exact format (no \
-         prose outside it; omit entirely if there are no findings):\n\n\
+        "\n\n---\n\nOutput ONLY the summary and findings in this exact format (no prose outside \
+         it). Always include the summary, even when there are no findings. The summary must be \
+         one to three useful sentences covering the main themes or risk:\n\n\
+         ## Summary\n\
+         <overall review summary>\n\n\
          {AI_FINDING_HEADING_PREFIX}<path>:<line>\n\
          <finding text, 1-3 sentences>\n\n\
          {AI_FINDING_HEADING_PREFIX}General\n\
@@ -241,61 +285,76 @@ fn strip_finding_heading(line: &str) -> Option<&str> {
     (!rest.is_empty()).then_some(rest)
 }
 
-/// Parse the AI reviewer's fixed-format output ([`ai_review_prompt`]) into
-/// findings. Tolerant of common formatting drift: an outer code fence around
-/// the whole response is stripped first ([`strip_outer_code_fence`]), and any
-/// small markdown heading level starts a new finding ([`strip_finding_heading`],
-/// not just the requested `###`). A `path:line` heading (the line parses as
-/// `u32`) anchors it, anything else (`General`, malformed) leaves it pathless.
-/// Body lines up to the next heading are joined and trimmed. Empty findings
-/// (blank body) are dropped rather than erroring — a partially-malformed
-/// response still yields whatever findings did parse.
-pub fn parse_ai_findings(output: &str) -> Vec<AiReviewFinding> {
+/// Parse the AI reviewer's fixed-format output ([`ai_review_prompt`]) into its
+/// overall summary and findings. Tolerant of common formatting drift: an
+/// outer code fence around the whole response is stripped first
+/// ([`strip_outer_code_fence`]), and any small markdown heading level starts a
+/// section ([`strip_finding_heading`], not just the requested `###`). A
+/// case-insensitive `Summary` section is separated from findings; a
+/// `path:line` finding heading (the line parses as `u32`) is anchored, while
+/// anything else (`General`, malformed) stays pathless. Empty sections are
+/// dropped rather than erroring, so a partially-malformed response still
+/// yields whatever content did parse.
+fn parse_ai_review_output(output: &str) -> (Option<String>, Vec<AiReviewFinding>) {
     fn flush(
-        current: Option<(Option<String>, Option<u32>, Vec<&str>)>,
+        current: Option<(&str, Vec<&str>)>,
+        summary: &mut Option<String>,
         out: &mut Vec<AiReviewFinding>,
     ) {
-        let Some((path, line, lines)) = current else {
+        let Some((heading, lines)) = current else {
             return;
         };
         let body = lines.join("\n").trim().to_string();
-        if !body.is_empty() {
-            out.push(AiReviewFinding {
-                path,
-                line,
-                body,
-                diff_hunk: None,
-                skipped: false,
-                published: false,
-            });
+        if body.is_empty() {
+            return;
         }
+        if heading.trim().eq_ignore_ascii_case("summary") {
+            if summary.is_none() {
+                *summary = Some(body);
+            }
+            return;
+        }
+        let (path, line) = match heading.trim().rsplit_once(':') {
+            Some((p, l)) if !p.is_empty() => match l.trim().parse::<u32>() {
+                Ok(n) => (Some(p.to_string()), Some(n)),
+                Err(_) => (None, None),
+            },
+            _ => (None, None),
+        };
+        out.push(AiReviewFinding {
+            path,
+            line,
+            body,
+            diff_hunk: None,
+            skipped: false,
+            published: false,
+        });
     }
 
     let output = strip_outer_code_fence(output);
+    let mut summary = None;
     let mut findings = Vec::new();
-    let mut current: Option<(Option<String>, Option<u32>, Vec<&str>)> = None;
+    let mut current: Option<(&str, Vec<&str>)> = None;
     for raw_line in output.lines() {
         match strip_finding_heading(raw_line) {
             Some(heading) => {
-                flush(current.take(), &mut findings);
-                let (path, line) = match heading.trim().rsplit_once(':') {
-                    Some((p, l)) if !p.is_empty() => match l.trim().parse::<u32>() {
-                        Ok(n) => (Some(p.to_string()), Some(n)),
-                        Err(_) => (None, None),
-                    },
-                    _ => (None, None),
-                };
-                current = Some((path, line, Vec::new()));
+                flush(current.take(), &mut summary, &mut findings);
+                current = Some((heading, Vec::new()));
             }
             None => {
-                if let Some((_, _, lines)) = current.as_mut() {
+                if let Some((_, lines)) = current.as_mut() {
                     lines.push(raw_line);
                 }
             }
         }
     }
-    flush(current, &mut findings);
-    findings
+    flush(current, &mut summary, &mut findings);
+    (summary, findings)
+}
+
+#[cfg(test)]
+pub fn parse_ai_findings(output: &str) -> Vec<AiReviewFinding> {
+    parse_ai_review_output(output).1
 }
 
 /// Reconstruct a GitHub-style `diff_hunk` string (the `@@ ... @@` header plus
@@ -328,7 +387,10 @@ fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) ->
 /// silently dropped. Inline comments carry their own attribution footer since
 /// they can surface on their own (e.g. the Files-changed view) without the
 /// review summary in sight; the summary already self-identifies.
-fn build_ai_review(findings: &[&AiReviewFinding]) -> (String, Vec<GhPrReviewComment>) {
+fn build_ai_review(
+    findings: &[&AiReviewFinding],
+    generated_summary: Option<&str>,
+) -> (String, Vec<GhPrReviewComment>) {
     let mut inline = Vec::new();
     let mut general = Vec::new();
     for f in findings {
@@ -356,10 +418,16 @@ fn build_ai_review(findings: &[&AiReviewFinding]) -> (String, Vec<GhPrReviewComm
         }
     }
 
-    let mut body = String::from("AI review, via AMF.");
+    let generated_summary = generated_summary.filter(|summary| !summary.trim().is_empty());
+    let mut body = generated_summary
+        .map(|summary| summary.trim().to_string())
+        .unwrap_or_else(|| "AI review, via AMF.".to_string());
     if !general.is_empty() {
         body.push_str("\n\n");
         body.push_str(&general.join("\n"));
+    }
+    if generated_summary.is_some() {
+        body = append_ai_review_attribution(&body);
     }
     (body, inline)
 }
@@ -428,7 +496,7 @@ fn run_ai_pr_review(
         },
     )
     .map(|output| {
-        let mut findings = parse_ai_findings(&output);
+        let (summary, mut findings) = parse_ai_review_output(&output);
         // Attach each anchored finding's diff hunk by re-matching its
         // `path:line` into the already-fetched PR diff — nothing about
         // generating a finding produces one the way GitHub's API does for a
@@ -443,10 +511,56 @@ fn run_ai_pr_review(
         }
         AiReviewOutcome {
             findings,
+            summary,
             raw_output: output,
         }
     });
     let _ = tx.send(AiReviewProgress::Done(result));
+}
+
+fn pr_review_state_matches_refresh(state: &PrReviewState, workdir: &Path, pr_number: u32) -> bool {
+    state.workdir.as_path() == workdir && state.review.pr.number == pr_number
+}
+
+/// Replace only the network-backed review snapshot while retaining the
+/// pane-local workflow state (filters, fix target, marks, dialogs, token
+/// baselines, and return navigation). Keep the same selected comment when it
+/// still exists in the refreshed response.
+fn apply_refreshed_pr_review_state(
+    state: &mut PrReviewState,
+    review: crate::app::pr_review::PrReview,
+    pending_ai_review_findings: usize,
+    checked_out_branch: Option<String>,
+) {
+    let selected_id = state.selected_comment().map(|comment| comment.id);
+    let old_selected = state.selected;
+    state.review = review;
+    state.pending_ai_review_findings = pending_ai_review_findings;
+    state.checked_out_branch = checked_out_branch;
+    state.marked.retain(|id| {
+        state
+            .review
+            .comments
+            .iter()
+            .any(|comment| comment.id == *id)
+    });
+    if let Some(index) = selected_id.and_then(|id| {
+        state
+            .review
+            .comments
+            .iter()
+            .position(|comment| comment.id == id)
+    }) {
+        state.selected = index;
+    } else {
+        state.selected = old_selected.min(state.review.comments.len().saturating_sub(1));
+        state.detail_scroll = 0;
+    }
+    // The restored (or fallback) selection can land on a row `hide_resolved`
+    // now excludes — e.g. the selected comment's thread was resolved on
+    // GitHub since the last fetch — so re-apply the same filter this pane
+    // already snaps to on an explicit `x` toggle.
+    state.snap_selection_to_visible();
 }
 
 impl App {
@@ -465,14 +579,15 @@ impl App {
                 .ok()
                 .flatten()
         });
-        let (findings, last_run) = match cached {
-            Some(entry) => (entry.findings, entry.last_run),
-            None => (Vec::new(), None),
+        let (findings, summary, last_run) = match cached {
+            Some(entry) => (entry.findings, entry.summary, entry.last_run),
+            None => (Vec::new(), None, None),
         };
         self.mode = AppMode::AiReview(AiReviewState {
             workdir,
             pr,
             findings,
+            summary,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
@@ -579,15 +694,81 @@ impl App {
         }
     }
 
-    fn cache_ai_review(&self, state: &AiReviewState) {
-        let Some(db) = self.db.as_ref() else {
-            return;
-        };
+    /// Persist the AI Review pane and synchronize any matching PR Triage
+    /// badge. Returns whether the durable cache write succeeded; most edits
+    /// treat a write failure as non-fatal, while posting uses it to ensure the
+    /// published marker is durable before starting the network refresh.
+    fn cache_ai_review(&mut self, state: &AiReviewState) -> bool {
         let entry = AiReviewCacheEntry {
             findings: state.findings.clone(),
             last_run: state.last_run.clone(),
+            summary: state.summary.clone(),
         };
-        let _ = db.save_ai_review_cache(state.pr.number, &state.pr.head_sha, &entry);
+        let saved = match self.db.as_ref() {
+            Some(db) => {
+                match db.save_ai_review_cache(state.pr.number, &state.pr.head_sha, &entry) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        self.log_warn(
+                            "pr_review",
+                            format!(
+                                "AI Review cache write failed for PR #{}: {error}",
+                                state.pr.number
+                            ),
+                        );
+                        false
+                    }
+                }
+            }
+            None => false,
+        };
+        self.update_pending_ai_review_count(
+            &state.workdir,
+            &state.pr,
+            entry.publishable_finding_count(),
+        );
+        saved
+    }
+
+    /// Publishable cached findings for the exact PR/head SHA. This is read
+    /// when PR Triage opens so the pending badge survives pane changes and
+    /// process restarts rather than depending on a live background job.
+    pub(crate) fn pending_ai_review_count(&self, pr: &PrRef) -> usize {
+        self.db
+            .as_ref()
+            .and_then(|db| {
+                db.load_ai_review_cache(pr.number, &pr.head_sha)
+                    .ok()
+                    .flatten()
+            })
+            .map_or(0, |entry| entry.publishable_finding_count())
+    }
+
+    /// Keep every in-memory copy of the matching PR Triage pane in sync with
+    /// the durable cache. The pane may currently be visible, stashed under AI
+    /// Review, or stashed while the user watches a fix session.
+    fn update_pending_ai_review_count(&mut self, workdir: &Path, pr: &PrRef, count: usize) {
+        let matches = |state: &PrReviewState| {
+            state.workdir == workdir
+                && state.review.pr.number == pr.number
+                && state.review.pr.head_sha == pr.head_sha
+        };
+        if let AppMode::PrReview(state) = &mut self.mode
+            && matches(state)
+        {
+            state.pending_ai_review_findings = count;
+        }
+        if let Some(return_to) = self.ai_review_return_to.as_deref_mut()
+            && let AppMode::PrReview(state) = return_to
+            && matches(state)
+        {
+            state.pending_ai_review_findings = count;
+        }
+        if let Some(stash) = &mut self.pr_review_return
+            && matches(&stash.state)
+        {
+            stash.state.pending_ai_review_findings = count;
+        }
     }
 
     pub fn ai_review_select_next(&mut self) {
@@ -615,7 +796,8 @@ impl App {
             finding.skipped = !finding.skipped;
         }
         if let AppMode::AiReview(state) = &self.mode {
-            self.cache_ai_review(state);
+            let state = state.clone();
+            self.cache_ai_review(&state);
         }
     }
 
@@ -661,7 +843,8 @@ impl App {
             finding.body = editor.text().to_string();
         }
         if let AppMode::AiReview(state) = &self.mode {
-            self.cache_ai_review(state);
+            let state = state.clone();
+            self.cache_ai_review(&state);
         }
     }
 
@@ -1068,7 +1251,10 @@ impl App {
                     match result {
                         Ok(outcome) => {
                             let count = outcome.findings.len();
-                            if count == 0 && !outcome.raw_output.trim().is_empty() {
+                            let parse_suspect = count == 0
+                                && outcome.summary.is_none()
+                                && !outcome.raw_output.trim().is_empty();
+                            if parse_suspect {
                                 self.log_warn(
                                     "pr_review",
                                     format!(
@@ -1105,6 +1291,7 @@ impl App {
                             // this point and following up on them happens in
                             // PR Triage, not here.
                             base.findings = outcome.findings;
+                            base.summary = outcome.summary;
                             base.selected = 0;
                             base.detail_scroll = 0;
                             base.last_run = Some(AiReviewRun {
@@ -1124,10 +1311,16 @@ impl App {
                                 String::new()
                             };
                             if count == 0 {
-                                self.push_toast_warning(format!(
-                                    "AI review found 0 findings{note} — press D to check the \
-                                     debug log"
-                                ));
+                                if parse_suspect {
+                                    self.push_toast_warning(format!(
+                                        "AI review found 0 findings{note} — press D to check the \
+                                         debug log"
+                                    ));
+                                } else {
+                                    self.push_toast_success(format!(
+                                        "AI review found no findings{note}"
+                                    ));
+                                }
                             } else {
                                 self.push_toast_success(format!(
                                     "AI review found {count} finding{}{note}",
@@ -1222,13 +1415,30 @@ impl App {
     /// Open the post-to-GitHub confirm dialog (`W`) for every kept
     /// (not-skipped, not-already-published) finding.
     pub fn ai_review_open_post_confirm(&mut self) {
-        let findings: Vec<AiReviewFinding> = match &self.mode {
-            AppMode::AiReview(state) if state.post_confirm.is_none() => state
-                .findings
-                .iter()
-                .filter(|f| !f.skipped && !f.published)
-                .cloned()
-                .collect(),
+        let (findings, generated_summary): (Vec<AiReviewFinding>, Option<String>) = match &self.mode
+        {
+            AppMode::AiReview(state) if state.post_confirm.is_none() => {
+                let findings: Vec<AiReviewFinding> = state
+                    .findings
+                    .iter()
+                    .filter(|f| !f.skipped && !f.published)
+                    .cloned()
+                    .collect();
+                // `state.summary` is model prose written over the *complete*
+                // finding set, so it can describe a finding the user has since
+                // skipped (a false positive, or one too sensitive to post) even
+                // though that finding itself is excluded from `findings` below.
+                // Once anything's been skipped, drop it in favor of the generic
+                // placeholder rather than risk republishing what `skipped` was
+                // meant to suppress.
+                let any_skipped = state.findings.iter().any(|f| f.skipped);
+                let generated_summary = if any_skipped {
+                    None
+                } else {
+                    state.summary.clone()
+                };
+                (findings, generated_summary)
+            }
             _ => return,
         };
         if findings.is_empty() {
@@ -1236,7 +1446,7 @@ impl App {
             return;
         }
         let refs: Vec<&AiReviewFinding> = findings.iter().collect();
-        let (summary, inline) = build_ai_review(&refs);
+        let (summary, inline) = build_ai_review(&refs, generated_summary.as_deref());
 
         if let AppMode::AiReview(state) = &mut self.mode {
             state.post_confirm = Some(AiReviewPostConfirmState {
@@ -1304,15 +1514,19 @@ impl App {
                     state.workdir.clone(),
                     state.pr.clone(),
                     post.inline.clone(),
-                    post.editor.text().trim().to_string(),
+                    ensure_ai_review_attribution(post.editor.text().trim()),
+                    state
+                        .findings
+                        .iter()
+                        .filter(|finding| !finding.skipped && !finding.published)
+                        .count(),
                 )
             }),
             _ => return Ok(()),
         };
-        let Some((workdir, pr, inline, body)) = prep else {
+        let Some((workdir, pr, inline, body, posted_count)) = prep else {
             return Ok(());
         };
-        let posted_count = inline.len().max(1); // at least the summary itself
 
         if let Err(e) = GhCli::create_review(&workdir, &pr, &body, "COMMENT", &inline) {
             self.fail_ai_review_post(e);
@@ -1327,14 +1541,167 @@ impl App {
             }
             state.post_confirm = None;
         }
-        if let AppMode::AiReview(state) = &self.mode {
-            self.cache_ai_review(state);
+        let published_marker_saved = if let AppMode::AiReview(state) = &self.mode {
+            let state = state.clone();
+            self.cache_ai_review(&state)
+        } else {
+            false
+        };
+        // The published marker must be durable before any refresh begins, so
+        // a network failure cannot make the same findings postable again.
+        if published_marker_saved {
+            self.start_ai_review_triage_refresh(workdir, pr);
+        } else {
+            self.push_toast_warning(
+                "AI review posted, but its published marker could not be saved; PR Triage was not refreshed",
+            );
         }
+        let next = if published_marker_saved {
+            " — refreshing PR Triage"
+        } else {
+            ""
+        };
         self.push_toast_success(format!(
-            "Posted AI review · {posted_count} finding{} — follow up in PR Triage after a refresh",
-            if posted_count == 1 { "" } else { "s" }
+            "Posted AI review · {posted_count} finding{}{}",
+            if posted_count == 1 { "" } else { "s" },
+            next,
         ));
         Ok(())
+    }
+
+    fn start_ai_review_triage_refresh(&mut self, workdir: PathBuf, pr: PrRef) {
+        if let Some(db) = self.db.as_ref()
+            && let Err(error) = db.delete_pr_review_cache(pr.number, &pr.head_sha)
+        {
+            self.log_warn(
+                "pr_review",
+                format!(
+                    "could not invalidate PR #{} cache before post refresh: {error}",
+                    pr.number
+                ),
+            );
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ai_review_triage_refresh_bg = Some(rx);
+        self.ai_review_triage_refresh_pending = Some(AiReviewTriageRefresh {
+            workdir: workdir.clone(),
+            pr: pr.clone(),
+        });
+        std::thread::spawn(move || {
+            let result = GhCli::fetch_pr_by_number(&workdir, pr.number).and_then(|fresh_pr| {
+                crate::app::pr_review::fetch_and_normalize(&workdir, fresh_pr)
+            });
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Apply the automatic post-success PR Triage refresh without changing
+    /// the current mode. A matching stashed pane is updated in place; when AI
+    /// Review was opened elsewhere, the fresh snapshot is still cached for
+    /// the next PR Triage entry.
+    pub fn poll_ai_review_triage_refresh_bg(&mut self) -> bool {
+        let Some(rx) = self.ai_review_triage_refresh_bg.as_ref() else {
+            return false;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ai_review_triage_refresh_bg = None;
+                let pending = self.ai_review_triage_refresh_pending.take();
+                let number = pending.as_ref().map(|pending| pending.pr.number);
+                self.log_warn(
+                    "pr_review",
+                    number.map_or_else(
+                        || "post-success PR Triage refresh disconnected".to_string(),
+                        |number| {
+                            format!("post-success PR Triage refresh for PR #{number} disconnected")
+                        },
+                    ),
+                );
+                self.push_toast_warning(
+                    "AI review posted, but PR Triage refresh failed unexpectedly",
+                );
+                return true;
+            }
+        };
+        self.ai_review_triage_refresh_bg = None;
+        let Some(pending) = self.ai_review_triage_refresh_pending.take() else {
+            return true;
+        };
+
+        match result {
+            Ok(mut review) => {
+                self.cache_pr_review(&review);
+                self.apply_persisted_triage(&mut review);
+                let pending_count = self.pending_ai_review_count(&review.pr);
+                let checked_out_branch =
+                    crate::worktree::WorktreeManager::current_branch(&pending.workdir)
+                        .unwrap_or(None);
+                let matches = |state: &PrReviewState| {
+                    pr_review_state_matches_refresh(state, &pending.workdir, pending.pr.number)
+                };
+
+                if let AppMode::PrReview(state) = &mut self.mode
+                    && matches(state)
+                {
+                    apply_refreshed_pr_review_state(
+                        state,
+                        review.clone(),
+                        pending_count,
+                        checked_out_branch.clone(),
+                    );
+                }
+                if let Some(return_to) = self.ai_review_return_to.as_deref_mut()
+                    && let AppMode::PrReview(state) = return_to
+                    && matches(state)
+                {
+                    apply_refreshed_pr_review_state(
+                        state,
+                        review.clone(),
+                        pending_count,
+                        checked_out_branch.clone(),
+                    );
+                }
+                if let Some(stash) = &mut self.pr_review_return
+                    && matches(&stash.state)
+                {
+                    apply_refreshed_pr_review_state(
+                        &mut stash.state,
+                        review.clone(),
+                        pending_count,
+                        checked_out_branch,
+                    );
+                }
+                self.log_info(
+                    "pr_review",
+                    format!(
+                        "refreshed PR #{} after AI Review post ({} comments)",
+                        review.pr.number,
+                        review.comments.len()
+                    ),
+                );
+                self.push_toast_success(format!(
+                    "PR Triage refreshed · {} comment{}",
+                    review.comments.len(),
+                    if review.comments.len() == 1 { "" } else { "s" }
+                ));
+            }
+            Err(error) => {
+                self.log_warn(
+                    "pr_review",
+                    format!(
+                        "AI Review posted, but PR #{} refresh failed: {error}",
+                        pending.pr.number
+                    ),
+                );
+                self.push_toast_warning(format!(
+                    "AI review posted, but PR Triage refresh failed: {error}"
+                ));
+            }
+        }
+        true
     }
 
     /// Record a `W` post failure inline on the still-open post-confirm dialog
@@ -1392,6 +1759,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_ai_review_output_separates_summary_from_findings() {
+        let output = "## Summary\nThe patch has one concurrency risk.\n\n### src/app/sync.rs:42\nGuard this with the lock.\n";
+        let (summary, findings) = parse_ai_review_output(output);
+        assert_eq!(
+            summary.as_deref(),
+            Some("The patch has one concurrency risk.")
+        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].path.as_deref(), Some("src/app/sync.rs"));
+    }
+
+    #[test]
+    fn parse_ai_review_output_allows_summary_without_findings() {
+        let (summary, findings) =
+            parse_ai_review_output("## Summary\nNo actionable issues found.\n");
+        assert_eq!(summary.as_deref(), Some("No actionable issues found."));
+        assert!(findings.is_empty());
+    }
+
+    #[test]
     fn parse_ai_findings_malformed_heading_is_pathless() {
         let output = "### not-a-path-line\nSome finding text.\n";
         let findings = parse_ai_findings(output);
@@ -1442,6 +1829,7 @@ mod tests {
         assert!(prompt.contains("diff content"));
         assert!(prompt.contains("known finding"));
         assert!(prompt.contains(AI_FINDING_HEADING_PREFIX));
+        assert!(prompt.contains("## Summary"));
     }
 
     #[test]
@@ -1489,12 +1877,16 @@ mod tests {
             Some("@@ -1 +1 @@"),
         );
         let general = finding(None, None, "general note", None);
-        let (summary, inline) = build_ai_review(&[&anchored, &general]);
+        let (summary, inline) = build_ai_review(
+            &[&anchored, &general],
+            Some("The patch has an anchored and a broad risk."),
+        );
         assert_eq!(inline.len(), 1);
         assert_eq!(inline[0].path, "src/lib.rs");
         assert!(inline[0].body.contains("AI review via AMF"));
         assert!(summary.contains("general note"));
-        assert!(summary.starts_with("AI review, via AMF."));
+        assert!(summary.starts_with("The patch has an anchored and a broad risk."));
+        assert!(summary.ends_with("— AI review via AMF"));
     }
 
     #[test]
@@ -1505,7 +1897,7 @@ mod tests {
             "fix this",
             Some("@@ -1 +1 @@"),
         );
-        let (summary, inline) = build_ai_review(&[&anchored]);
+        let (summary, inline) = build_ai_review(&[&anchored], None);
         assert_eq!(inline.len(), 1);
         assert_eq!(summary, "AI review, via AMF.");
     }
@@ -1516,15 +1908,53 @@ mod tests {
         // time — GitHub would reject the whole review if this were posted
         // inline, so it must fold into the summary instead.
         let unmatched = finding(Some("src/lib.rs"), Some(999), "miscounted line", None);
-        let (summary, inline) = build_ai_review(&[&unmatched]);
+        let (summary, inline) = build_ai_review(&[&unmatched], None);
         assert!(inline.is_empty());
         assert!(summary.contains("miscounted line"));
+    }
+
+    #[test]
+    fn cache_entry_counts_only_publishable_findings_from_a_successful_run() {
+        let mut skipped = finding(None, None, "skip", None);
+        skipped.skipped = true;
+        let mut published = finding(None, None, "posted", None);
+        published.published = true;
+        let pending = finding(None, None, "pending", None);
+        let mut entry = AiReviewCacheEntry {
+            findings: vec![skipped, published, pending],
+            last_run: Some(AiReviewRun {
+                ran_at: Local::now(),
+                outcome: AiReviewRunOutcome::Findings(3),
+            }),
+            summary: Some("One finding remains.".to_string()),
+        };
+
+        assert_eq!(entry.publishable_finding_count(), 1);
+        entry.last_run = Some(AiReviewRun {
+            ran_at: Local::now(),
+            outcome: AiReviewRunOutcome::Error("failed".to_string()),
+        });
+        assert_eq!(entry.publishable_finding_count(), 0);
     }
 
     #[test]
     fn append_ai_review_attribution_appends_footer_and_trims_trailing_whitespace() {
         let body = append_ai_review_attribution("finding text  \n\n");
         assert_eq!(body, "finding text\n\n— AI review via AMF");
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_restores_a_footer_the_user_deleted() {
+        // The summary body is editable right up to `W`; a user who trims the
+        // seeded footer while editing must still get an attributed post.
+        let body = ensure_ai_review_attribution("Fixed the summary text.");
+        assert_eq!(body, "Fixed the summary text.\n\n— AI review via AMF");
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_does_not_duplicate_an_existing_footer() {
+        let body = ensure_ai_review_attribution("Summary.\n\n— AI review via AMF");
+        assert_eq!(body, "Summary.\n\n— AI review via AMF");
     }
 
     #[test]

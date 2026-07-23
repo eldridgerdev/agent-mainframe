@@ -675,6 +675,16 @@ pub fn draw_pr_review(
             "  [AI review running]",
             Style::default().fg(theme.warning.to_color()),
         ));
+    } else if state.pending_ai_review_findings > 0 {
+        header_spans.push(Span::styled(
+            format!(
+                "  [AI review pending: {}]",
+                state.pending_ai_review_findings
+            ),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ));
     }
     // Once the fix-target session exists, show what triage has spent on it —
     // the "only pay for what you asked for" constraint made visible in-pane.
@@ -2117,6 +2127,7 @@ mod tests {
             marked: std::collections::HashSet::new(),
             pending_batch: false,
             checked_out_branch: Some("main".to_string()),
+            pending_ai_review_findings: 0,
         }
     }
 

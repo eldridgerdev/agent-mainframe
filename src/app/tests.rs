@@ -13575,8 +13575,7 @@ fn ai_review_post_dialog_drops_generated_summary_when_a_finding_is_skipped() {
         let mut skipped = sample_ai_review_finding("A sensitive finding");
         skipped.skipped = true;
         state.findings = vec![skipped, sample_ai_review_finding("A kept finding")];
-        state.summary =
-            Some("The patch has a sensitive issue plus a kept finding.".to_string());
+        state.summary = Some("The patch has a sensitive issue plus a kept finding.".to_string());
         state.last_run = Some(crate::app::ai_review::AiReviewRun {
             ran_at: chrono::Local::now(),
             outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(2),
@@ -13722,7 +13721,8 @@ fn post_success_refresh_snaps_selection_off_a_newly_resolved_comment() {
         repo: "r".to_string(),
         head_ref: "main".to_string(),
     };
-    let refreshed = crate::app::pr_review::normalize(refreshed_pr, comments, vec![], vec![], threads);
+    let refreshed =
+        crate::app::pr_review::normalize(refreshed_pr, comments, vec![], vec![], threads);
     tx.send(Ok(refreshed)).unwrap();
 
     assert!(app.poll_ai_review_triage_refresh_bg());

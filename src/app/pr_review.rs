@@ -1542,6 +1542,7 @@ impl App {
             );
             self.apply_persisted_triage(&mut review);
             let usage_baselines = self.pr_review_initial_usage_baselines(&workdir);
+            let pending_ai_review_findings = self.pending_ai_review_count(&review.pr);
             let checked_out_branch =
                 crate::worktree::WorktreeManager::current_branch(&workdir).unwrap_or(None);
             self.mode = AppMode::PrReview(PrReviewState {
@@ -1566,6 +1567,7 @@ impl App {
                 marked: std::collections::HashSet::new(),
                 pending_batch: false,
                 checked_out_branch,
+                pending_ai_review_findings,
             });
             return;
         }
@@ -1604,6 +1606,18 @@ impl App {
             self.ai_review_pending = None;
             self.ai_review_bg = None;
             self.ai_review_progress = None;
+            changed = true;
+        }
+
+        if self
+            .ai_review_triage_refresh_pending
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.workdir == workdir && pending.pr.number == predecessor_pr_number
+            })
+        {
+            self.ai_review_triage_refresh_pending = None;
+            self.ai_review_triage_refresh_bg = None;
             changed = true;
         }
 
@@ -1646,7 +1660,7 @@ impl App {
 
     /// Persist a freshly-fetched review under its `PR# + head SHA` key so the
     /// next open is a cache hit. A write failure is non-fatal (logged, not shown).
-    fn cache_pr_review(&mut self, review: &PrReview) {
+    pub(crate) fn cache_pr_review(&mut self, review: &PrReview) {
         let result = match self.db.as_ref() {
             Some(db) => db.save_pr_review_cache(review),
             None => return,
@@ -1662,7 +1676,7 @@ impl App {
     /// the PR's head) — is authoritative for local triage, so it wins over
     /// whatever the cache blob happened to serialize. A read failure (or no DB)
     /// is non-fatal: comments just stay [`TriageState::Untriaged`].
-    fn apply_persisted_triage(&mut self, review: &mut PrReview) {
+    pub(crate) fn apply_persisted_triage(&mut self, review: &mut PrReview) {
         let Some(db) = self.db.as_ref() else {
             return;
         };
@@ -2174,6 +2188,7 @@ impl App {
                         );
                         self.cache_pr_review(&review);
                         self.apply_persisted_triage(&mut review);
+                        let pending_ai_review_findings = self.pending_ai_review_count(&review.pr);
                         let checked_out_branch =
                             crate::worktree::WorktreeManager::current_branch(&workdir)
                                 .unwrap_or(None);
@@ -2199,6 +2214,7 @@ impl App {
                             marked: std::collections::HashSet::new(),
                             pending_batch: false,
                             checked_out_branch,
+                            pending_ai_review_findings,
                         });
                     }
                     Err(e) => {

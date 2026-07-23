@@ -36,6 +36,17 @@ pub fn save(conn: &Connection, review: &PrReview) -> Result<()> {
     Ok(())
 }
 
+/// Invalidate one exact cache row. Used after AMF posts an AI Review so a
+/// failed background refresh cannot leave the next PR Triage entry serving
+/// the pre-post comment snapshot.
+pub fn delete(conn: &Connection, pr_number: u32, head_sha: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM pr_review_cache WHERE pr_number = ?1 AND head_sha = ?2",
+        params![pr_number as i64, head_sha],
+    )?;
+    Ok(())
+}
+
 /// Drop cache rows older than a week so stale head-SHA entries don't accumulate.
 pub fn evict_stale(conn: &Connection) -> Result<()> {
     conn.execute(
@@ -126,5 +137,17 @@ mod tests {
 
         let loaded = db.load_pr_review_cache(7, "sha").unwrap().unwrap();
         assert_eq!(loaded.comments[0].snippet, "second");
+    }
+
+    #[test]
+    fn delete_invalidates_only_the_matching_key() {
+        let (_tmp, db) = open_temp_db();
+        db.save_pr_review_cache(&review(7, "old", "old")).unwrap();
+        db.save_pr_review_cache(&review(7, "new", "new")).unwrap();
+
+        db.delete_pr_review_cache(7, "old").unwrap();
+
+        assert!(db.load_pr_review_cache(7, "old").unwrap().is_none());
+        assert!(db.load_pr_review_cache(7, "new").unwrap().is_some());
     }
 }

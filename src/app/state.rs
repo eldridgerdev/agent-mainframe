@@ -1806,6 +1806,10 @@ pub struct AiReviewState {
     /// Findings from the most recent `A` run (or loaded from `ai_review_cache`
     /// on entry), in generation order.
     pub findings: Vec<crate::app::ai_review::AiReviewFinding>,
+    /// Overall one-to-three sentence review summary generated in the same
+    /// pass as `findings`, and loaded from the same cache row. Older cache
+    /// entries may not have one.
+    pub summary: Option<String>,
     /// Index into `findings` of the highlighted finding.
     pub selected: usize,
     /// Scroll offset (in lines) for the detail pane of the selected finding.
@@ -1926,6 +1930,19 @@ pub struct PrReviewState {
     /// wrong branch — see [`Self::branch_mismatch`]. `None` when the branch
     /// couldn't be determined (e.g. detached HEAD).
     pub checked_out_branch: Option<String>,
+    /// Completed AI-review findings for this exact PR/head SHA that are still
+    /// publishable. Loaded from `ai_review_cache` on entry and kept in sync as
+    /// the linked AI Review is generated, skipped, or posted.
+    pub pending_ai_review_findings: usize,
+}
+
+/// Identity of the PR Triage refresh started after a successful AI Review
+/// post. Kept outside `AppMode` so the refresh can update a stashed triage
+/// pane while the user remains in AI Review.
+#[derive(Debug, Clone)]
+pub struct AiReviewTriageRefresh {
+    pub workdir: PathBuf,
+    pub pr: crate::github::PrRef,
 }
 
 /// Confirm/edit dialog for posting the kept AI-review findings to GitHub as a

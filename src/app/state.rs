@@ -2173,6 +2173,29 @@ impl PrReviewState {
         self.sort_indices((0..self.review.comments.len()).collect())
     }
 
+    /// If `selected` is currently hidden by `hide_resolved`, snap it to the
+    /// nearest remaining visible comment in sort order (forward first, then
+    /// backward, then the first visible comment). No-op when `selected` is
+    /// already visible, or nothing is visible at all. Shared by the `x`
+    /// toggle and by a PR Triage refresh, either of which can newly hide the
+    /// selected comment (resolved on GitHub, in the toggle case; refreshed
+    /// into a resolved state, in the refresh case).
+    pub fn snap_selection_to_visible(&mut self) {
+        let visible = self.visible_indices();
+        if visible.is_empty() || visible.contains(&self.selected) {
+            return;
+        }
+        let order = self.all_sorted_indices();
+        let pos = order.iter().position(|&i| i == self.selected);
+        let snapped = pos
+            .and_then(|p| order[p..].iter().find(|i| visible.contains(i)))
+            .or_else(|| pos.and_then(|p| order[..p].iter().rev().find(|i| visible.contains(i))))
+            .copied()
+            .unwrap_or(visible[0]);
+        self.selected = snapped;
+        self.detail_scroll = 0;
+    }
+
     /// Apply `sort_mode` to a set of comment indices. Stable, so ties keep
     /// their relative (fetch) order.
     fn sort_indices(&self, mut indices: Vec<usize>) -> Vec<usize> {

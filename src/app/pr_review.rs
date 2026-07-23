@@ -2279,23 +2279,7 @@ impl App {
     pub fn pr_review_toggle_resolved(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.hide_resolved = !state.hide_resolved;
-            let visible = state.visible_indices();
-            if visible.is_empty() {
-                return;
-            }
-            if !visible.contains(&state.selected) {
-                let order = state.all_sorted_indices();
-                let pos = order.iter().position(|&i| i == state.selected);
-                let snapped = pos
-                    .and_then(|p| order[p..].iter().find(|i| visible.contains(i)))
-                    .or_else(|| {
-                        pos.and_then(|p| order[..p].iter().rev().find(|i| visible.contains(i)))
-                    })
-                    .copied()
-                    .unwrap_or(visible[0]);
-                state.selected = snapped;
-                state.detail_scroll = 0;
-            }
+            state.snap_selection_to_visible();
         }
     }
 
@@ -2737,25 +2721,25 @@ impl App {
                     let pr_number = state.review.pr.number;
                     let head_sha = state.review.pr.head_sha.clone();
                     let (prompt, ids, is_batch, reply_draft_requests) = match &state.fix_confirm {
-                        // Confirming the open dialog uses its edited buffer. A batch
-                        // dialog carries every included comment id; a single one
-                        // targets the current selection.
+                        // Confirming the open dialog uses its edited buffer. The
+                        // target ids come from the dialog's own reply-draft
+                        // requests — captured when the dialog was built — rather
+                        // than the *current* selection, which a PR Triage refresh
+                        // received while the dialog sat open can have moved onto
+                        // an unrelated comment the injected prompt never mentions.
                         Some(confirm) => {
                             let prompt = confirm.editor.text().trim().to_string();
-                            match &confirm.batch {
-                                Some(batch_ids) => (
-                                    prompt,
-                                    batch_ids.clone(),
-                                    true,
-                                    confirm.reply_draft_requests.clone(),
-                                ),
-                                None => (
-                                    prompt,
-                                    state.selected_comment().map(|c| c.id).into_iter().collect(),
-                                    false,
-                                    confirm.reply_draft_requests.clone(),
-                                ),
-                            }
+                            let ids: Vec<u64> = confirm
+                                .reply_draft_requests
+                                .iter()
+                                .map(|r| r.comment_id)
+                                .collect();
+                            (
+                                prompt,
+                                ids,
+                                confirm.batch.is_some(),
+                                confirm.reply_draft_requests.clone(),
+                            )
                         }
                         // No dialog open (e.g. empty pane): fall back to the selection.
                         None => match state.selected_comment() {

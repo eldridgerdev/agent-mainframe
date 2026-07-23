@@ -60,6 +60,21 @@ fn append_ai_review_attribution(body: &str) -> String {
     format!("{}\n\n{}", body.trim_end(), AI_REVIEW_FINDING_FOOTER)
 }
 
+/// Guarantee the footer survives into the posted body even though the
+/// confirm dialog's summary editor is free-form text the user can edit —
+/// including deleting the footer [`build_ai_review`] seeded it with. Called
+/// right before [`GhCli::create_review`] rather than trusted from dialog
+/// build time, so an edited-out footer is restored instead of silently
+/// publishing an unattributed review.
+fn ensure_ai_review_attribution(body: &str) -> String {
+    let trimmed = body.trim_end();
+    if trimmed.ends_with(AI_REVIEW_FINDING_FOOTER) {
+        trimmed.to_string()
+    } else {
+        append_ai_review_attribution(trimmed)
+    }
+}
+
 /// Soft ceiling on the AI review's assembled prompt (diff + memory doc +
 /// instructions): past this, a warning toast fires once the token estimate is
 /// known, but the review still runs — chunking or an outright refusal isn't
@@ -541,6 +556,11 @@ fn apply_refreshed_pr_review_state(
         state.selected = old_selected.min(state.review.comments.len().saturating_sub(1));
         state.detail_scroll = 0;
     }
+    // The restored (or fallback) selection can land on a row `hide_resolved`
+    // now excludes — e.g. the selected comment's thread was resolved on
+    // GitHub since the last fetch — so re-apply the same filter this pane
+    // already snaps to on an explicit `x` toggle.
+    state.snap_selection_to_visible();
 }
 
 impl App {
@@ -1397,15 +1417,28 @@ impl App {
     pub fn ai_review_open_post_confirm(&mut self) {
         let (findings, generated_summary): (Vec<AiReviewFinding>, Option<String>) = match &self.mode
         {
-            AppMode::AiReview(state) if state.post_confirm.is_none() => (
-                state
+            AppMode::AiReview(state) if state.post_confirm.is_none() => {
+                let findings: Vec<AiReviewFinding> = state
                     .findings
                     .iter()
                     .filter(|f| !f.skipped && !f.published)
                     .cloned()
-                    .collect(),
-                state.summary.clone(),
-            ),
+                    .collect();
+                // `state.summary` is model prose written over the *complete*
+                // finding set, so it can describe a finding the user has since
+                // skipped (a false positive, or one too sensitive to post) even
+                // though that finding itself is excluded from `findings` below.
+                // Once anything's been skipped, drop it in favor of the generic
+                // placeholder rather than risk republishing what `skipped` was
+                // meant to suppress.
+                let any_skipped = state.findings.iter().any(|f| f.skipped);
+                let generated_summary = if any_skipped {
+                    None
+                } else {
+                    state.summary.clone()
+                };
+                (findings, generated_summary)
+            }
             _ => return,
         };
         if findings.is_empty() {
@@ -1481,7 +1514,7 @@ impl App {
                     state.workdir.clone(),
                     state.pr.clone(),
                     post.inline.clone(),
-                    post.editor.text().trim().to_string(),
+                    ensure_ai_review_attribution(post.editor.text().trim()),
                     state
                         .findings
                         .iter()
@@ -1908,6 +1941,20 @@ mod tests {
     fn append_ai_review_attribution_appends_footer_and_trims_trailing_whitespace() {
         let body = append_ai_review_attribution("finding text  \n\n");
         assert_eq!(body, "finding text\n\n— AI review via AMF");
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_restores_a_footer_the_user_deleted() {
+        // The summary body is editable right up to `W`; a user who trims the
+        // seeded footer while editing must still get an attributed post.
+        let body = ensure_ai_review_attribution("Fixed the summary text.");
+        assert_eq!(body, "Fixed the summary text.\n\n— AI review via AMF");
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_does_not_duplicate_an_existing_footer() {
+        let body = ensure_ai_review_attribution("Summary.\n\n— AI review via AMF");
+        assert_eq!(body, "Summary.\n\n— AI review via AMF");
     }
 
     #[test]

@@ -8887,6 +8887,64 @@ fn pr_review_inject_fix_also_stashes_return_state() {
 }
 
 #[test]
+fn pr_review_inject_fix_targets_dialogs_original_comment_after_selection_moves() {
+    // Regression: a PR Triage refresh (e.g. the automatic one after posting
+    // an AI review) can drop the comment a still-open fix-confirm dialog was
+    // built for, falling the selection back onto a different comment while
+    // the stale dialog stays open. Confirming must still mark — and route
+    // the reply-draft handoff to — the dialog's original comment, never
+    // whatever the refresh happened to leave selected.
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    let db_dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1; // comment id 2
+    }
+    app.pr_review_open_fix_confirm();
+    let request_id = match &app.mode {
+        AppMode::PrReview(state) => state.fix_confirm.as_ref().unwrap().reply_draft_requests[0]
+            .request_id
+            .clone(),
+        _ => unreachable!(),
+    };
+
+    // Simulate the refresh: comment 2's thread resolved upstream and dropped
+    // out of the fetched set, so selection fell back to comment 1. The dialog
+    // (still targeting comment 2 via its own `reply_draft_requests`) is left
+    // open, exactly as `apply_refreshed_pr_review_state` leaves it.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.comments.retain(|c| c.id != 2);
+        state.selected = 0;
+    }
+
+    app.pr_review_inject_fix().unwrap();
+
+    let triage = app.db.as_ref().unwrap().load_pr_comment_triage(7).unwrap();
+    assert!(
+        !triage.contains_key(&1),
+        "the newly-selected comment must not be marked Fixing"
+    );
+    assert_eq!(
+        triage.get(&2).map(|(state, _)| *state),
+        Some(crate::app::pr_review::TriageState::Fixing),
+        "the dialog's original comment must still be marked Fixing"
+    );
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .capture_pr_comment_reply_draft(7, 2, &request_id, "Fixed the selected path.")
+            .unwrap(),
+        "the reply-draft handoff must still route to the dialog's original comment"
+    );
+}
+
+#[test]
 fn pr_review_i_opens_syntax_picker_for_selected_comment_file() {
     let mut app = pr_review_test_app();
     enter_pr_review(&mut app, 2); // comments have paths src/file{id}.rs (Rust)
@@ -13498,6 +13556,50 @@ fn ai_review_post_dialog_is_seeded_with_generated_summary_and_attribution() {
 }
 
 #[test]
+fn ai_review_post_dialog_drops_generated_summary_when_a_finding_is_skipped() {
+    // Regression: `state.summary` is model prose written over the *complete*
+    // finding set, so it can still describe a finding the user has since
+    // skipped (a false positive, or one too sensitive to post) even though
+    // that finding is excluded from the posted findings below it. Once
+    // anything's skipped, the dialog must fall back to the generic
+    // placeholder rather than risk republishing what `skipped` was meant to
+    // suppress.
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        let mut skipped = sample_ai_review_finding("A sensitive finding");
+        skipped.skipped = true;
+        state.findings = vec![skipped, sample_ai_review_finding("A kept finding")];
+        state.summary =
+            Some("The patch has a sensitive issue plus a kept finding.".to_string());
+        state.last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(2),
+        });
+    }
+
+    app.ai_review_open_post_confirm();
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            let body = state.post_confirm.as_ref().unwrap().editor.text();
+            assert!(
+                !body.contains("sensitive issue"),
+                "the model summary describing the skipped finding must not be posted: {body}"
+            );
+            assert!(body.starts_with("AI review, via AMF."));
+            assert!(body.contains("A kept finding"));
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
 fn open_ai_review_from_triage_stashes_the_pane_and_close_restores_it() {
     let store = store_with_feature(ProjectStatus::Idle);
     let mut app = App::new_for_test(
@@ -13557,6 +13659,84 @@ fn post_success_refresh_updates_stashed_triage_without_leaving_ai_review() {
             assert!(state.hide_resolved);
             assert!(state.marked.contains(&2));
             assert_eq!(state.pending_ai_review_findings, 0);
+        }
+        _ => panic!("expected refreshed stashed PR Triage pane"),
+    }
+}
+
+#[test]
+fn post_success_refresh_snaps_selection_off_a_newly_resolved_comment() {
+    // Regression: restoring the selection by id after a refresh can land it
+    // on a comment that `hide_resolved` now excludes (its thread resolved
+    // upstream since the last fetch), leaving `selected` pointing at a row
+    // `visible_indices()` doesn't include.
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 3);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1; // comment id 2, not yet resolved
+        state.hide_resolved = true;
+    }
+    app.open_ai_review_from_triage();
+    let (workdir, pr) = match &app.mode {
+        AppMode::AiReview(state) => (state.workdir.clone(), state.pr.clone()),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_triage_refresh_bg = Some(rx);
+    app.ai_review_triage_refresh_pending = Some(crate::app::AiReviewTriageRefresh { workdir, pr });
+
+    // The refresh comes back with comment 2's thread now resolved.
+    let comments: Vec<crate::github::ReviewComment> = (1..=3u64)
+        .map(|id| crate::github::ReviewComment {
+            id,
+            path: Some(format!("src/file{id}.rs")),
+            line: Some(id as u32),
+            original_line: Some(id as u32),
+            side: Some("RIGHT".into()),
+            subject_type: None,
+            diff_hunk: Some("@@".to_string()),
+            body: format!("comment {id}"),
+            user: crate::github::GhUser {
+                login: "alice".to_string(),
+                kind: "User".to_string(),
+            },
+            in_reply_to_id: None,
+            pull_request_review_id: None,
+        })
+        .collect();
+    let threads = vec![crate::github::ReviewThread {
+        id: "T2".to_string(),
+        is_resolved: true,
+        comment_ids: vec![2],
+    }];
+    let refreshed_pr = crate::github::PrRef {
+        number: 7,
+        head_sha: "sha".to_string(),
+        url: "https://github.com/o/r/pull/7".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+        head_ref: "main".to_string(),
+    };
+    let refreshed = crate::app::pr_review::normalize(refreshed_pr, comments, vec![], vec![], threads);
+    tx.send(Ok(refreshed)).unwrap();
+
+    assert!(app.poll_ai_review_triage_refresh_bg());
+    match app.ai_review_return_to.as_deref() {
+        Some(AppMode::PrReview(state)) => {
+            assert_ne!(
+                state.selected_comment().map(|comment| comment.id),
+                Some(2),
+                "selection must not stay on a comment hide_resolved now excludes"
+            );
+            assert!(
+                state.visible_indices().contains(&state.selected),
+                "selection must land on a row the current filter shows"
+            );
         }
         _ => panic!("expected refreshed stashed PR Triage pane"),
     }

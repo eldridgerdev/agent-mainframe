@@ -51,6 +51,37 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // The review timeline/history browser is read-only and captures every key
+    // while open. Horizontal navigation changes rounds; vertical navigation
+    // scrolls the selected round's independently rendered markdown body.
+    let history_open =
+        matches!(&app.mode, AppMode::DiffViewer(state) if state.review_history.is_some());
+    if history_open {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => app.close_review_history(),
+            KeyCode::Enter => {
+                let current = matches!(
+                    &app.mode,
+                    AppMode::DiffViewer(state)
+                        if state.review_history.as_ref().is_some_and(|h| h.selected == 0)
+                );
+                if current {
+                    app.close_review_history();
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left => app.review_history_move(-1),
+            KeyCode::Char('l') | KeyCode::Right => app.review_history_move(1),
+            KeyCode::Char('j') | KeyCode::Down => app.review_history_scroll_down(PATCH_SCROLL_STEP),
+            KeyCode::Char('k') | KeyCode::Up => app.review_history_scroll_up(PATCH_SCROLL_STEP),
+            KeyCode::PageDown => app.review_history_scroll_down(PATCH_PAGE_STEP),
+            KeyCode::PageUp => app.review_history_scroll_up(PATCH_PAGE_STEP),
+            KeyCode::Home | KeyCode::Char('g') => app.review_history_scroll_top(),
+            KeyCode::End | KeyCode::Char('G') => app.review_history_scroll_bottom(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // The changeset-overview modal is a read-only summary layered over the
     // diff, but it still takes full precedence while open so none of the
     // underlying review verdict/navigation keys leak through underneath it.
@@ -288,6 +319,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         match code {
+            KeyCode::Char('H') => {
+                app.open_review_history();
+                return Ok(());
+            }
             KeyCode::Char('c') => {
                 app.diff_review_toggle_line_cursor();
                 return Ok(());
@@ -690,6 +725,78 @@ index 1111111..2222222 100644
  fn delta() {}
 ";
 
+    #[test]
+    fn history_navigation_loads_archive_only_after_live_rounds() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("final-review-feedback.md"),
+            "\
+# Final Review Feedback
+
+## Review — r3
+
+newest
+
+## Review — r2
+
+middle
+",
+        )
+        .unwrap();
+        std::fs::write(
+            claude_dir.join("final-review-feedback-archive.md"),
+            "\
+# Final Review Feedback Archive
+
+## Review — r1
+
+oldest
+",
+        )
+        .unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('H'))).unwrap();
+        let history = match &app.mode {
+            AppMode::DiffViewer(state) => state.review_history.as_ref().unwrap(),
+            _ => panic!("not in review"),
+        };
+        assert_eq!(history.rounds.len(), 2);
+        assert_eq!(history.selected, 0);
+        assert!(!history.archive_loaded);
+
+        // Current -> newest live -> older live does not touch the archive.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('l'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Right)).unwrap();
+        let history = match &app.mode {
+            AppMode::DiffViewer(state) => state.review_history.as_ref().unwrap(),
+            _ => panic!("not in review"),
+        };
+        assert_eq!(history.selected, 2);
+        assert!(!history.archive_loaded);
+
+        // Crossing the loaded tail lazily appends the archive newest-first.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('l'))).unwrap();
+        let history = match &app.mode {
+            AppMode::DiffViewer(state) => state.review_history.as_ref().unwrap(),
+            _ => panic!("not in review"),
+        };
+        assert_eq!(history.selected, 3);
+        assert!(history.archive_loaded);
+        assert_eq!(history.rounds.len(), 3);
+        assert_eq!(history.rounds[2].title, "Review — r1");
+
+        // History owns the keys while open: a verdict binding must not leak to
+        // the underlying review.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(state) if state.decisions.is_empty()));
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(state) if state.review_history.is_none()));
+    }
+
     fn search_state(app: &App) -> (&str, &[usize], Option<usize>, Option<usize>, bool) {
         match &app.mode {
             AppMode::DiffViewer(s) => (
@@ -791,7 +898,7 @@ index 1111111..2222222 100644
     }
 
     #[test]
-    fn approving_all_files_finishes_without_feedback_file() {
+    fn approving_all_files_records_history_without_dispatching_feedback() {
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
 
@@ -800,7 +907,12 @@ index 1111111..2222222 100644
         finish_review(&mut app);
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
-        assert!(!dir.path().join(".claude/final-review-feedback.md").exists());
+        let history =
+            std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
+        assert!(history.contains("**Files reviewed:** 2"));
+        assert!(history.contains("**Approved:** 2"));
+        assert!(history.contains("**Needs work:** 0"));
+        assert!(!history.contains("### Files Needing Revision"));
     }
 
     #[test]
@@ -1298,12 +1410,12 @@ index 1111111..2222222 100644
             message.contains("1 suggestion(s) applied locally (a.rs:2)"),
             "{message}"
         );
+        let history =
+            std::fs::read_to_string(repo.path().join(".claude/final-review-feedback.md")).unwrap();
+        assert!(history.contains("**Local suggestion application:** 1 applied (a.rs:2)"));
         assert!(
-            !repo
-                .path()
-                .join(".claude/final-review-feedback.md")
-                .exists(),
-            "a successfully applied suggestion should not be dispatched as feedback"
+            !history.contains("### Line Comments"),
+            "a successfully applied suggestion should be recorded in history, not dispatched as feedback"
         );
     }
 
@@ -1446,9 +1558,14 @@ index 1111111..2222222 100644
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
         finish_review(&mut app);
 
-        // A resolved thread never reaches the feedback file, so an
-        // all-approved round with nothing else to say writes nothing.
-        assert!(!dir.path().join(".claude/final-review-feedback.md").exists());
+        // A resolved thread never reaches the round's actionable sections.
+        // The all-approved round itself is still recorded for the history
+        // browser.
+        let history =
+            std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
+        assert!(history.contains("**Approved:** 1"));
+        assert!(!history.contains("### Line Comments"));
+        assert!(!history.contains("bug here"));
     }
 
     #[test]

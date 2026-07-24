@@ -2401,6 +2401,157 @@ impl App {
         }
     }
 
+    /// Open the read-only review-round timeline. Only the bounded live feedback
+    /// log is read here; the archive is deliberately deferred until navigation
+    /// reaches past the loaded tail so browsing history never puts old rounds
+    /// back on the fixing agent's normal read path.
+    pub fn open_review_history(&mut self) {
+        let workdir = match &self.mode {
+            AppMode::DiffViewer(state) if state.review => state.workdir.clone(),
+            _ => return,
+        };
+        let live_path = workdir.join(".claude").join("final-review-feedback.md");
+        let archive_path = workdir
+            .join(".claude")
+            .join("final-review-feedback-archive.md");
+
+        let (rounds, error) = match std::fs::read_to_string(&live_path) {
+            Ok(content) => (parse_review_history_rounds(&content, FEEDBACK_TITLE), None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
+            Err(e) => (
+                Vec::new(),
+                Some(format!("Could not read review history: {e}")),
+            ),
+        };
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.review_history = Some(ReviewHistoryState {
+                rounds,
+                selected: 0,
+                scroll: 0,
+                rendered_lines: 0,
+                view_height: 0,
+                archive_available: archive_path.is_file(),
+                archive_loaded: false,
+                error,
+            });
+        }
+    }
+
+    pub fn close_review_history(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.review_history = None;
+        }
+    }
+
+    /// Load archived review rounds newest-first. The archive itself is written
+    /// oldest-first (older overflow chunks are appended), so reverse it before
+    /// extending the live newest-first timeline.
+    fn load_review_history_archive(&mut self) {
+        let workdir = match &self.mode {
+            AppMode::DiffViewer(state)
+                if state
+                    .review_history
+                    .as_ref()
+                    .is_some_and(|h| h.archive_available && !h.archive_loaded) =>
+            {
+                state.workdir.clone()
+            }
+            _ => return,
+        };
+        let path = workdir
+            .join(".claude")
+            .join("final-review-feedback-archive.md");
+        let result = std::fs::read_to_string(&path).map(|content| {
+            let mut rounds =
+                parse_review_history_rounds(&content, "# Final Review Feedback Archive\n\n");
+            rounds.reverse();
+            rounds
+        });
+        if let AppMode::DiffViewer(state) = &mut self.mode
+            && let Some(history) = &mut state.review_history
+        {
+            history.archive_loaded = true;
+            match result {
+                Ok(rounds) => history.rounds.extend(rounds),
+                Err(e) => {
+                    history.error = Some(format!("Could not read archived review history: {e}"))
+                }
+            }
+        }
+    }
+
+    /// Move left/right through `Current` and finished rounds. Crossing the
+    /// loaded tail is the one operation that triggers the lazy archive read.
+    pub fn review_history_move(&mut self, delta: isize) {
+        let should_load = matches!(
+            &self.mode,
+            AppMode::DiffViewer(state)
+                if state.review_history.as_ref().is_some_and(|h| {
+                    delta > 0
+                        && h.selected == h.rounds.len()
+                        && h.archive_available
+                        && !h.archive_loaded
+                })
+        );
+        if should_load {
+            self.load_review_history_archive();
+        }
+        if let AppMode::DiffViewer(state) = &mut self.mode
+            && let Some(history) = &mut state.review_history
+        {
+            let max = history.rounds.len();
+            let next = (history.selected as isize)
+                .saturating_add(delta)
+                .clamp(0, max as isize);
+            if next as usize != history.selected {
+                history.selected = next as usize;
+                history.scroll = 0;
+            }
+        }
+    }
+
+    fn review_history_max_scroll(state: &DiffViewerState) -> usize {
+        state
+            .review_history
+            .as_ref()
+            .map(|h| h.rendered_lines.saturating_sub(h.view_height))
+            .unwrap_or(0)
+    }
+
+    pub fn review_history_scroll_down(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let max = Self::review_history_max_scroll(state);
+            if let Some(history) = &mut state.review_history {
+                history.scroll = history.scroll.saturating_add(amount).min(max);
+            }
+        }
+    }
+
+    pub fn review_history_scroll_up(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode
+            && let Some(history) = &mut state.review_history
+        {
+            history.scroll = history.scroll.saturating_sub(amount);
+        }
+    }
+
+    pub fn review_history_scroll_top(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode
+            && let Some(history) = &mut state.review_history
+        {
+            history.scroll = 0;
+        }
+    }
+
+    pub fn review_history_scroll_bottom(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let max = Self::review_history_max_scroll(state);
+            if let Some(history) = &mut state.review_history {
+                history.scroll = max;
+            }
+        }
+    }
+
     /// Move the summary selection by `delta` rows, clamped to the list.
     /// `isize::MIN/2` / `isize::MAX/2` jump to the top/bottom, mirroring
     /// `diff_review_cursor_move`'s g/G handling.
@@ -2732,6 +2883,40 @@ impl App {
         }))
     }
 
+    /// Persist one self-contained round into the bounded live feedback log,
+    /// archiving overflow before replacing the live file. The archive remains
+    /// outside the fixing agent's read path and is consumed lazily by the
+    /// history browser.
+    fn persist_final_review_round(&mut self, workdir: &Path, round: &str) -> std::io::Result<()> {
+        let path = workdir.join(".claude").join("final-review-feedback.md");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let out = compose_feedback_log(std::fs::read_to_string(&path).ok().as_deref(), round);
+        let (live, overflow) = split_overflow_rounds(&out, MAX_LIVE_ROUNDS);
+
+        if let Some(overflow) = overflow {
+            let archive_path = workdir
+                .join(".claude")
+                .join("final-review-feedback-archive.md");
+            let mut archive = std::fs::read_to_string(&archive_path).unwrap_or_default();
+            if archive.is_empty() {
+                archive.push_str("# Final Review Feedback Archive\n\n");
+            }
+            archive.push_str(&overflow);
+            if let Err(e) = std::fs::write(&archive_path, archive) {
+                // Preserve the existing behavior: an archive failure is
+                // visible in the debug log but does not prevent the latest
+                // actionable round from reaching the agent.
+                self.log_warn(
+                    "review",
+                    format!("failed to archive prior review rounds: {e}"),
+                );
+            }
+        }
+        std::fs::write(path, live)
+    }
+
     /// Write `.claude/final-review-feedback.md` for any rejected files and
     /// return to the feature view with a summary message, folding in the
     /// optional build/test-gate `check` outcome.
@@ -2834,89 +3019,68 @@ impl App {
         // fast path below — it's the whole point of the gate.
         let check_failed = matches!(&check, Some(c) if !c.passed);
 
-        if !check_failed
+        let no_actionable_feedback = !check_failed
             && rejected.is_empty()
             && general_feedback.is_empty()
             && line_comment_sections.is_empty()
-            && file_comment_sections.is_empty()
-        {
-            self.message = Some(if total == 0 {
-                "Final review: no changes against the base branch".to_string()
-            } else {
-                let check_note = match &check {
-                    Some(c) => format!(" (check `{}` passed)", c.command),
-                    None => String::new(),
-                };
-                let local_note =
-                    local_suggestion_summary(&applied_suggestions, &suggestion_apply_failures);
-                format!(
-                    "Final review complete: all {approved} reviewed file(s) approved{}{check_note}{local_note}",
-                    if skipped > 0 {
-                        format!(", {skipped} skipped")
-                    } else {
-                        String::new()
-                    }
-                )
-            });
+            && file_comment_sections.is_empty();
+        if no_actionable_feedback {
+            // Successful/all-approved rounds still belong in the review
+            // timeline. They are persisted but never dispatched to an agent.
+            let round = review_round_preamble(
+                total,
+                approved,
+                rejected.len(),
+                skipped,
+                file_comment_sections.len(),
+                line_comment_count,
+                check.as_ref(),
+                &applied_suggestions,
+                &suggestion_apply_failures,
+            );
+            let history_error = self
+                .persist_final_review_round(&workdir, &round)
+                .err()
+                .map(|e| format!(" (history not saved: {e})"))
+                .unwrap_or_default();
+            self.message = Some(
+                if total == 0 {
+                    "Final review: no changes against the base branch".to_string()
+                } else {
+                    let check_note = match &check {
+                        Some(c) => format!(" (check `{}` passed)", c.command),
+                        None => String::new(),
+                    };
+                    let local_note =
+                        local_suggestion_summary(&applied_suggestions, &suggestion_apply_failures);
+                    format!(
+                        "Final review complete: all {approved} reviewed file(s) approved{}{check_note}{local_note}",
+                        if skipped > 0 {
+                            format!(", {skipped} skipped")
+                        } else {
+                            String::new()
+                        }
+                    )
+                } + &history_error,
+            );
             self.mode = AppMode::Viewing(from_view);
             return Ok(());
         }
         {
-            let path = workdir.join(".claude").join("final-review-feedback.md");
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-
             // Build this round as a self-contained section. Rounds are
             // prepended under a single title (see `compose_feedback_log`) so
             // every review is preserved as a trail rather than overwritten.
-            let mut round = String::new();
-            round.push_str(&format!(
-                "## Review — {}\n\n",
-                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
-            ));
-            round.push_str(&format!(
-                "**Files reviewed:** {total} | **Approved:** {approved} | \
-                 **Needs work:** {} | **Skipped:** {skipped} | \
-                 **File comments:** {} | **Line comments:** {line_comment_count}\n\n",
+            let mut round = review_round_preamble(
+                total,
+                approved,
                 rejected.len(),
-                file_comment_sections.len()
-            ));
-
-            if let Some(c) = &check {
-                round.push_str(&format!(
-                    "**Check:** `{}` — {}\n\n",
-                    c.command,
-                    if c.passed { "passed" } else { "FAILED" }
-                ));
-                if !c.passed {
-                    round.push_str("```\n");
-                    round.push_str(&c.output);
-                    round.push_str("\n```\n\n");
-                }
-            }
-
-            if !applied_suggestions.is_empty() || !suggestion_apply_failures.is_empty() {
-                round.push_str("**Local suggestion application:** ");
-                if !applied_suggestions.is_empty() {
-                    round.push_str(&format!(
-                        "{} applied ({})",
-                        applied_suggestions.len(),
-                        applied_suggestions.join(", ")
-                    ));
-                }
-                if !suggestion_apply_failures.is_empty() {
-                    if !applied_suggestions.is_empty() {
-                        round.push_str("; ");
-                    }
-                    round.push_str(&format!(
-                        "{} not applied ({})",
-                        suggestion_apply_failures.len(),
-                        suggestion_apply_failures.join("; ")
-                    ));
-                }
-                round.push_str("\n\n");
-            }
+                skipped,
+                file_comment_sections.len(),
+                line_comment_count,
+                check.as_ref(),
+                &applied_suggestions,
+                &suggestion_apply_failures,
+            );
 
             if !general_feedback.is_empty() {
                 round.push_str("### General Feedback\n\n");
@@ -2993,27 +3157,7 @@ impl App {
                 }
             }
 
-            let out = compose_feedback_log(std::fs::read_to_string(&path).ok().as_deref(), &round);
-            let (live, overflow) = split_overflow_rounds(&out, MAX_LIVE_ROUNDS);
-
-            if let Some(overflow) = overflow {
-                let archive_path = workdir
-                    .join(".claude")
-                    .join("final-review-feedback-archive.md");
-                let mut archive = std::fs::read_to_string(&archive_path).unwrap_or_default();
-                if archive.is_empty() {
-                    archive.push_str("# Final Review Feedback Archive\n\n");
-                }
-                archive.push_str(&overflow);
-                if let Err(e) = std::fs::write(&archive_path, archive) {
-                    self.log_warn(
-                        "review",
-                        format!("failed to archive prior review rounds: {e}"),
-                    );
-                }
-            }
-
-            if let Err(e) = std::fs::write(&path, live) {
+            if let Err(e) = self.persist_final_review_round(&workdir, &round) {
                 self.message = Some(format!("Final review: failed to write feedback file: {e}"));
                 self.mode = AppMode::Viewing(from_view);
                 return Ok(());
@@ -3893,6 +4037,68 @@ fn compose_feedback_log(existing: Option<&str>, round: &str) -> String {
     out
 }
 
+/// Start a persisted review round with the metadata shared by both actionable
+/// feedback rounds and all-approved rounds. Keeping successful rounds too is
+/// what lets the history browser represent the complete review conversation
+/// instead of silently omitting its positive outcomes.
+#[allow(clippy::too_many_arguments)]
+fn review_round_preamble(
+    total: usize,
+    approved: usize,
+    rejected: usize,
+    skipped: usize,
+    file_comments: usize,
+    line_comments: usize,
+    check: Option<&CheckOutcome>,
+    applied_suggestions: &[String],
+    suggestion_apply_failures: &[String],
+) -> String {
+    let mut round = String::new();
+    round.push_str(&format!(
+        "## Review — {}\n\n",
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+    ));
+    round.push_str(&format!(
+        "**Files reviewed:** {total} | **Approved:** {approved} | \
+         **Needs work:** {rejected} | **Skipped:** {skipped} | \
+         **File comments:** {file_comments} | **Line comments:** {line_comments}\n\n"
+    ));
+    if let Some(c) = check {
+        round.push_str(&format!(
+            "**Check:** `{}` — {}\n\n",
+            c.command,
+            if c.passed { "passed" } else { "FAILED" }
+        ));
+        if !c.passed {
+            round.push_str("```\n");
+            round.push_str(&c.output);
+            round.push_str("\n```\n\n");
+        }
+    }
+    if !applied_suggestions.is_empty() || !suggestion_apply_failures.is_empty() {
+        round.push_str("**Local suggestion application:** ");
+        if !applied_suggestions.is_empty() {
+            round.push_str(&format!(
+                "{} applied ({})",
+                applied_suggestions.len(),
+                applied_suggestions.join(", ")
+            ));
+        }
+        if !suggestion_apply_failures.is_empty() {
+            if !applied_suggestions.is_empty() {
+                round.push_str("; ");
+            }
+            round.push_str(&format!(
+                "{} not applied ({})",
+                suggestion_apply_failures.len(),
+                suggestion_apply_failures.join("; ")
+            ));
+        }
+        round.push_str("\n\n");
+    }
+    round
+}
+
 /// Review rounds kept in the live feedback file: the newest round the agent
 /// is asked to address, plus one prior round for context. Anything older is
 /// moved to `final-review-feedback-archive.md` by `split_overflow_rounds` —
@@ -3918,6 +4124,34 @@ fn split_rounds(body: &str) -> Vec<String> {
         rounds.push(current);
     }
     rounds
+}
+
+/// Parse a feedback/history document into self-contained rounds, preserving its
+/// on-disk order. The live log is newest-first; the archive caller reverses its
+/// oldest-first result before appending it to the timeline.
+fn parse_review_history_rounds(content: &str, document_title: &str) -> Vec<ReviewHistoryRound> {
+    let body = content.strip_prefix(document_title).unwrap_or(content);
+    split_rounds(body)
+        .into_iter()
+        .filter(|round| round.trim_start().starts_with("## Review"))
+        .map(|markdown| {
+            let title = markdown
+                .lines()
+                .next()
+                .and_then(|line| line.strip_prefix("## "))
+                .unwrap_or("Review")
+                .trim()
+                .to_string();
+            let carried_unresolved = markdown
+                .matches("(unresolved from a previous round)")
+                .count();
+            ReviewHistoryRound {
+                title,
+                markdown,
+                carried_unresolved,
+            }
+        })
+        .collect()
 }
 
 /// Split a composed feedback log (title + rounds, newest first) into the live
@@ -4418,8 +4652,9 @@ mod tests {
         CHECK_OUTPUT_MAX_CHARS, anchor_file_path, apply_suggestions_to_file, archive_review_notes,
         build_pr_review, build_walkthrough_prompt, comment_anchor_label, compose_feedback_log,
         compute_search_matches, load_review_notes, parse_agent_responses, parse_co_review_output,
-        parse_review_notes, reanchor_file_comments, severity_review_event,
-        split_overflow_review_notes, split_overflow_rounds, truncate_check_output,
+        parse_review_history_rounds, parse_review_notes, reanchor_file_comments,
+        severity_review_event, split_overflow_review_notes, split_overflow_rounds,
+        truncate_check_output,
     };
     use crate::app::state::DiffViewerState;
     use crate::app::{CommentAnchorContext, FileComment, LineComment, Severity};
@@ -4895,6 +5130,33 @@ mod tests {
         let overflow = overflow.expect("oldest round should overflow");
         assert!(overflow.contains("## Review — r1"));
         assert!(overflow.contains("oldest."));
+    }
+
+    #[test]
+    fn history_round_parser_preserves_markdown_and_carried_thread_count() {
+        let content = "\
+# Final Review Feedback
+
+## Review — 2026-07-24T12:00:00Z
+
+**Files reviewed:** 2
+
+#### src/a.rs:7 — [blocker] (unresolved from a previous round)
+
+Fix this.
+
+**Agent:** Fixed in src/a.rs.
+
+## Review — 2026-07-23T12:00:00Z
+
+**Check:** `cargo test` — passed
+";
+        let rounds = parse_review_history_rounds(content, super::FEEDBACK_TITLE);
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(rounds[0].title, "Review — 2026-07-24T12:00:00Z");
+        assert_eq!(rounds[0].carried_unresolved, 1);
+        assert!(rounds[0].markdown.contains("**Agent:** Fixed"));
+        assert!(rounds[1].markdown.contains("cargo test"));
     }
 
     #[test]

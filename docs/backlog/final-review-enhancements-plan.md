@@ -7,8 +7,9 @@
   re-review, the "fixes ready — re-review?" notification, local application of
   suggestion blocks, the **finish summary screen**, a **Cost** batch, the
   high-priority **close / pause without finishing** viewer item, and the
-  **`v` layout toggle** fix have shipped — that closes out every item in the
-  Loop group. The Cost batch makes
+  **`v` layout toggle** fix, and the **review-round timeline/history browser**
+  have shipped — that closes out every item in the Loop group. The Cost batch
+  makes
   bounded headless passes honor `review_model`, caps
   `final-review-feedback.md` with an archive file, and batches REVIEW MODE's
   note instruction per turn. Per-action model overrides (a `review_models`
@@ -944,9 +945,26 @@ Viewer:
       footer already labels `v` accurately as "select range" in that context,
       so no rebind was needed, just the two fixes above plus regression tests
       for both.
-- [ ] Review-round timeline/history browser (`Round 1 ─ Round 2 ─ Current`)
-      with round selection, a scrollable read-only summary, carried-thread
-      markers, and lazy access to archived rounds
+- [x] Review-round timeline/history browser — press `H` in Final Review to open
+      a compact `Current ─ Round …` strip over a scrollable markdown body.
+      `h`/`l` (or left/right) moves between rounds; `j`/`k`, page keys, and
+      `g`/`G` scroll the selected body independently; `Enter` on `Current`
+      returns to the live editable review. `Current` is derived directly from
+      in-memory decisions, comments, suggestions, drafts, replies, and thread
+      state, while finished rounds render their preserved feedback-log markdown
+      (timestamp, summary counts, check outcome, comments/suggestions, and
+      appended `**Agent:**` replies). The timeline marks open current threads
+      and unresolved threads carried into historical rounds, windows around the
+      selection for long histories, and says explicitly that an old round's
+      original diff cannot be reconstructed from today's single snapshot.
+      Opening reads only the capped `final-review-feedback.md`; navigating past
+      its tail lazily loads `final-review-feedback-archive.md`, reverses the
+      archive's append order, and then assigns stable round numbers. To keep the
+      history complete, all-approved rounds now persist their metadata into the
+      same capped log/archive but still return without posting or dispatching a
+      fix prompt. State/loading lives in `src/app/state.rs` and
+      `src/app/review.rs`; modal rendering and key capture live in
+      `src/ui/dialogs/diff.rs` and `src/handlers/diff.rs`.
 - [ ] Hierarchical, collapsible file tree for easier path-based navigation +
       reduce the Developer Notes panel's default height from ~40% to ~20%
       (preserve full-height expansion)

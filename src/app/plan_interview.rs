@@ -229,9 +229,7 @@ impl App {
             &self.mode,
             AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Done
         );
-        if reached_done
-            && let Err(e) = self.continue_plan_interview_after_done()
-        {
+        if reached_done && let Err(e) = self.continue_plan_interview_after_done() {
             self.report_logged_error(
                 "plan_interview",
                 format!("Failed to continue plan interview: {e}"),

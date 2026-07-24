@@ -2438,7 +2438,10 @@ fn poll_plan_interview_ai_bg_defers_while_abort_confirmation_is_open() {
     match &app.mode {
         AppMode::PlanInterview(state) => {
             assert_eq!(state.phase, PlanInterviewPhase::AiLoading);
-            assert_eq!(state.ai_rounds_completed, crate::plan_interview::MAX_AI_ROUNDS - 1);
+            assert_eq!(
+                state.ai_rounds_completed,
+                crate::plan_interview::MAX_AI_ROUNDS - 1
+            );
             assert!(state.abort_confirmation);
         }
         _ => panic!("expected plan interview mode"),
@@ -2466,9 +2469,7 @@ fn poll_plan_interview_ai_bg_surfaces_completion_failure_and_keeps_interview_ope
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
     let workdir = match &app.mode {
-        AppMode::PlanInterview(state) => {
-            state.pending_launch.as_ref().unwrap().workdir.clone()
-        }
+        AppMode::PlanInterview(state) => state.pending_launch.as_ref().unwrap().workdir.clone(),
         _ => panic!("expected plan interview mode"),
     };
     // A plain file where `write_plan_file` needs to create a `.claude`
@@ -2515,9 +2516,7 @@ fn poll_plan_interview_ai_bg_surfaces_completion_failure_on_disconnected_worker(
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
     let workdir = match &app.mode {
-        AppMode::PlanInterview(state) => {
-            state.pending_launch.as_ref().unwrap().workdir.clone()
-        }
+        AppMode::PlanInterview(state) => state.pending_launch.as_ref().unwrap().workdir.clone(),
         _ => panic!("expected plan interview mode"),
     };
     std::fs::create_dir_all(workdir.parent().unwrap()).unwrap();

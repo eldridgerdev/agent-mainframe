@@ -2184,7 +2184,7 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
 
 /// Common setup for the `poll_plan_interview_ai_bg` tests below: a feature
 /// launch deferred into a plan interview, exactly like the abort test above.
-fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile) {
+fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir) {
     let repo = TempDir::new().unwrap();
     let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
     // Permissive rather than strict-sequence expectations: these tests care
@@ -2220,14 +2220,15 @@ fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile) {
         startup_prompt: None,
     })
     .unwrap();
-    // Keep the tempdir alive for the repo path used above; the NamedTempFile
-    // return value keeps the store file alive for the caller.
-    (app, store_file)
+    // The NamedTempFile return value keeps the store file alive for the
+    // caller; `repo` is returned too so the workdir it created stays alive
+    // rather than being deleted the instant this function returns.
+    (app, store_file, repo)
 }
 
 #[test]
 fn plan_interview_done_without_ai_consent_never_starts_a_headless_round() {
-    let (mut app, _store_file) = app_with_deferred_plan_interview();
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
     if let AppMode::PlanInterview(state) = &mut app.mode {
         state.brief = "A useful feature".into();
@@ -2245,7 +2246,7 @@ fn plan_interview_done_without_ai_consent_never_starts_a_headless_round() {
 
 #[test]
 fn poll_plan_interview_ai_bg_appends_follow_ups_and_resumes_questions() {
-    let (mut app, _store_file) = app_with_deferred_plan_interview();
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
     // Drop straight into an in-flight AI round, as
     // `start_next_plan_interview_ai_round` would leave it, without spawning
@@ -2277,7 +2278,7 @@ fn poll_plan_interview_ai_bg_appends_follow_ups_and_resumes_questions() {
 
 #[test]
 fn poll_plan_interview_ai_bg_completes_the_launch_after_the_final_round() {
-    let (mut app, _store_file) = app_with_deferred_plan_interview();
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
     if let AppMode::PlanInterview(state) = &mut app.mode {
         // Simulate having already spent every round but one.
@@ -2309,7 +2310,7 @@ fn poll_plan_interview_ai_bg_completes_the_launch_after_the_final_round() {
 
 #[test]
 fn poll_plan_interview_ai_bg_discards_a_result_that_arrives_after_navigating_away() {
-    let (mut app, _store_file) = app_with_deferred_plan_interview();
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
     if let AppMode::PlanInterview(state) = &mut app.mode {
         state.begin_ai_round(200);
@@ -2331,8 +2332,149 @@ fn poll_plan_interview_ai_bg_discards_a_result_that_arrives_after_navigating_awa
 }
 
 #[test]
+fn poll_plan_interview_ai_bg_defers_while_abort_confirmation_is_open() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        // Simulate having already spent every round but one, so applying
+        // the queued result would complete the interview and launch the
+        // feature if the guard didn't hold.
+        state.ai_rounds_completed = crate::plan_interview::MAX_AI_ROUNDS - 1;
+        state.begin_ai_round(300);
+        // The user pressed Esc during AiLoading, which sets this without
+        // changing `phase`.
+        state.abort_confirmation = true;
+    } else {
+        panic!("expected plan interview mode");
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_ai_bg = Some(rx);
+    tx.send((
+        crate::plan_interview::MAX_AI_ROUNDS,
+        Ok("```json\n{\"questions\":[]}\n```".to_string()),
+    ))
+    .unwrap();
+
+    // While the abort dialog is open, the result must not be applied.
+    assert!(!app.poll_plan_interview_ai_bg());
+    assert!(app.plan_interview_ai_bg.is_some());
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::AiLoading);
+            assert_eq!(state.ai_rounds_completed, crate::plan_interview::MAX_AI_ROUNDS - 1);
+            assert!(state.abort_confirmation);
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+    assert!(matches!(app.mode, AppMode::PlanInterview(_)));
+
+    // Esc (resume) clears the flag; the deferred result is picked up on the
+    // very next poll, exactly as if the dialog had never appeared.
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.abort_confirmation = false;
+    }
+    assert!(app.poll_plan_interview_ai_bg());
+    assert!(app.plan_interview_ai_bg.is_none());
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .any(|f| f.name == "planned-feature" && !f.pending_worktree_script)
+    );
+}
+
+#[test]
+fn poll_plan_interview_ai_bg_surfaces_completion_failure_and_keeps_interview_open() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    let workdir = match &app.mode {
+        AppMode::PlanInterview(state) => {
+            state.pending_launch.as_ref().unwrap().workdir.clone()
+        }
+        _ => panic!("expected plan interview mode"),
+    };
+    // A plain file where `write_plan_file` needs to create a `.claude`
+    // directory forces `complete_plan_interview` to fail for real, instead
+    // of relying on the previous silent-discard behavior as a baseline.
+    // The workdir's own parent tree was never created (the launch above
+    // only touches the store/mock tmux), so recreate it before shadowing
+    // `workdir` itself with a file.
+    std::fs::create_dir_all(workdir.parent().unwrap()).unwrap();
+    std::fs::write(&workdir, b"not a directory").unwrap();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.ai_rounds_completed = crate::plan_interview::MAX_AI_ROUNDS - 1;
+        state.begin_ai_round(200);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_ai_bg = Some(rx);
+    tx.send((
+        crate::plan_interview::MAX_AI_ROUNDS,
+        Ok("```json\n{\"questions\":[]}\n```".to_string()),
+    ))
+    .unwrap();
+
+    assert!(app.poll_plan_interview_ai_bg());
+
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.contains("Failed to continue plan interview"),
+        "expected a surfaced failure message, got: {message:?}"
+    );
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert!(
+                state.pending_launch.is_some(),
+                "the pending launch must survive a write failure so the user can retry or abort"
+            );
+        }
+        _ => panic!("a plan-file write failure must keep the interview open"),
+    }
+}
+
+#[test]
+fn poll_plan_interview_ai_bg_surfaces_completion_failure_on_disconnected_worker() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    let workdir = match &app.mode {
+        AppMode::PlanInterview(state) => {
+            state.pending_launch.as_ref().unwrap().workdir.clone()
+        }
+        _ => panic!("expected plan interview mode"),
+    };
+    std::fs::create_dir_all(workdir.parent().unwrap()).unwrap();
+    std::fs::write(&workdir, b"not a directory").unwrap();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.begin_ai_round(200);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_ai_bg = Some(rx);
+    drop(tx);
+
+    assert!(app.poll_plan_interview_ai_bg());
+
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.contains("Failed to complete plan interview"),
+        "expected a surfaced failure message, got: {message:?}"
+    );
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert!(
+                state.pending_launch.is_some(),
+                "the pending launch must survive a write failure so the user can retry or abort"
+            );
+        }
+        _ => panic!("a plan-file write failure must keep the interview open"),
+    }
+}
+
+#[test]
 fn poll_plan_interview_ai_bg_treats_a_dropped_worker_as_round_exhaustion() {
-    let (mut app, _store_file) = app_with_deferred_plan_interview();
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
     if let AppMode::PlanInterview(state) = &mut app.mode {
         state.begin_ai_round(200);

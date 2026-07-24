@@ -1280,7 +1280,7 @@ fn run_review_memory_bootstrap(
         token_estimate: estimate_tokens(&prompt),
     });
 
-    let result = HeadlessRunner::run(&AgentKind::Claude, &workdir, &prompt, model.as_deref())
+    let result = HeadlessRunner::run(&AgentKind::Claude, &workdir, &prompt, model.as_deref(), false)
         .and_then(|output| {
             let findings = review_memory::parse_findings_markdown(&output);
             let mut appended = 0;
@@ -1331,7 +1331,8 @@ fn run_review_memory_compact(
         token_estimate: estimate_tokens(&prompt),
     });
 
-    let result = HeadlessRunner::run(&AgentKind::Claude, &workdir, &prompt, model.as_deref()).map(
+    let result =
+        HeadlessRunner::run(&AgentKind::Claude, &workdir, &prompt, model.as_deref(), false).map(
         |output| {
             let proposed_content = output.trim().to_string();
             let proposed_findings = review_memory::count_findings(&proposed_content);

@@ -128,7 +128,7 @@ impl App {
         let thread_harness = harness;
         let thread_workdir = workdir;
         std::thread::spawn(move || {
-            let result = HeadlessRunner::run(&thread_harness, &thread_workdir, &prompt, None);
+            let result = HeadlessRunner::run(&thread_harness, &thread_workdir, &prompt, None, true);
             let _ = tx.send((round, result));
         });
 
@@ -144,6 +144,20 @@ impl App {
         let Some(rx) = self.plan_interview_ai_bg.as_ref() else {
             return false;
         };
+        let confirming_abort = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state) if state.abort_confirmation
+        );
+        if confirming_abort {
+            // Leave the round result unread until the user resolves the
+            // pending abort choice — draining it here could start another
+            // paid round or launch the feature out from under them. Esc
+            // (resume) clears `abort_confirmation` and the next poll tick
+            // picks the result back up normally; y/n move `self.mode` out of
+            // `PlanInterview`, so the next tick falls through to the
+            // "navigated away, nothing to apply" path below instead.
+            return false;
+        }
         let (round, result) = match rx.try_recv() {
             Ok(message) => message,
             Err(mpsc::TryRecvError::Empty) => return false,
@@ -163,7 +177,12 @@ impl App {
                         state.ai_rounds_completed = plan_interview::MAX_AI_ROUNDS;
                         state.phase = PlanInterviewPhase::Done;
                     }
-                    let _ = self.complete_plan_interview();
+                    if let Err(e) = self.complete_plan_interview() {
+                        self.report_logged_error(
+                            "plan_interview",
+                            format!("Failed to complete plan interview: {e}"),
+                        );
+                    }
                 }
                 return true;
             }
@@ -210,8 +229,13 @@ impl App {
             &self.mode,
             AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Done
         );
-        if reached_done {
-            let _ = self.continue_plan_interview_after_done();
+        if reached_done
+            && let Err(e) = self.continue_plan_interview_after_done()
+        {
+            self.report_logged_error(
+                "plan_interview",
+                format!("Failed to continue plan interview: {e}"),
+            );
         }
         true
     }

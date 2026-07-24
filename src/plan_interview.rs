@@ -125,8 +125,12 @@ struct RawAiQuestion {
 
 #[derive(Debug, Default, Deserialize)]
 struct RawAiResponse {
+    /// Left as loosely-typed JSON, not `Vec<RawAiQuestion>`: one
+    /// structurally malformed entry must not fail the whole array's
+    /// deserialize and discard otherwise-valid sibling questions.
+    /// `parse_ai_questions` converts each entry individually.
     #[serde(default)]
-    questions: Vec<RawAiQuestion>,
+    questions: Vec<serde_json::Value>,
 }
 
 /// Return the last ` ```json ... ``` ` fenced block in `response`, if any.
@@ -155,12 +159,15 @@ fn last_fenced_json_block(response: &str) -> Option<&str> {
 /// Parse and validate one AI-adaptive round's response into follow-up
 /// [`PlanQuestion`]s.
 ///
-/// Defensive by construction, per the interviewer prompt's contract: any
-/// response that doesn't fit the shape — no fenced block, invalid JSON, a
-/// reused or duplicate id, a malformed `select` question — drops just that
-/// question (or the whole round, for a fence/JSON failure) rather than
-/// surfacing a partial or garbage question to the user. Callers should treat
-/// an empty result as "no useful follow-up this round," not an error.
+/// Defensive by construction, per the interviewer prompt's contract: a
+/// per-question problem — a reused or duplicate id, a malformed `select`
+/// question, or an entry that doesn't even deserialize into the expected
+/// shape — drops just that question rather than surfacing a partial or
+/// garbage question to the user, or invalidating well-formed siblings in
+/// the same round. Only a failure that breaks the whole response — no
+/// fenced block, or JSON that isn't even `{"questions": [...]}` — drops the
+/// entire round. Callers should treat an empty result as "no useful
+/// follow-up this round," not an error.
 pub fn parse_ai_questions(
     response: &str,
     existing_ids: &[String],
@@ -179,6 +186,9 @@ pub fn parse_ai_questions(
         if questions.len() >= MAX_AI_QUESTIONS_PER_ROUND {
             break;
         }
+        let Ok(raw) = serde_json::from_value::<RawAiQuestion>(raw) else {
+            continue;
+        };
         let id = raw.id.trim().to_string();
         let text = raw.text.trim().to_string();
         if id.is_empty() || text.is_empty() || seen_ids.contains(&id) {
@@ -555,6 +565,24 @@ mod tests {
 
         assert_eq!(questions.len(), 1);
         assert_eq!(questions[0].id, "valid");
+    }
+
+    #[test]
+    fn parse_ai_questions_skips_a_structurally_malformed_question_without_discarding_the_batch() {
+        // The middle entry's `id` is a number, not a string, so it fails to
+        // deserialize into `RawAiQuestion` at all — this must not take the
+        // well-formed siblings down with it.
+        let response = "```json\n{\"questions\":[\
+            {\"id\":\"first\",\"text\":\"First?\",\"kind\":\"free_text\"},\
+            {\"id\":123,\"text\":\"Bad id type\",\"kind\":\"free_text\"},\
+            {\"id\":\"second\",\"text\":\"Second?\",\"kind\":\"free_text\"}\
+            ]}\n```";
+
+        let questions = parse_ai_questions(response, &[], 1);
+
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions[0].id, "first");
+        assert_eq!(questions[1].id, "second");
     }
 
     #[test]

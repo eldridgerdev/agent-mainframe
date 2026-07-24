@@ -4280,7 +4280,9 @@ fn write_review_notes_atomic(path: &Path, content: &str) -> Result<()> {
 /// Keep the latest note for each of the `keep` most recently documented files
 /// in the live document. Older duplicates are archived too: `parse_review_notes`
 /// already exposes only the newest section for a path, so retaining superseded
-/// copies live adds read cost without changing the reviewer-visible result.
+/// copies live adds read cost without changing the reviewer-visible result. Any
+/// preamble (content before the first heading) always stays in the live
+/// document — it's never itself a candidate for archiving.
 fn split_overflow_review_notes(content: &str, keep: usize) -> (String, Option<String>) {
     let (preamble, sections) = review_note_sections(content);
     let mut seen = std::collections::HashSet::new();
@@ -4292,12 +4294,12 @@ fn split_overflow_review_notes(content: &str, keep: usize) -> (String, Option<St
         }
     }
 
-    if preamble.is_empty() && live_indices.len() == sections.len() {
+    if live_indices.len() == sections.len() {
         return (content.to_string(), None);
     }
 
-    let mut live = String::new();
-    let mut overflow = preamble;
+    let mut live = preamble;
+    let mut overflow = String::new();
     for (index, (_, section)) in sections.iter().enumerate() {
         if live_indices.contains(&index) {
             push_review_note_chunk(&mut live, section);
@@ -5140,16 +5142,25 @@ Current note.
 ";
         let (live, overflow) = split_overflow_review_notes(content, 2);
 
+        assert!(live.starts_with("# Optional preamble"));
         assert!(live.contains("## src/new.rs — current"));
         assert!(live.contains("## src/keep.rs — updated"));
         assert!(!live.contains("Superseded note."));
         assert!(!live.contains("Old note."));
 
         let overflow = overflow.expect("old and superseded notes should overflow");
-        assert!(overflow.starts_with("# Optional preamble"));
+        assert!(!overflow.contains("# Optional preamble"));
         assert!(overflow.contains("## src/old.rs — first"));
         assert!(overflow.contains("## src/keep.rs — first"));
         assert!(!overflow.contains("## src/keep.rs — updated"));
+    }
+
+    #[test]
+    fn review_notes_cap_is_noop_when_preamble_present_but_unique_notes_fit() {
+        let content = "# Optional preamble\n\n## src/a.rs — a\n\nA.\n\n---\n\n## src/b.rs — b\n\nB.\n";
+        let (live, overflow) = split_overflow_review_notes(content, 2);
+        assert_eq!(live, content);
+        assert!(overflow.is_none());
     }
 
     #[test]

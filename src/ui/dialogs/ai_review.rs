@@ -708,6 +708,7 @@ mod tests {
                 last_run: None,
                 harness: Some(AgentKind::Codex),
                 harness_pick: None,
+                harness_pick_origin: None,
                 model: None,
                 model_picked: true,
                 model_pick: None,

@@ -1826,6 +1826,16 @@ pub struct AiReviewState {
     pub harness: Option<AgentKind>,
     /// Single-select picker shown before the first `A` run in this pane.
     pub harness_pick: Option<AiHarnessPickState>,
+    /// Harness in effect when the current harness-pick "chain" started —
+    /// set the first time this pane's picker steps back from the model
+    /// picker to the harness picker, and left untouched by any further
+    /// back-and-forth within the same chain (cleared once a review actually
+    /// starts). Lets [`App::accept_ai_review_harness_pick`] detect a switch
+    /// away from the *original* harness even after the user backs out and
+    /// re-confirms an already-switched-to harness, so `AppConfig::review_model`
+    /// (which may only be valid for the original harness) isn't reseeded as
+    /// an incompatible model for the new one. See `AiHarnessPickState::previous_harness`.
+    pub harness_pick_origin: Option<AgentKind>,
     /// Model chosen for this pane's `A` runs, picked once via `model_pick`
     /// right after the harness. `None` means "use the default" — either the
     /// picker hasn't run yet (see `model_picked`) or the user explicitly
@@ -2000,9 +2010,13 @@ pub struct AiHarnessPickState {
     pub agents: Vec<AgentKind>,
     pub selected: usize,
     pub error: Option<String>,
-    /// Harness selected before returning here from the model picker. `None`
-    /// on the initial harness step; used to avoid seeding one harness's model
-    /// choice into a different harness's rebuilt model picker.
+    /// The harness-pick chain's original harness (`AiReviewState::harness_pick_origin`),
+    /// carried into this picker so a confirm can tell whether the choice has
+    /// actually diverged from where the chain started — not just from the
+    /// harness shown on the immediately preceding screen. `None` on the
+    /// initial harness step. Used to avoid seeding one harness's model choice
+    /// (or the globally configured default model) into a different harness's
+    /// rebuilt model picker.
     pub previous_harness: Option<AgentKind>,
 }
 

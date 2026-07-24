@@ -9128,6 +9128,7 @@ fn sample_ai_review_state(
         last_run: None,
         harness: None,
         harness_pick: None,
+        harness_pick_origin: None,
         model: None,
         model_picked: false,
         model_pick: None,
@@ -9233,6 +9234,87 @@ fn ai_review_model_picker_backs_through_custom_editor_and_rebuilds_for_new_harne
             assert_eq!(pick.rows, vec![ModelPickRow::Default, ModelPickRow::Custom]);
             assert_eq!(pick.selected, 0);
             assert!(pick.custom_input.is_empty());
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+}
+
+/// Regression for the gap `ai_review_model_picker_backs_through_custom_editor_and_rebuilds_for_new_harness`
+/// doesn't cover: backing out *again* after switching harness once, and
+/// reconfirming the *same* (already-switched-to) harness a second time.
+/// `harness_changed` used to compare only against the immediately preceding
+/// screen, so this second confirm looked unchanged and fell through to
+/// `start_ai_pr_review`'s `AppConfig::review_model` fallback — reseeding the
+/// Claude-only "sonnet" preset as a custom Opencode model, exactly what the
+/// first switch had correctly cleared.
+#[test]
+fn ai_review_harness_pick_reconfirm_after_backing_out_does_not_reseed_stale_model() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .times(2)
+        .returning(|_| Ok(std::path::PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    app.config.review_model = Some("sonnet".to_string());
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        state.harness = Some(AgentKind::Claude);
+        state.model_pick = Some(AiModelPickState {
+            rows: vec![
+                ModelPickRow::Default,
+                ModelPickRow::Preset("sonnet"),
+                ModelPickRow::Custom,
+            ],
+            selected: 0,
+            custom_input: String::new(),
+            editing_custom: false,
+        });
+    }
+
+    // Back out of the model picker (Claude -> harness picker) and switch to
+    // Opencode: this is the already-covered case, so the model resets to
+    // fresh defaults instead of "sonnet".
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Down)).unwrap();
+    app.accept_selected_ai_review_harness_for_test();
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.harness, Some(AgentKind::Opencode));
+            let pick = state.model_pick.as_ref().expect("rebuilt model picker");
+            assert!(pick.custom_input.is_empty());
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+
+    // Back out a second time without picking a model, and reconfirm the same
+    // (already-switched-to) Opencode harness.
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            let pick = state
+                .harness_pick
+                .as_ref()
+                .expect("should return to harness picker");
+            assert_eq!(pick.agents[pick.selected], AgentKind::Opencode);
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+    app.accept_selected_ai_review_harness_for_test();
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.harness, Some(AgentKind::Opencode));
+            let pick = state
+                .model_pick
+                .as_ref()
+                .expect("reconfirming should still open a fresh model picker");
+            assert_eq!(pick.rows, vec![ModelPickRow::Default, ModelPickRow::Custom]);
+            assert_eq!(pick.selected, 0);
+            assert!(
+                pick.custom_input.is_empty(),
+                "must not reseed the Claude-only \"sonnet\" default as an Opencode custom model"
+            );
         }
         _ => panic!("expected AI Review pane"),
     }

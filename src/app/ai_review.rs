@@ -608,6 +608,7 @@ impl App {
             last_run,
             harness: None,
             harness_pick: None,
+            harness_pick_origin: None,
             model: None,
             model_picked: false,
             model_pick: None,
@@ -969,6 +970,7 @@ impl App {
             return;
         };
         origin.harness_pick = None;
+        origin.harness_pick_origin = None;
         origin.model_pick = None;
         origin.post_confirm = None;
         origin.finding_editor = None;
@@ -1174,12 +1176,31 @@ impl App {
             .map(|harness| AgentKind::index_in(&agents, harness))
             .unwrap_or(0);
         if let AppMode::AiReview(state) = &mut self.mode {
+            // Record the chain's original harness the *first* time it steps
+            // back to this picker, and leave it alone on any further
+            // back-and-forth. Without this, re-confirming an already-switched
+            // harness (switch, back out, reselect the same one) would look
+            // unchanged from the immediately preceding screen, letting
+            // `start_ai_pr_review` reseed `AppConfig::review_model` (e.g. a
+            // Claude preset like "sonnet") as a custom model for a harness
+            // it's incompatible with.
+            // `model_pick` (which is what routes here) only ever exists once
+            // a harness has been chosen, so `current_harness` is always
+            // `Some` at this point.
+            let previous_harness = state
+                .harness_pick_origin
+                .get_or_insert_with(|| {
+                    current_harness
+                        .clone()
+                        .expect("model_pick implies a harness is already chosen")
+                })
+                .clone();
             state.harness = None;
             state.harness_pick = Some(AiHarnessPickState {
                 agents,
                 selected,
                 error: None,
-                previous_harness: current_harness,
+                previous_harness: Some(previous_harness),
             });
             state.model = None;
             state.model_picked = false;

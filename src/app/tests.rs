@@ -9320,6 +9320,98 @@ fn ai_review_harness_pick_reconfirm_after_backing_out_does_not_reseed_stale_mode
     }
 }
 
+/// Broader regression covering the reviewer's general "repeated navigation"
+/// concern rather than just a single back-and-forth: hops through three
+/// harnesses (Claude -> Opencode -> Codex -> Opencode -> Claude), backing out
+/// to the harness picker between every hop. Every switch away from the
+/// original Claude harness must land on fresh `Default`/empty model defaults
+/// (never a stale non-Claude value), and switching *back* to the original
+/// Claude harness must still restore the meaningful `AppConfig::review_model`
+/// default ("sonnet") rather than being needlessly cleared just because a
+/// picker round trip happened.
+#[test]
+fn ai_review_harness_pick_survives_multi_hop_navigation() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .times(4)
+        .returning(|_| Ok(std::path::PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    app.config.review_model = Some("sonnet".to_string());
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        state.harness = Some(AgentKind::Claude);
+        state.model_pick = Some(AiModelPickState {
+            rows: vec![
+                ModelPickRow::Default,
+                ModelPickRow::Preset("sonnet"),
+                ModelPickRow::Custom,
+            ],
+            selected: 1,
+            custom_input: String::new(),
+            editing_custom: false,
+        });
+    }
+
+    // Claude -> Opencode: first switch away from the original harness.
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Down)).unwrap();
+    app.accept_selected_ai_review_harness_for_test();
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.harness, Some(AgentKind::Opencode));
+            assert!(state.model_pick.as_ref().unwrap().custom_input.is_empty());
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+
+    // Opencode -> Codex: still away from the original, still fresh defaults.
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Down)).unwrap();
+    app.accept_selected_ai_review_harness_for_test();
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.harness, Some(AgentKind::Codex));
+            let pick = state.model_pick.as_ref().expect("rebuilt model picker");
+            assert_eq!(pick.rows, vec![ModelPickRow::Default, ModelPickRow::Custom]);
+            assert!(pick.custom_input.is_empty());
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+
+    // Codex -> Opencode: back to a previously-visited harness, still not the
+    // original — must not resurrect anything stale.
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Up)).unwrap();
+    app.accept_selected_ai_review_harness_for_test();
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.harness, Some(AgentKind::Opencode));
+            assert!(state.model_pick.as_ref().unwrap().custom_input.is_empty());
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+
+    // Opencode -> Claude: switching back to the *original* harness should
+    // restore the configured "sonnet" default, not force an empty Custom.
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_ai_review_key(&mut app, ke(KeyCode::Up)).unwrap();
+    app.accept_selected_ai_review_harness_for_test();
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.harness, Some(AgentKind::Claude));
+            let pick = state.model_pick.as_ref().expect("rebuilt model picker");
+            assert_eq!(
+                pick.rows.get(pick.selected),
+                Some(&ModelPickRow::Preset("sonnet")),
+                "returning to the original harness should still honor the configured default"
+            );
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+}
+
 /// Enter the PR picker directly (bypassing the real `gh pr list` call
 /// `open_pr_picker` would make) so bootstrap-pick tests can exercise the
 /// overlay's state transitions without hitting the network.

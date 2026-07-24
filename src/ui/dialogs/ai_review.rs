@@ -573,9 +573,9 @@ fn draw_ai_model_pick(frame: &mut Frame, pick: &AiModelPickState, theme: &Theme)
     let hints = if pick.editing_custom {
         "  [⏎] use this model   [esc] back to list"
     } else if custom_selected {
-        "  [j/k] choose   [⏎] type a model   [esc] cancel"
+        "  [j/k] choose   [⏎] type a model   [esc] harness"
     } else {
-        "  [j/k] choose   [⏎] confirm   [esc] cancel"
+        "  [j/k] choose   [⏎] confirm   [esc] harness"
     };
     frame.render_widget(
         Paragraph::new(hints).style(Style::default().fg(theme.primary.to_color())),
@@ -708,6 +708,7 @@ mod tests {
                 last_run: None,
                 harness: Some(AgentKind::Codex),
                 harness_pick: None,
+                harness_pick_origin: None,
                 model: None,
                 model_picked: true,
                 model_pick: None,

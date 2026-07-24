@@ -453,6 +453,19 @@ fn model_pick_rows(harness: &AgentKind) -> Vec<ModelPickRow> {
     rows
 }
 
+fn model_for_ai_review_run(
+    picked: Option<&str>,
+    model_picked: bool,
+    configured: Option<&str>,
+) -> Option<String> {
+    if model_picked {
+        // `None` is an explicit "Default" choice after the picker has run.
+        picked.map(str::to_string)
+    } else {
+        picked.or(configured).map(str::to_string)
+    }
+}
+
 /// Background body of the AI PR review (`A`): assemble the prompt from
 /// `diff` + `memory` (+ optional `skill`), report a token estimate, then make
 /// **one** headless agent pass and parse its response into findings. Runs off
@@ -595,6 +608,7 @@ impl App {
             last_run,
             harness: None,
             harness_pick: None,
+            harness_pick_origin: None,
             model: None,
             model_picked: false,
             model_pick: None,
@@ -902,6 +916,7 @@ impl App {
                     agents,
                     selected,
                     error: None,
+                    previous_harness: None,
                 });
             }
             return;
@@ -955,6 +970,7 @@ impl App {
             return;
         };
         origin.harness_pick = None;
+        origin.harness_pick_origin = None;
         origin.model_pick = None;
         origin.post_confirm = None;
         origin.finding_editor = None;
@@ -964,10 +980,13 @@ impl App {
         // The pane's own pick (from the model picker) takes priority over the
         // `review_model_for(PrReview)` default it was seeded from — picking
         // "Default" in the picker clears it back to `None` explicitly.
-        let model = origin
-            .model
-            .clone()
-            .or_else(|| self.config.review_model_for(ReviewAction::PrReview));
+        let model = model_for_ai_review_run(
+            origin.model.as_deref(),
+            origin.model_picked,
+            self.config
+                .review_model_for(ReviewAction::PrReview)
+                .as_deref(),
+        );
         self.log_info(
             "pr_review",
             format!(
@@ -1031,11 +1050,16 @@ impl App {
     }
 
     pub fn ai_review_harness_pick_confirm(&mut self) {
-        let chosen = match &self.mode {
-            AppMode::AiReview(state) => state
-                .harness_pick
-                .as_ref()
-                .and_then(|pick| pick.agents.get(pick.selected).cloned()),
+        let (chosen, harness_changed) = match &self.mode {
+            AppMode::AiReview(state) => state.harness_pick.as_ref().map_or((None, false), |pick| {
+                let chosen = pick.agents.get(pick.selected).cloned();
+                let changed = chosen.as_ref().is_some_and(|chosen| {
+                    pick.previous_harness
+                        .as_ref()
+                        .is_some_and(|previous| previous != chosen)
+                });
+                (chosen, changed)
+            }),
             _ => return,
         };
         let Some(chosen) = chosen else {
@@ -1049,18 +1073,58 @@ impl App {
             }
             return;
         }
+        self.accept_ai_review_harness_pick(chosen, harness_changed);
+    }
+
+    /// Apply a harness that has already passed its availability check, reset
+    /// any model state belonging to the previous harness, and advance to the
+    /// rebuilt model step (or directly to the run for Pi).
+    fn accept_ai_review_harness_pick(&mut self, chosen: AgentKind, harness_changed: bool) {
         if let AppMode::AiReview(state) = &mut self.mode {
             state.harness = Some(chosen.clone());
             state.harness_pick = None;
+            state.model = None;
+            state.model_picked = false;
+            state.model_pick = None;
         }
         self.push_toast_success(format!(
             "AI reviews will run with {}",
             chosen.display_name()
         ));
+        if harness_changed && chosen != AgentKind::Pi {
+            if let AppMode::AiReview(state) = &mut self.mode {
+                state.model_pick = Some(AiModelPickState {
+                    rows: model_pick_rows(&chosen),
+                    selected: 0,
+                    custom_input: String::new(),
+                    editing_custom: false,
+                });
+            }
+            return;
+        }
         // Re-enter the same start-up chain rather than jumping straight to
         // `begin_ai_pr_review`: with a harness now chosen but no model picked
         // yet, this opens the model picker next.
         self.start_ai_pr_review();
+    }
+
+    #[cfg(test)]
+    pub(super) fn accept_selected_ai_review_harness_for_test(&mut self) {
+        let (chosen, harness_changed) = match &self.mode {
+            AppMode::AiReview(state) => state.harness_pick.as_ref().map_or((None, false), |pick| {
+                let chosen = pick.agents.get(pick.selected).cloned();
+                let changed = chosen.as_ref().is_some_and(|chosen| {
+                    pick.previous_harness
+                        .as_ref()
+                        .is_some_and(|previous| previous != chosen)
+                });
+                (chosen, changed)
+            }),
+            _ => (None, false),
+        };
+        if let Some(chosen) = chosen {
+            self.accept_ai_review_harness_pick(chosen, harness_changed);
+        }
     }
 
     pub fn ai_review_model_picking(&self) -> bool {
@@ -1087,17 +1151,62 @@ impl App {
     }
 
     /// `esc`: while typing a custom model, back out to the row list without
-    /// losing what's typed so far; otherwise cancel the picker outright (the
-    /// harness stays chosen — pressing `A` again reopens this step).
+    /// losing what's typed so far; from the row list, return to the harness
+    /// picker with the current harness highlighted.
     pub fn ai_review_model_pick_cancel(&mut self) {
-        if let AppMode::AiReview(state) = &mut self.mode
-            && let Some(pick) = &mut state.model_pick
-        {
-            if pick.editing_custom {
-                pick.editing_custom = false;
-            } else {
-                state.model_pick = None;
+        let (workdir, current_harness) = match &mut self.mode {
+            AppMode::AiReview(state) => {
+                let Some(pick) = &mut state.model_pick else {
+                    return;
+                };
+                if pick.editing_custom {
+                    pick.editing_custom = false;
+                    return;
+                }
+                (state.workdir.clone(), state.harness.clone())
             }
+            _ => return,
+        };
+
+        let agents = self.allowed_agents_for_project_path(&workdir);
+        if agents.is_empty() {
+            self.push_toast_error("No agent harnesses are enabled for this project");
+            return;
+        }
+        let selected = current_harness
+            .as_ref()
+            .map(|harness| AgentKind::index_in(&agents, harness))
+            .unwrap_or(0);
+        if let AppMode::AiReview(state) = &mut self.mode {
+            // Record the chain's original harness the *first* time it steps
+            // back to this picker, and leave it alone on any further
+            // back-and-forth. Without this, re-confirming an already-switched
+            // harness (switch, back out, reselect the same one) would look
+            // unchanged from the immediately preceding screen, letting
+            // `start_ai_pr_review` reseed `AppConfig::review_model` (e.g. a
+            // Claude preset like "sonnet") as a custom model for a harness
+            // it's incompatible with.
+            // `model_pick` (which is what routes here) only ever exists once
+            // a harness has been chosen, so `current_harness` is always
+            // `Some` at this point.
+            let previous_harness = state
+                .harness_pick_origin
+                .get_or_insert_with(|| {
+                    current_harness
+                        .clone()
+                        .expect("model_pick implies a harness is already chosen")
+                })
+                .clone();
+            state.harness = None;
+            state.harness_pick = Some(AiHarnessPickState {
+                agents,
+                selected,
+                error: None,
+                previous_harness: Some(previous_harness),
+            });
+            state.model = None;
+            state.model_picked = false;
+            state.model_pick = None;
         }
     }
 
@@ -1851,6 +1960,15 @@ mod tests {
         assert!(claude.contains(&ModelPickRow::Preset("sonnet")));
         let codex = model_pick_rows(&AgentKind::Codex);
         assert!(!codex.iter().any(|r| matches!(r, ModelPickRow::Preset(_))));
+    }
+
+    #[test]
+    fn explicit_default_model_does_not_fall_back_to_configured_model() {
+        assert_eq!(model_for_ai_review_run(None, true, Some("sonnet")), None);
+        assert_eq!(
+            model_for_ai_review_run(None, false, Some("sonnet")),
+            Some("sonnet".to_string())
+        );
     }
 
     fn finding(

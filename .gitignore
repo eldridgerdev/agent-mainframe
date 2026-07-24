@@ -16,6 +16,7 @@ tui.json
 # .claude/ runtime files are also ignored via .claude/.gitignore; listed
 # here too so fresh checkouts/worktrees ignore them before that file exists.
 .claude/review-notes.md
+.claude/review-notes-archive.md
 .claude/final-review-feedback.md
 .claude/final-review-progress.json
 .claude/final-review-snapshot.json

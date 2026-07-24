@@ -10,12 +10,22 @@ are tagged.
 
 ## [Unreleased]
 
-### Backlog
+### Added
 
-- Allow each review action to choose its own model instead of sharing one
-  `review_model` setting.
-- Cap or archive `.claude/review-notes.md` so long-running Review Mode
-  sessions do not repeatedly read an ever-growing history.
+- **Review actions can each use a different model.** A new `review_models`
+  config setting maps an action name (`walkthrough`, `co_review`,
+  `changeset_overview`, `diff_explain`, `pr_review`, `review_memory`) to its
+  own `--model` override, so a whole-changeset overview can run on a
+  stronger model while a single-file walkthrough runs on a cheaper one. Any
+  action left unset still falls back to the existing shared `review_model`
+  setting, so nothing changes for configs that don't opt in. No migration is
+  required; existing `review_model` configs continue to work.
+- **Review Mode note reads stay bounded without losing history.** AMF now
+  keeps only the latest note for each of the 50 most recently documented
+  files in `.claude/review-notes.md`, moving older and superseded sections
+  to `.claude/review-notes-archive.md` after each agent turn. Review
+  surfaces merge both files, while agents only re-read the small live file.
+  No migration is required; AMF archives existing notes automatically.
 
 ## [v0.32.0] - 2026-07-24
 

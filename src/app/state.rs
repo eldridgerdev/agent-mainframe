@@ -3171,6 +3171,12 @@ pub struct PreparedFeatureLaunch {
 pub enum PlanInterviewPhase {
     Brief,
     StaticQuestions,
+    /// The static question flow is complete and the user must explicitly
+    /// choose whether to spend agent tokens on adaptive follow-ups.
+    AiConsent,
+    /// A background AI-adaptive round is in flight (`App::poll_plan_interview_ai_bg`).
+    /// Question navigation is frozen; `current_question()` returns `None`.
+    AiLoading,
     Done,
 }
 
@@ -3196,6 +3202,34 @@ pub struct PlanInterviewState {
     pub selected_option: usize,
     pub pending_launch: Option<PreparedFeatureLaunch>,
     pub abort_confirmation: bool,
+    /// The feature's configured agent, preferred as the AI-adaptive
+    /// interviewer engine before `HeadlessRunner::select_for_interview`
+    /// falls back to another installed harness.
+    pub preferred_harness: AgentKind,
+    /// Resolved lazily on the first AI round attempt. `None` = not yet
+    /// resolved; `Some(None)` = resolution was attempted and no
+    /// headless-capable harness is available, so remaining rounds are
+    /// skipped silently; `Some(Some(harness))` = the engine powering AI
+    /// rounds for the rest of this interview.
+    pub ai_harness: Option<Option<AgentKind>>,
+    /// Number of AI rounds that have finished (successfully or not),
+    /// checked against [`crate::plan_interview::MAX_AI_ROUNDS`].
+    pub ai_rounds_completed: usize,
+    /// True only after the user explicitly accepts the token-use prompt.
+    /// App-level round dispatch also checks this so no headless call can
+    /// start from an accidental `Done` transition.
+    pub ai_followups_opted_in: bool,
+    /// Set when the user finishes early or declines the token-use prompt so
+    /// the `Done` transition skips any remaining AI rounds.
+    pub skip_ai_rounds: bool,
+    /// When set, an AI round is in flight; used to render elapsed time on
+    /// the `AiLoading` frame. `None` outside `AiLoading`.
+    pub ai_round_started_at: Option<std::time::Instant>,
+    /// Cheap token estimate for the in-flight round's prompt, shown on the
+    /// `AiLoading` frame (`app::pr_review::estimate_tokens` is a chars/4
+    /// heuristic, not a harness-reported count — no headless call currently
+    /// surfaces real usage).
+    pub ai_round_token_estimate: usize,
 }
 
 impl PlanInterviewState {
@@ -3213,6 +3247,10 @@ impl PlanInterviewState {
         pending_launch: Option<PreparedFeatureLaunch>,
     ) -> Self {
         let answer_count = questions.len();
+        let preferred_harness = pending_launch
+            .as_ref()
+            .map(|prepared| prepared.agent.clone())
+            .unwrap_or_default();
         Self {
             feature_name,
             phase: PlanInterviewPhase::Brief,
@@ -3224,7 +3262,55 @@ impl PlanInterviewState {
             selected_option: 0,
             pending_launch,
             abort_confirmation: false,
+            preferred_harness,
+            ai_harness: None,
+            ai_rounds_completed: 0,
+            ai_followups_opted_in: false,
+            skip_ai_rounds: false,
+            ai_round_started_at: None,
+            ai_round_token_estimate: 0,
         }
+    }
+
+    /// Move into the `AiLoading` phase while a background round runs.
+    pub fn begin_ai_round(&mut self, token_estimate: usize) {
+        self.phase = PlanInterviewPhase::AiLoading;
+        self.ai_round_started_at = Some(std::time::Instant::now());
+        self.ai_round_token_estimate = token_estimate;
+    }
+
+    /// Explicitly accept the optional token-spending AI follow-up stage.
+    /// Returns false outside the consent screen so callers cannot opt in
+    /// accidentally from an ordinary answer editor.
+    pub fn opt_in_ai_followups(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::AiConsent {
+            return false;
+        }
+        self.ai_followups_opted_in = true;
+        self.skip_ai_rounds = false;
+        self.phase = PlanInterviewPhase::Done;
+        true
+    }
+
+    /// Apply a finished AI round's parsed follow-up questions.
+    ///
+    /// With no usable follow-ups, moves straight back to `Done` so the
+    /// caller can decide whether to try another round or complete. With
+    /// follow-ups, appends them to the question list and resumes the
+    /// question flow at the first new one.
+    pub fn apply_ai_round(&mut self, round: usize, new_questions: Vec<PlanQuestion>) {
+        self.ai_round_started_at = None;
+        self.ai_rounds_completed = round;
+        if new_questions.is_empty() {
+            self.phase = PlanInterviewPhase::Done;
+            return;
+        }
+        let first_new_index = self.questions.len();
+        self.answers.extend(new_questions.iter().map(|_| None));
+        self.questions.extend(new_questions);
+        self.phase = PlanInterviewPhase::StaticQuestions;
+        self.question_index = first_new_index;
+        self.load_current_answer();
     }
 
     pub fn current_question(&self) -> Option<&PlanQuestion> {
@@ -3273,7 +3359,7 @@ impl PlanInterviewState {
                 }
                 self.brief = self.editor.text().to_string();
                 if self.questions.is_empty() {
-                    self.phase = PlanInterviewPhase::Done;
+                    self.phase = PlanInterviewPhase::AiConsent;
                 } else {
                     self.phase = PlanInterviewPhase::StaticQuestions;
                     self.question_index = 0;
@@ -3284,13 +3370,24 @@ impl PlanInterviewState {
                 self.save_current_answer(false)?;
                 self.move_after_current_question();
             }
-            PlanInterviewPhase::Done => {}
+            PlanInterviewPhase::AiConsent => {
+                // Enter is deliberately the no-token default. Opting in uses
+                // the dedicated `a` action and `opt_in_ai_followups`.
+                self.skip_ai_rounds = true;
+                self.phase = PlanInterviewPhase::Done;
+            }
+            PlanInterviewPhase::AiLoading | PlanInterviewPhase::Done => {}
         }
         Ok(())
     }
 
-    /// Skip an optional question and move forward without recording an answer.
+    /// Skip an optional question, or decline the optional AI follow-up stage.
     pub fn skip(&mut self) -> Result<(), PlanInterviewAdvanceError> {
+        if self.phase == PlanInterviewPhase::AiConsent {
+            self.skip_ai_rounds = true;
+            self.phase = PlanInterviewPhase::Done;
+            return Ok(());
+        }
         let Some(question) = self.current_question() else {
             return Ok(());
         };
@@ -3319,6 +3416,17 @@ impl PlanInterviewState {
                 self.load_current_answer();
                 true
             }
+            PlanInterviewPhase::AiConsent if !self.questions.is_empty() => {
+                self.phase = PlanInterviewPhase::StaticQuestions;
+                self.question_index = self.questions.len() - 1;
+                self.load_current_answer();
+                true
+            }
+            PlanInterviewPhase::AiConsent => {
+                self.phase = PlanInterviewPhase::Brief;
+                self.editor = TextEditor::new(self.brief.clone());
+                true
+            }
             PlanInterviewPhase::Done if !self.questions.is_empty() => {
                 self.phase = PlanInterviewPhase::StaticQuestions;
                 self.question_index = self.questions.len() - 1;
@@ -3330,10 +3438,14 @@ impl PlanInterviewState {
                 self.editor = TextEditor::new(self.brief.clone());
                 true
             }
+            // Loading is a transient App-driven state; there is nothing to
+            // navigate back to until it resolves.
+            PlanInterviewPhase::AiLoading => false,
         }
     }
 
-    /// End questioning with the answers collected so far.
+    /// End questioning with the answers collected so far, skipping any
+    /// remaining AI-adaptive rounds.
     pub fn finish_early(&mut self) -> Result<(), PlanInterviewAdvanceError> {
         match self.phase {
             PlanInterviewPhase::Brief => {
@@ -3343,8 +3455,12 @@ impl PlanInterviewState {
                 self.brief = self.editor.text().to_string();
             }
             PlanInterviewPhase::StaticQuestions => self.save_current_draft(),
-            PlanInterviewPhase::Done => {}
+            PlanInterviewPhase::AiConsent
+            | PlanInterviewPhase::AiLoading
+            | PlanInterviewPhase::Done => {}
         }
+        self.ai_round_started_at = None;
+        self.skip_ai_rounds = true;
         self.phase = PlanInterviewPhase::Done;
         Ok(())
     }
@@ -3380,7 +3496,11 @@ impl PlanInterviewState {
 
     fn move_after_current_question(&mut self) {
         if self.question_index + 1 >= self.questions.len() {
-            self.phase = PlanInterviewPhase::Done;
+            self.phase = if self.ai_followups_opted_in {
+                PlanInterviewPhase::Done
+            } else {
+                PlanInterviewPhase::AiConsent
+            };
         } else {
             self.question_index += 1;
             self.load_current_answer();
@@ -3644,6 +3764,104 @@ mod tests {
             state.answers[1].as_deref(),
             Some("Developers use it from the dashboard")
         );
+    }
+
+    #[test]
+    fn plan_interview_finish_early_skips_remaining_ai_rounds() {
+        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.finish_early().unwrap();
+
+        assert_eq!(state.phase, PlanInterviewPhase::Done);
+        assert!(state.skip_ai_rounds);
+    }
+
+    #[test]
+    fn plan_interview_requires_explicit_opt_in_before_ai_rounds() {
+        let questions = crate::plan_interview::builtin_questions()
+            .into_iter()
+            .take(1)
+            .collect();
+        let mut state = PlanInterviewState::new("feature".into(), questions, None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        state.skip().unwrap();
+
+        assert_eq!(state.phase, PlanInterviewPhase::AiConsent);
+        assert!(!state.ai_followups_opted_in);
+        assert!(!state.skip_ai_rounds);
+
+        assert!(state.opt_in_ai_followups());
+
+        assert_eq!(state.phase, PlanInterviewPhase::Done);
+        assert!(state.ai_followups_opted_in);
+    }
+
+    #[test]
+    fn plan_interview_ai_consent_can_be_declined_without_opt_in() {
+        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        assert_eq!(state.phase, PlanInterviewPhase::AiConsent);
+
+        state.advance().unwrap();
+
+        assert_eq!(state.phase, PlanInterviewPhase::Done);
+        assert!(!state.ai_followups_opted_in);
+        assert!(state.skip_ai_rounds);
+    }
+
+    #[test]
+    fn plan_interview_begin_ai_round_enters_loading_with_metadata() {
+        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+
+        state.begin_ai_round(1200);
+
+        assert_eq!(state.phase, PlanInterviewPhase::AiLoading);
+        assert!(state.ai_round_started_at.is_some());
+        assert_eq!(state.ai_round_token_estimate, 1200);
+        assert!(state.current_question().is_none());
+    }
+
+    #[test]
+    fn plan_interview_apply_ai_round_with_no_questions_returns_to_done() {
+        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        state.begin_ai_round(500);
+
+        state.apply_ai_round(1, Vec::new());
+
+        assert_eq!(state.phase, PlanInterviewPhase::Done);
+        assert_eq!(state.ai_rounds_completed, 1);
+        assert!(state.ai_round_started_at.is_none());
+    }
+
+    #[test]
+    fn plan_interview_apply_ai_round_appends_questions_and_resumes_at_first_new_one() {
+        let existing = crate::plan_interview::builtin_questions();
+        let existing_count = existing.len();
+        let mut state = PlanInterviewState::new("feature".into(), existing, None);
+        state.answers = vec![Some("answered".into()); existing_count];
+        state.begin_ai_round(800);
+
+        let follow_up = PlanQuestion {
+            id: "retry-policy".into(),
+            text: "How should retries behave?".into(),
+            kind: PlanQuestionKind::FreeText,
+            source: crate::plan_interview::QuestionSource::Ai { round: 1 },
+            optional: true,
+        };
+        state.apply_ai_round(1, vec![follow_up.clone()]);
+
+        assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+        assert_eq!(state.ai_rounds_completed, 1);
+        assert_eq!(state.question_index, existing_count);
+        assert_eq!(state.questions.len(), existing_count + 1);
+        assert_eq!(state.questions[existing_count], follow_up);
+        assert_eq!(state.answers.len(), existing_count + 1);
+        assert_eq!(state.answers[existing_count], None);
+        assert_eq!(state.current_question(), Some(&follow_up));
     }
 
     #[test]

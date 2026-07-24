@@ -1436,6 +1436,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 state,
                 app.message.as_deref(),
                 &app.theme,
+                &app.throbber_state,
             );
         }
         AppMode::CreatingBatchFeatures(state) => {

@@ -32,7 +32,17 @@ struct HeadlessCommand {
     /// Args that must stay last (e.g. Codex's trailing `-` stdin marker). An
     /// optional `--model <name>` is inserted between `args` and `trailing`.
     trailing: Vec<&'static str>,
+    /// Extra env vars for the spawned process (e.g. Opencode's
+    /// `OPENCODE_PERMISSION` deny-all override for restricted runs).
+    envs: Vec<(&'static str, &'static str)>,
 }
+
+/// Deny-all permission override for Opencode's restricted headless runs.
+/// Traced the installed binary's config loader: `OPENCODE_PERMISSION` is
+/// merged into the resolved permission set *after* project/global
+/// `opencode.json`, so unlike a config-defined agent this can't be
+/// re-loosened by repo-controlled config.
+const OPENCODE_RESTRICTED_PERMISSION: &str = r#"{"*":"deny"}"#;
 
 /// Long flags `command_for(Codex)` relies on. Older Codex releases reject
 /// some of these with an argument-parse error, so headless availability must
@@ -129,13 +139,21 @@ impl HeadlessRunner {
     /// feature's interactive session runs. Pi's headless model flag isn't
     /// verified (mirrors `check_available`'s existing Pi caution), so a
     /// requested model is silently not applied there rather than guessed at.
+    ///
+    /// `restricted`, when true, forces Claude and Opencode into a no-tools
+    /// invocation that repo-controlled config (settings files, hooks,
+    /// plugins, MCP servers) cannot loosen — for callers whose prompt
+    /// carries all the context it needs and expects a plain text answer, not
+    /// a repo-exploring agent run. Codex is always sandboxed read-only
+    /// already; Pi is untouched.
     pub fn run(
         harness: &AgentKind,
         workdir: &Path,
         prompt: &str,
         model: Option<&str>,
+        restricted: bool,
     ) -> Result<String> {
-        let spec = command_for(harness);
+        let spec = command_for(harness, restricted);
         run_command(harness, &spec, workdir, prompt, model)
     }
 
@@ -152,7 +170,7 @@ impl HeadlessRunner {
         model: Option<&str>,
         on_progress: impl Fn(HeadlessProgress) + Send + 'static,
     ) -> Result<String> {
-        let spec = command_for(harness);
+        let spec = command_for(harness, false);
         run_jsonl_command(harness, &spec, workdir, prompt, model, on_progress)
     }
 
@@ -166,7 +184,6 @@ impl HeadlessRunner {
     /// can still be picked ahead of a working fallback. Pi is deliberately
     /// excluded until its headless contract is verified; a Pi feature can
     /// still be implemented by Pi while another harness powers discovery.
-    #[allow(dead_code)] // Wired into the interview state machine by the next Epic 3 item.
     pub fn select_for_interview(preferred: &AgentKind) -> Option<AgentKind> {
         select_interview_harness_with(preferred, |harness| Self::check_available(harness).is_ok())
     }
@@ -318,6 +335,7 @@ fn run_command(
 
     let mut child = Command::new(&spec.binary)
         .args(&args)
+        .envs(spec.envs.iter().copied())
         .current_dir(workdir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -388,6 +406,7 @@ fn run_jsonl_command(
 
     let mut child = Command::new(&spec.binary)
         .args(&args)
+        .envs(spec.envs.iter().copied())
         .current_dir(workdir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -844,13 +863,25 @@ fn json_error_message(error: Option<&serde_json::Value>) -> Option<String> {
         .or_else(|| error.as_str().map(str::to_string))
 }
 
-fn command_for(harness: &AgentKind) -> HeadlessCommand {
+fn command_for(harness: &AgentKind, restricted: bool) -> HeadlessCommand {
     match harness {
-        AgentKind::Claude => HeadlessCommand {
-            binary: crate::claude::ClaudeLauncher::resolve_binary(),
-            args: vec!["-p", "--output-format", "text"],
-            trailing: vec![],
-        },
+        AgentKind::Claude => {
+            let mut args = vec!["-p", "--output-format", "text"];
+            if restricted {
+                // Verified against the installed `claude --help`: --safe-mode
+                // drops repo-configured hooks/MCP servers/plugins without
+                // touching auth (unlike --bare, which also disables OAuth),
+                // and --tools "" empties the tool whitelist outright so no
+                // settings-file allow rule can grant Bash/Edit/Read.
+                args.extend(["--safe-mode", "--tools", ""]);
+            }
+            HeadlessCommand {
+                binary: crate::claude::ClaudeLauncher::resolve_binary(),
+                args,
+                trailing: vec![],
+                envs: vec![],
+            }
+        }
         AgentKind::Codex => HeadlessCommand {
             binary: "codex".into(),
             args: vec![
@@ -865,16 +896,30 @@ fn command_for(harness: &AgentKind) -> HeadlessCommand {
             // Codex reads the prompt from stdin only when `-` is the final
             // positional arg; an inserted `--model` must land before it.
             trailing: vec!["-"],
+            envs: vec![],
         },
-        AgentKind::Opencode => HeadlessCommand {
-            binary: "opencode".into(),
-            args: vec!["run"],
-            trailing: vec![],
-        },
+        AgentKind::Opencode => {
+            let mut args = vec!["run"];
+            let mut envs = vec![];
+            if restricted {
+                // --pure drops external plugins; OPENCODE_PERMISSION is a
+                // deny-all override applied after project/global
+                // opencode.json (see OPENCODE_RESTRICTED_PERMISSION's doc).
+                args.push("--pure");
+                envs.push(("OPENCODE_PERMISSION", OPENCODE_RESTRICTED_PERMISSION));
+            }
+            HeadlessCommand {
+                binary: "opencode".into(),
+                args,
+                trailing: vec![],
+                envs,
+            }
+        }
         AgentKind::Pi => HeadlessCommand {
             binary: "pi".into(),
             args: vec!["-p"],
             trailing: vec![],
+            envs: vec![],
         },
     }
 }
@@ -885,12 +930,12 @@ mod tests {
 
     #[test]
     fn every_agent_harness_has_a_headless_command() {
-        let claude = command_for(&AgentKind::Claude);
+        let claude = command_for(&AgentKind::Claude, false);
         assert!(!claude.binary.is_empty());
         assert_eq!(claude.args, ["-p", "--output-format", "text"]);
 
         assert_eq!(
-            command_for(&AgentKind::Codex),
+            command_for(&AgentKind::Codex, false),
             HeadlessCommand {
                 binary: "codex".into(),
                 args: vec![
@@ -903,23 +948,51 @@ mod tests {
                     "never",
                 ],
                 trailing: vec!["-"],
+                envs: vec![],
             }
         );
         assert_eq!(
-            command_for(&AgentKind::Opencode),
+            command_for(&AgentKind::Opencode, false),
             HeadlessCommand {
                 binary: "opencode".into(),
                 args: vec!["run"],
                 trailing: vec![],
+                envs: vec![],
             }
         );
         assert_eq!(
-            command_for(&AgentKind::Pi),
+            command_for(&AgentKind::Pi, false),
             HeadlessCommand {
                 binary: "pi".into(),
                 args: vec!["-p"],
                 trailing: vec![],
+                envs: vec![],
             }
+        );
+    }
+
+    #[test]
+    fn restricted_claude_and_opencode_deny_repo_configurable_tool_access() {
+        let claude = command_for(&AgentKind::Claude, true);
+        assert!(claude.args.contains(&"--safe-mode"));
+        let tools_idx = claude
+            .args
+            .iter()
+            .position(|arg| *arg == "--tools")
+            .expect("--tools flag present");
+        assert_eq!(claude.args[tools_idx + 1], "");
+
+        let opencode = command_for(&AgentKind::Opencode, true);
+        assert!(opencode.args.contains(&"--pure"));
+        assert_eq!(
+            opencode.envs,
+            [("OPENCODE_PERMISSION", OPENCODE_RESTRICTED_PERMISSION)]
+        );
+
+        // Codex is already sandboxed unconditionally; restricted is a no-op.
+        assert_eq!(
+            command_for(&AgentKind::Codex, true),
+            command_for(&AgentKind::Codex, false)
         );
     }
 
@@ -929,6 +1002,7 @@ mod tests {
             binary: "sh".into(),
             args: vec!["-c", "read input; printf 'received:%s' \"$input\""],
             trailing: vec![],
+            envs: vec![],
         };
         let output = run_command(&AgentKind::Codex, &spec, Path::new("/tmp"), "hello", None)
             .expect("fake headless command should succeed");
@@ -941,6 +1015,7 @@ mod tests {
             binary: "sh".into(),
             args: vec!["-c", "printf 'quota exhausted' >&2; exit 9"],
             trailing: vec![],
+            envs: vec![],
         };
         // Large enough that the early exit also breaks the stdin writer. The
         // provider's stderr must win over that secondary pipe error.
@@ -968,7 +1043,7 @@ mod tests {
 
     #[test]
     fn assemble_args_inserts_model_before_trailing_stdin_marker() {
-        let spec = command_for(&AgentKind::Codex);
+        let spec = command_for(&AgentKind::Codex, false);
         assert_eq!(
             assemble_args(&AgentKind::Codex, &spec, Some("gpt-5.5")),
             [
@@ -988,7 +1063,7 @@ mod tests {
 
     #[test]
     fn codex_json_args_keep_json_and_model_before_stdin_marker() {
-        let spec = command_for(&AgentKind::Codex);
+        let spec = command_for(&AgentKind::Codex, false);
         assert_eq!(
             assemble_jsonl_args(&AgentKind::Codex, &spec, Some("gpt-5.5")),
             [
@@ -1012,7 +1087,7 @@ mod tests {
         assert_eq!(
             assemble_jsonl_args(
                 &AgentKind::Claude,
-                &command_for(&AgentKind::Claude),
+                &command_for(&AgentKind::Claude, false),
                 Some("sonnet")
             ),
             [
@@ -1027,20 +1102,20 @@ mod tests {
         assert_eq!(
             assemble_jsonl_args(
                 &AgentKind::Opencode,
-                &command_for(&AgentKind::Opencode),
+                &command_for(&AgentKind::Opencode, false),
                 None
             ),
             ["run", "--format", "json"]
         );
         assert_eq!(
-            assemble_jsonl_args(&AgentKind::Pi, &command_for(&AgentKind::Pi), None),
+            assemble_jsonl_args(&AgentKind::Pi, &command_for(&AgentKind::Pi, false), None),
             ["-p", "--mode", "json"]
         );
     }
 
     #[test]
     fn assemble_args_omits_model_flag_for_pi() {
-        let spec = command_for(&AgentKind::Pi);
+        let spec = command_for(&AgentKind::Pi, false);
         assert_eq!(
             assemble_args(&AgentKind::Pi, &spec, Some("some-model")),
             ["-p"]
@@ -1049,7 +1124,7 @@ mod tests {
 
     #[test]
     fn assemble_args_is_unchanged_when_no_model_requested() {
-        let spec = command_for(&AgentKind::Claude);
+        let spec = command_for(&AgentKind::Claude, false);
         assert_eq!(
             assemble_args(&AgentKind::Claude, &spec, None),
             ["-p", "--output-format", "text"]
@@ -1099,7 +1174,7 @@ mod tests {
 
     #[test]
     fn codex_required_flags_cover_everything_the_headless_command_passes() {
-        let spec = command_for(&AgentKind::Codex);
+        let spec = command_for(&AgentKind::Codex, false);
         let args = assemble_jsonl_args(&AgentKind::Codex, &spec, None);
         for flag in CODEX_EXEC_REQUIRED_FLAGS {
             assert!(

@@ -18,6 +18,7 @@ pub fn draw_plan_interview_dialog(
     state: &PlanInterviewState,
     message: Option<&str>,
     theme: &Theme,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
     let area = centered_rect(80, 72, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
@@ -94,6 +95,35 @@ pub fn draw_plan_interview_dialog(
             }
             None => {}
         },
+        PlanInterviewPhase::AiConsent => {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        "Adaptive follow-up questions are optional.",
+                        Style::default()
+                            .fg(theme.text.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                    Line::from(
+                        "AMF will send your brief, answers, and bounded repository context to an available agent harness.",
+                    ),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!(
+                            "No agent tokens are used unless you opt in. Opting in may run up to {} AI rounds.",
+                            crate::plan_interview::MAX_AI_ROUNDS
+                        ),
+                        Style::default().fg(theme.warning.to_color()),
+                    )),
+                ])
+                .wrap(Wrap { trim: false }),
+                chunks[2],
+            );
+        }
+        PlanInterviewPhase::AiLoading => {
+            draw_ai_loading(frame, chunks[2], state, theme, throbber_state)
+        }
         PlanInterviewPhase::Done => {
             frame.render_widget(
                 Paragraph::new(
@@ -116,6 +146,17 @@ pub fn draw_plan_interview_dialog(
             message.to_string(),
             Style::default().fg(color),
         ))
+    } else if state.phase == PlanInterviewPhase::AiConsent {
+        Line::from(vec![
+            hint("a", theme),
+            Span::raw(" generate (uses tokens)  "),
+            hint("Enter", theme),
+            Span::raw(" finish without AI  "),
+            hint("Ctrl+B", theme),
+            Span::raw(" back  "),
+            hint("Esc", theme),
+            Span::raw(" cancel"),
+        ])
     } else {
         Line::from(vec![
             hint("Enter", theme),
@@ -151,6 +192,11 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
                 .unwrap_or_default();
             (state.question_index + 2, source)
         }
+        PlanInterviewPhase::AiConsent => (total, "Optional AI".to_string()),
+        PlanInterviewPhase::AiLoading => (
+            state.questions.len() + 1,
+            format!("AI round {}", state.ai_rounds_completed + 1),
+        ),
         PlanInterviewPhase::Done => (total, "Complete".to_string()),
     };
     Paragraph::new(Line::from(vec![
@@ -171,6 +217,10 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             .current_question()
             .map(|question| (question.text.clone(), question.optional))
             .unwrap_or_default(),
+        PlanInterviewPhase::AiConsent => {
+            ("Generate adaptive follow-up questions?".to_string(), false)
+        }
+        PlanInterviewPhase::AiLoading => ("Generating follow-up questions".to_string(), false),
         PlanInterviewPhase::Done => ("Interview complete".to_string(), false),
     };
     let suffix = if optional { " (optional)" } else { "" };
@@ -184,6 +234,54 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         Span::styled(suffix, Style::default().fg(theme.text_muted.to_color())),
     ]))
     .wrap(Wrap { trim: false })
+}
+
+/// Loading frame shown while an AI-adaptive round runs off the UI thread
+/// (`App::poll_plan_interview_ai_bg`). Shows the engine, elapsed time, and a
+/// cheap token estimate for the prompt — mirrors the PR-review family's
+/// running frames (`draw_ai_pr_review_running`).
+fn draw_ai_loading(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    theme: &Theme,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+) {
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+
+    let engine = state
+        .ai_harness
+        .as_ref()
+        .and_then(|resolved| resolved.as_ref())
+        .map(|harness| harness.display_name())
+        .unwrap_or("agent");
+    let elapsed = state
+        .ai_round_started_at
+        .map(|started_at| started_at.elapsed().as_secs())
+        .unwrap_or(0);
+    let round = state.ai_rounds_completed + 1;
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![
+                spinner,
+                Span::styled(
+                    format!(
+                        " Generating follow-up questions ({engine}) · round {round} · {elapsed}s · ~{} tokens...",
+                        state.ai_round_token_estimate
+                    ),
+                    Style::default()
+                        .fg(theme.text.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        ])
+        .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_editor(

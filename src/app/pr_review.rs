@@ -1413,20 +1413,26 @@ fn run_review_memory_bootstrap(
         token_estimate: estimate_tokens(&prompt),
     });
 
-    let result = HeadlessRunner::run(&AgentKind::Claude, &workdir, &prompt, model.as_deref())
-        .and_then(|output| {
-            let findings = review_memory::parse_findings_markdown(&output);
-            let mut appended = 0;
-            for (category, finding) in &findings {
-                if review_memory::append_finding(&memory_path, category, finding)? {
-                    appended += 1;
-                }
+    let result = HeadlessRunner::run(
+        &AgentKind::Claude,
+        &workdir,
+        &prompt,
+        model.as_deref(),
+        false,
+    )
+    .and_then(|output| {
+        let findings = review_memory::parse_findings_markdown(&output);
+        let mut appended = 0;
+        for (category, finding) in &findings {
+            if review_memory::append_finding(&memory_path, category, finding)? {
+                appended += 1;
             }
-            Ok(BootstrapOutcome {
-                pr_count: pr_bodies.len(),
-                appended,
-            })
-        });
+        }
+        Ok(BootstrapOutcome {
+            pr_count: pr_bodies.len(),
+            appended,
+        })
+    });
     let _ = tx.send(BootstrapProgress::Done(result));
 }
 
@@ -1464,17 +1470,22 @@ fn run_review_memory_compact(
         token_estimate: estimate_tokens(&prompt),
     });
 
-    let result = HeadlessRunner::run(&AgentKind::Claude, &workdir, &prompt, model.as_deref()).map(
-        |output| {
-            let proposed_content = output.trim().to_string();
-            let proposed_findings = review_memory::count_findings(&proposed_content);
-            Some(CompactOutcome {
-                original_findings,
-                proposed_findings,
-                proposed_content,
-            })
-        },
-    );
+    let result = HeadlessRunner::run(
+        &AgentKind::Claude,
+        &workdir,
+        &prompt,
+        model.as_deref(),
+        false,
+    )
+    .map(|output| {
+        let proposed_content = output.trim().to_string();
+        let proposed_findings = review_memory::count_findings(&proposed_content);
+        Some(CompactOutcome {
+            original_findings,
+            proposed_findings,
+            proposed_content,
+        })
+    });
     let _ = tx.send(CompactProgress::Done(result));
 }
 

@@ -10832,6 +10832,100 @@ fn pr_review_ids_in_visible_order(app: &App) -> Vec<u64> {
     }
 }
 
+fn install_amf_outbound_comment_mix(app: &mut App) {
+    use crate::app::pr_review::{
+        AI_REVIEW_ATTRIBUTION_FOOTER, AMF_ATTRIBUTION_FOOTER, CommentKind,
+    };
+
+    enter_pr_review_with_conversation(app, &[], &[]);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut root = pr_comment_of_kind(1, CommentKind::Inline);
+        root.author = "reviewer".into();
+
+        let mut amf_reply = pr_comment_of_kind(2, CommentKind::Inline);
+        amf_reply.author = "author".into();
+        amf_reply.in_reply_to = Some(1);
+        amf_reply.body = format!("Done in `abc123`.\n\n{AMF_ATTRIBUTION_FOOTER}");
+
+        let mut ai_finding = pr_comment_of_kind(3, CommentKind::Inline);
+        ai_finding.author = "author".into();
+        ai_finding.body = format!("AI finding.\n\n{AI_REVIEW_ATTRIBUTION_FOOTER}");
+
+        let mut human_reply = pr_comment_of_kind(4, CommentKind::Inline);
+        human_reply.author = "second-reviewer".into();
+        human_reply.in_reply_to = Some(1);
+        human_reply.body = "This still needs a regression test.".into();
+
+        let mut orphaned_amf_reply = pr_comment_of_kind(5, CommentKind::Inline);
+        orphaned_amf_reply.author = "author".into();
+        orphaned_amf_reply.in_reply_to = Some(999);
+        orphaned_amf_reply.body = format!("Done elsewhere.\n\n{AMF_ATTRIBUTION_FOOTER}");
+
+        state.review.comments = vec![root, amf_reply, ai_finding, human_reply, orphaned_amf_reply];
+    }
+}
+
+#[test]
+fn pr_review_collates_amf_reply_but_keeps_other_outbound_context_accessible() {
+    let mut app = pr_review_test_app();
+    install_amf_outbound_comment_mix(&mut app);
+
+    // The attributed inline reply is represented under comment 1's Replies
+    // section, not as a duplicate row. Top-level AI findings and orphaned AMF
+    // replies stay visible for context; the unrelated human reply stays fully
+    // visible and actionable.
+    assert_eq!(pr_review_ids_in_visible_order(&app), vec![1, 3, 4, 5]);
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("not in PrReview mode");
+    };
+    assert_eq!(state.review.open_count(), 2);
+    assert!(state.review.comments[3].is_actionable());
+    assert!(!state.review.comments[2].is_actionable());
+    assert!(!state.review.comments[4].is_actionable());
+}
+
+#[test]
+fn pr_review_never_builds_fix_prompts_for_amf_authored_rows() {
+    let mut app = pr_review_test_app();
+    install_amf_outbound_comment_mix(&mut app);
+
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 2; // top-level AI Review finding
+    }
+    app.pr_review_open_fix_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.fix_confirm.is_none()),
+        _ => panic!("not in PrReview mode"),
+    }
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("AMF-authored"))
+    );
+
+    // Even a stale mark set assembled before refresh filters AMF-authored
+    // entries out of the combined prompt.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.marked.extend([3, 4]);
+    }
+    app.pr_review_open_batch_confirm();
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("not in PrReview mode");
+    };
+    let confirm = state
+        .fix_confirm
+        .as_ref()
+        .expect("human reply is batchable");
+    assert_eq!(confirm.batch.as_deref(), Some(&[4][..]));
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains("This still needs a regression test.")
+    );
+    assert!(!confirm.editor.text().contains("AI finding."));
+}
+
 #[test]
 fn pr_review_cycle_sort_wraps_through_all_modes() {
     let mut app = pr_review_test_app();

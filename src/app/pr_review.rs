@@ -271,6 +271,11 @@ pub(crate) fn window_parsed_hunk(
 /// footer already sitting in the editor.
 pub(crate) const AMF_ATTRIBUTION_FOOTER: &str = "— posted via AMF";
 pub(crate) const AI_ATTRIBUTION_FOOTER: &str = "— drafted by AI via AMF";
+/// Attribution on findings and summaries posted by the separate AI Review
+/// workflow. Keep this exact marker alongside the two PR Triage reply markers
+/// so a later refresh can distinguish every AMF-authored outbound comment
+/// from incoming feedback without relying on the authenticated user's login.
+pub(crate) const AI_REVIEW_ATTRIBUTION_FOOTER: &str = "— AI review via AMF";
 
 fn append_amf_attribution(body: &str) -> String {
     format!("{}\n\n{}", body.trim_end(), AMF_ATTRIBUTION_FOOTER)
@@ -749,6 +754,26 @@ impl PrComment {
             .filter(|c| c.in_reply_to == Some(self.id))
             .collect()
     }
+
+    /// Whether this comment was posted by an AMF-owned workflow.
+    ///
+    /// Exact attribution footers are the durable signal: author login is not
+    /// sufficient because AMF posts as the user's own GitHub account, and a
+    /// loose text search would misclassify ordinary comments that merely
+    /// mention AMF.
+    pub fn is_amf_authored(&self) -> bool {
+        let body = self.body.trim_end();
+        body.ends_with(AMF_ATTRIBUTION_FOOTER)
+            || body.ends_with(AI_ATTRIBUTION_FOOTER)
+            || body.ends_with(AI_REVIEW_ATTRIBUTION_FOOTER)
+    }
+
+    /// Incoming feedback can be fixed, batched, replied to, and counted as
+    /// open work. AMF's own outbound comments remain inspectable context but
+    /// must never be fed back to the agent as a fresh task.
+    pub fn is_actionable(&self) -> bool {
+        !self.is_amf_authored()
+    }
 }
 
 /// Whether `reply` carries either exact AMF attribution footer — the local
@@ -1094,9 +1119,28 @@ pub struct PrReview {
 }
 
 impl PrReview {
-    /// Number of comments not yet resolved on GitHub.
+    /// Whether an AMF-authored inline reply is already represented beneath its
+    /// fetched root comment's detail view. Such replies stay in the normalized
+    /// model/cache, but do not need a duplicate row in the actionable list.
+    ///
+    /// An orphaned reply whose root was not fetched remains a list row so it is
+    /// still accessible rather than silently disappearing.
+    pub fn is_collated_amf_reply(&self, comment: &PrComment) -> bool {
+        comment.is_amf_authored()
+            && comment.in_reply_to.is_some_and(|root_id| {
+                self.comments
+                    .iter()
+                    .any(|candidate| candidate.id == root_id)
+            })
+    }
+
+    /// Number of unresolved incoming comments. AMF-authored outbound comments
+    /// are context, not review work, so they never inflate this count.
     pub fn open_count(&self) -> usize {
-        self.comments.iter().filter(|c| !c.is_resolved).count()
+        self.comments
+            .iter()
+            .filter(|c| c.is_actionable() && !c.is_resolved)
+            .count()
     }
 }
 
@@ -1793,20 +1837,27 @@ impl App {
     /// point. No-op (with a hint) if nothing is selected or another dialog
     /// is already open.
     pub fn pr_review_open_mark_pick(&mut self) {
-        let ready = match &self.mode {
+        let selected_actionable = match &self.mode {
             AppMode::PrReview(state)
                 if state.reply.is_none()
                     && state.fix_confirm.is_none()
                     && state.reply_kind_pick.is_none()
                     && state.mark_pick.is_none() =>
             {
-                state.selected_comment().is_some()
+                state.selected_comment().map(PrComment::is_actionable)
             }
             _ => return,
         };
-        if !ready {
-            self.message = Some("No comment selected".into());
-            return;
+        match selected_actionable {
+            Some(true) => {}
+            Some(false) => {
+                self.message = Some("AMF-authored comments are shown for context only".to_string());
+                return;
+            }
+            None => {
+                self.message = Some("No comment selected".into());
+                return;
+            }
         }
         if let AppMode::PrReview(state) = &mut self.mode {
             state.mark_pick = Some(MarkPickState { selected: 0 });
@@ -1907,10 +1958,20 @@ impl App {
     /// Marks are kept by comment id, so they survive the hide-resolved filter
     /// shifting the visible rows. No-op with no selection.
     pub fn pr_review_toggle_mark(&mut self) {
-        let AppMode::PrReview(state) = &mut self.mode else {
+        let selected = match &self.mode {
+            AppMode::PrReview(state) => state
+                .selected_comment()
+                .map(|comment| (comment.id, comment.is_actionable())),
+            _ => return,
+        };
+        let Some((id, actionable)) = selected else {
             return;
         };
-        let Some(id) = state.selected_comment().map(|c| c.id) else {
+        if !actionable {
+            self.message = Some("AMF-authored comments cannot be batched as fixes".to_string());
+            return;
+        }
+        let AppMode::PrReview(state) = &mut self.mode else {
             return;
         };
         let now_marked = if state.marked.remove(&id) {
@@ -2331,6 +2392,22 @@ impl App {
     /// already chosen, or a dedicated session already exists) go straight to
     /// the dialog.
     pub fn pr_review_open_fix_confirm(&mut self) {
+        let selected_actionable = match &self.mode {
+            AppMode::PrReview(state) => state.selected_comment().map(PrComment::is_actionable),
+            _ => return,
+        };
+        match selected_actionable {
+            Some(true) => {}
+            Some(false) => {
+                self.message =
+                    Some("AMF-authored comments cannot be sent back as fixes".to_string());
+                return;
+            }
+            None => {
+                self.message = Some("No comment selected".into());
+                return;
+            }
+        }
         if self.pr_review_needs_harness_pick() {
             if let AppMode::PrReview(state) = &mut self.mode {
                 state.pending_batch = false;
@@ -2353,6 +2430,10 @@ impl App {
             self.message = Some("No comment selected".into());
             return;
         };
+        if !comment.is_actionable() {
+            self.message = Some("AMF-authored comments cannot be sent back as fixes".to_string());
+            return;
+        }
         let request = ReplyDraftRequest::new(comment.id, &state.review.pr.head_sha);
         let prompt = with_reply_draft_handoff(
             comment.fix_prompt(),
@@ -2382,13 +2463,14 @@ impl App {
                     .review
                     .comments
                     .iter()
-                    .filter(|c| state.marked.contains(&c.id) && !c.is_resolved)
+                    .filter(|c| state.marked.contains(&c.id) && c.is_actionable() && !c.is_resolved)
                     .count()
             }
             _ => return,
         };
         if valid == 0 {
-            self.message = Some("Marked comments are all resolved — nothing to batch".into());
+            self.message =
+                Some("Marked comments are all resolved or AMF-authored — nothing to batch".into());
             return;
         }
         // The dedicated-review target picks a harness before the first fix, same
@@ -2412,7 +2494,7 @@ impl App {
                     .review
                     .comments
                     .iter()
-                    .filter(|c| state.marked.contains(&c.id) && !c.is_resolved)
+                    .filter(|c| state.marked.contains(&c.id) && c.is_actionable() && !c.is_resolved)
                     .collect();
                 (!selected.is_empty()).then(|| {
                     let ids: Vec<u64> = selected.iter().map(|c| c.id).collect();
@@ -2432,7 +2514,8 @@ impl App {
             _ => return,
         };
         let Some((prompt, ids, requests)) = built else {
-            self.message = Some("Marked comments are all resolved — nothing to batch".into());
+            self.message =
+                Some("Marked comments are all resolved or AMF-authored — nothing to batch".into());
             return;
         };
 
@@ -2715,6 +2798,17 @@ impl App {
     /// `FixConfirmState::batch`): the batch injects one numbered prompt and marks
     /// every included comment `Fixing`, then clears the marked set.
     pub fn pr_review_inject_fix(&mut self) -> Result<()> {
+        let selected_is_amf_authored = matches!(
+            &self.mode,
+            AppMode::PrReview(state)
+                if state.fix_confirm.is_none()
+                    && state.selected_comment().is_some_and(PrComment::is_amf_authored)
+        );
+        if selected_is_amf_authored {
+            self.message = Some("AMF-authored comments cannot be sent back as fixes".into());
+            return Ok(());
+        }
+
         let (prompt, pr_number, head_sha, fixing_ids, is_batch, reply_draft_requests) =
             match &self.mode {
                 AppMode::PrReview(state) => {
@@ -2906,19 +3000,26 @@ impl App {
     /// with one entry point. No-op (with a hint) if nothing is selected or
     /// another dialog is already open.
     pub fn pr_review_open_reply_pick(&mut self) {
-        let ready = match &self.mode {
+        let selected_actionable = match &self.mode {
             AppMode::PrReview(state)
                 if state.reply.is_none()
                     && state.fix_confirm.is_none()
                     && state.reply_kind_pick.is_none() =>
             {
-                state.selected_comment().is_some()
+                state.selected_comment().map(PrComment::is_actionable)
             }
             _ => return,
         };
-        if !ready {
-            self.message = Some("No comment selected".into());
-            return;
+        match selected_actionable {
+            Some(true) => {}
+            Some(false) => {
+                self.message = Some("AMF-authored comments are shown for context only".to_string());
+                return;
+            }
+            None => {
+                self.message = Some("No comment selected".into());
+                return;
+            }
         }
         if let AppMode::PrReview(state) = &mut self.mode {
             state.reply_kind_pick = Some(ReplyKindPickState { selected: 0 });
@@ -3023,6 +3124,10 @@ impl App {
             self.message = Some("No comment selected".into());
             return;
         };
+        if !comment.is_actionable() {
+            self.message = Some("AMF-authored comments are shown for context only".to_string());
+            return;
+        }
         // A captured draft is the fixing agent's description of what it
         // changed — meaningful only for a `Done` reply. NotNeeded always
         // starts from the fallback (empty, for the user to fill in) so a fix
@@ -3209,6 +3314,7 @@ impl App {
             {
                 state
                     .selected_comment()
+                    .filter(|c| c.is_actionable())
                     .map(|c| (c.id, c.memory_finding_seed()))
             }
             _ => return,
@@ -4664,6 +4770,95 @@ mod tests {
         // `gh` directly, a human on GitHub) has no such footer.
         reply.body = "Done in `abc123`.".to_string();
         assert!(!reply_posted_via_amf(&reply));
+    }
+
+    #[test]
+    fn normalize_classifies_exact_amf_footers_without_hiding_human_feedback() {
+        let comments = vec![
+            ReviewComment {
+                id: 1,
+                path: Some("src/lib.rs".into()),
+                line: Some(10),
+                original_line: Some(10),
+                side: Some("RIGHT".into()),
+                diff_hunk: Some("@@".into()),
+                subject_type: None,
+                body: "Please guard this write.".into(),
+                user: user("reviewer", "User"),
+                in_reply_to_id: None,
+                pull_request_review_id: Some(90),
+            },
+            ReviewComment {
+                id: 2,
+                path: Some("src/lib.rs".into()),
+                line: Some(10),
+                original_line: Some(10),
+                side: Some("RIGHT".into()),
+                diff_hunk: Some("@@".into()),
+                subject_type: None,
+                body: format!("Done in `abc123`.\n\n{AMF_ATTRIBUTION_FOOTER}"),
+                user: user("author", "User"),
+                in_reply_to_id: Some(1),
+                pull_request_review_id: Some(91),
+            },
+            ReviewComment {
+                id: 3,
+                path: Some("src/lib.rs".into()),
+                line: Some(10),
+                original_line: Some(10),
+                side: Some("RIGHT".into()),
+                diff_hunk: Some("@@".into()),
+                subject_type: None,
+                body: "I saw the posted via AMF note; this still needs a test.".into(),
+                user: user("reviewer", "User"),
+                in_reply_to_id: Some(1),
+                pull_request_review_id: Some(90),
+            },
+            ReviewComment {
+                id: 4,
+                path: Some("src/other.rs".into()),
+                line: Some(4),
+                original_line: Some(4),
+                side: Some("RIGHT".into()),
+                diff_hunk: Some("@@".into()),
+                subject_type: None,
+                body: format!("AI finding.\n\n{AI_REVIEW_ATTRIBUTION_FOOTER}"),
+                user: user("author", "User"),
+                in_reply_to_id: None,
+                pull_request_review_id: Some(92),
+            },
+        ];
+
+        // This is the same normalize pass a manual refresh runs after an `R`
+        // reply has appeared on GitHub.
+        let review = normalize(pr(), comments, vec![], vec![], vec![]);
+        assert!(review.comments[1].is_amf_authored());
+        assert!(review.is_collated_amf_reply(&review.comments[1]));
+        assert!(review.comments[3].is_amf_authored());
+        assert!(!review.is_collated_amf_reply(&review.comments[3]));
+
+        // Merely mentioning AMF is not an attribution marker, so the unrelated
+        // human reply remains incoming, actionable work.
+        assert!(!review.comments[2].is_amf_authored());
+        assert!(review.comments[2].is_actionable());
+        assert_eq!(review.open_count(), 2);
+    }
+
+    #[test]
+    fn orphaned_amf_reply_is_not_collated_away() {
+        let mut orphan = sample_comment(2, "author", false);
+        orphan.in_reply_to = Some(999);
+        orphan.body = format!("Done.\n\n{AI_ATTRIBUTION_FOOTER}");
+        let review = PrReview {
+            pr: pr(),
+            comments: vec![orphan.clone()],
+            fetched_at: Local::now(),
+        };
+
+        assert!(orphan.is_amf_authored());
+        assert!(!orphan.is_actionable());
+        assert!(!review.is_collated_amf_reply(&orphan));
+        assert_eq!(review.open_count(), 0);
     }
 
     #[test]

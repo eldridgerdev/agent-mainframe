@@ -2407,7 +2407,7 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/app/state.rs`, `src/ui/dialogs/ai_review.rs`, `src/app/tests.rs`,
       `docs/screenshots/ai-review-picker-back-navigation/`, `CHANGELOG.md`.
 
-- [ ] **Hide or de-emphasize AMF's own outbound comments in the PR Triage
+- [x] **Hide or de-emphasize AMF's own outbound comments in the PR Triage
       list.** Replies posted by the `R` flow already end with the exact
       `— posted via AMF` footer, and AI Review findings posted by AMF carry the
       corresponding `— drafted by AI via AMF` footer. Use these durable markers
@@ -2424,6 +2424,26 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       and render coverage, including a refresh after posting through `R`, an AI
       Review-authored comment, and an unrelated human reply that must remain
       visible and actionable.
+
+      **Shipped, 2026-07-24.** `PrComment::is_amf_authored` now recognizes only
+      the three exact durable footers emitted by AMF's reply and AI Review
+      flows (`— posted via AMF`, `— drafted by AI via AMF`, and the standalone
+      AI Review workflow's existing `— AI review via AMF`). A refreshed
+      attributed inline reply remains in the normalized/cache model and in its
+      root comment's **Replies** section, but `PrReviewState::visible_indices`
+      collates away the duplicate list row when that root is present. Top-level
+      comments and orphaned replies remain visible with a muted `[via AMF]`
+      context-only treatment. All AMF-authored comments are excluded from the
+      open count and rejected by single-fix, batch-mark, reply, mark, and memory
+      entry points; batch construction defensively filters stale marked ids too.
+      Exact-marker matching leaves ordinary human replies that merely mention
+      AMF visible and actionable. Normalization, refresh-shaped classification,
+      orphan/filter/count, fix/batch, and list/detail render regressions cover
+      the complete flow. Full suite green (1234 passed, 1 ignored); strict
+      Clippy and formatting clean. → `src/app/ai_review.rs`,
+      `src/app/pr_review.rs`, `src/app/state.rs`, `src/app/tests.rs`,
+      `src/ui/dialogs/pr_review.rs`,
+      `docs/screenshots/pr-triage-amf-outbound-comments/`, `CHANGELOG.md`.
 
 ## Reasoning / when to build
 

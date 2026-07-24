@@ -2170,25 +2170,37 @@ impl PrReviewState {
 
     /// Indices into `review.comments` that pass the current filter, ordered by
     /// `sort_mode`. With `hide_resolved` on, GitHub-resolved comments are
-    /// dropped.
+    /// dropped. AMF-authored inline replies whose root is present are always
+    /// collated under that root's detail view instead of duplicated here.
     pub fn visible_indices(&self) -> Vec<usize> {
         let indices = self
             .review
             .comments
             .iter()
             .enumerate()
-            .filter(|(_, c)| !self.hide_resolved || !c.is_resolved)
+            .filter(|(_, c)| {
+                !self.review.is_collated_amf_reply(c) && (!self.hide_resolved || !c.is_resolved)
+            })
             .map(|(i, _)| i)
             .collect();
         self.sort_indices(indices)
     }
 
-    /// Every comment index (ignoring `hide_resolved`) in `sort_mode` order.
-    /// Used to find a hidden selection's nearest visible neighbor when a
-    /// filter change hides it — the filter can't change relative order, only
-    /// remove from it, so this is the same order `visible_indices` would use.
+    /// Every list-eligible comment index (ignoring `hide_resolved`) in
+    /// `sort_mode` order. Used to find a hidden selection's nearest visible
+    /// neighbor when a filter or refresh hides it — the filter can't change
+    /// relative order, only remove from it, so this is the same order
+    /// `visible_indices` would use.
     pub(crate) fn all_sorted_indices(&self) -> Vec<usize> {
-        self.sort_indices((0..self.review.comments.len()).collect())
+        let indices = self
+            .review
+            .comments
+            .iter()
+            .enumerate()
+            .filter(|(_, comment)| !self.review.is_collated_amf_reply(comment))
+            .map(|(index, _)| index)
+            .collect();
+        self.sort_indices(indices)
     }
 
     /// If `selected` is currently hidden by `hide_resolved`, snap it to the

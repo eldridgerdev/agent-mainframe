@@ -5157,7 +5157,8 @@ Current note.
 
     #[test]
     fn review_notes_cap_is_noop_when_preamble_present_but_unique_notes_fit() {
-        let content = "# Optional preamble\n\n## src/a.rs — a\n\nA.\n\n---\n\n## src/b.rs — b\n\nB.\n";
+        let content =
+            "# Optional preamble\n\n## src/a.rs — a\n\nA.\n\n---\n\n## src/b.rs — b\n\nB.\n";
         let (live, overflow) = split_overflow_review_notes(content, 2);
         assert_eq!(live, content);
         assert!(overflow.is_none());

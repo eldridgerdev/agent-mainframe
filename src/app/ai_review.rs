@@ -983,7 +983,9 @@ impl App {
         let model = model_for_ai_review_run(
             origin.model.as_deref(),
             origin.model_picked,
-            self.config.review_model_for(ReviewAction::PrReview).as_deref(),
+            self.config
+                .review_model_for(ReviewAction::PrReview)
+                .as_deref(),
         );
         self.log_info(
             "pr_review",

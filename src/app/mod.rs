@@ -442,16 +442,58 @@ pub struct AppConfig {
     /// PR diff, so the feature must work without assuming one is installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_review_skill: Option<String>,
-    /// Explicit model name/id passed as `--model` to the headless CLI for AI
-    /// PR review (`A`) and the review-memory lookback bootstrap (Epic E of
-    /// `pr-comment-review-plan.md`), independent of whatever model the
-    /// feature's own interactive session runs. Format depends on the harness
-    /// running the review (a bare name/alias for Claude/Codex, `provider/model`
-    /// for Opencode; not applied for Pi, whose headless model flag isn't
-    /// verified). `None` (default) passes no explicit model, so the harness's
-    /// own default model applies.
+    /// Default explicit model name/id passed as `--model` to the headless CLI
+    /// for every review action listed on [`ReviewAction`], independent of
+    /// whatever model the feature's own interactive session runs. Format
+    /// depends on the harness running the review (a bare name/alias for
+    /// Claude/Codex, `provider/model` for Opencode; not applied for Pi, whose
+    /// headless model flag isn't verified). `None` (default) passes no
+    /// explicit model, so the harness's own default model applies. Overridden
+    /// per-action by `review_models`; see [`AppConfig::review_model_for`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_model: Option<String>,
+    /// Per-action overrides of `review_model`, keyed by
+    /// [`ReviewAction::config_key`] (e.g. `"changeset_overview"`). An action
+    /// missing here (or an unrecognized key) falls back to `review_model`.
+    /// Lets a cheap single-file pass (the walkthrough) run a lighter model
+    /// than a whole-changeset pass without forcing every action onto one
+    /// setting.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub review_models: std::collections::BTreeMap<String, String>,
+}
+
+/// The distinct headless review call sites that each read `review_model`
+/// (optionally overridden per-action via `review_models`). Bootstrapping and
+/// compacting the review-memory doc share the `review_memory` key: both
+/// operate on the same doc with the same cost/quality tradeoff, so splitting
+/// them would just be two knobs for one decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewAction {
+    /// On-demand walkthrough for a noteless file (`w` in Final Review).
+    Walkthrough,
+    /// AI co-reviewer first pass over the current file (`A` in Final Review).
+    CoReview,
+    /// Whole-changeset overview + risk markers (`O` in Final Review).
+    ChangesetOverview,
+    /// Config-wizard / hook diff-review explanation.
+    DiffExplain,
+    /// AI PR review pane (`A` in PR Triage / the AI Review pane).
+    PrReview,
+    /// Review-memory lookback bootstrap and compaction (PR picker).
+    ReviewMemory,
+}
+
+impl ReviewAction {
+    pub fn config_key(self) -> &'static str {
+        match self {
+            ReviewAction::Walkthrough => "walkthrough",
+            ReviewAction::CoReview => "co_review",
+            ReviewAction::ChangesetOverview => "changeset_overview",
+            ReviewAction::DiffExplain => "diff_explain",
+            ReviewAction::PrReview => "pr_review",
+            ReviewAction::ReviewMemory => "review_memory",
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -510,6 +552,7 @@ impl Default for AppConfig {
             review_memory_path: None,
             ai_review_skill: None,
             review_model: None,
+            review_models: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -525,6 +568,16 @@ impl AppConfig {
         };
 
         Duration::from_secs_f64(seconds)
+    }
+
+    /// The `--model` override for a given review action: `review_models`'s
+    /// entry for [`ReviewAction::config_key`] if set, else the shared
+    /// `review_model` default, else `None` (harness default).
+    pub fn review_model_for(&self, action: ReviewAction) -> Option<String> {
+        self.review_models
+            .get(action.config_key())
+            .cloned()
+            .or_else(|| self.review_model.clone())
     }
 }
 
@@ -699,6 +752,12 @@ pub struct App {
     /// agent session, the PR picker), which close straight to `Normal` —
     /// matching how `close_pr_review` already behaves for those.
     pub ai_review_return_to: Option<Box<AppMode>>,
+    /// Background PR Triage refresh kicked off only after GitHub confirms an
+    /// AI Review post. Separate from `pr_review_bg` so it can update a stashed
+    /// pane without changing the current AI Review mode.
+    pub ai_review_triage_refresh_bg: Option<Receiver<Result<pr_review::PrReview>>>,
+    /// PR/workdir identity paired with `ai_review_triage_refresh_bg`.
+    pub ai_review_triage_refresh_pending: Option<AiReviewTriageRefresh>,
     /// Memoized `GhCli::current_user` result for the session, so opening or
     /// refreshing the PR picker doesn't repeat the `gh api user` call every
     /// time. `None` = not yet resolved; `Some(None)` = resolution was
@@ -2054,6 +2113,8 @@ impl App {
             ai_review_progress: None,
             ai_review_pending: None,
             ai_review_return_to: None,
+            ai_review_triage_refresh_bg: None,
+            ai_review_triage_refresh_pending: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
@@ -2263,6 +2324,8 @@ impl App {
             ai_review_progress: None,
             ai_review_pending: None,
             ai_review_return_to: None,
+            ai_review_triage_refresh_bg: None,
+            ai_review_triage_refresh_pending: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),

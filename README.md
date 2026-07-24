@@ -351,7 +351,7 @@ All keys are forwarded to the tmux session except:
 | `i` | Input requests picker |
 | `e` | Toggle compose/direct input (agent sessions) |
 | `s` | Steering coach (experimental) |
-| `d` | Open the diff viewer |
+| `d` | Choose all current changes or one commit to view |
 | `m` | Markdown file picker/viewer |
 | `b` | Show/hide the sidebar |
 | `v` | Expand/collapse todos in the sidebar |

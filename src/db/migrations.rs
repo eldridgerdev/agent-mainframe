@@ -64,6 +64,14 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Cache AI PR-review findings keyed by PR# + head SHA (split from pr_review_cache)",
             MIGRATION_012,
         ),
+        (
+            "Persist agent-written PR comment reply drafts",
+            MIGRATION_013,
+        ),
+        (
+            "Track the pre-fix PR head for accurate reply commit references",
+            MIGRATION_014,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -255,6 +263,28 @@ CREATE TABLE IF NOT EXISTS ai_review_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_review_cache_updated
     ON ai_review_cache(updated_at);
+";
+
+// A fix prompt carries a fresh request id for each comment. The agent sends its
+// proposed reviewer-facing reply back through AMF's IPC command with that id;
+// updating only the matching row prevents a late response from an older fix
+// attempt from replacing the current draft.
+const MIGRATION_013: &str = "
+CREATE TABLE IF NOT EXISTS pr_comment_reply_drafts (
+    pr_number  INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
+    body       TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (pr_number, comment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_comment_reply_drafts_updated
+    ON pr_comment_reply_drafts(updated_at);
+";
+
+const MIGRATION_014: &str = "
+ALTER TABLE pr_comment_reply_drafts
+    ADD COLUMN base_head_sha TEXT NOT NULL DEFAULT '';
 ";
 
 const MIGRATION_001: &str = "

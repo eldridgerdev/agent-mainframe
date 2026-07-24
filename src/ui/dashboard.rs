@@ -903,6 +903,7 @@ fn mode_view_context(mode: &AppMode) -> Option<&crate::app::ViewState> {
         AppMode::NotificationPicker(_, from_view) => from_view.as_ref(),
         AppMode::CommandPicker(state) => state.from_view.as_ref(),
         AppMode::BookmarkPicker(state) => state.from_view.as_ref(),
+        AppMode::DiffPicker(state) => Some(&state.from_view),
         AppMode::DiffViewerLoading(state) | AppMode::DiffViewer(state) => Some(&state.from_view),
         AppMode::SteeringPrompt(state) => Some(&state.view),
         AppMode::Compose(state) => Some(&state.view),
@@ -1204,6 +1205,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     {
         draw_view_pane(frame, app, view, false, false);
         super::dialogs::draw_prompt_library(frame, state, app.message.as_deref(), &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
+        return;
+    }
+
+    if let AppMode::DiffPicker(state) = &app.mode {
+        draw_view_pane(frame, app, &state.from_view, false, false);
+        super::dialogs::draw_diff_picker(frame, state, &app.theme);
         draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
@@ -2171,12 +2179,14 @@ mod tests {
             workdir: feature.workdir.clone(),
             pr,
             findings: Vec::new(),
+            summary: None,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
             last_run: None,
             harness: None,
             harness_pick: None,
+            harness_pick_origin: None,
             model: None,
             model_picked: false,
             model_pick: None,
@@ -2287,6 +2297,7 @@ mod tests {
             marked: std::collections::HashSet::new(),
             pending_batch: false,
             checked_out_branch: Some(checked_out.to_string()),
+            pending_ai_review_findings: 0,
         }
     }
 
@@ -2316,12 +2327,14 @@ mod tests {
             workdir,
             pr,
             findings: Vec::new(),
+            summary: None,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
             last_run: None,
             harness: None,
             harness_pick: None,
+            harness_pick_origin: None,
             model: None,
             model_picked: false,
             model_pick: None,
@@ -2365,6 +2378,33 @@ mod tests {
             .collect();
 
         assert!(!rendered.contains("AI review running"));
+        assert!(!rendered.contains("AI review pending"));
+    }
+
+    #[test]
+    fn pr_review_pane_shows_completed_pending_ai_review_count() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.pending_ai_review_findings = 3;
+        app.mode = crate::app::AppMode::PrReview(state);
+
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("AI review pending: 3"));
     }
 
     #[test]

@@ -11,11 +11,12 @@
   Loop group. The Cost batch makes
   bounded headless passes honor `review_model`, caps
   `final-review-feedback.md` with an archive file, and batches REVIEW MODE's
-  note instruction per turn. The rest of the
+  note instruction per turn. Per-action model overrides (a `review_models`
+  map keyed by `ReviewAction`) and bounded live review notes with a
+  reviewer-visible archive have since shipped too. The rest of the
   viewer-ergonomics, AI co-review,
-  and workflow items are not yet started. Three Cost follow-ups (per-action
-  model overrides, capping `review-notes.md` the same way, and measuring the
-  most token-efficient way to dispatch review fixes) are added below.
+  and workflow items are not yet started. One Cost follow-up remains:
+  measuring the most token-efficient way to dispatch review fixes.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -431,6 +432,8 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       cleared on finish)
 - [x] Choose base ref (press `b` in the diff viewer / final review to
       diff against any branch, tag, or commit; blank reverts to auto)
+- [x] Choose the view-mode diff scope (leader `d` opens a picker for all
+      current branch/worktree changes or one feature-branch commit)
 - [x] PR inline-comment integration — opt-in via the
       `final_review_post_to_pr` config flag. On finishing a review (with the
       flag on), AMF resolves the branch's PR and posts a single GitHub review:
@@ -840,31 +843,35 @@ Cost:
       a file that already has a note with nothing new to add), instead of
       one per individual edit. Output format (and `parse_review_notes`)
       unchanged.
-- [ ] Per-action model overrides. `review_model` is one setting shared
-      across six call sites with different cost/quality needs — PR
-      Triage's AI review, the review-memory lookback bootstrap, and (as of
-      the item above) final review's walkthrough / AI co-review /
-      changeset overview / diff explain. A whole-changeset overview (`O`)
-      reading every file's diff at once benefits from a stronger model; a
-      single-file walkthrough is a much smaller ask and could run on
-      something cheap. Extend `review_model` from one string to a map
-      keyed by action, falling back to a single default when unset.
-      Explicitly flagged as still-open in the shipped item's own
-      CHANGELOG entry.
-- [ ] Cap/archive `.claude/review-notes.md` the same way
-      `final-review-feedback.md` was capped above. The batching fix
-      reduces how *often* the agent writes to this file, but not how
-      large it gets — nothing trims it, and
-      `generate_review_walkthrough`'s "does this file already have a
-      note" check (`state.review_notes.contains_key`, `src/app/review.rs`)
-      means the agent — per the REVIEW MODE instructions
-      `ensure_review_claude_md` writes into `CLAUDE.local.md` — has to
-      read the whole file every batch to decide what still needs a note.
-      Same unbounded-history-reread shape the feedback file had, on a
-      file that's read even more often (every batch, not just per review
-      round). Likely the same shape as `split_overflow_rounds`: keep the
-      newest N files' notes (or notes from the last N review rounds) live,
-      move the rest to a gitignored `.claude/review-notes-archive.md`.
+- [x] Per-action model overrides — a new `review_models` map
+      (`BTreeMap<String, String>` on `AppConfig`) keyed by
+      `ReviewAction::config_key()` (`walkthrough` / `co_review` /
+      `changeset_overview` / `diff_explain` / `pr_review` / `review_memory`;
+      the latter covers both the review-memory bootstrap and compact
+      passes, which share one cost/quality tradeoff) lets each call site
+      pick its own model — e.g. a stronger model for the whole-changeset
+      overview (`O`) and a cheaper one for the single-file walkthrough
+      (`w`). All six former `self.config.review_model.clone()` call sites
+      now go through `AppConfig::review_model_for(action)`, which checks
+      `review_models` first and falls back to the shared `review_model`
+      default, so an unconfigured action is unaffected. `review_model`
+      itself is unchanged (still the global default / back-compat single
+      setting); `ReviewAction` and the lookup live in `src/app/mod.rs`.
+- [x] Cap/archive `.claude/review-notes.md` — the live file now keeps the
+      latest note for each of the 50 most recently documented files;
+      older sections and superseded notes for the same path move to the
+      gitignored `.claude/review-notes-archive.md`. `archive_review_notes`
+      / `split_overflow_review_notes` (`src/app/review.rs`) run when Review
+      Mode is configured (migrating an existing long-lived file) and when
+      an agent-turn boundary reaches `notifications.rs`, so the next batch
+      never pays to read unbounded history. The managed Review Mode
+      instruction is refreshed on upgrade and explicitly tells the agent
+      to inspect only the bounded live file. AMF's final-review viewer and
+      per-edit explanation lookup use `load_review_notes`, which merges the
+      archive first and the live file second, preserving old reviewer
+      context while allowing a current note to override its archived
+      predecessor. Archiving writes history before truncating the live
+      file, and setup adds both note files to `.claude/.gitignore`.
 - [ ] Investigate and implement the most token-efficient strategy for
       dispatching review comments to fixing agents. Benchmark at least four
       shapes on small, medium, and very large review rounds: one fresh agent per

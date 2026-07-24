@@ -289,6 +289,24 @@ pub enum DiffViewerLayout {
     SideBySide,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffScope {
+    /// The existing branch snapshot: every commit since the resolved base plus
+    /// staged, unstaged, and untracked worktree changes.
+    CurrentChanges,
+    /// Exactly one commit, compared with its first parent.
+    Commit(crate::diff::DiffCommit),
+}
+
+pub struct DiffPickerState {
+    pub from_view: ViewState,
+    pub workdir: PathBuf,
+    pub commits: Vec<crate::diff::DiffCommit>,
+    /// Zero is "all current changes"; commit rows start at one.
+    pub selected: usize,
+    pub error: Option<String>,
+}
+
 /// Severity tag on a line comment or file rejection, conventional-comments
 /// style. Drives three things: the GitHub review *event* (any `Blocker` →
 /// `REQUEST_CHANGES`), the agent prompt's mandatory-vs-optional framing, and
@@ -650,6 +668,7 @@ pub enum SummaryItem {
 pub struct DiffViewerState {
     pub from_view: ViewState,
     pub workdir: PathBuf,
+    pub scope: DiffScope,
     pub branch: String,
     pub base_ref: String,
     pub base_commit: String,
@@ -848,6 +867,7 @@ impl DiffViewerState {
         Self {
             from_view,
             workdir,
+            scope: DiffScope::CurrentChanges,
             branch: String::new(),
             base_ref: String::new(),
             base_commit: String::new(),
@@ -1786,6 +1806,10 @@ pub struct AiReviewState {
     /// Findings from the most recent `A` run (or loaded from `ai_review_cache`
     /// on entry), in generation order.
     pub findings: Vec<crate::app::ai_review::AiReviewFinding>,
+    /// Overall one-to-three sentence review summary generated in the same
+    /// pass as `findings`, and loaded from the same cache row. Older cache
+    /// entries may not have one.
+    pub summary: Option<String>,
     /// Index into `findings` of the highlighted finding.
     pub selected: usize,
     /// Scroll offset (in lines) for the detail pane of the selected finding.
@@ -1802,6 +1826,16 @@ pub struct AiReviewState {
     pub harness: Option<AgentKind>,
     /// Single-select picker shown before the first `A` run in this pane.
     pub harness_pick: Option<AiHarnessPickState>,
+    /// Harness in effect when the current harness-pick "chain" started —
+    /// set the first time this pane's picker steps back from the model
+    /// picker to the harness picker, and left untouched by any further
+    /// back-and-forth within the same chain (cleared once a review actually
+    /// starts). Lets [`App::accept_ai_review_harness_pick`] detect a switch
+    /// away from the *original* harness even after the user backs out and
+    /// re-confirms an already-switched-to harness, so `AppConfig::review_model`
+    /// (which may only be valid for the original harness) isn't reseeded as
+    /// an incompatible model for the new one. See `AiHarnessPickState::previous_harness`.
+    pub harness_pick_origin: Option<AgentKind>,
     /// Model chosen for this pane's `A` runs, picked once via `model_pick`
     /// right after the harness. `None` means "use the default" — either the
     /// picker hasn't run yet (see `model_picked`) or the user explicitly
@@ -1906,6 +1940,19 @@ pub struct PrReviewState {
     /// wrong branch — see [`Self::branch_mismatch`]. `None` when the branch
     /// couldn't be determined (e.g. detached HEAD).
     pub checked_out_branch: Option<String>,
+    /// Completed AI-review findings for this exact PR/head SHA that are still
+    /// publishable. Loaded from `ai_review_cache` on entry and kept in sync as
+    /// the linked AI Review is generated, skipped, or posted.
+    pub pending_ai_review_findings: usize,
+}
+
+/// Identity of the PR Triage refresh started after a successful AI Review
+/// post. Kept outside `AppMode` so the refresh can update a stashed triage
+/// pane while the user remains in AI Review.
+#[derive(Debug, Clone)]
+pub struct AiReviewTriageRefresh {
+    pub workdir: PathBuf,
+    pub pr: crate::github::PrRef,
 }
 
 /// Confirm/edit dialog for posting the kept AI-review findings to GitHub as a
@@ -1963,6 +2010,14 @@ pub struct AiHarnessPickState {
     pub agents: Vec<AgentKind>,
     pub selected: usize,
     pub error: Option<String>,
+    /// The harness-pick chain's original harness (`AiReviewState::harness_pick_origin`),
+    /// carried into this picker so a confirm can tell whether the choice has
+    /// actually diverged from where the chain started — not just from the
+    /// harness shown on the immediately preceding screen. `None` on the
+    /// initial harness step. Used to avoid seeding one harness's model choice
+    /// (or the globally configured default model) into a different harness's
+    /// rebuilt model picker.
+    pub previous_harness: Option<AgentKind>,
 }
 
 /// One row of the model picker: either "use the default", a known-good
@@ -2032,6 +2087,18 @@ pub struct ReplyState {
     pub kind: crate::app::pr_review::ReplyKind,
     /// The reply body, editable before posting.
     pub editor: TextEditor,
+    /// Whether the initial body came back from an agent fix session. Agent
+    /// drafts receive AI-authorship attribution; deterministic templates and
+    /// user-written not-needed replies receive channel-only AMF attribution.
+    /// Only ever `true` for [`super::pr_review::ReplyKind::Done`] — see
+    /// [`super::pr_review::App::open_reply`].
+    pub agent_drafted: bool,
+    /// The exact body the editor was seeded with when the dialog opened.
+    /// Compared against the current editor text at post time: if the user has
+    /// changed it, the draft is no longer purely the agent's own words, so
+    /// `agent_drafted` attribution no longer applies (see
+    /// [`super::pr_review::reply_effective_agent_drafted`]).
+    pub original_seed: String,
     /// True while keystrokes go to the editor (`e` to enter); false in the
     /// confirm view (`⏎` post / `e` edit / `esc` cancel).
     pub editing: bool,
@@ -2079,6 +2146,10 @@ pub struct FixConfirmState {
     /// injecting marks all of them `Fixing` and clears the marked set. `None`
     /// for an ordinary single-comment fix (only the selected comment is marked).
     pub batch: Option<Vec<u64>>,
+    /// Per-comment correlation ids embedded in the prompt's `amf reply-draft`
+    /// handoff commands. They become authoritative only when the user confirms
+    /// injection, at which point AMF invalidates any older stored draft.
+    pub reply_draft_requests: Vec<crate::app::pr_review::ReplyDraftRequest>,
 }
 
 impl PrReviewState {
@@ -2118,6 +2189,29 @@ impl PrReviewState {
     /// remove from it, so this is the same order `visible_indices` would use.
     pub(crate) fn all_sorted_indices(&self) -> Vec<usize> {
         self.sort_indices((0..self.review.comments.len()).collect())
+    }
+
+    /// If `selected` is currently hidden by `hide_resolved`, snap it to the
+    /// nearest remaining visible comment in sort order (forward first, then
+    /// backward, then the first visible comment). No-op when `selected` is
+    /// already visible, or nothing is visible at all. Shared by the `x`
+    /// toggle and by a PR Triage refresh, either of which can newly hide the
+    /// selected comment (resolved on GitHub, in the toggle case; refreshed
+    /// into a resolved state, in the refresh case).
+    pub fn snap_selection_to_visible(&mut self) {
+        let visible = self.visible_indices();
+        if visible.is_empty() || visible.contains(&self.selected) {
+            return;
+        }
+        let order = self.all_sorted_indices();
+        let pos = order.iter().position(|&i| i == self.selected);
+        let snapped = pos
+            .and_then(|p| order[p..].iter().find(|i| visible.contains(i)))
+            .or_else(|| pos.and_then(|p| order[..p].iter().rev().find(|i| visible.contains(i))))
+            .copied()
+            .unwrap_or(visible[0]);
+        self.selected = snapped;
+        self.detail_scroll = 0;
     }
 
     /// Apply `sort_mode` to a set of comment indices. Stable, so ties keep
@@ -2317,6 +2411,7 @@ pub enum AppMode {
         workdir: PathBuf,
     },
     BookmarkPicker(BookmarkPickerState),
+    DiffPicker(DiffPickerState),
     DiffViewerLoading(DiffViewerState),
     DiffViewer(DiffViewerState),
     /// Prompting for a PR number when the branch has no auto-detectable PR.

@@ -34,7 +34,6 @@ struct IpcMsg {
     amf_session: Option<String>,
     amf_feature_session_id: Option<String>,
     provider_session_id: Option<String>,
-    #[allow(dead_code)] // explicit tmux session, currently logged by hooks/plugins for diagnostics
     amf_tmux_session: Option<String>,
     #[allow(dead_code)] // explicit tmux window, currently logged by hooks/plugins for diagnostics
     amf_tmux_window: Option<String>,
@@ -355,6 +354,53 @@ impl App {
         }
     }
 
+    /// Bound Review Mode's live developer-note file when an agent finishes a
+    /// turn. Harness integrations with end-of-turn notifications emit either
+    /// `thinking-stop`, `stop`, or `input-request` at that boundary. Resolve
+    /// the configured feature first instead of trusting an arbitrary IPC cwd
+    /// as a write target.
+    fn archive_review_notes_after_agent_turn(&mut self, msg: &IpcMsg, msg_type: &str) {
+        let notification_type = msg.notification_type.as_deref().unwrap_or_default();
+        let ended = matches!(msg_type, "thinking-stop" | "stop" | "input-request")
+            || notification_type == "input-request";
+        if !ended {
+            return;
+        }
+
+        let cwd_path = PathBuf::from(msg.cwd.as_deref().unwrap_or_default());
+        let amf_session = msg
+            .amf_session
+            .as_deref()
+            .or(msg.amf_tmux_session.as_deref())
+            .or(msg.session_id.as_deref());
+        let Some((pi, fi)) = self.project_feature_for_message(amf_session, &cwd_path).3 else {
+            return;
+        };
+        let feature = &self.store.projects[pi].features[fi];
+        if !feature.review {
+            return;
+        }
+        let workdir = feature.workdir.clone();
+
+        match super::review::archive_review_notes(&workdir) {
+            Ok(0) => {}
+            Ok(count) => self.log_info(
+                "review",
+                format!(
+                    "archived {count} older review-note section(s) for {}",
+                    workdir.display()
+                ),
+            ),
+            Err(err) => self.log_warn(
+                "review",
+                format!(
+                    "failed to cap review notes for {}: {err}",
+                    workdir.display()
+                ),
+            ),
+        }
+    }
+
     fn codex_feature_for_message(
         &self,
         session_id: Option<&str>,
@@ -628,6 +674,76 @@ impl App {
             return;
         }
 
+        if matches!(msg_type.as_str(), "pr-reply-draft" | "pr_reply_draft") {
+            let parsed = raw
+                .get("pr_number")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+                .zip(raw.get("comment_id").and_then(|value| value.as_u64()))
+                .zip(
+                    raw.get("draft_request_id")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty()),
+                )
+                .zip(
+                    raw.get("body")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty()),
+                );
+            let Some((((pr_number, comment_id), request_id), body)) = parsed else {
+                self.log_warn(
+                    "pr_review",
+                    "Ignored invalid PR reply draft payload".to_string(),
+                );
+                return;
+            };
+
+            let result = match self.db.as_ref() {
+                Some(db) => {
+                    db.capture_pr_comment_reply_draft(pr_number, comment_id, request_id, body)
+                }
+                None => {
+                    self.log_warn(
+                        "pr_review",
+                        "Ignored PR reply draft because the database is unavailable".to_string(),
+                    );
+                    return;
+                }
+            };
+            match result {
+                Ok(true) => {
+                    self.log_info(
+                        "pr_review",
+                        format!("Captured reply draft for PR #{pr_number}, comment {comment_id}"),
+                    );
+                    // This fires from a background fix session's IPC message,
+                    // often while the user is elsewhere (dashboard, an
+                    // unrelated tmux view) — bare PR/comment numbers alone
+                    // aren't enough to place it, so pull the comment's file
+                    // path/snippet from the cached review when available.
+                    let message = match self.reply_draft_toast_context(pr_number, comment_id) {
+                        Some(context) => {
+                            format!("Reply draft ready for PR #{pr_number} · {context}")
+                        }
+                        None => {
+                            format!("Reply draft ready for PR #{pr_number} comment {comment_id}")
+                        }
+                    };
+                    self.push_toast_success(message);
+                }
+                Ok(false) => self.log_warn(
+                    "pr_review",
+                    format!("Ignored stale reply draft for PR #{pr_number}, comment {comment_id}"),
+                ),
+                Err(error) => self.log_warn(
+                    "pr_review",
+                    format!("Failed to persist PR reply draft: {error}"),
+                ),
+            }
+            return;
+        }
+
         if matches!(
             msg_type.as_str(),
             "opencode-sidebar-updated" | "sidebar-updated"
@@ -798,6 +914,7 @@ impl App {
         self.bind_exact_token_usage_source_from_ipc(&msg);
 
         let msg_type = msg.msg_type.as_deref().unwrap_or("stop").to_string();
+        self.archive_review_notes_after_agent_turn(&msg, &msg_type);
 
         // "clear" removes any pending notification for this
         // session, sent by clear-notify.sh on PreToolUse.
@@ -1175,6 +1292,36 @@ impl App {
             self.push_toast_warning(input_request_toast_message(&pending_input));
         }
         self.pending_inputs.push(pending_input);
+    }
+
+    /// Best-effort human-readable location for a reply-draft-ready toast: the
+    /// comment's file path and boilerplate-stripped snippet, resolved from the
+    /// PR review cached at the time the fix was injected. `None` when the
+    /// cache is unavailable (never fetched, evicted, or the comment has
+    /// neither a path nor a snippet) — the caller falls back to bare
+    /// PR/comment numbers rather than failing the toast outright.
+    pub(crate) fn reply_draft_toast_context(
+        &self,
+        pr_number: u32,
+        comment_id: u64,
+    ) -> Option<String> {
+        let db = self.db.as_ref()?;
+        let (_, base_head_sha) = db
+            .load_pr_comment_reply_draft_with_base(pr_number, comment_id)
+            .ok()
+            .flatten()?;
+        let review = db
+            .load_pr_review_cache(pr_number, &base_head_sha)
+            .ok()
+            .flatten()?;
+        let comment = review.comments.into_iter().find(|c| c.id == comment_id)?;
+        let snippet = comment.snippet.trim();
+        match (&comment.path, snippet.is_empty()) {
+            (Some(path), false) => Some(format!("{path} — {snippet}")),
+            (Some(path), true) => Some(path.clone()),
+            (None, false) => Some(snippet.to_string()),
+            (None, true) => None,
+        }
     }
 
     /// Scan ignoring the dir-mtime fingerprint. Used for watcher-driven

@@ -38,7 +38,7 @@ pub use dialog::{
     handle_markdown_viewer_key, handle_rename_feature_key, handle_rename_session_key,
     handle_session_config_key, handle_steering_prompt_key, handle_theme_picker_key,
 };
-pub use diff::{handle_diff_viewer_key, handle_review_harness_pick_key};
+pub use diff::{handle_diff_picker_key, handle_diff_viewer_key, handle_review_harness_pick_key};
 pub use diff_review::handle_diff_review_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
@@ -111,6 +111,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ConfirmingCodexSession { .. } => handle_codex_session_confirm_key(app, key.code),
         AppMode::SessionPicker(_) => handle_session_picker_key(app, key.code),
         AppMode::BookmarkPicker(_) => handle_bookmark_picker_key(app, key.code),
+        AppMode::DiffPicker(_) => handle_diff_picker_key(app, key),
         AppMode::DiffViewerLoading(_) => handle_diff_viewer_key(app, key),
         AppMode::DiffViewer(_) => handle_diff_viewer_key(app, key),
         AppMode::PrNumberPrompt(_) => handle_pr_number_prompt_key(app, key),

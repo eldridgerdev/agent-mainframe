@@ -14,6 +14,59 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## PR Triage fix agents sometimes target the wrong lines
+
+- **Status:** Backlog
+- **Reported:** 2026-07-20
+- **Relates to:** PR Triage fix-prompt assembly
+  (`src/app/pr_review.rs::PrComment::fix_prompt`, `fix_prompt_body`,
+  `combined_fix_prompt`)
+- **Lead:** The prompt currently gives the agent a `file:line` pointer, the
+  review comment, and its GitHub diff hunk, but the agent can still interpret
+  that context against the wrong location in the current file. The agent has
+  described the failure as having "mis-anchored" the comment. Capture a real
+  failing prompt and compare its stored `line`, `side`, `outdated`, and
+  `diff_hunk` fields with the current worktree before deciding whether the fix
+  belongs in comment normalization, hunk construction, or stronger prompt
+  guidance.
+
+### Suggested changes and checks
+
+1. Never truncate, window, or otherwise re-slice GitHub's `diff_hunk` before
+   handing it to the agent. In particular, audit `PrComment::prompt_hunk`,
+   which currently reduces longer line-anchored hunks to three context lines
+   on either side of the computed anchor.
+2. Prefer GitHub's current `line` whenever it is present; use `original_line`
+   only as the fallback for an outdated comment. Preserve and test the current
+   `c.line.or(c.original_line)` precedence during any refactor.
+3. Add a cheap consistency check before dispatch: parse the
+   `@@ -old_start,old_count +new_start,new_count @@` header and verify that the
+   chosen line falls within the old or new range selected by `side`. If the
+   anchor cannot be mapped, refresh or surface the mismatch instead of quietly
+   constructing a possibly incorrect excerpt.
+4. Audit freshness at the same boundary. Any line mapping or last-`N` hunk
+   slicing must not combine a current line number with a cached or stale hunk.
+   Verify that the line, side, hunk header, hunk body, and PR head SHA all come
+   from the same fresh fetch; specifically check whether an `@@ ... @@` excerpt
+   is being cut from the tail of an older cached hunk rather than the freshly
+   fetched comment hunk.
+
+### Repro
+
+1. Open PR Triage and select an inline review comment.
+2. Send the comment to an agent with `f` (or include it in a batch with `B`).
+3. Let the agent make the requested fix and inspect the resulting edit.
+
+### Expected
+
+The agent applies the fix to the exact line or code block the review comment
+is anchored to.
+
+### Actual
+
+Intermittently, the agent applies or explains the fix against different lines
+than the comment refers to and reports that it mis-anchored the comment.
+
 ## AI Review pane doesn't refresh PR Triage after posting
 
 - **Status:** Backlog

@@ -25,10 +25,70 @@ impl App {
             return Ok(());
         };
 
-        let mut state = DiffViewerState::new(view, workdir);
+        let (commits, error) = match crate::diff::list_diff_commits(&workdir) {
+            Ok(commits) => (commits, None),
+            Err(err) => (Vec::new(), Some(err.to_string())),
+        };
+        self.mode = AppMode::DiffPicker(DiffPickerState {
+            from_view: view,
+            workdir,
+            commits,
+            selected: 0,
+            error,
+        });
+        Ok(())
+    }
+
+    pub fn close_diff_picker(&mut self) {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::DiffPicker(state) => state.from_view,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+        self.mode = AppMode::Viewing(view);
+    }
+
+    pub fn diff_picker_select_next(&mut self) {
+        if let AppMode::DiffPicker(state) = &mut self.mode {
+            let entry_count = state.commits.len() + 1;
+            state.selected = (state.selected + 1) % entry_count;
+        }
+    }
+
+    pub fn diff_picker_select_prev(&mut self) {
+        if let AppMode::DiffPicker(state) = &mut self.mode {
+            let entry_count = state.commits.len() + 1;
+            state.selected = if state.selected == 0 {
+                entry_count - 1
+            } else {
+                state.selected - 1
+            };
+        }
+    }
+
+    pub fn diff_picker_choose(&mut self) {
+        let picker = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::DiffPicker(state) => state,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        let scope = if picker.selected == 0 {
+            DiffScope::CurrentChanges
+        } else {
+            match picker.commits.get(picker.selected - 1).cloned() {
+                Some(commit) => DiffScope::Commit(commit),
+                None => DiffScope::CurrentChanges,
+            }
+        };
+        let mut state = DiffViewerState::new(picker.from_view, picker.workdir);
+        state.scope = scope;
         state.layout = self.preferred_diff_viewer_layout();
         self.mode = AppMode::DiffViewerLoading(state);
-        Ok(())
     }
 
     pub fn close_diff_viewer(&mut self) {
@@ -70,7 +130,15 @@ impl App {
             .get(state.selected_file)
             .map(|file| file.path.clone());
         let selected_index = state.selected_file;
-        match crate::diff::load_snapshot(&state.workdir, state.override_base_ref.as_deref()) {
+        let snapshot = match &state.scope {
+            DiffScope::CurrentChanges => {
+                crate::diff::load_snapshot(&state.workdir, state.override_base_ref.as_deref())
+            }
+            DiffScope::Commit(commit) => {
+                crate::diff::load_commit_snapshot(&state.workdir, &commit.hash)
+            }
+        };
+        match snapshot {
             Ok(snapshot) => {
                 state.branch = snapshot.branch;
                 state.base_ref = snapshot.base_ref;
@@ -82,11 +150,7 @@ impl App {
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
                 state.patch_scroll = 0;
                 if state.review {
-                    state.review_notes = std::fs::read_to_string(
-                        state.workdir.join(".claude").join("review-notes.md"),
-                    )
-                    .map(|content| crate::app::review::parse_review_notes(&content))
-                    .unwrap_or_default();
+                    state.review_notes = crate::app::review::load_review_notes(&state.workdir);
                 }
             }
             Err(err) => {
@@ -119,7 +183,9 @@ impl App {
     /// Open the base-ref prompt, pre-filling it with the active override (or the
     /// currently resolved base) so the reviewer can edit rather than retype.
     pub fn diff_viewer_start_base_ref_edit(&mut self) {
-        if let AppMode::DiffViewer(state) = &mut self.mode {
+        if let AppMode::DiffViewer(state) = &mut self.mode
+            && matches!(&state.scope, DiffScope::CurrentChanges)
+        {
             state.base_ref_input = state
                 .override_base_ref
                 .clone()

@@ -96,6 +96,17 @@ enum Commands {
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
     },
+    /// Return an agent-written PR review reply draft to the running AMF
+    /// instance. Reads the reply body from stdin.
+    #[command(name = "reply-draft", hide = true)]
+    ReplyDraft {
+        #[arg(long)]
+        pr_number: u32,
+        #[arg(long)]
+        comment_id: u64,
+        #[arg(long)]
+        request_id: String,
+    },
     /// Write a custom session status into the AMF database.
     /// Used by hook scripts for custom sessions.
     #[command(name = "set-status", hide = true)]
@@ -162,6 +173,33 @@ fn main() -> Result<()> {
 
     if let Some(Commands::Automation { command }) = cli.command {
         return run_automation_command(command);
+    }
+
+    if let Some(Commands::ReplyDraft {
+        pr_number,
+        comment_id,
+        request_id,
+    }) = cli.command
+    {
+        use std::io::Read;
+        let mut body = String::new();
+        std::io::stdin().read_to_string(&mut body)?;
+        let body = body.trim();
+        if body.is_empty() {
+            anyhow::bail!("Reply draft is empty");
+        }
+        if request_id.trim().is_empty() {
+            anyhow::bail!("Reply draft request id is empty");
+        }
+        let payload = serde_json::json!({
+            "type": "pr-reply-draft",
+            "pr_number": pr_number,
+            "comment_id": comment_id,
+            "draft_request_id": request_id,
+            "body": body,
+        });
+        ipc::send(&ipc::socket_path(), &serde_json::to_string(&payload)?)?;
+        return Ok(());
     }
 
     if let Some(Commands::Notify) = cli.command {
@@ -814,6 +852,10 @@ fn run_loop<B: Backend>(
         }
 
         if app.ai_review_bg.is_some() && app.poll_ai_pr_review_bg() {
+            force_redraw = true;
+        }
+
+        if app.ai_review_triage_refresh_bg.is_some() && app.poll_ai_review_triage_refresh_bg() {
             force_redraw = true;
         }
 
@@ -1519,7 +1561,10 @@ fn run_loop<B: Backend>(
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_hooks_at, startup_loading_pending, startup_sidebar_can_warm};
+    use super::{
+        Cli, Commands, cleanup_hooks_at, startup_loading_pending, startup_sidebar_can_warm,
+    };
+    use clap::Parser;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1532,6 +1577,29 @@ mod tests {
     fn read_settings(path: &std::path::Path) -> serde_json::Value {
         let s = fs::read_to_string(path).unwrap();
         serde_json::from_str(&s).unwrap()
+    }
+
+    #[test]
+    fn reply_draft_cli_parses_the_prompt_handoff_arguments() {
+        let cli = Cli::try_parse_from([
+            "amf",
+            "reply-draft",
+            "--pr-number",
+            "42",
+            "--comment-id",
+            "9001",
+            "--request-id",
+            "request-123",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ReplyDraft {
+                pr_number: 42,
+                comment_id: 9001,
+                request_id,
+            }) if request_id == "request-123"
+        ));
     }
 
     #[test]

@@ -40,13 +40,58 @@ are tagged.
   `pr-continue` skill also now explicitly avoids posting a "done" reply on
   its own initiative, and only cites a commit after confirming it actually
   touches the comment's file.
+- **Review actions can each use a different model.** A new `review_models`
+  config setting maps an action name (`walkthrough`, `co_review`,
+  `changeset_overview`, `diff_explain`, `pr_review`, `review_memory`) to its
+  own `--model` override, so a whole-changeset overview can run on a
+  stronger model while a single-file walkthrough runs on a cheaper one. Any
+  action left unset still falls back to the existing shared `review_model`
+  setting, so nothing changes for configs that don't opt in. No migration is
+  required; existing `review_model` configs continue to work.
+- **Review Mode note reads stay bounded without losing history.** AMF now
+  keeps only the latest note for each of the 50 most recently documented
+  files in `.claude/review-notes.md`, moving older and superseded sections
+  to `.claude/review-notes-archive.md` after each agent turn. Review
+  surfaces merge both files, while agents only re-read the small live file.
+  No migration is required; AMF archives existing notes automatically.
 
-### Backlog
+### Fixed
 
-- Allow each review action to choose its own model instead of sharing one
-  `review_model` setting.
-- Cap or archive `.claude/review-notes.md` so long-running Review Mode
-  sessions do not repeatedly read an ever-growing history.
+- **AI Review's model picker can now go back to harness selection.** Pressing
+  `Esc` or `q` from the model list returns to the harness picker with the
+  current harness highlighted, so a mistaken harness choice can be corrected
+  without leaving AI Review. Changing the harness rebuilds its model choices
+  instead of carrying over an incompatible selection. Repeatedly switching
+  harnesses and backing out no longer resurrects a model choice that isn't
+  valid for the newly chosen harness. No migration is required.
+
+## [v0.32.0] - 2026-07-24
+
+### Added
+
+- **Diff view can isolate a single commit.** Leader `d` opens a scope picker
+  where you can keep the full current changeset or choose one feature-branch
+  commit and review only what it introduced.
+- **Final Review has a confirmation summary.** Pressing `q` now opens a
+  navigable list of every verdict, unresolved comment or suggestion, and
+  general feedback. Jump back to edit any item with `Enter`, press `Esc` to
+  keep reviewing without side effects, or press `q` again to finish.
+- **PR fixes prepare editable reply drafts.** After an agent addresses a
+  comment sent with `f` or `B`, pressing `R` prefills its reviewer-facing
+  response. AMF labels the reply as AI-drafted, chooses a relevant fix commit
+  when possible, and still requires confirmation before posting.
+- **Completed AI Reviews stay pending in PR Triage.** A persistent badge shows
+  how many findings remain publishable, and `A` reopens the cached review
+  instead of running it again. Reviews also include an editable overall
+  summary, and PR Triage refreshes automatically after posting.
+- **PR Triage shows replies with their original comment.** The detail pane
+  lists replies even when they were posted outside AMF, including their
+  author, AMF attribution, and current outdated or resolved state.
+
+### Migration
+
+- No migration is required. Older AI Review drafts without an overall summary
+  continue to use the existing fallback text.
 
 ## [v0.31.0] - 2026-07-20
 

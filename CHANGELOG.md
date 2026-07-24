@@ -10,58 +10,40 @@ are tagged.
 
 ## [Unreleased]
 
-### Added
-
-- **The view-mode diff viewer can isolate a single commit.** Leader `d` now
-  opens a scope picker: keep the default to review every branch, staged,
-  unstaged, and untracked change, or choose a feature-branch commit to see only
-  what that commit introduced.
-- **Final Review shows a summary before it writes and dispatches anything.**
-  `q` used to gate on undecided files and then finish immediately; it now
-  opens a navigable summary listing every file's verdict, every open line/file
-  comment (and suggestion), and the general feedback, in one place. `j`/`k`
-  (and `g`/`G`) move through the list, `Enter` jumps back into the diff at
-  that item and opens its editor pre-filled — a rejection's feedback, a line
-  or file comment, or the general note — so fixing something you spot in the
-  summary no longer means hunting it down again. `q` from the summary is the
-  real finish; `Esc` just closes it and returns to reviewing, with nothing
-  written, posted, or dispatched. No migration is required.
-- **PR Triage now carries an agent-written reply draft back from each fix.**
-  After addressing and verifying a comment sent with `f` or `B`, the fixing
-  agent prepares a concise reviewer-facing response without posting it. When
-  you return to PR Triage and press `R`, that draft is prefilled for review
-  and editing; if the agent did not provide one, the existing “Done in
-  `<sha>`” or not-needed starting text is unchanged. Completed-fix drafts cite
-  a later commit that touched the comment's file when AMF can identify one,
-  rather than guessing from older line history, and GitHub marks the reply as
-  AI-drafted via AMF. Posting still requires explicit confirmation. No setup
-  or migration is required.
-- **Completed AI Reviews now remain visible and actionable in PR Triage.** A
-  pending badge shows exactly how many findings are still publishable, survives
-  leaving the pane or restarting AMF, and reopens the cached review with `A`
-  instead of spending tokens on a duplicate run. Each review now generates an
-  editable overall summary for the GitHub review body, and after `W` posts it,
-  AMF refreshes PR Triage automatically so the new comments appear without
-  pressing `r`. No migration is required; older cached reviews without a
-  summary continue to use the existing fallback text.
-- **PR Triage's detail pane now shows a comment's replies, however they got
-  posted.** A reply posted outside AMF's own `R`/`n` flow — e.g. an agent
-  working the PR with its own `gh` access — previously left no trace next to
-  the original comment; you had to hunt the flat list for the reply entry. A
-  new "Replies" section lists each reply with its author, a `[via AMF]` chip
-  when it carries AMF's own posting disclosure, and the thread's current
-  `[outdated]`/`[✓ resolved]` chips, so confirming a thread already got
-  answered is a glance at the comment, refreshed on demand with `r`. The
-  `pr-continue` skill also now explicitly avoids posting a "done" reply on
-  its own initiative, and only cites a commit after confirming it actually
-  touches the comment's file.
-
 ### Backlog
 
 - Allow each review action to choose its own model instead of sharing one
   `review_model` setting.
 - Cap or archive `.claude/review-notes.md` so long-running Review Mode
   sessions do not repeatedly read an ever-growing history.
+
+## [v0.32.0] - 2026-07-24
+
+### Added
+
+- **Diff view can isolate a single commit.** Leader `d` opens a scope picker
+  where you can keep the full current changeset or choose one feature-branch
+  commit and review only what it introduced.
+- **Final Review has a confirmation summary.** Pressing `q` now opens a
+  navigable list of every verdict, unresolved comment or suggestion, and
+  general feedback. Jump back to edit any item with `Enter`, press `Esc` to
+  keep reviewing without side effects, or press `q` again to finish.
+- **PR fixes prepare editable reply drafts.** After an agent addresses a
+  comment sent with `f` or `B`, pressing `R` prefills its reviewer-facing
+  response. AMF labels the reply as AI-drafted, chooses a relevant fix commit
+  when possible, and still requires confirmation before posting.
+- **Completed AI Reviews stay pending in PR Triage.** A persistent badge shows
+  how many findings remain publishable, and `A` reopens the cached review
+  instead of running it again. Reviews also include an editable overall
+  summary, and PR Triage refreshes automatically after posting.
+- **PR Triage shows replies with their original comment.** The detail pane
+  lists replies even when they were posted outside AMF, including their
+  author, AMF attribution, and current outdated or resolved state.
+
+### Migration
+
+- No migration is required. Older AI Review drafts without an overall summary
+  continue to use the existing fallback text.
 
 ## [v0.31.0] - 2026-07-20
 

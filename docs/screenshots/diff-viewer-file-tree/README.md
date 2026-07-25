@@ -1,10 +1,13 @@
-# Hierarchical file tree in Final Review
+# Hierarchical file tree in the diff viewers
 
 Captured from an isolated, throwaway AMF instance
 (`scripts/dev/screenshot/amf-capture.sh`, 160x44) against a scratch demo repo
 whose changeset deliberately spans a repo-root file, `docs/backlog/`,
 `src/app/`, `src/handlers/` and `src/ui/dialogs/`, so the tree has real depth.
 No real project, database or tmux session was touched.
+
+Frames 1–5 are Final Review; frames 6–7 are the plain diff viewer
+(leader `d`), which shares the same file-list widget and fold bindings.
 
 ## 1. The tree
 
@@ -59,3 +62,19 @@ outermost directory holding the selected file, so a row always stays
 highlighted.
 
 ![Whole tree folded to its top-level directories](05-tree-fully-folded.png)
+
+## 6. The same tree in the plain diff viewer (leader `d`)
+
+The tree is not a Final Review feature — the plain diff viewer shares the file
+list, so leader `d` groups identically. Note the absence of the verdict column:
+there are no verdicts outside a review, and the rest of the row is unchanged.
+
+![Plain diff viewer file list rendered as a directory tree](06-plain-diff-viewer-tree.png)
+
+## 7. Folding in the plain diff viewer
+
+`j`/`k`, `z`/`Z` and `h`/`l` work exactly as they do in Final Review. The
+collapsed row reports `(1)` — just the file count, since the undecided,
+rejected and changed-since-last-review counts only exist during a review.
+
+![A directory folded in the plain diff viewer](07-plain-diff-viewer-folded.png)

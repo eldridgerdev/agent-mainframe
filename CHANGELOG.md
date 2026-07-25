@@ -12,16 +12,17 @@ are tagged.
 
 ### Added
 
-- **Final Review's changed-file list is now a collapsible directory tree.**
+- **The diff viewers' changed-file list is now a collapsible directory tree.**
   Files are grouped under their directories instead of repeating the full path
-  on every row, so a changeset spanning many folders is far easier to scan. In
-  the file list, `j`/`k` move through the tree (directory headers included),
+  on every row, so a changeset spanning many folders is far easier to scan.
+  This applies both to Final Review and to the plain diff viewer (leader `d`).
+  In the file list, `j`/`k` move through the tree (directory headers included),
   `z` or `Enter` folds the directory under the cursor, `Z` folds or unfolds
   everything, and `h`/`l` step out to a parent or into a directory. Parking on
   a directory never changes which file the diff shows. A folded directory
-  reports what it is hiding — how many files, how many still undecided, any
-  rejections, and whether anything changed since the last review round — so
-  folding cannot bury outstanding work. Filters, counts and `n`/`p` file
+  reports what it is hiding — how many files, and during a review how many are
+  still undecided, any rejections, and whether anything changed since the last
+  round — so folding cannot bury outstanding work. Filters, counts and `n`/`p` file
   navigation are unaffected by folding: landing on a file inside a folded
   directory simply opens it up. No migration is required.
 

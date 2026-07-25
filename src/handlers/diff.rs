@@ -3002,4 +3002,39 @@ oldest
             "folding belongs to the file list, not the patch panel"
         );
     }
+    /// The tree is not a review-mode feature: the plain diff viewer (leader d)
+    /// shares `draw_file_list` and the same fold bindings, so it groups and
+    /// folds identically.
+    #[test]
+    fn plain_diff_viewer_gets_the_tree_and_fold_keys_too() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["README.md", "src/a.rs", "src/ui/b.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.review = false;
+        }
+
+        let rows = match &app.mode {
+            AppMode::DiffViewer(state) => state.file_tree_rows(),
+            _ => panic!("left the diff viewer"),
+        };
+        assert_eq!(
+            rows.len(),
+            5,
+            "expected README + src/ + a.rs + ui/ + b.rs outside review mode: {rows:?}"
+        );
+
+        // j walks onto the `src` directory row, z folds it.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('z'))).unwrap();
+        let state = match &app.mode {
+            AppMode::DiffViewer(state) => state,
+            _ => panic!("left the diff viewer"),
+        };
+        assert!(state.collapsed_dirs.contains("src"));
+        assert_eq!(state.file_tree_rows().len(), 2);
+        assert_eq!(
+            state.selected_file, 0,
+            "folding must not change the previewed file outside review mode either"
+        );
+    }
 }

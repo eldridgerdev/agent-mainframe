@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **The dashboard now shows when an AI Review is generating.** A feature's PR
+  badge reads `[PR #123 · 4 open · AI review]` while its review runs, so you
+  can leave the AI Review pane, work elsewhere, and still see the pass is in
+  flight. The marker appears only on the feature whose review is running and
+  clears when generation succeeds, fails, or is cancelled. No migration is
+  required.
 - **Final Review now includes a review-round history browser.** Press `H` to
   move between the live review and earlier rounds, including their verdict
   counts, checks, comments, suggestions, and agent replies. Older archived

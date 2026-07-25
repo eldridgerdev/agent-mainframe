@@ -329,16 +329,26 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         ));
                     }
                     if let Some(pr) = app.active_pr_for_feature(&feature.id) {
-                        let (label, color) = match pr.unresolved_threads {
-                            Some(0) => (
-                                format!(" [PR #{} · 0 open]", pr.number),
-                                theme.success.to_color(),
-                            ),
-                            Some(count) => (
-                                format!(" [PR #{} · {} open]", pr.number, count),
-                                theme.info.to_color(),
-                            ),
-                            None => (format!(" [PR #{}]", pr.number), theme.info.to_color()),
+                        // A background AI Review outlives the pane it was
+                        // started from, so mirror the in-session PR badge's
+                        // activity marker here (see `pr_triage_badge_span`) —
+                        // the dashboard is where the user waits it out.
+                        let ai_review_running = app.ai_review_running_for_workdir(&feature.workdir);
+                        let mut label = match pr.unresolved_threads {
+                            Some(0) => format!(" [PR #{} · 0 open", pr.number),
+                            Some(count) => format!(" [PR #{} · {} open", pr.number, count),
+                            None => format!(" [PR #{}", pr.number),
+                        };
+                        if ai_review_running {
+                            label.push_str(" · AI review");
+                        }
+                        label.push(']');
+                        let color = if ai_review_running {
+                            theme.warning.to_color()
+                        } else if pr.unresolved_threads == Some(0) {
+                            theme.success.to_color()
+                        } else {
+                            theme.info.to_color()
                         };
                         line_spans.push(Span::styled(
                             label,
@@ -661,9 +671,53 @@ mod tests {
         }
     }
 
+    /// Mark a background AI Review as running for `workdir`, the way
+    /// `App::ai_review_running_for_workdir` observes it.
+    fn set_ai_review_running(app: &mut App, workdir: PathBuf) {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        // Dropping the sender is fine: the badge only checks that the
+        // background slot is occupied, it never reads progress here.
+        app.ai_review_bg = Some(rx);
+        app.ai_review_pending = Some(crate::app::AiReviewState {
+            workdir,
+            pr: crate::github::PrRef {
+                number: 321,
+                head_sha: "abc123".to_string(),
+                url: "https://github.com/o/r/pull/321".to_string(),
+                owner: "o".to_string(),
+                repo: "r".to_string(),
+                head_ref: "usage-feat".to_string(),
+            },
+            findings: Vec::new(),
+            summary: None,
+            selected: 0,
+            detail_scroll: 0,
+            detail_content_lines: 0,
+            last_run: None,
+            harness: None,
+            harness_pick: None,
+            harness_pick_origin: None,
+            model: None,
+            model_picked: false,
+            model_pick: None,
+            finding_editor: None,
+            post_confirm: None,
+        });
+    }
+
     fn render_feature_row_with_pr(
         sessions: Vec<FeatureSession>,
         active_pr: Option<crate::app::ActivePrStatus>,
+    ) -> String {
+        render_feature_row_configured(sessions, active_pr, |_| {})
+    }
+
+    /// Render the single `usage-feat` feature row (workdir `/tmp/usage-feat`),
+    /// letting `configure` adjust app state after the store is built.
+    fn render_feature_row_configured(
+        sessions: Vec<FeatureSession>,
+        active_pr: Option<crate::app::ActivePrStatus>,
+        configure: impl FnOnce(&mut App),
     ) -> String {
         let now = Utc::now();
         let feature = Feature {
@@ -716,6 +770,7 @@ mod tests {
         if let Some(active_pr) = active_pr {
             app.active_prs.insert("feat-1".to_string(), active_pr);
         }
+        configure(&mut app);
 
         let backend = TestBackend::new(140, 8);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -823,5 +878,47 @@ mod tests {
         );
 
         assert!(rendered.contains("[PR #321 · 4 open]"));
+    }
+
+    fn pr_status() -> crate::app::ActivePrStatus {
+        crate::app::ActivePrStatus {
+            branch: "usage-feat".to_string(),
+            head_sha: "abc123".to_string(),
+            number: 321,
+            unresolved_threads: Some(4),
+        }
+    }
+
+    #[test]
+    fn feature_row_marks_a_running_ai_review_on_its_own_pr_badge() {
+        let rendered = render_feature_row_configured(vec![], Some(pr_status()), |app| {
+            set_ai_review_running(app, PathBuf::from("/tmp/usage-feat"));
+        });
+
+        assert!(rendered.contains("[PR #321 · 4 open · AI review]"));
+    }
+
+    #[test]
+    fn feature_row_omits_the_ai_review_marker_for_another_features_review() {
+        let rendered = render_feature_row_configured(vec![], Some(pr_status()), |app| {
+            set_ai_review_running(app, PathBuf::from("/tmp/other-feat"));
+        });
+
+        assert!(rendered.contains("[PR #321 · 4 open]"));
+        assert!(!rendered.contains("AI review"));
+    }
+
+    #[test]
+    fn feature_row_omits_the_ai_review_marker_once_generation_finishes() {
+        // Completion clears the background slot before taking the pending
+        // snapshot (`App::poll_ai_pr_review_bg`), so the marker must be gone
+        // at the intermediate state, not just after both fields are empty.
+        let rendered = render_feature_row_configured(vec![], Some(pr_status()), |app| {
+            set_ai_review_running(app, PathBuf::from("/tmp/usage-feat"));
+            app.ai_review_bg = None;
+        });
+
+        assert!(rendered.contains("[PR #321 · 4 open]"));
+        assert!(!rendered.contains("AI review"));
     }
 }

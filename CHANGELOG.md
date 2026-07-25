@@ -12,6 +12,19 @@ are tagged.
 
 ### Added
 
+- **Final Review's changed-file list is now a collapsible directory tree.**
+  Files are grouped under their directories instead of repeating the full path
+  on every row, so a changeset spanning many folders is far easier to scan. In
+  the file list, `j`/`k` move through the tree (directory headers included),
+  `z` or `Enter` folds the directory under the cursor, `Z` folds or unfolds
+  everything, and `h`/`l` step out to a parent or into a directory. Parking on
+  a directory never changes which file the diff shows. A folded directory
+  reports what it is hiding — how many files, how many still undecided, any
+  rejections, and whether anything changed since the last review round — so
+  folding cannot bury outstanding work. Filters, counts and `n`/`p` file
+  navigation are unaffected by folding: landing on a file inside a folded
+  directory simply opens it up. No migration is required.
+
 - **Final Review now includes a review-round history browser.** Press `H` to
   move between the live review and earlier rounds, including their verdict
   counts, checks, comments, suggestions, and agent replies. Older archived
@@ -60,6 +73,14 @@ are tagged.
   to `.claude/review-notes-archive.md` after each agent turn. Review
   surfaces merge both files, while agents only re-read the small live file.
   No migration is required; AMF archives existing notes automatically.
+
+### Changed
+
+- **Final Review's Developer Notes panel is half its former height.** It now
+  takes about a fifth of the column beside the diff rather than about two
+  fifths, leaving considerably more room for the change you are actually
+  reading. `e` still expands notes to full height when you want the whole
+  note.
 
 ### Fixed
 

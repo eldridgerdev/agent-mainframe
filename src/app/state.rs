@@ -634,6 +634,47 @@ impl FileFilter {
     }
 }
 
+/// One rendered row of the changed-file tree: either a directory header or a
+/// file beneath it. Produced by `DiffViewerState::file_tree_rows`, which is the
+/// single source of truth for both the file-list rendering and the `j`/`k` row
+/// cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileTreeRow {
+    Dir {
+        /// Full directory path from the repo root, e.g. `src/app`. Also the key
+        /// used in `collapsed_dirs` / `tree_cursor_dir`.
+        path: String,
+        /// Just this level's segment, e.g. `app` — what the row displays.
+        label: String,
+        depth: usize,
+        collapsed: bool,
+        /// Visible files anywhere beneath this directory.
+        files: usize,
+    },
+    File {
+        /// Index into `DiffViewerState::files` — the selection everything else
+        /// in the viewer is keyed by.
+        index: usize,
+        depth: usize,
+        /// Basename only; the path's directories are shown by the rows above.
+        name: String,
+    },
+}
+
+/// Every ancestor directory of `path`, shallowest first (`src`, `src/app`, …).
+/// Empty for a repo-root file.
+pub fn ancestor_dirs(path: &str) -> Vec<String> {
+    let Some(dir_end) = path.rfind('/') else {
+        return Vec::new();
+    };
+    let mut dirs = Vec::new();
+    for (i, _) in path[..dir_end].match_indices('/') {
+        dirs.push(path[..i].to_string());
+    }
+    dirs.push(path[..dir_end].to_string());
+    dirs
+}
+
 /// A reply the feature's agent wrote back under a review item in the previous
 /// round. Parsed out of `.claude/final-review-feedback.md` on re-review (from the
 /// `**Agent:**` blocks `REVIEW_FEEDBACK_PROMPT` asks the agent to append) and
@@ -897,6 +938,16 @@ pub struct DiffViewerState {
     /// closed. Historical rounds are loaded from the live feedback log first;
     /// the archive is read only when the reviewer navigates beyond that tail.
     pub review_history: Option<ReviewHistoryState>,
+    /// Directory paths (repo-relative, no trailing slash) currently collapsed in
+    /// the file tree. Purely a view concern: a collapsed directory hides its
+    /// rows, but never its files from filters, counts or file-order navigation —
+    /// landing on a file inside one re-expands its ancestors
+    /// (`reveal_selected_file`) so the selection is always reachable.
+    pub collapsed_dirs: std::collections::BTreeSet<String>,
+    /// Set while the file-list row cursor is parked on a *directory* row rather
+    /// than a file. The selected file (and therefore the patch panel) is left
+    /// alone, so collapsing a tree never changes what's being diffed.
+    pub tree_cursor_dir: Option<String>,
 }
 
 impl DiffViewerState {
@@ -972,6 +1023,8 @@ impl DiffViewerState {
             summary_open: false,
             summary_selected: 0,
             review_history: None,
+            collapsed_dirs: std::collections::BTreeSet::new(),
+            tree_cursor_dir: None,
         }
     }
 
@@ -1000,6 +1053,11 @@ impl DiffViewerState {
         // Search matches are anchored to a single file; end the search rather
         // than leaving a stale query pointing at the previous file.
         self.clear_search();
+        // The cursor is on a file again, and that file must be visible: every
+        // file-order navigation path funnels through here, so no caller has to
+        // know the tree can be folded.
+        self.tree_cursor_dir = None;
+        self.reveal_selected_file();
     }
 
     /// Whether the file at `path` carries a `Blocker`-severity signal: either a
@@ -1105,6 +1163,138 @@ impl DiffViewerState {
             .filter(|(_, file)| self.file_passes_filter(file))
             .map(|(i, _)| i)
             .collect()
+    }
+
+    /// The file list as a directory tree, in the same order as
+    /// `visible_file_indices` — `files` is sorted by full path
+    /// (`crate::diff`), and comparing a directory as `name/` against a file as
+    /// `name` reproduces exactly that ordering, so grouping never reorders the
+    /// list. Directory rows are emitted when the path prefix changes; a
+    /// collapsed directory emits its own row and swallows everything beneath
+    /// it.
+    pub fn file_tree_rows(&self) -> Vec<FileTreeRow> {
+        let visible = self.visible_file_indices();
+        // Visible-file count per ancestor directory, for the row's `(n)` badge.
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for &idx in &visible {
+            for dir in ancestor_dirs(&self.files[idx].path) {
+                *counts.entry(dir).or_default() += 1;
+            }
+        }
+
+        let mut rows = Vec::new();
+        // Directory segments of the previous file, so a shared prefix is only
+        // emitted once.
+        let mut open: Vec<&str> = Vec::new();
+        for &idx in &visible {
+            let path = self.files[idx].path.as_str();
+            let (dir_part, name) = match path.rfind('/') {
+                Some(pos) => (&path[..pos], &path[pos + 1..]),
+                None => ("", path),
+            };
+            let comps: Vec<&str> = if dir_part.is_empty() {
+                Vec::new()
+            } else {
+                dir_part.split('/').collect()
+            };
+
+            let mut common = 0;
+            while common < open.len() && common < comps.len() && open[common] == comps[common] {
+                common += 1;
+            }
+            open.truncate(common);
+
+            // A directory already on the stack may be collapsed, in which case
+            // its row was emitted earlier and everything below it is hidden.
+            let mut hidden = (1..=open.len())
+                .any(|depth| self.collapsed_dirs.contains(&comps[..depth].join("/")));
+
+            for depth in common..comps.len() {
+                open.push(comps[depth]);
+                if hidden {
+                    continue;
+                }
+                let full = comps[..=depth].join("/");
+                let collapsed = self.collapsed_dirs.contains(&full);
+                rows.push(FileTreeRow::Dir {
+                    label: comps[depth].to_string(),
+                    depth,
+                    collapsed,
+                    files: counts.get(&full).copied().unwrap_or(0),
+                    path: full,
+                });
+                if collapsed {
+                    hidden = true;
+                }
+            }
+
+            if !hidden {
+                rows.push(FileTreeRow::File {
+                    index: idx,
+                    depth: comps.len(),
+                    name: name.to_string(),
+                });
+            }
+        }
+        rows
+    }
+
+    /// Expand every collapsed ancestor of the selected file so the selection is
+    /// always on a row the reviewer can see. Called from `on_file_changed`, so
+    /// every file-order navigation path (n/p, verdict advance, filters, search,
+    /// summary jumps) reveals its target without having to know about the tree.
+    pub fn reveal_selected_file(&mut self) {
+        let Some(file) = self.files.get(self.selected_file) else {
+            return;
+        };
+        for dir in ancestor_dirs(&file.path) {
+            self.collapsed_dirs.remove(&dir);
+        }
+    }
+
+    /// Toggle a directory's collapsed state. Collapsing an ancestor of the
+    /// selected file is allowed — the file stays selected and the patch panel
+    /// keeps showing it; only the row is folded away.
+    pub fn toggle_dir_collapsed(&mut self, dir: &str) {
+        if !self.collapsed_dirs.remove(dir) {
+            self.collapsed_dirs.insert(dir.to_string());
+        }
+    }
+
+    /// Every directory that currently has a row in the tree (regardless of
+    /// collapse state), in row order.
+    pub fn tree_dirs(&self) -> Vec<String> {
+        self.file_tree_rows()
+            .into_iter()
+            .filter_map(|row| match row {
+                FileTreeRow::Dir { path, .. } => Some(path),
+                FileTreeRow::File { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Row index the file-list cursor sits on: the directory row when the
+    /// cursor is parked on one, else the selected file's row. Falls back to the
+    /// deepest visible ancestor directory if the selected file happens to be
+    /// folded away, so a row is always highlighted.
+    pub fn tree_cursor_row(&self, rows: &[FileTreeRow]) -> Option<usize> {
+        if let Some(dir) = &self.tree_cursor_dir
+            && let Some(pos) = rows
+                .iter()
+                .position(|row| matches!(row, FileTreeRow::Dir { path, .. } if path == dir))
+        {
+            return Some(pos);
+        }
+        if let Some(pos) = rows.iter().position(
+            |row| matches!(row, FileTreeRow::File { index, .. } if *index == self.selected_file),
+        ) {
+            return Some(pos);
+        }
+        let path = self.files.get(self.selected_file)?.path.as_str();
+        ancestor_dirs(path).into_iter().rev().find_map(|dir| {
+            rows.iter()
+                .position(|row| matches!(row, FileTreeRow::Dir { path, .. } if *path == dir))
+        })
     }
 
     /// Every row of the pre-finish summary, in file order: each file's verdict

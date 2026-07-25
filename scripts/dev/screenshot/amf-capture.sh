@@ -327,10 +327,36 @@ wait_for_any() {
 first_screen="$(wait_for_any "$READY_TIMEOUT_SECS" "No projects yet" "Configure Agent Harnesses")"
 if [[ "$first_screen" == "Configure Agent Harnesses" ]]; then
     echo "resolving first-run harness setup dialog" >&2
-    tmux send-keys -t "$SESSION" Enter
-    wait_for_any "$READY_TIMEOUT_SECS" "(installed)" "(not found" >/dev/null
-    tmux send-keys -t "$SESSION" c
-    wait_for_text "No projects yet" "$READY_TIMEOUT_SECS"
+    # The dialog's title renders before amf starts reading keys, so a single
+    # immediate Enter is silently dropped. Re-send it until the availability
+    # check actually starts (or resolves).
+    harness_resolved=""
+    for _ in 1 2 3 4 5 6; do
+        tmux send-keys -t "$SESSION" Enter
+        if harness_resolved="$(wait_for_any 3 "(installed)" "(not found" 2>/dev/null)"; then
+            break
+        fi
+        harness_resolved=""
+    done
+    if [[ -z "$harness_resolved" ]]; then
+        echo "error: harness setup dialog never resolved an availability check" >&2
+        tmux capture-pane -p -t "$SESSION" >&2 || true
+        exit 1
+    fi
+    # Same race on the confirm key: retry until the dashboard actually appears.
+    harness_confirmed=0
+    for _ in 1 2 3 4 5 6; do
+        tmux send-keys -t "$SESSION" c
+        if wait_for_text "No projects yet" 3 >/dev/null 2>&1; then
+            harness_confirmed=1
+            break
+        fi
+    done
+    if [[ "$harness_confirmed" -ne 1 ]]; then
+        echo "error: harness setup dialog never confirmed" >&2
+        tmux capture-pane -p -t "$SESSION" >&2 || true
+        exit 1
+    fi
 fi
 echo "dashboard ready" >&2
 

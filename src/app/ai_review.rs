@@ -48,16 +48,12 @@ const AI_FINDING_HEADING_PREFIX: &str = "### ";
 const AI_FINDING_HUNK_CONTEXT_LINES: usize = 6;
 
 /// Attribution for an AI review finding posted as an inline GitHub comment.
-/// Deliberately distinct text from [`super::pr_review::AI_ATTRIBUTION_FOOTER`]
-/// even though both disclose AI authorship: [`super::pr_review::reply_posted_via_amf`]
-/// matches on that other footer to detect a reply posted through PR Triage's
-/// `R`/`n` dialog, and an AI-review finding is never that — it's a fresh
-/// review comment, not a reply, and if GitHub auto-threads it under an
-/// existing comment on the same line, it must not be mistaken for one.
-const AI_REVIEW_FINDING_FOOTER: &str = "— AI review via AMF";
-
 fn append_ai_review_attribution(body: &str) -> String {
-    format!("{}\n\n{}", body.trim_end(), AI_REVIEW_FINDING_FOOTER)
+    format!(
+        "{}\n\n{}",
+        body.trim_end(),
+        super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
+    )
 }
 
 /// Guarantee the footer survives into the posted body even though the
@@ -68,7 +64,7 @@ fn append_ai_review_attribution(body: &str) -> String {
 /// publishing an unattributed review.
 fn ensure_ai_review_attribution(body: &str) -> String {
     let trimmed = body.trim_end();
-    if trimmed.ends_with(AI_REVIEW_FINDING_FOOTER) {
+    if trimmed.ends_with(super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER) {
         trimmed.to_string()
     } else {
         append_ai_review_attribution(trimmed)

@@ -14,8 +14,7 @@ use std::path::Path;
 
 use crate::{
     app::pr_review::{
-        BootstrapDepth, BootstrapStage, CommentKind, CompactStage, MarkAction, PrComment,
-        ReplyKind, reply_posted_via_amf,
+        BootstrapDepth, BootstrapStage, CommentKind, CompactStage, MarkAction, PrComment, ReplyKind,
     },
     app::{
         BootstrapPickState, BootstrapRunState, CompactConfirmState, CompactReviewState,
@@ -773,12 +772,23 @@ pub fn draw_pr_review(
         0 => "space mark".to_string(),
         n => format!("space mark · B combine({n})"),
     };
-    let keys = Paragraph::new(Line::from(Span::styled(
+    let key_text = if state
+        .selected_comment()
+        .is_some_and(PrComment::is_amf_followup_reply)
+    {
+        format!(
+            " AMF follow-up · context only   j/k move   {toggle_hint}   o sort→{}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
+            state.sort_mode.label()
+        )
+    } else {
         format!(
             " j/k move   f fix→{}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
-        ),
+        )
+    };
+    let keys = Paragraph::new(Line::from(Span::styled(
+        key_text,
         Style::default().fg(theme.text_muted.to_color()),
     )));
     let footer = Layout::default()
@@ -1374,6 +1384,8 @@ fn comment_list_line<'a>(
     theme: &Theme,
     width: usize,
 ) -> Line<'a> {
+    let amf_authored = c.is_amf_authored();
+    let context_only = !c.is_actionable();
     let marker = if c.is_resolved { "✓" } else { " " };
     // A leading `●` flags comments marked (space) for the `F` batch fix.
     let mark = if is_marked { "●" } else { " " };
@@ -1383,7 +1395,7 @@ fn comment_list_line<'a>(
         (None, _) => kind_label(&c.kind).to_string(),
     };
 
-    let location_style = if c.is_resolved {
+    let location_style = if c.is_resolved || context_only {
         Style::default().fg(theme.text_muted.to_color())
     } else {
         Style::default().fg(theme.text.to_color())
@@ -1393,27 +1405,55 @@ fn comment_list_line<'a>(
     let triage_span = format!("[{}] ", c.triage.marker());
     let marker_span = format!("{marker} ");
     let author_span = format!("@{}  ", c.author);
+    let attribution_span = if amf_authored { "[via AMF] " } else { "" };
 
     // Everything before the location is fixed-width; give the rest to the
     // location and left-ellipsize so the tail (filename:line) survives.
     let prefix_width = mark_span.chars().count()
         + triage_span.chars().count()
         + marker_span.chars().count()
-        + author_span.chars().count();
+        + author_span.chars().count()
+        + attribution_span.chars().count();
     let location = truncate_left(&location, width.saturating_sub(prefix_width));
 
     Line::from(vec![
-        Span::styled(mark_span, Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            mark_span,
+            Style::default().fg(if context_only {
+                theme.text_muted.to_color()
+            } else {
+                theme.warning.to_color()
+            }),
+        ),
         Span::styled(
             triage_span,
-            Style::default().fg(triage_color(c.triage, theme)),
+            Style::default().fg(if context_only {
+                theme.text_muted.to_color()
+            } else {
+                triage_color(c.triage, theme)
+            }),
         ),
-        Span::styled(marker_span, Style::default().fg(theme.success.to_color())),
+        Span::styled(
+            marker_span,
+            Style::default().fg(if context_only {
+                theme.text_muted.to_color()
+            } else {
+                theme.success.to_color()
+            }),
+        ),
         Span::styled(
             author_span,
-            Style::default()
-                .fg(theme.primary.to_color())
-                .add_modifier(Modifier::BOLD),
+            if context_only {
+                Style::default().fg(theme.text_muted.to_color())
+            } else {
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD)
+            },
+        ),
+        Span::styled(
+            attribution_span,
+            Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled(location, location_style),
         Span::styled(
@@ -1497,6 +1537,16 @@ fn draw_comment_detail(
         ),
         chip(kind_label(&c.kind), theme.text_muted.to_color()),
     ]));
+    if c.is_amf_authored()
+        && let Some(line) = lines.last_mut()
+    {
+        let label = if c.is_actionable() {
+            "via AMF"
+        } else {
+            "via AMF · context only"
+        };
+        line.spans.push(chip(label, theme.text_muted.to_color()));
+    }
 
     // Diff hunk, colored like a diff (add/remove/context/hunk-header) — unless
     // it's whole-file-sized, in which case show the file reference the prompt
@@ -1567,7 +1617,7 @@ fn draw_comment_detail(
                 format!("↳ @{}", reply.author),
                 Style::default().fg(theme.secondary.to_color()),
             )];
-            if reply_posted_via_amf(reply) {
+            if reply.is_amf_authored() {
                 spans.push(chip("via AMF", theme.text_muted.to_color()));
             }
             if reply.outdated {
@@ -2175,6 +2225,38 @@ mod tests {
         assert!(!rendered.contains("Conversation"));
     }
 
+    #[test]
+    fn comment_list_collates_amf_reply_and_labels_standalone_finding() {
+        let mut root = pr_comment_of_kind(1, CommentKind::Inline);
+        root.author = "reviewer".into();
+
+        let mut amf_reply = pr_comment_of_kind(2, CommentKind::Inline);
+        amf_reply.author = "amf-reply".into();
+        amf_reply.in_reply_to = Some(1);
+        amf_reply.body = "Done.\n\n— posted via AMF".into();
+
+        let mut ai_finding = pr_comment_of_kind(3, CommentKind::Inline);
+        ai_finding.author = "ai-review".into();
+        ai_finding.body = "Finding.\n\n— AI review via AMF".into();
+
+        let mut human_reply = pr_comment_of_kind(4, CommentKind::Inline);
+        human_reply.author = "human-reply".into();
+        human_reply.in_reply_to = Some(1);
+        human_reply.body = "Please also add a test.".into();
+
+        let state = pr_review_state_with_comments(
+            vec![root, amf_reply, ai_finding, human_reply],
+            crate::app::pr_review::PrSortMode::FetchOrder,
+        );
+        let rendered = render_comment_list(&state);
+
+        assert!(rendered.contains("@reviewer"));
+        assert!(!rendered.contains("@amf-reply"));
+        assert!(rendered.contains("@ai-review"));
+        assert!(rendered.contains("[via AMF]"));
+        assert!(rendered.contains("@human-reply"));
+    }
+
     fn render_comment_detail(comment: &PrComment, all_comments: &[PrComment]) -> String {
         use ratatui::{Terminal, backend::TestBackend};
 
@@ -2234,6 +2316,16 @@ mod tests {
         let rendered = render_comment_detail(&root, &all);
         assert!(rendered.contains("↳ @headless-agent"));
         assert!(!rendered.contains("via AMF"));
+    }
+
+    #[test]
+    fn detail_pane_marks_top_level_amf_comment_as_actionable_attribution() {
+        let mut finding = pr_comment_of_kind(1, CommentKind::Inline);
+        finding.body = "Finding.\n\n— AI review via AMF".into();
+
+        let rendered = render_comment_detail(&finding, std::slice::from_ref(&finding));
+        assert!(rendered.contains("via AMF"));
+        assert!(!rendered.contains("context only"));
     }
 
     #[test]

@@ -2407,23 +2407,42 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/app/state.rs`, `src/ui/dialogs/ai_review.rs`, `src/app/tests.rs`,
       `docs/screenshots/ai-review-picker-back-navigation/`, `CHANGELOG.md`.
 
-- [ ] **Hide or de-emphasize AMF's own outbound comments in the PR Triage
+- [x] **Hide or de-emphasize AMF's own follow-up replies in the PR Triage
       list.** Replies posted by the `R` flow already end with the exact
       `— posted via AMF` footer, and AI Review findings posted by AMF carry the
       corresponding `— drafted by AI via AMF` footer. Use these durable markers
-      to classify tool-authored outbound comments separately from incoming
-      feedback after a refresh. An inline `Done in \`<sha>\`.`/not-needed reply
-      should remain visible under its root comment's existing **Replies**
-      section, but should not also appear as a normal actionable row, inflate
-      the open-comment count, or be offered back to the agent as another fix.
-      For AMF-authored top-level conversation comments or orphaned replies that
-      have no parent row, retain access in a muted/gray presentation (or behind
-      an explicit show-tool-comments toggle) rather than silently discarding
-      them. Match only AMF's exact attribution footers so ordinary comments
-      that merely mention AMF are not hidden. Add normalization/filter/count
-      and render coverage, including a refresh after posting through `R`, an AI
-      Review-authored comment, and an unrelated human reply that must remain
-      visible and actionable.
+      together with the reply's parent relationship to distinguish follow-up
+      history from standalone findings after a refresh. An inline
+      `Done in \`<sha>\`.`/not-needed reply should remain visible under its root
+      comment's existing **Replies** section, but should not also appear as a
+      normal actionable row, inflate the open-comment count, or be offered back
+      to the agent as another fix.
+      For orphaned AMF follow-up replies whose parent row was not fetched,
+      retain access in a muted/gray presentation rather than silently
+      discarding them. Standalone comments, including AI Review findings posted
+      through AMF, remain normal actionable work. Match only AMF's exact reply
+      attribution footers so ordinary comments that merely mention AMF are not
+      hidden. Add normalization/filter/count and render coverage, including a
+      refresh after posting through `R`, an AI Review-authored comment, and an
+      unrelated human reply that must remain visible and actionable.
+
+      **Shipped, 2026-07-24.** Exact durable attribution footers distinguish
+      follow-up replies posted through PR Triage from standalone findings. A
+      refreshed attributed inline reply remains in the normalized/cache model
+      and in its root comment's **Replies** section, but
+      `PrReviewState::visible_indices` collates away the duplicate list row when
+      that root is present. An orphaned follow-up remains visible with a muted
+      `[via AMF]` context-only treatment. Standalone findings — including those
+      posted by AI Review — retain the normal open count, fix, batch, reply,
+      mark, and memory actions. Exact-marker matching leaves ordinary human
+      replies that merely mention AMF visible and actionable. Normalization,
+      refresh-shaped classification, orphan/filter/count, fix/batch, and
+      list/detail render regressions cover the complete flow. Full suite green
+      (1234 passed, 1 ignored); strict Clippy and formatting clean. →
+      `src/app/ai_review.rs`,
+      `src/app/pr_review.rs`, `src/app/state.rs`, `src/app/tests.rs`,
+      `src/ui/dialogs/pr_review.rs`,
+      `docs/screenshots/pr-triage-amf-outbound-comments/`, `CHANGELOG.md`.
 
 ## Reasoning / when to build
 

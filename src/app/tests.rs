@@ -11138,6 +11138,103 @@ fn pr_review_ids_in_visible_order(app: &App) -> Vec<u64> {
     }
 }
 
+fn install_amf_outbound_comment_mix(app: &mut App) {
+    use crate::app::pr_review::{
+        AI_REVIEW_ATTRIBUTION_FOOTER, AMF_ATTRIBUTION_FOOTER, CommentKind,
+    };
+
+    enter_pr_review_with_conversation(app, &[], &[]);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut root = pr_comment_of_kind(1, CommentKind::Inline);
+        root.author = "reviewer".into();
+
+        let mut amf_reply = pr_comment_of_kind(2, CommentKind::Inline);
+        amf_reply.author = "author".into();
+        amf_reply.in_reply_to = Some(1);
+        amf_reply.body = format!("Done in `abc123`.\n\n{AMF_ATTRIBUTION_FOOTER}");
+
+        let mut ai_finding = pr_comment_of_kind(3, CommentKind::Inline);
+        ai_finding.author = "author".into();
+        ai_finding.body = format!("AI finding.\n\n{AI_REVIEW_ATTRIBUTION_FOOTER}");
+
+        let mut human_reply = pr_comment_of_kind(4, CommentKind::Inline);
+        human_reply.author = "second-reviewer".into();
+        human_reply.in_reply_to = Some(1);
+        human_reply.body = "This still needs a regression test.".into();
+
+        let mut orphaned_amf_reply = pr_comment_of_kind(5, CommentKind::Inline);
+        orphaned_amf_reply.author = "author".into();
+        orphaned_amf_reply.in_reply_to = Some(999);
+        orphaned_amf_reply.body = format!("Done elsewhere.\n\n{AMF_ATTRIBUTION_FOOTER}");
+
+        state.review.comments = vec![root, amf_reply, ai_finding, human_reply, orphaned_amf_reply];
+    }
+}
+
+#[test]
+fn pr_review_collates_amf_followup_but_keeps_standalone_findings_actionable() {
+    let mut app = pr_review_test_app();
+    install_amf_outbound_comment_mix(&mut app);
+
+    // The attributed inline reply is represented under comment 1's Replies
+    // section, not as a duplicate row. A top-level AI finding stays fully
+    // actionable; an orphaned follow-up stays visible for context; and the
+    // unrelated human reply remains actionable.
+    assert_eq!(pr_review_ids_in_visible_order(&app), vec![1, 3, 4, 5]);
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("not in PrReview mode");
+    };
+    assert_eq!(state.review.open_count(), 3);
+    assert!(state.review.comments[3].is_actionable());
+    assert!(state.review.comments[2].is_actionable());
+    assert!(!state.review.comments[4].is_actionable());
+}
+
+#[test]
+fn pr_review_fixes_standalone_amf_findings_but_not_followup_replies() {
+    let mut app = pr_review_test_app();
+    install_amf_outbound_comment_mix(&mut app);
+
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 2; // top-level AI Review finding
+    }
+    app.pr_review_open_fix_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let confirm = state
+                .fix_confirm
+                .as_ref()
+                .expect("standalone AI Review finding is fixable");
+            assert!(confirm.editor.text().contains("AI finding."));
+        }
+        _ => panic!("not in PrReview mode"),
+    }
+
+    // Even a stale mark set assembled before refresh filters the orphaned
+    // AMF follow-up out of the combined prompt, but retains the finding.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.fix_confirm = None;
+        state.marked.extend([3, 4, 5]);
+    }
+    app.pr_review_open_batch_confirm();
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("not in PrReview mode");
+    };
+    let confirm = state
+        .fix_confirm
+        .as_ref()
+        .expect("standalone finding and human reply are batchable");
+    assert_eq!(confirm.batch.as_deref(), Some(&[3, 4][..]));
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains("This still needs a regression test.")
+    );
+    assert!(confirm.editor.text().contains("AI finding."));
+    assert!(!confirm.editor.text().contains("Done elsewhere."));
+}
+
 #[test]
 fn pr_review_cycle_sort_wraps_through_all_modes() {
     let mut app = pr_review_test_app();
@@ -14398,6 +14495,144 @@ fn post_success_refresh_snaps_selection_off_a_newly_resolved_comment() {
                 state.selected_comment().map(|comment| comment.id),
                 Some(2),
                 "selection must not stay on a comment hide_resolved now excludes"
+            );
+            assert!(
+                state.visible_indices().contains(&state.selected),
+                "selection must land on a row the current filter shows"
+            );
+        }
+        _ => panic!("expected refreshed stashed PR Triage pane"),
+    }
+}
+
+#[test]
+fn post_success_refresh_snaps_selection_off_a_newly_collated_amf_reply() {
+    use crate::app::pr_review::AMF_ATTRIBUTION_FOOTER;
+
+    // Regression: `selected` can itself be an orphaned AMF follow-up reply
+    // (its root wasn't fetched, so it stood as its own row). If a refresh
+    // fetches the root, the reply becomes collated under it and vanishes
+    // from `visible_indices()`. `all_sorted_indices()` used to also drop
+    // collated replies, so `position()` couldn't find `selected` there
+    // either and both neighbor searches short-circuited to `visible[0]`
+    // instead of the nearest neighbor (the reply's own root).
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+
+    let pr = crate::github::PrRef {
+        number: 7,
+        head_sha: "sha".to_string(),
+        url: "https://github.com/o/r/pull/7".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+        head_ref: "main".to_string(),
+    };
+    let user = |login: &str| crate::github::GhUser {
+        login: login.to_string(),
+        kind: "User".to_string(),
+    };
+
+    // An unrelated comment that sorts before the reply's root in fetch order.
+    // Its presence is what distinguishes "snap to the nearest neighbor" from
+    // "snap to the first visible row" — with only the reply and its root,
+    // the root would also happen to be `visible[0]`, masking the bug.
+    let unrelated = crate::github::ReviewComment {
+        id: 3,
+        path: Some("src/other.rs".into()),
+        line: Some(4),
+        original_line: Some(4),
+        side: Some("RIGHT".into()),
+        diff_hunk: Some("@@".into()),
+        subject_type: None,
+        body: "Unrelated finding.".into(),
+        user: user("reviewer"),
+        in_reply_to_id: None,
+        pull_request_review_id: None,
+    };
+
+    // Initial fetch: the AMF reply came back but its root did not, so it's
+    // orphaned and shown as its own row. It's selected.
+    let orphan_reply = crate::github::ReviewComment {
+        id: 2,
+        path: Some("src/lib.rs".into()),
+        line: Some(10),
+        original_line: Some(10),
+        side: Some("RIGHT".into()),
+        diff_hunk: Some("@@".into()),
+        subject_type: None,
+        body: format!("Done in `abc123`.\n\n{AMF_ATTRIBUTION_FOOTER}"),
+        user: user("author"),
+        in_reply_to_id: Some(1),
+        pull_request_review_id: Some(91),
+    };
+    app.mode = AppMode::PrReview(PrReviewState {
+        selected: 1,
+        review: crate::app::pr_review::normalize(
+            pr.clone(),
+            vec![unrelated.clone(), orphan_reply.clone()],
+            vec![],
+            vec![],
+            vec![],
+        ),
+        ..match app.mode {
+            AppMode::PrReview(state) => state,
+            _ => unreachable!(),
+        }
+    });
+
+    app.open_ai_review_from_triage();
+    let (workdir, pr) = match &app.mode {
+        AppMode::AiReview(state) => (state.workdir.clone(), state.pr.clone()),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_triage_refresh_bg = Some(rx);
+    app.ai_review_triage_refresh_pending = Some(crate::app::AiReviewTriageRefresh {
+        workdir,
+        pr: pr.clone(),
+    });
+
+    // The refresh comes back with the reply's root now present, so the
+    // reply collates under it and drops out of `visible_indices()`.
+    let root = crate::github::ReviewComment {
+        id: 1,
+        path: Some("src/lib.rs".into()),
+        line: Some(10),
+        original_line: Some(10),
+        side: Some("RIGHT".into()),
+        diff_hunk: Some("@@".into()),
+        subject_type: None,
+        body: "Please add a test here.".into(),
+        user: user("reviewer"),
+        in_reply_to_id: None,
+        pull_request_review_id: Some(90),
+    };
+    let refreshed = crate::app::pr_review::normalize(
+        pr,
+        vec![unrelated, root, orphan_reply],
+        vec![],
+        vec![],
+        vec![],
+    );
+    tx.send(Ok(refreshed)).unwrap();
+
+    assert!(app.poll_ai_review_triage_refresh_bg());
+    match app.ai_review_return_to.as_deref() {
+        Some(AppMode::PrReview(state)) => {
+            assert_ne!(
+                state.selected_comment().map(|comment| comment.id),
+                Some(2),
+                "selection must not stay on the now-collated AMF reply"
+            );
+            assert_eq!(
+                state.selected_comment().map(|comment| comment.id),
+                Some(1),
+                "selection should snap to the reply's own root, its nearest visible neighbor"
             );
             assert!(
                 state.visible_indices().contains(&state.selected),

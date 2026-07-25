@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Final Review now includes a review-round history browser.** Press `H` to
+  move between the live review and earlier rounds, including their verdict
+  counts, checks, comments, suggestions, and agent replies. Older archived
+  rounds load only when you navigate past the recent history, while `Enter`
+  on `Current` returns directly to the editable review. No migration is
+  required.
 - **Plan-mode interviews now ask AI-generated follow-up questions.** After
   the configured questions, AMF offers an explicit opt-in before using any
   agent tokens. If accepted, the feature's agent harness (or an available

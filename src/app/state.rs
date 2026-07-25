@@ -646,6 +646,39 @@ pub struct AgentResponse {
     pub response: String,
 }
 
+/// One finished final-review round loaded from the bounded live feedback log
+/// (or, on demand, its archive). The markdown is kept intact so the history
+/// browser can show everything the round recorded — verdict counts, comments,
+/// suggestions, check output and agent replies — without inventing a second
+/// persisted format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewHistoryRound {
+    /// The `## Review — ...` heading text, used for the timeline's compact
+    /// label. Falls back to `Review` for a malformed/legacy round.
+    pub title: String,
+    /// The complete self-contained round, including its heading.
+    pub markdown: String,
+    /// Number of unresolved comments explicitly carried into this round.
+    pub carried_unresolved: usize,
+}
+
+/// Transient state for the read-only final-review timeline/history browser.
+/// `rounds` is newest-first. It starts with only the bounded live feedback
+/// file; older archived rounds are appended lazily when navigation reaches
+/// past the loaded tail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewHistoryState {
+    pub rounds: Vec<ReviewHistoryRound>,
+    /// `0` is the live editable `Current` review; `1..` index `rounds`.
+    pub selected: usize,
+    pub scroll: usize,
+    pub rendered_lines: usize,
+    pub view_height: usize,
+    pub archive_available: bool,
+    pub archive_loaded: bool,
+    pub error: Option<String>,
+}
+
 /// One row of the pre-finish summary list (`summary_items`): every verdict,
 /// open comment and suggestion in the review, in file order. Built fresh from
 /// `DiffViewerState` each time the modal is opened or navigated — nothing here
@@ -860,6 +893,10 @@ pub struct DiffViewerState {
     pub summary_open: bool,
     /// Selected row in `summary_items()`, clamped to its length on navigation.
     pub summary_selected: usize,
+    /// Read-only review-round timeline/history browser (`H`). `None` while
+    /// closed. Historical rounds are loaded from the live feedback log first;
+    /// the archive is read only when the reviewer navigates beyond that tail.
+    pub review_history: Option<ReviewHistoryState>,
 }
 
 impl DiffViewerState {
@@ -934,6 +971,7 @@ impl DiffViewerState {
             interdiff_scroll: 0,
             summary_open: false,
             summary_selected: 0,
+            review_history: None,
         }
     }
 

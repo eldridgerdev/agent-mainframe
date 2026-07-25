@@ -199,6 +199,293 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     if state.summary_open {
         draw_review_summary_modal(frame, state, theme);
     }
+    if state.review_history.is_some() {
+        draw_review_history_modal(frame, state, theme);
+    }
+}
+
+/// Read-only review-round timeline (`H`). `Current` is generated from the
+/// in-memory review so it always reflects live edits; finished rounds render
+/// their preserved markdown verbatim. Historical bodies deliberately carry an
+/// explicit original-diff limitation because only the latest review snapshot
+/// exists today.
+fn draw_review_history_modal(frame: &mut Frame, state: &mut DiffViewerState, theme: &Theme) {
+    let area = centered_rect(88, 86, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Review Timeline ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(4),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+
+    let Some(history) = state.review_history.as_ref() else {
+        return;
+    };
+    let selected = history.selected;
+    let scroll = history.scroll;
+    let error = history.error.clone();
+    let historical = selected > 0;
+    let body = if selected == 0 {
+        current_review_history_markdown(state)
+    } else {
+        history
+            .rounds
+            .get(selected - 1)
+            .map(|round| round.markdown.clone())
+            .unwrap_or_else(|| "## Review unavailable\n".to_string())
+    };
+
+    frame.render_widget(
+        Paragraph::new(review_history_timeline(
+            history,
+            state.unresolved_thread_count(),
+            rows[0].width as usize,
+            theme,
+        )),
+        rows[0],
+    );
+
+    let rendered =
+        crate::markdown::render_markdown(&body, theme, rows[1].width.max(1) as usize, None);
+    let rendered_lines = rendered.lines.len();
+    frame.render_widget(
+        Paragraph::new(rendered.lines)
+            .scroll((scroll.min(u16::MAX as usize) as u16, 0))
+            .wrap(Wrap { trim: false }),
+        rows[1],
+    );
+
+    if let Some(history) = state.review_history.as_mut() {
+        history.rendered_lines = rendered_lines;
+        history.view_height = rows[1].height as usize;
+        history.scroll = history
+            .scroll
+            .min(rendered_lines.saturating_sub(history.view_height));
+    }
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    let status = if let Some(error) = error {
+        Span::styled(error, Style::default().fg(theme.danger.to_color()))
+    } else if historical {
+        Span::styled(
+            "Historical round is read-only; its original diff snapshot is unavailable.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )
+    } else {
+        Span::styled(
+            "Current is live; press Enter to return to editing.",
+            Style::default().fg(theme.info.to_color()),
+        )
+    };
+    let hints = Line::from(vec![
+        key("h/l"),
+        Span::raw(" round  "),
+        key("j/k"),
+        Span::raw(" scroll  "),
+        key("Enter"),
+        Span::raw(" edit Current  "),
+        key("q/Esc"),
+        Span::raw(" close"),
+    ]);
+    frame.render_widget(Paragraph::new(vec![Line::from(status), hints]), rows[2]);
+}
+
+/// Window the timeline around the selected entry so long histories do not
+/// wrap. Archived entries are numbered once loaded; before that, the strip
+/// advertises a lazy `Older…` tail without reading it.
+fn review_history_timeline(
+    history: &crate::app::ReviewHistoryState,
+    current_unresolved: usize,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let complete = history.archive_loaded || !history.archive_available;
+    let total = history.rounds.len();
+    let mut labels = Vec::with_capacity(total + 1);
+    labels.push(if current_unresolved > 0 {
+        format!("Current ●{current_unresolved}")
+    } else {
+        "Current".to_string()
+    });
+    for (idx, round) in history.rounds.iter().enumerate() {
+        let base = if complete {
+            format!("Round {}", total.saturating_sub(idx))
+        } else if idx == 0 {
+            "Last review".to_string()
+        } else {
+            format!("Earlier {}", idx)
+        };
+        labels.push(if round.carried_unresolved > 0 {
+            format!("{base} ●{}", round.carried_unresolved)
+        } else {
+            base
+        });
+    }
+
+    // Each entry averages ~16 columns including the separator. Keep at least
+    // three visible when possible and center the selected entry in the window.
+    let capacity = (width / 16).clamp(1, 7).min(labels.len().max(1));
+    let mut start = history.selected.saturating_sub(capacity / 2);
+    if start + capacity > labels.len() {
+        start = labels.len().saturating_sub(capacity);
+    }
+    let end = (start + capacity).min(labels.len());
+
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled(
+            "… ─ ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    }
+    for (idx, label) in labels.iter().enumerate().take(end).skip(start) {
+        if idx > start {
+            spans.push(Span::styled(
+                " ─ ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ));
+        }
+        let selected = idx == history.selected;
+        let current = idx == 0;
+        let style = if selected {
+            Style::default()
+                .bg(theme.shortcut_background.to_color())
+                .fg(theme.shortcut_text.to_color())
+                .add_modifier(Modifier::BOLD)
+        } else if current {
+            Style::default()
+                .fg(theme.info.to_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        spans.push(Span::styled(format!(" {label} "), style));
+    }
+    if end < labels.len() {
+        spans.push(Span::styled(
+            " ─ …",
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    } else if history.archive_available && !history.archive_loaded {
+        spans.push(Span::styled(
+            " ─ Older…",
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Compose the live `Current` history body from review state. Unlike finished
+/// rounds this includes drafts and resolved threads, because it is a faithful
+/// read-only projection of what the reviewer can return to and edit.
+fn current_review_history_markdown(state: &DiffViewerState) -> String {
+    let mut approved = 0usize;
+    let mut rejected = 0usize;
+    for file in &state.files {
+        match state.decisions.get(&file.path) {
+            Some(ReviewDecision::Approve) => approved += 1,
+            Some(ReviewDecision::Reject { .. }) => rejected += 1,
+            None => {}
+        }
+    }
+    let undecided = state
+        .files
+        .len()
+        .saturating_sub(approved)
+        .saturating_sub(rejected);
+    let mut out = format!(
+        "## Current Review\n\n**Files:** {} | **Approved:** {approved} | **Needs work:** \
+         {rejected} | **No verdict:** {undecided} | **Open threads:** {}\n\n",
+        state.files.len(),
+        state.unresolved_thread_count()
+    );
+    if state.finish_check_child.is_some() {
+        out.push_str("**Check:** running…\n\n");
+    }
+    if !state.general_feedback.trim().is_empty() {
+        out.push_str("### General Feedback\n\n");
+        out.push_str(state.general_feedback.trim());
+        out.push_str("\n\n");
+    }
+    for file in &state.files {
+        let verdict = match state.decisions.get(&file.path) {
+            Some(ReviewDecision::Approve) => "approved".to_string(),
+            Some(ReviewDecision::Reject { severity, .. }) => {
+                format!("needs work [{}]", severity.label())
+            }
+            None => "no verdict".to_string(),
+        };
+        out.push_str(&format!("### {} — {verdict}\n\n", file.path));
+        if let Some(ReviewDecision::Reject { feedback, .. }) = state.decisions.get(&file.path)
+            && !feedback.trim().is_empty()
+        {
+            out.push_str(feedback.trim());
+            out.push_str("\n\n");
+        }
+        if let Some(comment) = state.file_comments.get(&file.path) {
+            let status = if comment.resolved { "resolved" } else { "open" };
+            out.push_str(&format!(
+                "**File comment [{} · {status}]:** {}\n\n",
+                comment.severity.label(),
+                comment.text.trim()
+            ));
+        }
+        if let Some(comments) = state.line_comments.get(&file.path) {
+            for comment in comments {
+                let start = comment.start.and_then(|loc| loc.new_line.or(loc.old_line));
+                let end = comment.location.new_line.or(comment.location.old_line);
+                let anchor = match (start, end) {
+                    (Some(start), Some(end)) if start != end => format!("L{start}-{end}"),
+                    (_, Some(end)) => format!("L{end}"),
+                    _ => "anchor lost".to_string(),
+                };
+                let status = if comment.draft {
+                    "AI draft"
+                } else if comment.resolved {
+                    "resolved"
+                } else if comment.carried {
+                    "open · carried"
+                } else {
+                    "open"
+                };
+                out.push_str(&format!(
+                    "#### {anchor} — [{} · {status}]\n\n",
+                    comment.severity.label()
+                ));
+                if !comment.text.trim().is_empty() {
+                    out.push_str(comment.text.trim());
+                    out.push_str("\n\n");
+                }
+                if let Some(suggestion) = &comment.suggestion {
+                    out.push_str("```suggestion\n");
+                    out.push_str(suggestion);
+                    out.push_str("\n```\n\n");
+                }
+            }
+        }
+        if let Some(responses) = state.prior_agent_responses.get(&file.path) {
+            for response in responses {
+                out.push_str(&format!(
+                    "**Agent reply to {}:** {}\n\n",
+                    response.anchor,
+                    response.response.trim()
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// A centered modal showing the "since last review" diff for the current
@@ -2050,6 +2337,11 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
     first_line.push(key("O"));
     first_line.push(Span::raw(" overview"));
 
+    // Read-only timeline across the live review and every finished round.
+    first_line.push(Span::raw("  "));
+    first_line.push(key("H"));
+    first_line.push(Span::raw(" history"));
+
     // Offer the interdiff only for a file that actually changed since the
     // last review — the case where re-reading the whole diff to find the fix
     // is the exact pain this feature answers.
@@ -3753,6 +4045,50 @@ index 0000000..1111111
         state.files = vec![file];
         state.selected_file = 0;
         (state, loc)
+    }
+
+    #[test]
+    fn review_history_modal_renders_current_state_and_lazy_archive_tail() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut state, _) = single_added_line_review_state();
+        state
+            .decisions
+            .insert("a.rs".to_string(), ReviewDecision::Approve);
+        state.review_history = Some(crate::app::ReviewHistoryState {
+            rounds: vec![crate::app::ReviewHistoryRound {
+                title: "Review — r1".to_string(),
+                markdown: "## Review — r1\n\n**Approved:** 1\n".to_string(),
+                carried_unresolved: 0,
+            }],
+            selected: 0,
+            scroll: 0,
+            rendered_lines: 0,
+            view_height: 0,
+            archive_available: true,
+            archive_loaded: false,
+            error: None,
+        });
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_diff_viewer(frame, &mut state, &Theme::default()))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Review Timeline"));
+        assert!(rendered.contains("Current"));
+        assert!(rendered.contains("Last review"));
+        assert!(rendered.contains("Older"));
+        assert!(rendered.contains("Current Review"));
+        assert!(rendered.contains("Approved: 1"));
+        assert!(rendered.contains("press Enter to return to editing"));
     }
 
     #[test]

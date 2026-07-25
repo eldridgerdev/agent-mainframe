@@ -10866,26 +10866,26 @@ fn install_amf_outbound_comment_mix(app: &mut App) {
 }
 
 #[test]
-fn pr_review_collates_amf_reply_but_keeps_other_outbound_context_accessible() {
+fn pr_review_collates_amf_followup_but_keeps_standalone_findings_actionable() {
     let mut app = pr_review_test_app();
     install_amf_outbound_comment_mix(&mut app);
 
     // The attributed inline reply is represented under comment 1's Replies
-    // section, not as a duplicate row. Top-level AI findings and orphaned AMF
-    // replies stay visible for context; the unrelated human reply stays fully
-    // visible and actionable.
+    // section, not as a duplicate row. A top-level AI finding stays fully
+    // actionable; an orphaned follow-up stays visible for context; and the
+    // unrelated human reply remains actionable.
     assert_eq!(pr_review_ids_in_visible_order(&app), vec![1, 3, 4, 5]);
     let AppMode::PrReview(state) = &app.mode else {
         panic!("not in PrReview mode");
     };
-    assert_eq!(state.review.open_count(), 2);
+    assert_eq!(state.review.open_count(), 3);
     assert!(state.review.comments[3].is_actionable());
-    assert!(!state.review.comments[2].is_actionable());
+    assert!(state.review.comments[2].is_actionable());
     assert!(!state.review.comments[4].is_actionable());
 }
 
 #[test]
-fn pr_review_never_builds_fix_prompts_for_amf_authored_rows() {
+fn pr_review_fixes_standalone_amf_findings_but_not_followup_replies() {
     let mut app = pr_review_test_app();
     install_amf_outbound_comment_mix(&mut app);
 
@@ -10894,19 +10894,21 @@ fn pr_review_never_builds_fix_prompts_for_amf_authored_rows() {
     }
     app.pr_review_open_fix_confirm();
     match &app.mode {
-        AppMode::PrReview(state) => assert!(state.fix_confirm.is_none()),
+        AppMode::PrReview(state) => {
+            let confirm = state
+                .fix_confirm
+                .as_ref()
+                .expect("standalone AI Review finding is fixable");
+            assert!(confirm.editor.text().contains("AI finding."));
+        }
         _ => panic!("not in PrReview mode"),
     }
-    assert!(
-        app.message
-            .as_deref()
-            .is_some_and(|m| m.contains("AMF-authored"))
-    );
 
-    // Even a stale mark set assembled before refresh filters AMF-authored
-    // entries out of the combined prompt.
+    // Even a stale mark set assembled before refresh filters the orphaned
+    // AMF follow-up out of the combined prompt, but retains the finding.
     if let AppMode::PrReview(state) = &mut app.mode {
-        state.marked.extend([3, 4]);
+        state.fix_confirm = None;
+        state.marked.extend([3, 4, 5]);
     }
     app.pr_review_open_batch_confirm();
     let AppMode::PrReview(state) = &app.mode else {
@@ -10915,15 +10917,16 @@ fn pr_review_never_builds_fix_prompts_for_amf_authored_rows() {
     let confirm = state
         .fix_confirm
         .as_ref()
-        .expect("human reply is batchable");
-    assert_eq!(confirm.batch.as_deref(), Some(&[4][..]));
+        .expect("standalone finding and human reply are batchable");
+    assert_eq!(confirm.batch.as_deref(), Some(&[3, 4][..]));
     assert!(
         confirm
             .editor
             .text()
             .contains("This still needs a regression test.")
     );
-    assert!(!confirm.editor.text().contains("AI finding."));
+    assert!(confirm.editor.text().contains("AI finding."));
+    assert!(!confirm.editor.text().contains("Done elsewhere."));
 }
 
 #[test]

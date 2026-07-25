@@ -272,9 +272,8 @@ pub(crate) fn window_parsed_hunk(
 pub(crate) const AMF_ATTRIBUTION_FOOTER: &str = "— posted via AMF";
 pub(crate) const AI_ATTRIBUTION_FOOTER: &str = "— drafted by AI via AMF";
 /// Attribution on findings and summaries posted by the separate AI Review
-/// workflow. Keep this exact marker alongside the two PR Triage reply markers
-/// so a later refresh can distinguish every AMF-authored outbound comment
-/// from incoming feedback without relying on the authenticated user's login.
+/// workflow. These are still actionable review findings after refresh; the
+/// footer identifies their origin without turning them into follow-up replies.
 pub(crate) const AI_REVIEW_ATTRIBUTION_FOOTER: &str = "— AI review via AMF";
 
 fn append_amf_attribution(body: &str) -> String {
@@ -768,11 +767,19 @@ impl PrComment {
             || body.ends_with(AI_REVIEW_ATTRIBUTION_FOOTER)
     }
 
-    /// Incoming feedback can be fixed, batched, replied to, and counted as
-    /// open work. AMF's own outbound comments remain inspectable context but
-    /// must never be fed back to the agent as a fresh task.
+    /// Whether this is a follow-up reply posted through PR Triage's reply flow.
+    ///
+    /// The parent relationship is essential: a standalone AMF-authored finding
+    /// is still review work even when it carries an attribution footer.
+    pub fn is_amf_followup_reply(&self) -> bool {
+        self.in_reply_to.is_some() && reply_posted_via_amf(self)
+    }
+
+    /// Incoming feedback and standalone findings can be fixed, batched,
+    /// replied to, and counted as open work. AMF's own follow-up replies stay
+    /// inspectable as thread history but must not become a fresh task.
     pub fn is_actionable(&self) -> bool {
-        !self.is_amf_authored()
+        !self.is_amf_followup_reply()
     }
 }
 
@@ -1119,14 +1126,14 @@ pub struct PrReview {
 }
 
 impl PrReview {
-    /// Whether an AMF-authored inline reply is already represented beneath its
+    /// Whether an AMF follow-up reply is already represented beneath its
     /// fetched root comment's detail view. Such replies stay in the normalized
     /// model/cache, but do not need a duplicate row in the actionable list.
     ///
     /// An orphaned reply whose root was not fetched remains a list row so it is
     /// still accessible rather than silently disappearing.
     pub fn is_collated_amf_reply(&self, comment: &PrComment) -> bool {
-        comment.is_amf_authored()
+        comment.is_amf_followup_reply()
             && comment.in_reply_to.is_some_and(|root_id| {
                 self.comments
                     .iter()
@@ -1134,8 +1141,8 @@ impl PrReview {
             })
     }
 
-    /// Number of unresolved incoming comments. AMF-authored outbound comments
-    /// are context, not review work, so they never inflate this count.
+    /// Number of unresolved incoming comments and standalone findings. AMF
+    /// follow-up replies are thread history, so they never inflate this count.
     pub fn open_count(&self) -> usize {
         self.comments
             .iter()
@@ -1851,7 +1858,7 @@ impl App {
         match selected_actionable {
             Some(true) => {}
             Some(false) => {
-                self.message = Some("AMF-authored comments are shown for context only".to_string());
+                self.message = Some("AMF follow-up replies are shown for context only".to_string());
                 return;
             }
             None => {
@@ -1968,7 +1975,7 @@ impl App {
             return;
         };
         if !actionable {
-            self.message = Some("AMF-authored comments cannot be batched as fixes".to_string());
+            self.message = Some("AMF follow-up replies cannot be batched as fixes".to_string());
             return;
         }
         let AppMode::PrReview(state) = &mut self.mode else {
@@ -2400,7 +2407,7 @@ impl App {
             Some(true) => {}
             Some(false) => {
                 self.message =
-                    Some("AMF-authored comments cannot be sent back as fixes".to_string());
+                    Some("AMF follow-up replies cannot be sent back as fixes".to_string());
                 return;
             }
             None => {
@@ -2431,7 +2438,7 @@ impl App {
             return;
         };
         if !comment.is_actionable() {
-            self.message = Some("AMF-authored comments cannot be sent back as fixes".to_string());
+            self.message = Some("AMF follow-up replies cannot be sent back as fixes".to_string());
             return;
         }
         let request = ReplyDraftRequest::new(comment.id, &state.review.pr.head_sha);
@@ -2469,8 +2476,10 @@ impl App {
             _ => return,
         };
         if valid == 0 {
-            self.message =
-                Some("Marked comments are all resolved or AMF-authored — nothing to batch".into());
+            self.message = Some(
+                "Marked comments are all resolved or AMF follow-up replies — nothing to batch"
+                    .into(),
+            );
             return;
         }
         // The dedicated-review target picks a harness before the first fix, same
@@ -2514,8 +2523,10 @@ impl App {
             _ => return,
         };
         let Some((prompt, ids, requests)) = built else {
-            self.message =
-                Some("Marked comments are all resolved or AMF-authored — nothing to batch".into());
+            self.message = Some(
+                "Marked comments are all resolved or AMF follow-up replies — nothing to batch"
+                    .into(),
+            );
             return;
         };
 
@@ -2798,14 +2809,16 @@ impl App {
     /// `FixConfirmState::batch`): the batch injects one numbered prompt and marks
     /// every included comment `Fixing`, then clears the marked set.
     pub fn pr_review_inject_fix(&mut self) -> Result<()> {
-        let selected_is_amf_authored = matches!(
+        let selected_is_amf_followup = matches!(
             &self.mode,
             AppMode::PrReview(state)
                 if state.fix_confirm.is_none()
-                    && state.selected_comment().is_some_and(PrComment::is_amf_authored)
+                    && state
+                        .selected_comment()
+                        .is_some_and(PrComment::is_amf_followup_reply)
         );
-        if selected_is_amf_authored {
-            self.message = Some("AMF-authored comments cannot be sent back as fixes".into());
+        if selected_is_amf_followup {
+            self.message = Some("AMF follow-up replies cannot be sent back as fixes".into());
             return Ok(());
         }
 
@@ -3013,7 +3026,7 @@ impl App {
         match selected_actionable {
             Some(true) => {}
             Some(false) => {
-                self.message = Some("AMF-authored comments are shown for context only".to_string());
+                self.message = Some("AMF follow-up replies are shown for context only".to_string());
                 return;
             }
             None => {
@@ -3125,7 +3138,7 @@ impl App {
             return;
         };
         if !comment.is_actionable() {
-            self.message = Some("AMF-authored comments are shown for context only".to_string());
+            self.message = Some("AMF follow-up replies are shown for context only".to_string());
             return;
         }
         // A captured draft is the fixing agent's description of what it
@@ -4836,12 +4849,13 @@ mod tests {
         assert!(review.is_collated_amf_reply(&review.comments[1]));
         assert!(review.comments[3].is_amf_authored());
         assert!(!review.is_collated_amf_reply(&review.comments[3]));
+        assert!(review.comments[3].is_actionable());
 
         // Merely mentioning AMF is not an attribution marker, so the unrelated
         // human reply remains incoming, actionable work.
         assert!(!review.comments[2].is_amf_authored());
         assert!(review.comments[2].is_actionable());
-        assert_eq!(review.open_count(), 2);
+        assert_eq!(review.open_count(), 3);
     }
 
     #[test]

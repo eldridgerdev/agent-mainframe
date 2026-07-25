@@ -2170,7 +2170,7 @@ impl PrReviewState {
 
     /// Indices into `review.comments` that pass the current filter, ordered by
     /// `sort_mode`. With `hide_resolved` on, GitHub-resolved comments are
-    /// dropped. AMF-authored inline replies whose root is present are always
+    /// dropped. AMF follow-up replies whose root is present are always
     /// collated under that root's detail view instead of duplicated here.
     pub fn visible_indices(&self) -> Vec<usize> {
         let indices = self

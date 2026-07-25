@@ -774,10 +774,10 @@ pub fn draw_pr_review(
     };
     let key_text = if state
         .selected_comment()
-        .is_some_and(PrComment::is_amf_authored)
+        .is_some_and(PrComment::is_amf_followup_reply)
     {
         format!(
-            " AMF outbound · context only   j/k move   {toggle_hint}   o sort→{}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
+            " AMF follow-up · context only   j/k move   {toggle_hint}   o sort→{}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
             state.sort_mode.label()
         )
     } else {
@@ -1385,6 +1385,7 @@ fn comment_list_line<'a>(
     width: usize,
 ) -> Line<'a> {
     let amf_authored = c.is_amf_authored();
+    let context_only = !c.is_actionable();
     let marker = if c.is_resolved { "✓" } else { " " };
     // A leading `●` flags comments marked (space) for the `F` batch fix.
     let mark = if is_marked { "●" } else { " " };
@@ -1394,7 +1395,7 @@ fn comment_list_line<'a>(
         (None, _) => kind_label(&c.kind).to_string(),
     };
 
-    let location_style = if c.is_resolved || amf_authored {
+    let location_style = if c.is_resolved || context_only {
         Style::default().fg(theme.text_muted.to_color())
     } else {
         Style::default().fg(theme.text.to_color())
@@ -1418,7 +1419,7 @@ fn comment_list_line<'a>(
     Line::from(vec![
         Span::styled(
             mark_span,
-            Style::default().fg(if amf_authored {
+            Style::default().fg(if context_only {
                 theme.text_muted.to_color()
             } else {
                 theme.warning.to_color()
@@ -1426,7 +1427,7 @@ fn comment_list_line<'a>(
         ),
         Span::styled(
             triage_span,
-            Style::default().fg(if amf_authored {
+            Style::default().fg(if context_only {
                 theme.text_muted.to_color()
             } else {
                 triage_color(c.triage, theme)
@@ -1434,7 +1435,7 @@ fn comment_list_line<'a>(
         ),
         Span::styled(
             marker_span,
-            Style::default().fg(if amf_authored {
+            Style::default().fg(if context_only {
                 theme.text_muted.to_color()
             } else {
                 theme.success.to_color()
@@ -1442,7 +1443,7 @@ fn comment_list_line<'a>(
         ),
         Span::styled(
             author_span,
-            if amf_authored {
+            if context_only {
                 Style::default().fg(theme.text_muted.to_color())
             } else {
                 Style::default()
@@ -1539,8 +1540,12 @@ fn draw_comment_detail(
     if c.is_amf_authored()
         && let Some(line) = lines.last_mut()
     {
-        line.spans
-            .push(chip("via AMF · context only", theme.text_muted.to_color()));
+        let label = if c.is_actionable() {
+            "via AMF"
+        } else {
+            "via AMF · context only"
+        };
+        line.spans.push(chip(label, theme.text_muted.to_color()));
     }
 
     // Diff hunk, colored like a diff (add/remove/context/hunk-header) — unless
@@ -2221,7 +2226,7 @@ mod tests {
     }
 
     #[test]
-    fn comment_list_collates_amf_reply_and_labels_visible_outbound_context() {
+    fn comment_list_collates_amf_reply_and_labels_standalone_finding() {
         let mut root = pr_comment_of_kind(1, CommentKind::Inline);
         root.author = "reviewer".into();
 
@@ -2314,12 +2319,13 @@ mod tests {
     }
 
     #[test]
-    fn detail_pane_marks_top_level_amf_comment_as_context_only() {
+    fn detail_pane_marks_top_level_amf_comment_as_actionable_attribution() {
         let mut finding = pr_comment_of_kind(1, CommentKind::Inline);
         finding.body = "Finding.\n\n— AI review via AMF".into();
 
         let rendered = render_comment_detail(&finding, std::slice::from_ref(&finding));
-        assert!(rendered.contains("via AMF · context only"));
+        assert!(rendered.contains("via AMF"));
+        assert!(!rendered.contains("context only"));
     }
 
     #[test]

@@ -36,13 +36,12 @@ are tagged.
   instead of carrying over an incompatible selection. Repeatedly switching
   harnesses and backing out no longer resurrects a model choice that isn't
   valid for the newly chosen harness. No migration is required.
-- **PR Triage no longer treats AMF's own comments as new feedback.** Replies
-  posted through PR Triage now stay with their original comment instead of
-  reappearing as actionable rows after refresh, and AMF-authored AI Review or
-  orphaned comments remain available as muted, context-only rows. These
-  outbound comments no longer inflate the open count or enter fix and batch
-  prompts; unrelated human replies remain actionable. No migration is
-  required.
+- **PR Triage no longer lets AMF's “fixed in” replies crowd out new
+  feedback.** Follow-up replies posted through PR Triage now stay with their
+  original comment instead of reappearing as actionable rows after refresh;
+  orphaned follow-ups remain available as muted context. Standalone findings,
+  including AI Review findings posted by AMF, remain actionable. No migration
+  is required.
 
 ## [v0.32.0] - 2026-07-24
 

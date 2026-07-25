@@ -1,9 +1,10 @@
 # AMF outbound comments in PR Triage
 
 Captured from an isolated AMF instance against a deterministic, read-only
-GitHub CLI fixture. The fixture contains seven comments: three human comments
-that remain actionable and four AMF-authored or supporting comments that are
-context only. No GitHub writes were performed.
+GitHub CLI fixture. The fixture contains seven comments: five incoming or
+standalone comments that remain actionable, one AMF follow-up collated beneath
+its root, and one orphaned follow-up retained as context. No GitHub writes were
+performed.
 
 ## 1. Collated AMF reply
 
@@ -13,13 +14,13 @@ actionable row.
 
 ![AMF reply collated under its root PR comment](001-amf-reply-collated.png)
 
-## 2. AMF-authored context
+## 2. AMF-authored standalone finding
 
-Standalone and orphaned AMF comments remain visible with a `[via AMF]` marker.
-Selecting one replaces the action shortcuts with an **AMF outbound · context
-only** footer.
+An AI Review finding posted by AMF remains actionable after refresh. Its
+`[via AMF]` marker provides attribution without removing the normal fix, mark,
+reply, and memory actions.
 
-![AMF-authored PR comment shown as context only](002-amf-context-only.png)
+![AMF-authored standalone finding remains actionable](002-amf-standalone-actionable.png)
 
 ## 3. Human reply
 

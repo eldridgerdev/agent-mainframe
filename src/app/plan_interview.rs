@@ -33,26 +33,36 @@ impl App {
     }
 
     /// Called once the interview's question flow or AI consent step reaches
-    /// `Done`. Starts the next AI-adaptive round only after explicit user
-    /// opt-in; otherwise completes the interview without spending tokens.
-    /// No-op unless the mode is actually `Done`.
+    /// `Done`. Starts the next opted-in adaptive round, then synthesizes the
+    /// collected interview before completing. No-op unless the mode is
+    /// actually `Done`.
     pub(crate) fn continue_plan_interview_after_done(&mut self) -> Result<()> {
-        let (is_done, should_start_next_round) = match &self.mode {
-            AppMode::PlanInterview(state) => (
-                state.phase == PlanInterviewPhase::Done,
-                state.ai_followups_opted_in
-                    && !state.skip_ai_rounds
-                    && state.ai_rounds_completed < plan_interview::MAX_AI_ROUNDS,
-            ),
-            _ => (false, false),
-        };
+        let (is_done, should_start_next_round, synthesis_allowed, synthesis_attempted) =
+            match &self.mode {
+                AppMode::PlanInterview(state) => (
+                    state.phase == PlanInterviewPhase::Done,
+                    state.ai_followups_opted_in
+                        && !state.skip_ai_rounds
+                        && state.ai_rounds_completed < plan_interview::MAX_AI_ROUNDS,
+                    state.ai_followups_opted_in || state.synthesis_requested,
+                    state.synthesis_attempted,
+                ),
+                _ => (false, false, false, false),
+            };
         if !is_done {
             return Ok(());
         }
         if should_start_next_round {
             self.start_next_plan_interview_ai_round()
+        } else if synthesis_attempted {
+            self.open_plan_interview_review(None);
+            Ok(())
+        } else if synthesis_allowed {
+            self.start_plan_interview_synthesis()
         } else {
-            self.complete_plan_interview()
+            // Enter/skip from the consent screen is the zero-token path.
+            self.open_plan_interview_review(None);
+            Ok(())
         }
     }
 
@@ -101,7 +111,7 @@ impl App {
                 "plan_interview",
                 "no headless-capable harness available; skipping AI rounds".to_string(),
             );
-            return self.complete_plan_interview();
+            return self.start_plan_interview_synthesis();
         };
 
         let context = plan_interview::gather_repository_context(&workdir);
@@ -134,6 +144,77 @@ impl App {
 
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.begin_ai_round(token_estimate);
+        }
+        Ok(())
+    }
+
+    /// Spawn the final plan-synthesis pass off the UI thread. A missing
+    /// headless engine is not fatal: completion retains Epic 1's raw-Q&A plan
+    /// as a deterministic fallback.
+    pub(crate) fn start_plan_interview_synthesis(&mut self) -> Result<()> {
+        let (preferred_harness, resolved_harness, feature_name, brief, questions, answers, workdir) =
+            match &self.mode {
+                AppMode::PlanInterview(state) => (
+                    state.preferred_harness.clone(),
+                    state.ai_harness.clone(),
+                    state.feature_name.clone(),
+                    state.brief.clone(),
+                    state.questions.clone(),
+                    state.answers.clone(),
+                    state
+                        .pending_launch
+                        .as_ref()
+                        .map(|prepared| prepared.workdir.clone())
+                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                ),
+                _ => return Ok(()),
+            };
+
+        let harness = match resolved_harness {
+            Some(resolved) => resolved,
+            None => HeadlessRunner::select_for_interview(&preferred_harness),
+        };
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.ai_harness = Some(harness.clone());
+        }
+
+        let Some(harness) = harness else {
+            self.log_info(
+                "plan_interview",
+                "no headless-capable harness available; using raw Q&A plan".to_string(),
+            );
+            self.open_plan_interview_review(None);
+            return Ok(());
+        };
+
+        let context = plan_interview::gather_repository_context(&workdir);
+        let prompt = plan_interview::build_synthesis_prompt(
+            &feature_name,
+            &brief,
+            &questions,
+            &answers,
+            &context,
+        );
+        let token_estimate = estimate_tokens(&prompt);
+
+        self.log_info(
+            "plan_interview",
+            format!(
+                "starting plan synthesis with {} (~{token_estimate} tokens)",
+                harness.display_name()
+            ),
+        );
+
+        let (tx, rx) = mpsc::channel();
+        self.plan_interview_synthesis_bg = Some(rx);
+        let thread_harness = harness;
+        std::thread::spawn(move || {
+            let result = HeadlessRunner::run(&thread_harness, &workdir, &prompt, None, true);
+            let _ = tx.send(result);
+        });
+
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.begin_synthesis(token_estimate);
         }
         Ok(())
     }
@@ -177,10 +258,10 @@ impl App {
                         state.ai_rounds_completed = plan_interview::MAX_AI_ROUNDS;
                         state.phase = PlanInterviewPhase::Done;
                     }
-                    if let Err(e) = self.complete_plan_interview() {
+                    if let Err(e) = self.continue_plan_interview_after_done() {
                         self.report_logged_error(
                             "plan_interview",
-                            format!("Failed to complete plan interview: {e}"),
+                            format!("Failed to continue plan interview: {e}"),
                         );
                     }
                 }
@@ -238,7 +319,103 @@ impl App {
         true
     }
 
-    /// Complete the interview and execute the launch it has been holding.
+    /// Poll the in-flight synthesis pass. A failed, disconnected, empty, or
+    /// structurally incomplete response falls back to the raw interview plan.
+    pub fn poll_plan_interview_synthesis_bg(&mut self) -> bool {
+        let Some(rx) = self.plan_interview_synthesis_bg.as_ref() else {
+            return false;
+        };
+        let confirming_abort = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state) if state.abort_confirmation
+        );
+        if confirming_abort {
+            return false;
+        }
+
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.plan_interview_synthesis_bg = None;
+                self.log_warn(
+                    "plan_interview",
+                    "plan synthesis worker thread ended unexpectedly; using raw Q&A plan"
+                        .to_string(),
+                );
+                let was_loading = matches!(
+                    &self.mode,
+                    AppMode::PlanInterview(state)
+                        if state.phase == PlanInterviewPhase::SynthesisLoading
+                );
+                if was_loading {
+                    self.open_plan_interview_review(None);
+                }
+                return true;
+            }
+        };
+        self.plan_interview_synthesis_bg = None;
+
+        let is_loading = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state)
+                if state.phase == PlanInterviewPhase::SynthesisLoading
+        );
+        if !is_loading {
+            // The user navigated or aborted away from the synthesis screen;
+            // discard the late result without touching the launch.
+            return false;
+        }
+
+        let plan = match result {
+            Ok(response) => {
+                let plan = plan_interview::parse_synthesized_plan(&response);
+                if plan.is_none() {
+                    self.log_warn(
+                        "plan_interview",
+                        "plan synthesis returned incomplete markdown; using raw Q&A plan"
+                            .to_string(),
+                    );
+                }
+                plan
+            }
+            Err(e) => {
+                self.log_warn(
+                    "plan_interview",
+                    format!("plan synthesis failed; using raw Q&A plan: {e}"),
+                );
+                None
+            }
+        };
+
+        self.open_plan_interview_review(plan);
+        true
+    }
+
+    /// Resolve a synthesis result into the exact markdown shown at the review
+    /// gate. A failed first pass uses the raw-Q&A fallback; a failed
+    /// regeneration preserves the plan the user was already reviewing.
+    fn open_plan_interview_review(&mut self, generated: Option<String>) {
+        let plan = match &self.mode {
+            AppMode::PlanInterview(state) => generated
+                .or_else(|| state.synthesized_plan.clone())
+                .unwrap_or_else(|| {
+                    render_static_plan(
+                        &state.feature_name,
+                        &state.brief,
+                        &state.questions,
+                        &state.answers,
+                    )
+                }),
+            _ => return,
+        };
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.apply_synthesis(plan);
+        }
+        self.message = None;
+    }
+
+    /// Accept the reviewed plan and execute the launch it has been holding.
     pub(crate) fn complete_plan_interview(&mut self) -> Result<()> {
         let (workdir, plan) = match &self.mode {
             AppMode::PlanInterview(state) => {
@@ -247,12 +424,14 @@ impl App {
                 };
                 (
                     prepared.workdir.clone(),
-                    render_static_plan(
-                        &state.feature_name,
-                        &state.brief,
-                        &state.questions,
-                        &state.answers,
-                    ),
+                    state.synthesized_plan.clone().unwrap_or_else(|| {
+                        render_static_plan(
+                            &state.feature_name,
+                            &state.brief,
+                            &state.questions,
+                            &state.answers,
+                        )
+                    }),
                 )
             }
             _ => return Ok(()),

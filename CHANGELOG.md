@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **Plan-mode interviews now pause at a review gate before launching the
+  feature.** An opted-in AI flow turns the interview into a structured
+  implementation plan, then shows the rendered markdown for review. You can
+  edit the raw plan, regenerate it, scroll through the preview, or abort;
+  AMF writes `.claude/plan.md` and starts the feature only after you press
+  `Enter` to accept. If synthesis is unavailable or returns an invalid plan,
+  AMF shows the raw interview plan as a fallback. No migration is required.
 - **Final Review now includes a review-round history browser.** Press `H` to
   move between the live review and earlier rounds, including their verdict
   counts, checks, comments, suggestions, and agent replies. Older archived

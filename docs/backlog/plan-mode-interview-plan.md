@@ -404,14 +404,20 @@ edit, regenerate, accept (writes `.claude/plan.md`, launches session
 with
 seeded kickoff composer), or abort.
 
-- [ ] Synthesis prompt constant + headless call with loading frame
-- [ ] Review-gate UI: render plan via markdown viewer, `e` to edit
+- [x] Synthesis prompt constant + headless call with loading frame
+- [x] Review-gate UI: render plan via markdown viewer, `e` to edit
       raw markdown in TextEditor, `r` regenerate, `Enter` accept,
-      `Esc` abort-with-confirm
+      `Esc` abort-with-confirm (`Ctrl+S` saves an edit back to preview;
+      `Esc` from the editor discards the edit)
+- [ ] Optional agent-review action from the review gate: have an agent
+      inspect the draft plan and provide a detailed analysis of gaps,
+      risks, contradictions, unclear decisions, and missing acceptance
+      criteria; present the analysis as advisory feedback without
+      changing the plan unless the user chooses to revise it
 - [ ] Accept path: write `.claude/plan.md`, augment the instruction
       block ("plan is user-approved"), run deferred launch, seed
       composer kickoff prompt via `open_compose_seeded`
-- [ ] Replace Epic 1's raw-Q&A plan-file write with synthesized doc
+- [x] Replace Epic 1's raw-Q&A plan-file write with synthesized doc
       (raw Q&A kept as fallback when synthesis fails)
 - [ ] Omit skipped and unanswered questions from both synthesis input
       and the raw-Q&A fallback plan so they do not add irrelevant context

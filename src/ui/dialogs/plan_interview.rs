@@ -11,22 +11,39 @@ use crate::plan_interview::{PlanQuestionKind, QuestionSource};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
-use super::editor_view::editor_lines;
+use super::editor_view::{count_wrapped_editor_lines, editor_lines, sync_editor_scroll};
 
 pub fn draw_plan_interview_dialog(
     frame: &mut Frame,
-    state: &PlanInterviewState,
+    state: &mut PlanInterviewState,
     message: Option<&str>,
     theme: &Theme,
     throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
-    let area = centered_rect(80, 72, frame.area());
+    let review_gate = matches!(
+        state.phase,
+        PlanInterviewPhase::Review | PlanInterviewPhase::Editing
+    );
+    let area = if review_gate {
+        centered_rect(86, 86, frame.area())
+    } else {
+        centered_rect(80, 72, frame.area())
+    };
     crate::ui::draw_modal_overlay(frame, area, theme);
 
+    let title = match state.phase {
+        PlanInterviewPhase::Review => format!(" Plan Review · {} ", state.feature_name),
+        PlanInterviewPhase::Editing => format!(" Edit Plan · {} ", state.feature_name),
+        _ => format!(" Plan Mode · {} ", state.feature_name),
+    };
     let block = Block::default()
-        .title(format!(" Plan Mode · {} ", state.feature_name))
+        .title(title)
         .borders(Borders::ALL)
-        .style(Style::default().bg(theme.effective_bg()))
+        .style(Style::default().bg(if review_gate {
+            theme.effective_header_bg()
+        } else {
+            theme.effective_bg()
+        }))
         .border_style(Style::default().fg(theme.primary.to_color()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -58,6 +75,15 @@ pub fn draw_plan_interview_dialog(
         .style(Style::default().bg(theme.effective_bg()))
         .wrap(Wrap { trim: false });
         frame.render_widget(confirm, inner);
+        return;
+    }
+
+    if state.phase == PlanInterviewPhase::Review {
+        draw_plan_review(frame, inner, state, message, theme);
+        return;
+    }
+    if state.phase == PlanInterviewPhase::Editing {
+        draw_plan_edit(frame, inner, state, message, theme);
         return;
     }
 
@@ -124,6 +150,10 @@ pub fn draw_plan_interview_dialog(
         PlanInterviewPhase::AiLoading => {
             draw_ai_loading(frame, chunks[2], state, theme, throbber_state)
         }
+        PlanInterviewPhase::SynthesisLoading => {
+            draw_synthesis_loading(frame, chunks[2], state, theme, throbber_state)
+        }
+        PlanInterviewPhase::Review | PlanInterviewPhase::Editing => unreachable!(),
         PlanInterviewPhase::Done => {
             frame.render_widget(
                 Paragraph::new(
@@ -152,11 +182,18 @@ pub fn draw_plan_interview_dialog(
             Span::raw(" generate (uses tokens)  "),
             hint("Enter", theme),
             Span::raw(" finish without AI  "),
+            hint("Ctrl+F", theme),
+            Span::raw(" synthesize now  "),
             hint("Ctrl+B", theme),
             Span::raw(" back  "),
             hint("Esc", theme),
             Span::raw(" cancel"),
         ])
+    } else if matches!(
+        state.phase,
+        PlanInterviewPhase::AiLoading | PlanInterviewPhase::SynthesisLoading
+    ) {
+        Line::from(vec![hint("Esc", theme), Span::raw(" cancel")])
     } else {
         Line::from(vec![
             hint("Enter", theme),
@@ -168,7 +205,7 @@ pub fn draw_plan_interview_dialog(
             hint("Ctrl+S", theme),
             Span::raw(" skip  "),
             hint("Ctrl+F", theme),
-            Span::raw(" finish  "),
+            Span::raw(" synthesize now (uses tokens)  "),
             hint("Esc", theme),
             Span::raw(" cancel"),
         ])
@@ -197,6 +234,9 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             state.questions.len() + 1,
             format!("AI round {}", state.ai_rounds_completed + 1),
         ),
+        PlanInterviewPhase::SynthesisLoading => (total, "Plan synthesis".to_string()),
+        PlanInterviewPhase::Review => (total, "Plan review".to_string()),
+        PlanInterviewPhase::Editing => (total, "Edit plan".to_string()),
         PlanInterviewPhase::Done => (total, "Complete".to_string()),
     };
     Paragraph::new(Line::from(vec![
@@ -221,6 +261,11 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             ("Generate adaptive follow-up questions?".to_string(), false)
         }
         PlanInterviewPhase::AiLoading => ("Generating follow-up questions".to_string(), false),
+        PlanInterviewPhase::SynthesisLoading => {
+            ("Synthesizing implementation plan".to_string(), false)
+        }
+        PlanInterviewPhase::Review => ("Review implementation plan".to_string(), false),
+        PlanInterviewPhase::Editing => ("Edit raw markdown".to_string(), false),
         PlanInterviewPhase::Done => ("Interview complete".to_string(), false),
     };
     let suffix = if optional { " (optional)" } else { "" };
@@ -281,6 +326,184 @@ fn draw_ai_loading(
         ])
         .wrap(Wrap { trim: false }),
         area,
+    );
+}
+
+/// Loading frame for the final structured-plan synthesis pass.
+fn draw_synthesis_loading(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    theme: &Theme,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+) {
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+
+    let engine = state
+        .ai_harness
+        .as_ref()
+        .and_then(|resolved| resolved.as_ref())
+        .map(|harness| harness.display_name())
+        .unwrap_or("agent");
+    let elapsed = state
+        .synthesis_started_at
+        .map(|started_at| started_at.elapsed().as_secs())
+        .unwrap_or(0);
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![
+                spinner,
+                Span::styled(
+                    format!(
+                        " Synthesizing implementation plan ({engine}) · {elapsed}s · ~{} tokens...",
+                        state.synthesis_token_estimate
+                    ),
+                    Style::default()
+                        .fg(theme.text.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        ])
+        .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_plan_review(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &mut PlanInterviewState,
+    message: Option<&str>,
+    theme: &Theme,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .split(area);
+    let source_path = state
+        .pending_launch
+        .as_ref()
+        .map(|prepared| prepared.workdir.join(".claude/plan.md"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".claude/plan.md"));
+    let content = state.synthesized_plan.as_deref().unwrap_or_default();
+    super::markdown::draw_markdown_document(
+        frame,
+        chunks[0],
+        content,
+        &source_path,
+        &mut state.review_scroll_offset,
+        &mut state.review_rendered_width,
+        &mut state.review_rendered_lines,
+        theme,
+    );
+
+    let context = if let Some(message) = message {
+        let color = if message.starts_with("Error:") {
+            theme.danger.to_color()
+        } else {
+            theme.text_muted.to_color()
+        };
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(color),
+        ))
+    } else {
+        Line::from(Span::styled(
+            source_path.display().to_string(),
+            Style::default()
+                .fg(theme.secondary.to_color())
+                .add_modifier(Modifier::ITALIC),
+        ))
+    };
+    let hints = Line::from(vec![
+        hint("j/k", theme),
+        Span::raw(" scroll  "),
+        hint("PgUp/PgDn", theme),
+        Span::raw(" page  "),
+        hint("e", theme),
+        Span::raw(" edit  "),
+        hint("r", theme),
+        Span::raw(" regenerate  "),
+        hint("Enter", theme),
+        Span::raw(" accept  "),
+        hint("Esc", theme),
+        Span::raw(" abort"),
+    ]);
+    frame.render_widget(
+        Paragraph::new(vec![context, hints])
+            .style(Style::default().bg(theme.effective_header_bg()))
+            .wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+}
+
+fn draw_plan_edit(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &mut PlanInterviewState,
+    message: Option<&str>,
+    theme: &Theme,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(area);
+    let lines = editor_lines(
+        &state.editor,
+        theme,
+        "Write the implementation plan in markdown.",
+    );
+    let wrap_width = chunks[0].width.saturating_sub(2).max(1) as usize;
+    let total_visual_lines = count_wrapped_editor_lines(&lines, wrap_width);
+    sync_editor_scroll(
+        &state.editor,
+        &mut state.edit_scroll_offset,
+        &mut state.edit_sync_to_cursor,
+        chunks[0].height.saturating_sub(2) as usize,
+        wrap_width,
+        total_visual_lines,
+    );
+    let editor = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" Raw markdown ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border.to_color())),
+        )
+        .style(Style::default().bg(theme.effective_header_bg()))
+        .wrap(Wrap { trim: false })
+        .scroll((state.edit_scroll_offset.min(u16::MAX as usize) as u16, 0));
+    frame.render_widget(editor, chunks[0]);
+
+    let footer = if let Some(message) = message {
+        let color = if message.starts_with("Error:") {
+            theme.danger.to_color()
+        } else {
+            theme.text_muted.to_color()
+        };
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(color),
+        ))
+    } else {
+        Line::from(vec![
+            hint("Enter", theme),
+            Span::raw(" newline  "),
+            hint("Ctrl+S", theme),
+            Span::raw(" save + preview  "),
+            hint("Esc", theme),
+            Span::raw(" discard edits"),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(Style::default().bg(theme.effective_header_bg()))
+            .wrap(Wrap { trim: false }),
+        chunks[1],
     );
 }
 

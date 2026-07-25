@@ -98,11 +98,41 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
         ("Ctrl+B", "Return to the previous question"),
         ("Ctrl+S", "Skip an optional question"),
-        ("Ctrl+F", "Finish early with answers so far"),
+        ("Ctrl+F", "Synthesize now with answers so far (uses tokens)"),
         ("Esc", "Cancel (launch without plan or feature)"),
     ];
 
     for (key, desc) in &plan_interview_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  During plan review:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let plan_review_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k / PgUp/PgDn", "Scroll the rendered plan"),
+        ("e", "Edit raw plan markdown"),
+        ("r", "Regenerate the plan (uses tokens)"),
+        ("Enter", "Accept plan and launch feature"),
+        ("Ctrl+S", "Save edit and return to preview"),
+        ("Esc", "Discard edit or confirm abort"),
+    ];
+
+    for (key, desc) in &plan_review_keybinds {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:>14}", key),

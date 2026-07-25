@@ -57,12 +57,16 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
             if let AppMode::PlanInterview(state) = &mut app.mode
                 && !state.abort_confirmation
                 && (state.phase == crate::app::PlanInterviewPhase::Brief
+                    || state.phase == crate::app::PlanInterviewPhase::Editing
                     || matches!(
                         state.current_question().map(|question| &question.kind),
                         Some(crate::plan_interview::PlanQuestionKind::FreeText)
                     ))
             {
-                state.editor.insert_str(text);
+                let outcome = state.editor.insert_str(text);
+                if state.phase == crate::app::PlanInterviewPhase::Editing && outcome.text_changed {
+                    state.edit_sync_to_cursor = true;
+                }
             }
         }
         AppMode::RenamingSession(_) => {

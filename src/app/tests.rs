@@ -14286,8 +14286,10 @@ fn post_success_refresh_snaps_selection_off_a_newly_collated_amf_reply() {
     };
     let (tx, rx) = std::sync::mpsc::channel();
     app.ai_review_triage_refresh_bg = Some(rx);
-    app.ai_review_triage_refresh_pending =
-        Some(crate::app::AiReviewTriageRefresh { workdir, pr: pr.clone() });
+    app.ai_review_triage_refresh_pending = Some(crate::app::AiReviewTriageRefresh {
+        workdir,
+        pr: pr.clone(),
+    });
 
     // The refresh comes back with the reply's root now present, so the
     // reply collates under it and drops out of `visible_indices()`.

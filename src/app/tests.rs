@@ -14200,6 +14200,142 @@ fn post_success_refresh_snaps_selection_off_a_newly_resolved_comment() {
 }
 
 #[test]
+fn post_success_refresh_snaps_selection_off_a_newly_collated_amf_reply() {
+    use crate::app::pr_review::AMF_ATTRIBUTION_FOOTER;
+
+    // Regression: `selected` can itself be an orphaned AMF follow-up reply
+    // (its root wasn't fetched, so it stood as its own row). If a refresh
+    // fetches the root, the reply becomes collated under it and vanishes
+    // from `visible_indices()`. `all_sorted_indices()` used to also drop
+    // collated replies, so `position()` couldn't find `selected` there
+    // either and both neighbor searches short-circuited to `visible[0]`
+    // instead of the nearest neighbor (the reply's own root).
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+
+    let pr = crate::github::PrRef {
+        number: 7,
+        head_sha: "sha".to_string(),
+        url: "https://github.com/o/r/pull/7".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+        head_ref: "main".to_string(),
+    };
+    let user = |login: &str| crate::github::GhUser {
+        login: login.to_string(),
+        kind: "User".to_string(),
+    };
+
+    // An unrelated comment that sorts before the reply's root in fetch order.
+    // Its presence is what distinguishes "snap to the nearest neighbor" from
+    // "snap to the first visible row" — with only the reply and its root,
+    // the root would also happen to be `visible[0]`, masking the bug.
+    let unrelated = crate::github::ReviewComment {
+        id: 3,
+        path: Some("src/other.rs".into()),
+        line: Some(4),
+        original_line: Some(4),
+        side: Some("RIGHT".into()),
+        diff_hunk: Some("@@".into()),
+        subject_type: None,
+        body: "Unrelated finding.".into(),
+        user: user("reviewer"),
+        in_reply_to_id: None,
+        pull_request_review_id: None,
+    };
+
+    // Initial fetch: the AMF reply came back but its root did not, so it's
+    // orphaned and shown as its own row. It's selected.
+    let orphan_reply = crate::github::ReviewComment {
+        id: 2,
+        path: Some("src/lib.rs".into()),
+        line: Some(10),
+        original_line: Some(10),
+        side: Some("RIGHT".into()),
+        diff_hunk: Some("@@".into()),
+        subject_type: None,
+        body: format!("Done in `abc123`.\n\n{AMF_ATTRIBUTION_FOOTER}"),
+        user: user("author"),
+        in_reply_to_id: Some(1),
+        pull_request_review_id: Some(91),
+    };
+    app.mode = AppMode::PrReview(PrReviewState {
+        selected: 1,
+        review: crate::app::pr_review::normalize(
+            pr.clone(),
+            vec![unrelated.clone(), orphan_reply.clone()],
+            vec![],
+            vec![],
+            vec![],
+        ),
+        ..match app.mode {
+            AppMode::PrReview(state) => state,
+            _ => unreachable!(),
+        }
+    });
+
+    app.open_ai_review_from_triage();
+    let (workdir, pr) = match &app.mode {
+        AppMode::AiReview(state) => (state.workdir.clone(), state.pr.clone()),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_triage_refresh_bg = Some(rx);
+    app.ai_review_triage_refresh_pending =
+        Some(crate::app::AiReviewTriageRefresh { workdir, pr: pr.clone() });
+
+    // The refresh comes back with the reply's root now present, so the
+    // reply collates under it and drops out of `visible_indices()`.
+    let root = crate::github::ReviewComment {
+        id: 1,
+        path: Some("src/lib.rs".into()),
+        line: Some(10),
+        original_line: Some(10),
+        side: Some("RIGHT".into()),
+        diff_hunk: Some("@@".into()),
+        subject_type: None,
+        body: "Please add a test here.".into(),
+        user: user("reviewer"),
+        in_reply_to_id: None,
+        pull_request_review_id: Some(90),
+    };
+    let refreshed = crate::app::pr_review::normalize(
+        pr,
+        vec![unrelated, root, orphan_reply],
+        vec![],
+        vec![],
+        vec![],
+    );
+    tx.send(Ok(refreshed)).unwrap();
+
+    assert!(app.poll_ai_review_triage_refresh_bg());
+    match app.ai_review_return_to.as_deref() {
+        Some(AppMode::PrReview(state)) => {
+            assert_ne!(
+                state.selected_comment().map(|comment| comment.id),
+                Some(2),
+                "selection must not stay on the now-collated AMF reply"
+            );
+            assert_eq!(
+                state.selected_comment().map(|comment| comment.id),
+                Some(1),
+                "selection should snap to the reply's own root, its nearest visible neighbor"
+            );
+            assert!(
+                state.visible_indices().contains(&state.selected),
+                "selection must land on a row the current filter shows"
+            );
+        }
+        _ => panic!("expected refreshed stashed PR Triage pane"),
+    }
+}
+
+#[test]
 fn post_success_refresh_caches_fresh_triage_when_ai_review_has_no_return_pane() {
     let store = store_with_feature(ProjectStatus::Idle);
     let mut app = App::new_for_test(

@@ -2186,21 +2186,17 @@ impl PrReviewState {
         self.sort_indices(indices)
     }
 
-    /// Every list-eligible comment index (ignoring `hide_resolved`) in
-    /// `sort_mode` order. Used to find a hidden selection's nearest visible
-    /// neighbor when a filter or refresh hides it — the filter can't change
-    /// relative order, only remove from it, so this is the same order
-    /// `visible_indices` would use.
+    /// Every comment index — including ones `visible_indices` would drop for
+    /// `hide_resolved` or collation — in `sort_mode` order. Used to find a
+    /// hidden selection's nearest visible neighbor when a filter or refresh
+    /// hides it. Must stay unfiltered so `self.selected` itself can always be
+    /// located by `position()`, even when `selected` is the very comment that
+    /// just became hidden (e.g. an orphaned AMF reply that a refresh just
+    /// collated under its now-present root); the neighbor search then walks
+    /// this order and tests `visible_indices().contains()` to find the
+    /// nearest comment that's actually shown.
     pub(crate) fn all_sorted_indices(&self) -> Vec<usize> {
-        let indices = self
-            .review
-            .comments
-            .iter()
-            .enumerate()
-            .filter(|(_, comment)| !self.review.is_collated_amf_reply(comment))
-            .map(|(index, _)| index)
-            .collect();
-        self.sort_indices(indices)
+        self.sort_indices((0..self.review.comments.len()).collect())
     }
 
     /// If `selected` is currently hidden by `hide_resolved`, snap it to the

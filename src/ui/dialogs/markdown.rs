@@ -4,6 +4,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+use std::path::Path;
 
 use crate::app::{MarkdownLoadingState, MarkdownViewerState};
 use crate::theme::Theme;
@@ -43,43 +44,16 @@ pub fn draw_markdown_viewer(frame: &mut Frame, state: &mut MarkdownViewerState, 
     };
     let content_area = chunks[0];
 
-    let visible_lines = content_area.height as usize;
-    let render_width = content_area.width.saturating_sub(1).max(1);
-    if state.rendered_width != render_width || state.rendered_lines.is_empty() {
-        state.rendered_lines = crate::markdown::render_markdown(
-            &state.content,
-            theme,
-            render_width as usize,
-            Some(&state.source_path),
-        )
-        .lines;
-        state.rendered_width = render_width;
-    }
-    let total_visual_lines = state.rendered_lines.len();
-    let max_scroll = total_visual_lines.saturating_sub(visible_lines);
-    state.scroll_offset = state.scroll_offset.min(max_scroll);
-    let scroll_offset = state.scroll_offset;
-
-    let visible = state
-        .rendered_lines
-        .iter()
-        .skip(scroll_offset)
-        .take(visible_lines)
-        .cloned()
-        .collect::<Vec<_>>();
-    let paragraph = Paragraph::new(visible).style(Style::default().bg(theme.effective_header_bg()));
-    frame.render_widget(paragraph, content_area);
-
-    if total_visual_lines > visible_lines {
-        let scrollbar = Scrollbar::default()
-            .orientation(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(Some("↑"))
-            .end_symbol(Some("↓"));
-        let mut scrollbar_state = ScrollbarState::new(total_visual_lines)
-            .position(scroll_offset)
-            .viewport_content_length(visible_lines);
-        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
-    }
+    draw_markdown_document(
+        frame,
+        content_area,
+        &state.content,
+        &state.source_path,
+        &mut state.scroll_offset,
+        &mut state.rendered_width,
+        &mut state.rendered_lines,
+        theme,
+    );
 
     let hints = Paragraph::new(vec![
         Line::from(Span::styled(
@@ -99,6 +73,57 @@ pub fn draw_markdown_viewer(frame: &mut Frame, state: &mut MarkdownViewerState, 
     ])
     .style(Style::default().bg(theme.effective_header_bg()));
     frame.render_widget(hints, chunks[1]);
+}
+
+/// Render a scrollable markdown document into an existing content area.
+/// Shared by the standalone markdown viewer and workflows such as the plan
+/// interview review gate that need the same markdown presentation with their
+/// own surrounding actions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_markdown_document(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    content: &str,
+    source_path: &Path,
+    scroll_offset: &mut usize,
+    rendered_width: &mut u16,
+    rendered_lines: &mut Vec<ratatui::text::Line<'static>>,
+    theme: &Theme,
+) {
+    let visible_lines = area.height as usize;
+    let render_width = area.width.saturating_sub(1).max(1);
+    if *rendered_width != render_width || rendered_lines.is_empty() {
+        *rendered_lines = crate::markdown::render_markdown(
+            content,
+            theme,
+            render_width as usize,
+            Some(source_path),
+        )
+        .lines;
+        *rendered_width = render_width;
+    }
+    let total_visual_lines = rendered_lines.len();
+    let max_scroll = total_visual_lines.saturating_sub(visible_lines);
+    *scroll_offset = (*scroll_offset).min(max_scroll);
+    let visible = rendered_lines
+        .iter()
+        .skip(*scroll_offset)
+        .take(visible_lines)
+        .cloned()
+        .collect::<Vec<_>>();
+    let paragraph = Paragraph::new(visible).style(Style::default().bg(theme.effective_header_bg()));
+    frame.render_widget(paragraph, area);
+
+    if total_visual_lines > visible_lines {
+        let scrollbar = Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(total_visual_lines)
+            .position(*scroll_offset)
+            .viewport_content_length(visible_lines);
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
 }
 
 pub fn draw_markdown_loading(

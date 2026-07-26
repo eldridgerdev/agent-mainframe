@@ -1406,6 +1406,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
 
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        super::dialogs::draw_plan_interview_dialog(
+            frame,
+            state,
+            app.message.as_deref(),
+            &app.theme,
+            &app.throbber_state,
+        );
+        return;
+    }
+
     match &app.mode {
         AppMode::CreatingProject(state) => {
             let allowed_agents =
@@ -1430,15 +1441,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
-        AppMode::PlanInterview(state) => {
-            super::dialogs::draw_plan_interview_dialog(
-                frame,
-                state,
-                app.message.as_deref(),
-                &app.theme,
-                &app.throbber_state,
-            );
-        }
+        AppMode::PlanInterview(_) => unreachable!("plan interview handled above"),
         AppMode::CreatingBatchFeatures(state) => {
             super::dialogs::draw_create_batch_features_dialog(frame, state, &app.theme);
         }

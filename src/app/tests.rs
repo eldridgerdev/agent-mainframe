@@ -8,7 +8,7 @@ use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify}
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::sync::{
     Arc,
@@ -2306,14 +2306,35 @@ fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir)
     (app, store_file, repo)
 }
 
+/// Keep completion-path tests deterministic and offline. `Some(None)` means
+/// harness resolution has already run and no synthesis engine is available,
+/// so the interview must use its raw-Q&A fallback.
+fn force_plan_interview_raw_fallback(app: &mut App) {
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    state.ai_harness = Some(None);
+}
+
+fn synthesized_plan_response() -> String {
+    "# Plan: planned-feature\n\n## Goal\nShip a useful feature.\n\n\
+     ## Decisions\n- Use the native TUI.\n\n\
+     ## Architecture\nNo changes identified.\n\n\
+     ## UI\nAdd a plan-mode dialog.\n\n\
+     ## Tasks\n- [ ] Implement the feature\n- [ ] Verify it\n\n\
+     ## Risks / open questions\n- None identified.\n"
+        .to_string()
+}
+
 #[test]
-fn plan_interview_done_without_ai_consent_never_starts_a_headless_round() {
+fn plan_interview_done_without_ai_consent_uses_raw_fallback_without_headless_work() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
     if let AppMode::PlanInterview(state) = &mut app.mode {
         state.brief = "A useful feature".into();
         state.phase = PlanInterviewPhase::Done;
         assert!(!state.ai_followups_opted_in);
+        assert!(!state.synthesis_requested);
     } else {
         panic!("expected plan interview mode");
     }
@@ -2321,7 +2342,284 @@ fn plan_interview_done_without_ai_consent_never_starts_a_headless_round() {
     app.continue_plan_interview_after_done().unwrap();
 
     assert!(app.plan_interview_ai_bg.is_none());
+    assert!(app.plan_interview_synthesis_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state
+                    .synthesized_plan
+                    .as_deref()
+                    .is_some_and(|plan| plan.contains("## Feature brief\n\nA useful feature"))
+    ));
+}
+
+#[test]
+fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    let workdir = match &mut app.mode {
+        AppMode::PlanInterview(state) => {
+            state.brief = "Ship a useful feature".into();
+            state.begin_synthesis(450);
+            state.pending_launch.as_ref().unwrap().workdir.clone()
+        }
+        _ => panic!("expected plan interview mode"),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_synthesis_bg = Some(rx);
+    tx.send(Ok(synthesized_plan_response())).unwrap();
+
+    assert!(app.poll_plan_interview_synthesis_bg());
+
+    assert!(app.plan_interview_synthesis_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref()
+                    == Some(synthesized_plan_response().as_str())
+    ));
+    assert!(!workdir.join(".claude/plan.md").exists());
+    assert!(
+        !app.store.projects[0]
+            .features
+            .iter()
+            .any(|f| f.name == "planned-feature" && !f.pending_worktree_script)
+    );
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
     assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(
+        std::fs::read_to_string(workdir.join(".claude/plan.md")).unwrap(),
+        synthesized_plan_response()
+    );
+    assert!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .any(|f| f.name == "planned-feature" && !f.pending_worktree_script)
+    );
+}
+
+#[test]
+fn poll_plan_interview_synthesis_bg_uses_raw_fallback_for_incomplete_markdown() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    let workdir = match &mut app.mode {
+        AppMode::PlanInterview(state) => {
+            state.brief = "Fallback brief".into();
+            state.begin_synthesis(300);
+            state.pending_launch.as_ref().unwrap().workdir.clone()
+        }
+        _ => panic!("expected plan interview mode"),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_synthesis_bg = Some(rx);
+    tx.send(Ok("# Plan: incomplete".into())).unwrap();
+
+    assert!(app.poll_plan_interview_synthesis_bg());
+
+    let plan = match &app.mode {
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review => {
+            state.synthesized_plan.as_deref().unwrap()
+        }
+        _ => panic!("expected raw fallback at the review gate"),
+    };
+    assert!(plan.contains("## Feature brief\n\nFallback brief"));
+    assert!(plan.contains("## Q&A"));
+    assert!(!workdir.join(".claude/plan.md").exists());
+    assert!(
+        app.debug_log
+            .entries()
+            .iter()
+            .any(|entry| entry.message.contains("incomplete markdown"))
+    );
+}
+
+#[test]
+fn poll_plan_interview_synthesis_bg_defers_while_abort_confirmation_is_open() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.begin_synthesis(300);
+        state.abort_confirmation = true;
+    } else {
+        panic!("expected plan interview mode");
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_synthesis_bg = Some(rx);
+    tx.send(Ok(synthesized_plan_response())).unwrap();
+
+    assert!(!app.poll_plan_interview_synthesis_bg());
+    assert!(app.plan_interview_synthesis_bg.is_some());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::SynthesisLoading
+                && state.abort_confirmation
+    ));
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.abort_confirmation = false;
+    }
+    assert!(app.poll_plan_interview_synthesis_bg());
+    assert!(app.plan_interview_synthesis_bg.is_none());
+    assert!(matches!(
+        app.mode,
+        AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Review
+    ));
+}
+
+#[test]
+fn accepting_review_surfaces_write_failure_and_keeps_generated_plan() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    let workdir = match &app.mode {
+        AppMode::PlanInterview(state) => state.pending_launch.as_ref().unwrap().workdir.clone(),
+        _ => panic!("expected plan interview mode"),
+    };
+    std::fs::create_dir_all(workdir.parent().unwrap()).unwrap();
+    std::fs::write(&workdir, b"not a directory").unwrap();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.begin_synthesis(300);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_synthesis_bg = Some(rx);
+    tx.send(Ok(synthesized_plan_response())).unwrap();
+
+    assert!(app.poll_plan_interview_synthesis_bg());
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.contains("Failed to accept plan interview"),
+        "expected a surfaced failure message, got: {message:?}"
+    );
+    let expected_plan = synthesized_plan_response();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesis_attempted
+                && state.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+                && state.pending_launch.is_some()
+    ));
+}
+
+#[test]
+fn plan_review_can_edit_save_regenerate_fallback_and_open_abort_confirmation() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(None);
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('e'))).unwrap();
+    assert!(matches!(
+        app.mode,
+        AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Editing
+    ));
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("# Plan: edited".into());
+    }
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some("# Plan: edited\n")
+    ));
+
+    // With no headless harness available, regeneration keeps the
+    // already-reviewed plan instead of discarding the user's edit, and says so
+    // rather than looking like an unbound key.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some("# Plan: edited\n")
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No headless-capable harness available; keeping current plan")
+    );
+    app.message = None;
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review && state.abort_confirmation
+    ));
+}
+
+#[test]
+fn requested_synthesis_without_a_harness_explains_the_raw_fallback() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    force_plan_interview_raw_fallback(&mut app);
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.brief = "Explain the fallback".into();
+        state.synthesis_requested = true;
+        state.phase = PlanInterviewPhase::Done;
+    } else {
+        panic!("expected plan interview mode");
+    }
+
+    app.continue_plan_interview_after_done().unwrap();
+
+    assert!(app.plan_interview_synthesis_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state
+                    .synthesized_plan
+                    .as_deref()
+                    .is_some_and(|plan| plan.contains("## Feature brief\n\nExplain the fallback"))
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No headless-capable harness available; using the raw Q&A plan")
+    );
+}
+
+/// No current transition re-enters `Done` after synthesis has been attempted,
+/// but if one is ever added it must re-open the plan already paid for instead
+/// of starting a second headless pass.
+#[test]
+fn done_after_synthesis_reopens_the_existing_plan_without_spending_tokens() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.ai_followups_opted_in = true;
+        state.skip_ai_rounds = true;
+        state.apply_synthesis(synthesized_plan_response());
+        assert!(state.synthesis_attempted);
+        state.phase = PlanInterviewPhase::Done;
+    } else {
+        panic!("expected plan interview mode");
+    }
+
+    app.continue_plan_interview_after_done().unwrap();
+
+    assert!(app.plan_interview_ai_bg.is_none());
+    assert!(app.plan_interview_synthesis_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref()
+                    == Some(synthesized_plan_response().as_str())
+    ));
 }
 
 #[test]
@@ -2357,8 +2655,9 @@ fn poll_plan_interview_ai_bg_appends_follow_ups_and_resumes_questions() {
 }
 
 #[test]
-fn poll_plan_interview_ai_bg_completes_the_launch_after_the_final_round() {
+fn poll_plan_interview_ai_bg_opens_review_after_the_final_round() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    force_plan_interview_raw_fallback(&mut app);
 
     if let AppMode::PlanInterview(state) = &mut app.mode {
         // Simulate having already spent every round but one.
@@ -2379,9 +2678,12 @@ fn poll_plan_interview_ai_bg_completes_the_launch_after_the_final_round() {
     assert!(app.poll_plan_interview_ai_bg());
 
     assert!(app.plan_interview_ai_bg.is_none());
-    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(matches!(
+        app.mode,
+        AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Review
+    ));
     assert!(
-        app.store.projects[0]
+        !app.store.projects[0]
             .features
             .iter()
             .any(|f| f.name == "planned-feature" && !f.pending_worktree_script)
@@ -2414,6 +2716,7 @@ fn poll_plan_interview_ai_bg_discards_a_result_that_arrives_after_navigating_awa
 #[test]
 fn poll_plan_interview_ai_bg_defers_while_abort_confirmation_is_open() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    force_plan_interview_raw_fallback(&mut app);
 
     if let AppMode::PlanInterview(state) = &mut app.mode {
         // Simulate having already spent every round but one, so applying
@@ -2459,9 +2762,12 @@ fn poll_plan_interview_ai_bg_defers_while_abort_confirmation_is_open() {
     }
     assert!(app.poll_plan_interview_ai_bg());
     assert!(app.plan_interview_ai_bg.is_none());
-    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(matches!(
+        app.mode,
+        AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Review
+    ));
     assert!(
-        app.store.projects[0]
+        !app.store.projects[0]
             .features
             .iter()
             .any(|f| f.name == "planned-feature" && !f.pending_worktree_script)
@@ -2469,8 +2775,9 @@ fn poll_plan_interview_ai_bg_defers_while_abort_confirmation_is_open() {
 }
 
 #[test]
-fn poll_plan_interview_ai_bg_surfaces_completion_failure_and_keeps_interview_open() {
+fn final_ai_round_waits_for_accept_before_surface_write_failure() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    force_plan_interview_raw_fallback(&mut app);
 
     let workdir = match &app.mode {
         AppMode::PlanInterview(state) => state.pending_launch.as_ref().unwrap().workdir.clone(),
@@ -2498,10 +2805,17 @@ fn poll_plan_interview_ai_bg_surfaces_completion_failure_and_keeps_interview_ope
     .unwrap();
 
     assert!(app.poll_plan_interview_ai_bg());
+    assert!(matches!(
+        app.mode,
+        AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Review
+    ));
+    assert!(app.message.is_none());
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     let message = app.message.clone().unwrap_or_default();
     assert!(
-        message.contains("Failed to continue plan interview"),
+        message.contains("Failed to accept plan interview"),
         "expected a surfaced failure message, got: {message:?}"
     );
     match &app.mode {
@@ -2516,8 +2830,9 @@ fn poll_plan_interview_ai_bg_surfaces_completion_failure_and_keeps_interview_ope
 }
 
 #[test]
-fn poll_plan_interview_ai_bg_surfaces_completion_failure_on_disconnected_worker() {
+fn disconnected_ai_worker_waits_for_accept_before_surface_write_failure() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    force_plan_interview_raw_fallback(&mut app);
 
     let workdir = match &app.mode {
         AppMode::PlanInterview(state) => state.pending_launch.as_ref().unwrap().workdir.clone(),
@@ -2534,10 +2849,17 @@ fn poll_plan_interview_ai_bg_surfaces_completion_failure_on_disconnected_worker(
     drop(tx);
 
     assert!(app.poll_plan_interview_ai_bg());
+    assert!(matches!(
+        app.mode,
+        AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Review
+    ));
+    assert!(app.message.is_none());
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     let message = app.message.clone().unwrap_or_default();
     assert!(
-        message.contains("Failed to complete plan interview"),
+        message.contains("Failed to accept plan interview"),
         "expected a surfaced failure message, got: {message:?}"
     );
     match &app.mode {
@@ -2554,6 +2876,7 @@ fn poll_plan_interview_ai_bg_surfaces_completion_failure_on_disconnected_worker(
 #[test]
 fn poll_plan_interview_ai_bg_treats_a_dropped_worker_as_round_exhaustion() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    force_plan_interview_raw_fallback(&mut app);
 
     if let AppMode::PlanInterview(state) = &mut app.mode {
         state.begin_ai_round(200);
@@ -2565,7 +2888,10 @@ fn poll_plan_interview_ai_bg_treats_a_dropped_worker_as_round_exhaustion() {
     assert!(app.poll_plan_interview_ai_bg());
 
     assert!(app.plan_interview_ai_bg.is_none());
-    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(matches!(
+        app.mode,
+        AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Review
+    ));
 }
 
 #[test]

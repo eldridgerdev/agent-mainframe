@@ -321,6 +321,12 @@ pub enum FixTarget {
     /// The feature's existing live agent session — warm in-progress context, at
     /// the cost of carrying that session's unrelated conversation into each fix.
     ExistingLive,
+    /// A **companion triage feature**: its own worktree, its own tmux session,
+    /// and its own harness/vibe-mode chosen independently of the source
+    /// feature. The isolated option — worktree-local hooks and permissions the
+    /// triage agent writes can't mutate the source feature — at the cost of an
+    /// explicit integration step to land the fixes on the PR branch.
+    NewFeature,
 }
 
 impl FixTarget {
@@ -329,6 +335,7 @@ impl FixTarget {
         match self {
             FixTarget::DedicatedReview => "dedicated triage session",
             FixTarget::ExistingLive => "existing live session",
+            FixTarget::NewFeature => "triage feature",
         }
     }
 
@@ -337,7 +344,14 @@ impl FixTarget {
         match self {
             FixTarget::DedicatedReview => "dedicated",
             FixTarget::ExistingLive => "live",
+            FixTarget::NewFeature => "new feature",
         }
+    }
+
+    /// Whether this target's session lives in a **companion** feature rather
+    /// than the feature PR Triage was opened from.
+    pub fn is_companion_feature(self) -> bool {
+        matches!(self, FixTarget::NewFeature)
     }
 }
 
@@ -355,6 +369,11 @@ pub enum FixTargetPickRow {
     ExistingLive(Option<String>),
     /// Spin up (or reuse) the dedicated triage session on this harness.
     Dedicated(AgentKind),
+    /// Create a **companion triage feature**: its own worktree, its own tmux
+    /// session, and harness/vibe-mode chosen independently of the source
+    /// feature. Choosing it opens the compact setup overlay rather than
+    /// resolving a harness inline, so it carries no `AgentKind` of its own.
+    NewFeature,
 }
 
 impl FixTargetPickRow {
@@ -367,6 +386,9 @@ impl FixTargetPickRow {
             FixTargetPickRow::ExistingLive(None) => "Existing live session".to_string(),
             FixTargetPickRow::Dedicated(agent) => {
                 format!("Dedicated triage session ({})", agent.display_name())
+            }
+            FixTargetPickRow::NewFeature => {
+                "New feature… (isolated worktree, own harness + mode)".to_string()
             }
         }
     }
@@ -435,7 +457,10 @@ pub(crate) fn fix_session_index(
             .sessions
             .iter()
             .position(|s| s.kind.is_agent_harness()),
-        FixTarget::DedicatedReview => feature
+        // `NewFeature` resolves the same labelled session, just inside the
+        // companion feature rather than the source one — callers pass the
+        // companion in `feature` (see `App::pr_review_target_feature`).
+        FixTarget::DedicatedReview | FixTarget::NewFeature => feature
             .sessions
             .iter()
             .position(|s| s.kind.is_agent_harness() && s.label == dedicated_label),
@@ -1620,6 +1645,8 @@ impl App {
                 usage_baselines,
                 review_harness: None,
                 harness_pick: None,
+                new_feature_setup: None,
+                integrate: None,
                 fix_confirm: None,
                 fix_vim_enabled: false,
                 mark_pick: None,
@@ -1631,6 +1658,9 @@ impl App {
                 checked_out_branch,
                 pending_ai_review_findings,
             });
+            // A companion triage feature created on an earlier visit is reused
+            // for every fix in this PR — adopt it now so `f` doesn't re-ask.
+            self.adopt_existing_triage_feature();
             return;
         }
         self.start_pr_review_fetch(workdir, pr);
@@ -2284,6 +2314,8 @@ impl App {
                             usage_baselines,
                             review_harness: None,
                             harness_pick: None,
+                            new_feature_setup: None,
+                            integrate: None,
                             fix_confirm: None,
                             fix_vim_enabled: false,
                             mark_pick: None,
@@ -2295,6 +2327,7 @@ impl App {
                             checked_out_branch,
                             pending_ai_review_findings,
                         });
+                        self.adopt_existing_triage_feature();
                     }
                     Err(e) => {
                         self.mode = AppMode::Normal;
@@ -2382,20 +2415,23 @@ impl App {
     /// visit" tally starts from zero for the just-selected target rather than
     /// including whatever that session had accrued before this pane opened.
     fn pr_review_set_fix_target(&mut self, target: FixTarget) {
-        let workdir = match &self.mode {
-            AppMode::PrReview(state) => state.workdir.clone(),
-            _ => return,
-        };
-        let baseline = self.fix_session_usage_for(&workdir, target);
         if let AppMode::PrReview(state) = &mut self.mode {
             state.fix_target = target;
             state.fix_target_picked = true;
-            if let Some(usage) = baseline {
-                state
-                    .usage_baselines
-                    .entry(usage.source.clone())
-                    .or_insert(usage);
-            }
+        } else {
+            return;
+        }
+        // Read the baseline *after* the target is set: for the companion
+        // (`New feature…`) target the usage lookup has to resolve against the
+        // triage feature, which only `fix_target` identifies.
+        let baseline = self.pr_review_fix_session_usage();
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(usage) = baseline
+        {
+            state
+                .usage_baselines
+                .entry(usage.source.clone())
+                .or_insert(usage);
         }
     }
 
@@ -2610,6 +2646,10 @@ impl App {
                 });
         let mut rows = vec![FixTargetPickRow::ExistingLive(existing_live_label)];
         rows.extend(agents.into_iter().map(FixTargetPickRow::Dedicated));
+        // The isolated option goes last: it costs a worktree and an explicit
+        // integration step, so it reads as the deliberate choice rather than
+        // the one the cursor lands on.
+        rows.push(FixTargetPickRow::NewFeature);
         // +1: rows[0] is the ExistingLive row, so the dedicated default shifts by one.
         let selected = dedicated_default + 1;
         if let AppMode::PrReview(state) = &mut self.mode {
@@ -2633,7 +2673,7 @@ impl App {
     /// pending action wanted: the combined-batch confirm for the `B` flow,
     /// otherwise the single-comment fix confirm. Neither re-checks the pick,
     /// so this can't loop back into the picker.
-    fn pr_review_continue_after_harness(&mut self) {
+    pub(crate) fn pr_review_continue_after_harness(&mut self) {
         let batch = matches!(&self.mode, AppMode::PrReview(state) if state.pending_batch);
         if batch {
             self.pr_review_show_batch_confirm();
@@ -2697,6 +2737,19 @@ impl App {
                     "Triage session will run {}",
                     agent.display_name()
                 ));
+            }
+            FixTargetPickRow::NewFeature => {
+                // The companion feature's settings aren't a single choice, so
+                // this row hands off to the setup overlay instead of resolving
+                // the target here; the overlay's confirm sets the target and
+                // continues into the same fix dialog.
+                let pending_batch =
+                    matches!(&self.mode, AppMode::PrReview(state) if state.pending_batch);
+                if let AppMode::PrReview(state) = &mut self.mode {
+                    state.harness_pick = None;
+                }
+                self.pr_review_open_triage_feature_setup(pending_batch);
+                return;
             }
         }
         // Continue into the dialog the pending action wanted (single or batch).
@@ -2972,7 +3025,10 @@ impl App {
             }
         };
 
-        let Some((pi, fi)) = self.feature_indices_for_workdir(&state.workdir) else {
+        // Resolves to the companion triage feature under the `New feature…`
+        // target, so `P` peeks at the session `f` actually targets rather than
+        // the source feature's.
+        let Some((pi, fi)) = self.pr_review_feature_for_target(&state) else {
             self.mode = AppMode::PrReview(state);
             self.push_toast_warning("Could not find the feature for this PR");
             return Ok(());
@@ -3547,17 +3603,19 @@ impl App {
     /// window that fix prompts target. Returns `(project, feature, session)`
     /// indices. Ensures the feature's tmux session is running first.
     fn resolve_fix_session(&mut self) -> Result<(usize, usize, usize)> {
-        let (workdir, target, harness) = match &self.mode {
-            AppMode::PrReview(state) => (
-                state.workdir.clone(),
-                state.fix_target,
-                state.review_harness.clone(),
-            ),
+        let (target, harness) = match &self.mode {
+            AppMode::PrReview(state) => (state.fix_target, state.review_harness.clone()),
             _ => anyhow::bail!("not reviewing a PR"),
         };
-        let (pi, fi) = self
-            .feature_indices_for_workdir(&workdir)
-            .ok_or_else(|| anyhow::anyhow!("could not find the feature for this PR"))?;
+        let (pi, fi) = self.pr_review_target_feature().ok_or_else(|| {
+            if target.is_companion_feature() {
+                anyhow::anyhow!(
+                    "the triage feature for this PR no longer exists — press f and pick a target again"
+                )
+            } else {
+                anyhow::anyhow!("could not find the feature for this PR")
+            }
+        })?;
 
         self.ensure_feature_running_for_new_session(pi, fi)?;
 
@@ -3567,7 +3625,10 @@ impl App {
         }
 
         match target {
-            FixTarget::DedicatedReview => {
+            // The companion feature is created with its triage session already
+            // in place, but a user who removed that window still gets a
+            // working `f` rather than a dead end.
+            FixTarget::DedicatedReview | FixTarget::NewFeature => {
                 let si =
                     self.create_dedicated_review_session(pi, fi, TRIAGE_SESSION_LABEL, harness)?;
                 Ok((pi, fi, si))
@@ -3576,6 +3637,53 @@ impl App {
                 anyhow::bail!("no live agent session to reuse — switch to the dedicated target (t)")
             }
         }
+    }
+
+    /// The `(project, feature)` whose sessions the pane's current fix target
+    /// resolves against: the **companion triage feature** for
+    /// [`FixTarget::NewFeature`], otherwise the feature PR Triage was opened
+    /// from. `None` when the feature can't be resolved — for the companion
+    /// case, that means one hasn't been created for this PR yet (or was
+    /// deleted). Read-only: never creates anything.
+    pub(crate) fn pr_review_target_feature(&self) -> Option<(usize, usize)> {
+        let AppMode::PrReview(state) = &self.mode else {
+            return None;
+        };
+        self.pr_review_feature_for_target(state)
+    }
+
+    /// [`Self::pr_review_target_feature`] against an explicit state, so callers
+    /// that already hold the pane state (or a stashed one) don't have to go
+    /// through `self.mode`.
+    pub(crate) fn pr_review_feature_for_target(
+        &self,
+        state: &crate::app::PrReviewState,
+    ) -> Option<(usize, usize)> {
+        if state.fix_target.is_companion_feature() {
+            self.triage_feature_indices(state)
+        } else {
+            self.feature_indices_for_workdir(&state.workdir)
+        }
+    }
+
+    /// Find the companion triage feature created for this pane's PR, in the
+    /// same project as the source feature. Matched on the persisted
+    /// [`TriageSource`] link — not on branch, which deliberately differs from
+    /// the PR's own branch so both can be checked out at once — so re-opening
+    /// the PR after a restart finds and reuses the same feature.
+    pub(crate) fn triage_feature_indices(
+        &self,
+        state: &crate::app::PrReviewState,
+    ) -> Option<(usize, usize)> {
+        let (pi, source_fi) = self.feature_indices_for_workdir(&state.workdir)?;
+        let source_id = self.store.projects[pi].features[source_fi].id.clone();
+        let pr_number = state.review.pr.number;
+        let fi = self.store.projects[pi].features.iter().position(|f| {
+            f.triage_source.as_ref().is_some_and(|link| {
+                link.pr_number == pr_number && link.source_feature_id == source_id
+            })
+        })?;
+        Some((pi, fi))
     }
 
     /// Find the `(project, feature)` indices of the feature whose workdir
@@ -3620,7 +3728,10 @@ impl App {
         let AppMode::PrReview(state) = &self.mode else {
             return None;
         };
-        let (pi, fi) = self.feature_indices_for_workdir(&state.workdir)?;
+        // Resolves against the companion triage feature for the `New feature…`
+        // target, so the header reports what that feature's agent spent rather
+        // than the source feature's unrelated session.
+        let (pi, fi) = self.pr_review_feature_for_target(state)?;
         let feature = &self.store.projects[pi].features[fi];
         let si = pr_triage_session_index(feature, state.fix_target)?;
         feature.sessions[si].token_usage.clone()
@@ -3634,7 +3745,9 @@ impl App {
         let AppMode::PrReview(state) = &self.mode else {
             return None;
         };
-        self.dedicated_review_session_working_for_workdir(&state.workdir)
+        let (pi, fi) = self.pr_review_feature_for_target(state)?;
+        let workdir = self.store.projects[pi].features[fi].workdir.clone();
+        self.dedicated_review_session_working_for_workdir(&workdir)
     }
 
     /// Same as [`Self::pr_review_dedicated_session_working`] but for an

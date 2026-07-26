@@ -217,7 +217,9 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("f", "Inject scoped fix into agent session"),
         ("", "(e edit · Tab inject · Ctrl+T vim)"),
         ("", "(first fix/batch picks the fix target: existing"),
-        ("", "live session, or a dedicated session + harness)"),
+        ("", "live session, a dedicated session + harness, or"),
+        ("", "New feature… — an isolated worktree with its own"),
+        ("", "harness + vibe mode, set up in one compact form)"),
         ("Space", "Mark comment for batch fix"),
         ("B", "Inject one combined prompt for all marked"),
         ("P", "Jump to the linked fix session"),
@@ -233,6 +235,9 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("r", "Refresh comments from GitHub"),
         ("g", "Pick a different PR to triage"),
         ("A", "Open the AI Review pane for this PR"),
+        ("I", "Land the triage feature's commits on the PR"),
+        ("", "(push to the PR branch, or cherry-pick into the"),
+        ("", "source worktree — never while it's dirty)"),
         ("q / Esc", "Close PR Triage"),
     ];
 

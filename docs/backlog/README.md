@@ -157,6 +157,12 @@ doc always says exactly what remains.
   replies/resolution → throughput epics, with a planned Epic E adding an
   AI code review of the diff and a committed `review-memory.md` of common
   findings (bootstrapped from the last N PRs, grown one comment at a time).
+  All epics and the backlog have now shipped — most recently a
+  `New feature…` fix target that runs a PR's triage in its own
+  worktree-backed feature, with its harness and vibe mode chosen
+  independently of the source feature, and an explicit `I` step to land
+  those commits on the PR. Only one open question remains (whether to add
+  a cross-project review-memory layer on top of each repo's own doc).
 - [Screenshot & video review harness](screenshot-review-plan.md) —
   _All epics shipped._ Lets an agent run AMF in an isolated scratch
   instance (private `XDG_CONFIG_HOME`/`XDG_STATE_HOME` + tmux session, no

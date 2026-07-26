@@ -619,6 +619,11 @@ pub fn draw_pr_review(
     usage: PrReviewUsage<'_>,
     dedicated_session_working: Option<bool>,
     ai_review_running: bool,
+    // `"<feature> · <harness> · <mode>"` for the companion triage feature when
+    // that's the fix target — so the fix confirm dialog names exactly which
+    // feature (and which mode) a fix will run in. `None` for the in-feature
+    // targets, which run in the feature already on screen.
+    triage_feature_summary: Option<&str>,
 ) {
     let area = frame.area();
     let review = &state.review;
@@ -669,6 +674,15 @@ pub fn draw_pr_review(
     // called out explicitly — this is that ambient "yes, it's still going"
     // signal (mirrors the dashboard/session ambient badge's own
     // `ai_review_running_for_workdir` check).
+    // Name the companion feature in the header too, not only in the fix
+    // confirm dialog: when fixes land in a *different* feature than the one on
+    // screen, that's the single most important thing about the pane's state.
+    if let Some(summary) = triage_feature_summary {
+        header_spans.push(Span::styled(
+            format!("  [{summary}]"),
+            Style::default().fg(theme.secondary.to_color()),
+        ));
+    }
     if ai_review_running {
         header_spans.push(Span::styled(
             "  [AI review running]",
@@ -781,8 +795,15 @@ pub fn draw_pr_review(
             state.sort_mode.label()
         )
     } else {
+        // `I` only means something for the companion-feature target — the
+        // other two commit straight onto the PR branch.
+        let integrate_hint = if state.fix_target.is_companion_feature() {
+            "   I integrate"
+        } else {
+            ""
+        };
         format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session{integrate_hint}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
         )
@@ -801,6 +822,15 @@ pub fn draw_pr_review(
     if let Some(pick) = &state.harness_pick {
         draw_harness_pick(frame, pick, theme);
     }
+    // Triage-feature setup (`New feature…`) overlays the pane before the fix
+    // confirm dialog it continues into.
+    if let Some(setup) = &state.new_feature_setup {
+        draw_triage_feature_setup(frame, setup, theme);
+    }
+    // Integration overlay (`I`): land the companion feature's commits on the PR.
+    if let Some(integrate) = &state.integrate {
+        draw_triage_integrate(frame, integrate, theme);
+    }
     // Reply-kind picker (`R`) overlays the pane before the reply dialog itself.
     if let Some(pick) = &state.reply_kind_pick {
         draw_reply_kind_pick(frame, pick, theme);
@@ -813,7 +843,14 @@ pub fn draw_pr_review(
     // Fix confirm/edit dialog overlays the pane when open.
     let fix_target = state.fix_target;
     if let Some(confirm) = &mut state.fix_confirm {
-        draw_fix_confirm(frame, confirm, fix_target, mismatch.as_deref(), theme);
+        draw_fix_confirm(
+            frame,
+            confirm,
+            fix_target,
+            triage_feature_summary,
+            mismatch.as_deref(),
+            theme,
+        );
     }
     // Reply dialog overlays the pane when open.
     if let Some(reply) = &state.reply {
@@ -964,6 +1001,7 @@ fn draw_fix_confirm(
     frame: &mut Frame,
     confirm: &mut crate::app::FixConfirmState,
     target: crate::app::pr_review::FixTarget,
+    triage_feature_summary: Option<&str>,
     branch_mismatch: Option<&str>,
     theme: &Theme,
 ) {
@@ -1003,6 +1041,14 @@ fn draw_fix_confirm(
         ])
         .split(inner);
 
+    // For the companion target, name the feature and the mode it runs in —
+    // the whole point of that target is that they differ from the feature the
+    // PR was built in, so "dedicated triage session" alone wouldn't say where
+    // this lands.
+    let target_text = match triage_feature_summary {
+        Some(summary) => summary.to_string(),
+        None => target.label().to_string(),
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -1010,7 +1056,7 @@ fn draw_fix_confirm(
                 Style::default().fg(theme.text_muted.to_color()),
             ),
             Span::styled(
-                target.label(),
+                target_text,
                 Style::default()
                     .fg(theme.secondary.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -1165,6 +1211,275 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[2],
+    );
+}
+
+/// Compact setup overlay for the `New feature…` fix target: one settings list
+/// (preset / harness / vibe mode / review / chrome / branch) rather than a
+/// re-run of the multi-step feature wizard, because the user is mid-triage.
+fn draw_triage_feature_setup(
+    frame: &mut Frame,
+    setup: &crate::app::TriageFeatureSetupState,
+    theme: &Theme,
+) {
+    use crate::app::TriageSetupRow;
+
+    let area = super::super::dashboard::centered_rect(64, 60, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" New triage feature ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // explanation
+            Constraint::Min(1),    // settings rows
+            Constraint::Length(1), // error
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(Span::styled(
+            "Fixes run in their own worktree on a companion branch, with the settings below — \
+             independent of the feature the PR was built in. Landing them on the PR is an \
+             explicit step (I).",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))])
+        .wrap(Wrap { trim: true }),
+        chunks[0],
+    );
+
+    let value_for = |row: TriageSetupRow| -> String {
+        match row {
+            TriageSetupRow::Preset => setup.preset_label(),
+            TriageSetupRow::Harness => setup.agent().display_name().to_string(),
+            TriageSetupRow::Mode => format!(
+                "{} — {}",
+                setup.mode.display_name(),
+                setup.mode.description()
+            ),
+            TriageSetupRow::Review => if setup.review { "on" } else { "off" }.to_string(),
+            TriageSetupRow::Chrome => if setup.enable_chrome { "on" } else { "off" }.to_string(),
+            TriageSetupRow::Branch => setup.branch.clone(),
+        }
+    };
+
+    let lines: Vec<Line> = TriageSetupRow::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let is_selected = i == setup.row;
+            let marker = if is_selected { ">" } else { " " };
+            let value_style = if is_selected {
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .bg(theme.effective_selection_bg())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text.to_color())
+            };
+            let mut value = value_for(*row);
+            // A visible caret makes the branch row read as a text field rather
+            // than one more cyclable value.
+            if is_selected && *row == TriageSetupRow::Branch {
+                value.push('▏');
+            }
+            Line::from(vec![
+                Span::styled(
+                    format!("  {marker} "),
+                    Style::default().fg(theme.warning.to_color()),
+                ),
+                Span::styled(
+                    format!("{:<13}", row.label()),
+                    Style::default().fg(theme.text_muted.to_color()),
+                ),
+                Span::styled(value, value_style),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), chunks[1]);
+
+    if let Some(error) = &setup.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  {error}"),
+                Style::default()
+                    .fg(theme.danger.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            chunks[2],
+        );
+    }
+
+    let hints = if setup.focused_row() == TriageSetupRow::Branch {
+        "[⏎] create   [↑/↓] move   [type] edit branch   [esc] cancel"
+    } else {
+        "[⏎] create   [j/k] move   [h/l] change   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[3],
+    );
+}
+
+/// Integration overlay (`I`): what the companion triage feature has committed
+/// since it branched, and the two non-destructive ways to land it on the PR.
+fn draw_triage_integrate(
+    frame: &mut Frame,
+    integrate: &crate::app::TriageIntegrateState,
+    theme: &Theme,
+) {
+    use crate::app::TriageIntegration;
+
+    let area = super::super::dashboard::centered_rect(70, 66, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Land triage commits on the PR ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // branches
+            Constraint::Min(1),    // commit preview
+            Constraint::Length(3), // option rows
+            Constraint::Length(2), // status / error
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                integrate.triage_branch.clone(),
+                Style::default()
+                    .fg(theme.secondary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" → ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                integrate.source_branch.clone(),
+                Style::default()
+                    .fg(theme.secondary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])])
+        .wrap(Wrap { trim: true }),
+        chunks[0],
+    );
+
+    let mut commit_lines: Vec<Line> = Vec::new();
+    if integrate.commits.is_empty() {
+        commit_lines.push(Line::from(Span::styled(
+            "  No commits on the triage branch yet — nothing to land.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+    } else {
+        commit_lines.push(Line::from(Span::styled(
+            format!("  {} commit(s) to land:", integrate.commits.len()),
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+        for commit in &integrate.commits {
+            commit_lines.push(Line::from(Span::styled(
+                format!("    {commit}"),
+                Style::default().fg(theme.text.to_color()),
+            )));
+        }
+    }
+    if integrate.triage_dirty {
+        commit_lines.push(Line::from(Span::styled(
+            "  ⚠ the triage worktree has uncommitted changes — they will not be included",
+            Style::default().fg(theme.warning.to_color()),
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(commit_lines).wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+
+    let option_lines: Vec<Line> = TriageIntegration::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, option)| {
+            let disabled =
+                *option == TriageIntegration::CherryPick && integrate.source_dirty.is_some();
+            let is_selected = i == integrate.selected;
+            let marker = if is_selected { ">" } else { " " };
+            let style = if disabled {
+                Style::default().fg(theme.text_muted.to_color())
+            } else if is_selected {
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .bg(theme.effective_selection_bg())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text.to_color())
+            };
+            let mut spans = vec![
+                Span::styled(
+                    format!("  {marker} "),
+                    Style::default().fg(theme.warning.to_color()),
+                ),
+                Span::styled(option.label(), style),
+            ];
+            if disabled {
+                spans.push(Span::styled(
+                    "  [unavailable]",
+                    Style::default().fg(theme.danger.to_color()),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(option_lines), chunks[2]);
+
+    let mut status: Vec<Line> = Vec::new();
+    if let Some(done) = &integrate.done {
+        status.push(Line::from(Span::styled(
+            format!("  ✓ {done}"),
+            Style::default()
+                .fg(theme.success.to_color())
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    if let Some(error) = &integrate.error {
+        status.push(Line::from(Span::styled(
+            format!("  {error}"),
+            Style::default()
+                .fg(theme.danger.to_color())
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    if let Some(reason) = &integrate.source_dirty {
+        status.push(Line::from(Span::styled(
+            format!("  Cherry-pick unavailable: {reason}"),
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+    }
+    frame.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }), chunks[3]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] run   [j/k] move   [esc] close",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[4],
     );
 }
 
@@ -1967,6 +2282,170 @@ mod tests {
         assert!(!line_text(&line).contains("you"));
     }
 
+    fn render_fix_confirm_with_target(
+        branch_mismatch: Option<&str>,
+        triage_feature_summary: Option<&str>,
+    ) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut confirm = crate::app::FixConfirmState {
+            editor: crate::editor::TextEditor::new("fix this".to_string()),
+            editing: false,
+            scroll: 0,
+            sync_to_cursor: false,
+            batch: None,
+            reply_draft_requests: Vec::new(),
+        };
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_fix_confirm(
+                    frame,
+                    &mut confirm,
+                    crate::app::pr_review::FixTarget::NewFeature,
+                    triage_feature_summary,
+                    branch_mismatch,
+                    &theme,
+                )
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn fix_confirm_names_the_triage_feature_and_mode_for_the_companion_target() {
+        // The whole point of the `New feature…` target is that the feature and
+        // mode differ from the one on screen, so the dialog has to say which.
+        let rendered = render_fix_confirm_with_target(None, Some("main-triage · Codex · Vibeless"));
+        assert!(rendered.contains("main-triage"));
+        assert!(rendered.contains("Vibeless"));
+    }
+
+    #[test]
+    fn fix_confirm_falls_back_to_the_target_label_without_a_feature_summary() {
+        let rendered = render_fix_confirm_with_target(None, None);
+        assert!(rendered.contains("triage feature"));
+    }
+
+    fn render_triage_setup(setup: &crate::app::TriageFeatureSetupState) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(110, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_triage_feature_setup(frame, setup, &theme))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    fn sample_triage_setup() -> crate::app::TriageFeatureSetupState {
+        crate::app::TriageFeatureSetupState {
+            presets: Vec::new(),
+            preset_index: 0,
+            agents: vec![crate::project::AgentKind::Codex],
+            agent_index: 0,
+            mode: crate::project::VibeMode::Vibeless,
+            review: false,
+            enable_chrome: false,
+            branch: "main-triage".to_string(),
+            row: 0,
+            error: None,
+            pending_batch: false,
+        }
+    }
+
+    #[test]
+    fn triage_setup_lists_every_setting_and_the_companion_branch() {
+        let rendered = render_triage_setup(&sample_triage_setup());
+        for label in ["Preset", "Harness", "Vibe mode", "Review mode", "Branch"] {
+            assert!(rendered.contains(label), "missing row: {label}");
+        }
+        assert!(rendered.contains("main-triage"));
+        assert!(rendered.contains("Codex"));
+        assert!(rendered.contains("Vibeless"));
+    }
+
+    #[test]
+    fn triage_setup_surfaces_a_creation_error_inline() {
+        let mut setup = sample_triage_setup();
+        setup.error = Some("Feature 'main-triage' already exists".to_string());
+        let rendered = render_triage_setup(&setup);
+        assert!(rendered.contains("already exists"));
+    }
+
+    fn render_integrate(integrate: &crate::app::TriageIntegrateState) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(110, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_triage_integrate(frame, integrate, &theme))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    fn sample_integrate() -> crate::app::TriageIntegrateState {
+        crate::app::TriageIntegrateState {
+            triage_branch: "main-triage".to_string(),
+            source_branch: "main".to_string(),
+            commits: vec!["abc1234 apply review comment".to_string()],
+            source_dirty: None,
+            triage_dirty: false,
+            selected: 0,
+            error: None,
+            done: None,
+        }
+    }
+
+    #[test]
+    fn integrate_shows_both_options_and_the_commits_to_land() {
+        let rendered = render_integrate(&sample_integrate());
+        assert!(rendered.contains("main-triage"));
+        assert!(rendered.contains("apply review comment"));
+        assert!(rendered.contains("Push to the PR branch"));
+        assert!(rendered.contains("Cherry-pick"));
+        assert!(!rendered.contains("unavailable"));
+    }
+
+    #[test]
+    fn integrate_marks_cherry_pick_unavailable_against_a_dirty_source() {
+        let mut integrate = sample_integrate();
+        integrate.source_dirty = Some("the source worktree has uncommitted changes".to_string());
+        let rendered = render_integrate(&integrate);
+        assert!(rendered.contains("[unavailable]"));
+        assert!(rendered.contains("uncommitted changes"));
+    }
+
+    #[test]
+    fn integrate_warns_when_the_triage_worktree_has_uncommitted_work() {
+        let mut integrate = sample_integrate();
+        integrate.triage_dirty = true;
+        let rendered = render_integrate(&integrate);
+        assert!(rendered.contains("will not be included"));
+    }
+
     fn render_fix_confirm(branch_mismatch: Option<&str>) -> String {
         use ratatui::{Terminal, backend::TestBackend};
 
@@ -1987,6 +2466,7 @@ mod tests {
                     frame,
                     &mut confirm,
                     crate::app::pr_review::FixTarget::default(),
+                    None,
                     branch_mismatch,
                     &theme,
                 )
@@ -2168,6 +2648,8 @@ mod tests {
             usage_baselines: std::collections::HashMap::new(),
             review_harness: None,
             harness_pick: None,
+            new_feature_setup: None,
+            integrate: None,
             fix_confirm: None,
             fix_vim_enabled: false,
             mark_pick: None,

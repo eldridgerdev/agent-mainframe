@@ -252,6 +252,7 @@ type FeatureRow = (
     String,
     String,
     bool,
+    Option<String>,
 );
 
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
@@ -259,7 +260,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         "SELECT id, name, branch, workdir, is_worktree, tmux_session,
                 mode, review, plan_mode, agent, enable_chrome, status,
                 summary, summary_updated_at, nickname, collapsed,
-                created_at, last_accessed, ready
+                created_at, last_accessed, ready, triage_source
          FROM features WHERE project_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -286,6 +287,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 row.get(16)?,
                 row.get(17)?,
                 row.get(18)?,
+                row.get(19)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -311,6 +313,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         feat_created_at,
         last_accessed,
         ready,
+        triage_source_json,
     ) in rows
     {
         let sessions = load_sessions(conn, &feat_id)?;
@@ -337,6 +340,12 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
             summary,
             summary_updated_at: summary_updated_at_str.as_deref().map(dt_from_str),
             nickname,
+            // A malformed blob (hand-edited DB, or a row written by a future
+            // schema) degrades to "not a triage feature" rather than failing
+            // the whole store load.
+            triage_source: triage_source_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
         });
     }
     Ok(features)
@@ -481,9 +490,9 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                     id, project_id, name, branch, workdir, is_worktree,
                     tmux_session, mode, review, plan_mode, agent, enable_chrome,
                     status, summary, summary_updated_at, nickname, collapsed,
-                    created_at, last_accessed, ready, sort_order
+                    created_at, last_accessed, ready, sort_order, triage_source
                 ) VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21
+                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22
                 )",
                 params![
                     feature.id,
@@ -507,6 +516,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                     dt_to_str(&feature.last_accessed),
                     feature.ready as i32,
                     fi as i64,
+                    feature
+                        .triage_source
+                        .as_ref()
+                        .and_then(|link| serde_json::to_string(link).ok()),
                 ],
             )?;
 
@@ -661,6 +674,14 @@ mod tests {
             summary: Some("did some stuff".to_string()),
             summary_updated_at: Some(Utc::now()),
             nickname: Some("myf".to_string()),
+            // A companion PR-triage feature: the link that survives a restart
+            // and lets PR Triage find and reuse this feature for the same PR.
+            triage_source: Some(crate::project::TriageSource {
+                pr_number: 42,
+                source_feature_id: "feat-source".to_string(),
+                source_branch: "feature/my-feature".to_string(),
+                base_sha: "abc123".to_string(),
+            }),
         };
 
         let project = Project {
@@ -693,6 +714,16 @@ mod tests {
         assert!(lf.ready);
         assert_eq!(lf.summary, Some("did some stuff".to_string()));
         assert_eq!(lf.nickname, Some("myf".to_string()));
+        assert_eq!(
+            lf.triage_source,
+            Some(crate::project::TriageSource {
+                pr_number: 42,
+                source_feature_id: "feat-source".to_string(),
+                source_branch: "feature/my-feature".to_string(),
+                base_sha: "abc123".to_string(),
+            }),
+            "the PR/source-feature link must survive a save/load round trip"
+        );
 
         assert_eq!(lf.sessions.len(), 1);
         let ls = &lf.sessions[0];
@@ -796,6 +827,7 @@ mod tests {
                     summary: None,
                     summary_updated_at: None,
                     nickname: None,
+                    triage_source: None,
                 },
                 Feature {
                     id: "feat-skip".to_string(),
@@ -820,6 +852,7 @@ mod tests {
                     summary: None,
                     summary_updated_at: None,
                     nickname: None,
+                    triage_source: None,
                 },
             ],
             created_at: Utc::now(),

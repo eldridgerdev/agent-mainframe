@@ -1,6 +1,6 @@
 # PR Triage
 
-- **Status:** Partial
+- **Status:** Shipped (one open question remains)
 - **Owner:** unassigned
 - **Relates to:** `trigger_final_review` / `DiffViewer` mode
   (`src/app/review.rs`), embedded tmux view (`AppMode::Viewing`,
@@ -2214,7 +2214,7 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `.claude/commands/amf/pr-continue.md`, `src/app/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`.
 
-- [ ] **Open PR Triage work in a new AMF feature with independently chosen
+- [x] **Open PR Triage work in a new AMF feature with independently chosen
       settings.** The current dedicated triage session may use a different
       harness, but it still inherits the source feature's vibe mode and launch
       flags. Add a `New feature…` fix-target option alongside the existing-live
@@ -2240,6 +2240,95 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       and complete multiple fixes in the isolated feature, land them on the
       original PR branch through the confirmed integration path, and return to
       the same PR Triage state.
+
+      **Shipped.** A third `FixTarget::NewFeature` sits alongside
+      `ExistingLive`/`DedicatedReview`, added as a last row
+      (`FixTargetPickRow::NewFeature`) in the same first-fix target picker — last
+      deliberately, since it costs a worktree and an explicit integration step,
+      so it isn't what the cursor lands on. Choosing it opens
+      `TriageFeatureSetupState`, a **single settings list** rather than a re-run
+      of the multi-step feature wizard (the user is mid-triage, and the wizard's
+      source-worktree / existing-worktree / session-name / task-prompt steps all
+      have an obvious answer here): Preset · Harness · Vibe mode · Review mode ·
+      Chrome · Branch. `j/k` move, `h/l` change, `⏎` creates, `esc` abandons the
+      fix *and* leaves the target unresolved so the next `f` re-offers every
+      option. Selecting a configured feature preset fills the rows beneath it —
+      including applying its `branch_prefix` to the companion branch — and leaves
+      them editable, so a preset is a starting point rather than a lock. Plan mode
+      is deliberately absent: it defers the launch into a planning interview,
+      which makes no sense for a feature whose job is to apply comments that
+      already say what to do.
+
+      **Isolation and the link.** `create_triage_feature`
+      (`src/app/triage_feature.rs`) resolves a base via `triage_base` — the source
+      feature's local branch when it already *contains* the PR head (so unpushed
+      commits aren't silently dropped), otherwise the head SHA itself, fetched
+      first if absent — and builds a worktree with
+      `WorktreeManager::create_from`. The companion branch defaults to
+      `<pr-branch>-triage`, de-duplicated (`-2`, `-3`, …) against both existing
+      feature names and existing git branches, because **git can't check the PR's
+      own branch out in two worktrees**. Its own worktree is exactly what keeps
+      the triage agent's hooks and permissions off the source feature; the
+      `on_worktree_created` hook runs synchronously (the interactive prompt flow
+      would have to unwind the PR pane) and a failure warns rather than aborting.
+      The feature's primary session carries the existing `"PR Triage"` label, so
+      `pr_triage_session_index` finds it inside the companion exactly as it does
+      the in-feature dedicated session. Since branch-based auto-detection can't
+      get back, the link is persisted explicitly as `Feature::triage_source`
+      (`TriageSource { pr_number, source_feature_id, source_branch, base_sha }`,
+      JSON blob column added by migration 015, `#[serde(default)]` so pre-existing
+      rows/JSON still load).
+
+      **Reuse and redirection.** A new `App::pr_review_target_feature` /
+      `pr_review_feature_for_target` resolves the *companion* feature for this
+      target and the source feature otherwise; `resolve_fix_session`,
+      `pr_review_fix_session_usage`, `pr_review_dedicated_session_working`, and
+      the `P` toggle (`pr_review_toggle_to_session`) all route through it, so
+      injection, the header's usage/working badges, and the return-to-triage
+      round trip follow the fix to whichever feature it lands in.
+      `adopt_existing_triage_feature`, called on both pane-entry paths (cache hit
+      and background fetch), finds an existing companion by the persisted link and
+      marks the target resolved — so **every fix in the PR reuses the same
+      feature** across pane re-opens and restarts without re-asking, mirroring the
+      existing "a dedicated session already exists, don't re-offer the picker"
+      rule one level up. The fix confirm dialog and the pane header both name the
+      companion as `<feature> · <harness> · <mode>`
+      (`pr_review_triage_feature_summary`), since "which feature and which mode"
+      is the entire point of the target.
+
+      **Integration.** `I` opens `TriageIntegrateState`: the companion branch →
+      PR branch, the commits on the companion since `base_sha`, and two explicit
+      options. **Push** runs `git push origin <triage>:<pr-branch>` — never
+      `--force`; a diverged PR branch is reported with a "pull it in and try
+      again" message instead of being overwritten. **Cherry-pick** applies
+      `base_sha..<triage>` into the source worktree and is refused outright while
+      that worktree is dirty (checked when the overlay opens — the row renders
+      `[unavailable]` with the reason — *and* again inside `cherry_pick_range`, so
+      no future caller can bypass it); a conflicting pick is aborted so the source
+      worktree comes back exactly as it was found. Uncommitted work in the
+      *triage* worktree is called out too, since it wouldn't be included.
+      Successes and failures both stay in the overlay so a rejected push can be
+      read and retried in place.
+
+      Unit-tested: the picker's row order, `New feature…` opening setup instead of
+      injecting, branch pre-fill/de-duplication, row cycling and wrapping, the
+      branch text row, preset application (including its branch prefix), cancel
+      leaving the target unresolved, companion-vs-source session resolution (with
+      a decoy same-labelled session in the source feature), adopt-on-entry and its
+      PR-number scoping, the confirm-dialog summary, `I` rejected for the
+      in-feature targets, and — against real git repos — `triage_base` preference,
+      `commits_since`, dirty detection, a successful cherry-pick, a refused one,
+      an empty range, and a conflicting pick leaving the source clean. Plus
+      persistence: SQLite round trip of `triage_source` and JSON round trip /
+      absent-field back-compat. Full suite green (1297 passed, 1 ignored); strict
+      clippy and formatting clean. →
+      `src/app/triage_feature.rs` (new), `src/app/pr_review.rs`,
+      `src/app/state.rs`, `src/app/mod.rs`, `src/app/session_ops.rs`,
+      `src/app/automation.rs`, `src/app/review.rs`, `src/project.rs`,
+      `src/db/migrations.rs`, `src/db/store.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/diff.rs`,
+      `src/ui/dialogs/help.rs`, `src/ui/dashboard.rs`, `src/app/tests.rs`,
+      `README.md`.
 
 - [x] **Carry an agent-written reply draft from fix injection into the Reply
       flow.** Extend the prompt injected by `f` (and each entry in `B`'s

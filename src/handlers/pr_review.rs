@@ -24,6 +24,15 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if app.pr_review_harness_picking() {
         return handle_harness_pick_key(app, key);
     }
+    // The triage-feature setup overlay (`New feature…`), when open, captures
+    // all keys.
+    if app.pr_review_triage_setup_open() {
+        return handle_triage_setup_key(app, key);
+    }
+    // The integration overlay (`I`), when open, captures all keys.
+    if app.pr_review_integrate_open() {
+        return handle_integrate_key(app, key);
+    }
     // The reply-kind picker (`R`), when open, captures all keys.
     if app.pr_review_reply_pick_picking() {
         return handle_reply_pick_key(app, key);
@@ -67,6 +76,62 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('i') => app.open_syntax_language_picker_for_selected_diff_file(),
         KeyCode::Char('g') => app.open_pr_picker_from_pane(),
         KeyCode::Char('A') => app.open_ai_review_from_triage(),
+        KeyCode::Char('I') => app.pr_review_open_integrate(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the triage-feature setup overlay (`New feature…`) is
+/// open.
+///
+/// `j/k` move between settings rows, `h/l` (or `space`) change the focused
+/// row's value, `⏎` creates the feature and continues into the fix dialog,
+/// `esc`/`Ctrl+Q` abandons the fix. On the branch row, typing edits the name —
+/// which is why `q`/`h`/`l` are *not* bound as verbs there and `Esc` is the
+/// single cancel key.
+fn handle_triage_setup_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        app.pr_review_triage_setup_cancel();
+        return Ok(());
+    }
+    match key.code {
+        KeyCode::Esc => app.pr_review_triage_setup_cancel(),
+        KeyCode::Enter => app.pr_review_triage_setup_confirm()?,
+        KeyCode::Down | KeyCode::Tab => app.pr_review_triage_setup_move(1),
+        KeyCode::Up | KeyCode::BackTab => app.pr_review_triage_setup_move(-1),
+        KeyCode::Right => app.pr_review_triage_setup_adjust(1),
+        KeyCode::Left => app.pr_review_triage_setup_adjust(-1),
+        KeyCode::Backspace => app.pr_review_triage_setup_branch_backspace(),
+        // The branch row is a text field, so bare characters type into it and
+        // only the non-text rows get the vim-style movement/adjust bindings.
+        KeyCode::Char(c) => {
+            if app.pr_review_triage_setup_on_branch_row() {
+                app.pr_review_triage_setup_branch_push(c);
+            } else {
+                match c {
+                    'j' => app.pr_review_triage_setup_move(1),
+                    'k' => app.pr_review_triage_setup_move(-1),
+                    'l' | ' ' => app.pr_review_triage_setup_adjust(1),
+                    'h' => app.pr_review_triage_setup_adjust(-1),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the integration overlay (`I`) is open: `j/k` choose
+/// between pushing to the PR branch and cherry-picking into the source
+/// worktree, `⏎` runs the highlighted one, `esc`/`q` closes.
+fn handle_integrate_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_integrate_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_integrate_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_integrate_move(-1),
+        KeyCode::Enter => app.pr_review_integrate_confirm()?,
         _ => {}
     }
     Ok(())

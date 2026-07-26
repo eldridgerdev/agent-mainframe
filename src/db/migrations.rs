@@ -72,6 +72,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Track the pre-fix PR head for accurate reply commit references",
             MIGRATION_014,
         ),
+        (
+            "Link a companion PR-triage feature back to its PR and source feature",
+            MIGRATION_015,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -287,6 +291,15 @@ ALTER TABLE pr_comment_reply_drafts
     ADD COLUMN base_head_sha TEXT NOT NULL DEFAULT '';
 ";
 
+/// A companion triage feature (PR Triage's `New feature…` fix target) can't be
+/// tied back to its PR by branch — it deliberately sits on its own branch so
+/// git can check it out alongside the source worktree. The link is stored as a
+/// JSON blob rather than four columns: it's read and written whole, and only a
+/// small minority of features ever have one.
+const MIGRATION_015: &str = "
+ALTER TABLE features ADD COLUMN triage_source TEXT;
+";
+
 const MIGRATION_001: &str = "
 CREATE TABLE IF NOT EXISTS store_meta (
     key   TEXT PRIMARY KEY,
@@ -371,7 +384,10 @@ mod tests {
     #[test]
     fn migration_010_collapses_per_sha_triage_rows() {
         let conn = Connection::open_in_memory().unwrap();
-        // Stand up the v009 schema and seed it before 010 runs.
+        // Stand up the v009 schema and seed it before 010 runs. The base
+        // schema comes along too: later migrations (015 onwards) alter tables
+        // 001 created, and this DB is replayed through all of them.
+        conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_009).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,

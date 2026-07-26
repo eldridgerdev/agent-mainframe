@@ -341,6 +341,30 @@ pub struct Feature {
     pub summary_updated_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
+    /// Set only on a **companion triage feature**: the isolated worktree PR
+    /// Triage creates when the user picks the `New feature…` fix target. Git
+    /// can't check out the PR's branch in two worktrees at once, so the
+    /// companion sits on its own branch and this link — not branch-based PR
+    /// auto-detection — is what ties it back to the PR and the feature the
+    /// triage was started from. `None` for every ordinary feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_source: Option<TriageSource>,
+}
+
+/// The PR and source feature a companion triage feature was created for. Also
+/// records the commit the companion was branched from, which is the base of
+/// the commit range offered to the integration flow (`I` in PR Triage).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TriageSource {
+    /// The PR whose review comments this feature was created to fix.
+    pub pr_number: u32,
+    /// `Feature::id` of the feature PR Triage was opened from.
+    pub source_feature_id: String,
+    /// The source feature's branch — the PR head branch fixes must land on.
+    pub source_branch: String,
+    /// Commit the companion worktree was branched from. Everything after it on
+    /// the triage branch is what integration pushes or cherry-picks back.
+    pub base_sha: String,
 }
 
 #[derive(Deserialize)]
@@ -378,6 +402,8 @@ struct FeatureDe {
     summary_updated_at: Option<DateTime<Utc>>,
     #[serde(default)]
     nickname: Option<String>,
+    #[serde(default)]
+    triage_source: Option<TriageSource>,
 }
 
 impl<'de> Deserialize<'de> for Feature {
@@ -410,6 +436,7 @@ impl<'de> Deserialize<'de> for Feature {
             summary: feature.summary,
             summary_updated_at: feature.summary_updated_at,
             nickname: feature.nickname,
+            triage_source: feature.triage_source,
         })
     }
 }
@@ -513,6 +540,7 @@ impl Feature {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            triage_source: None,
         }
     }
 
@@ -1115,6 +1143,7 @@ impl ProjectStore {
                             summary: None,
                             summary_updated_at: None,
                             nickname: None,
+                            triage_source: None,
                         }
                     })
                     .collect();
@@ -1255,6 +1284,52 @@ pub fn store_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// Feature JSON written before the companion-triage link existed still
+    /// deserializes — it simply isn't a triage feature.
+    #[test]
+    fn feature_without_triage_source_deserializes_as_an_ordinary_feature() {
+        let json = serde_json::json!({
+            "id": "feat-1",
+            "name": "my-feat",
+            "branch": "my-feat",
+            "workdir": "/tmp/wd",
+            "is_worktree": false,
+            "tmux_session": "amf-my-feat",
+            "status": "stopped",
+            "created_at": "2026-01-01T00:00:00Z",
+            "last_accessed": "2026-01-01T00:00:00Z",
+        });
+        let feature: Feature = serde_json::from_value(json).unwrap();
+        assert!(feature.triage_source.is_none());
+    }
+
+    #[test]
+    fn feature_triage_source_round_trips_through_json() {
+        let mut feature = Feature::new(
+            "main-triage".to_string(),
+            "main-triage".to_string(),
+            PathBuf::from("/tmp/wd"),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Codex,
+            false,
+            false,
+        );
+        feature.triage_source = Some(TriageSource {
+            pr_number: 7,
+            source_feature_id: "feat-source".to_string(),
+            source_branch: "main".to_string(),
+            base_sha: "abc".to_string(),
+        });
+
+        let round_tripped: Feature =
+            serde_json::from_str(&serde_json::to_string(&feature).unwrap()).unwrap();
+
+        assert_eq!(round_tripped.triage_source, feature.triage_source);
+    }
+
     use super::*;
     use chrono::Utc;
     use std::collections::HashMap;
@@ -1302,6 +1377,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            triage_source: None,
         }
     }
 
@@ -1361,6 +1437,7 @@ mod tests {
                     summary: None,
                     summary_updated_at: None,
                     nickname: None,
+                    triage_source: None,
                 }],
                 created_at: Utc::now(),
                 preferred_agent: AgentKind::Claude,
@@ -1438,6 +1515,7 @@ mod tests {
                         summary: Some("summary".to_string()),
                         summary_updated_at: Some(Utc::now()),
                         nickname: Some("nick".to_string()),
+                        triage_source: None,
                     },
                     Feature {
                         id: "feature-2".to_string(),
@@ -1462,6 +1540,7 @@ mod tests {
                         summary: None,
                         summary_updated_at: None,
                         nickname: None,
+                        triage_source: None,
                     },
                 ],
                 created_at: Utc::now(),

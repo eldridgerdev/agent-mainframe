@@ -2747,10 +2747,13 @@ impl App {
             }
             state.fix_target = match state.fix_target {
                 FixTarget::ExistingLive => FixTarget::DedicatedReview,
-                FixTarget::DedicatedReview => FixTarget::ExistingLive,
+                // `NewFeature` is a PR-Triage-only target (it needs a PR to
+                // seed a companion worktree from); the final review's toggle
+                // only ever cycles the two in-feature targets.
+                FixTarget::DedicatedReview | FixTarget::NewFeature => FixTarget::ExistingLive,
             };
             match state.fix_target {
-                FixTarget::DedicatedReview => {
+                FixTarget::DedicatedReview | FixTarget::NewFeature => {
                     "Fixes will run in a fresh dedicated review session (you'll pick the harness)"
                 }
                 FixTarget::ExistingLive => "Fixes go to the feature's existing agent session",
@@ -3259,8 +3262,9 @@ impl App {
                 self.mode = AppMode::Viewing(from_view);
             }
             // A dedicated session must be spun up; let the reviewer pick which
-            // harness runs the fixes before it is created.
-            FixTarget::DedicatedReview => {
+            // harness runs the fixes before it is created. (`NewFeature` never
+            // reaches the final review — see `diff_review_toggle_fix_target`.)
+            FixTarget::DedicatedReview | FixTarget::NewFeature => {
                 let harnesses = if self.store.available_harnesses.is_empty() {
                     vec![self.store.projects[pi].preferred_agent.clone()]
                 } else {

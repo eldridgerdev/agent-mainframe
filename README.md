@@ -542,10 +542,23 @@ In the PR Triage pane:
   language parser without leaving the pane).
 - `f` injects a scoped fix prompt for the selected comment into an
   agent session — the first fix/batch of a visit asks which session
-  fixes should target: the feature's existing live session, or a
-  dedicated triage session on a chosen harness. Mark several comments
-  with `Space`, then `B` opens one combined, editable prompt for all
-  of them.
+  fixes should target: the feature's existing live session, a
+  dedicated triage session on a chosen harness, or **New feature…**.
+  Mark several comments with `Space`, then `B` opens one combined,
+  editable prompt for all of them.
+- **New feature…** creates an isolated, worktree-backed AMF feature
+  just for this PR's triage, with its own harness and vibe mode chosen
+  in one compact form (or from a feature preset) — so you can build a
+  PR in SuperVibe and apply review fixes under Vibeless supervision,
+  without the triage agent writing hooks or permissions into the
+  source worktree. It's seeded from the PR head onto a companion
+  branch (git can't check the PR's own branch out twice) and is reused
+  for every fix in that PR, across restarts.
+- `I` lands the triage feature's commits on the PR: push the companion
+  branch onto the PR branch, or cherry-pick into the source worktree.
+  Both are explicit and non-destructive — the push is never forced,
+  and the cherry-pick refuses to run while the source worktree is
+  dirty.
 - `R` opens a reply picker: "Done" replies "Done in `<sha>`", seeded
   from the most recent commit that touched the comment's file/line
   (falling back to your latest commit, flagged "latest commit", when

@@ -2533,8 +2533,9 @@ fn plan_review_can_edit_save_regenerate_fallback_and_open_abort_confirmation() {
                 && state.synthesized_plan.as_deref() == Some("# Plan: edited\n")
     ));
 
-    // With no headless harness available, regeneration is a no-op that keeps
-    // the already-reviewed plan instead of discarding the user's edit.
+    // With no headless harness available, regeneration keeps the
+    // already-reviewed plan instead of discarding the user's edit, and says so
+    // rather than looking like an unbound key.
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
     assert!(matches!(
         &app.mode,
@@ -2542,12 +2543,78 @@ fn plan_review_can_edit_save_regenerate_fallback_and_open_abort_confirmation() {
             if state.phase == PlanInterviewPhase::Review
                 && state.synthesized_plan.as_deref() == Some("# Plan: edited\n")
     ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No headless-capable harness available; keeping current plan")
+    );
+    app.message = None;
 
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
     assert!(matches!(
         &app.mode,
         AppMode::PlanInterview(state)
             if state.phase == PlanInterviewPhase::Review && state.abort_confirmation
+    ));
+}
+
+#[test]
+fn requested_synthesis_without_a_harness_explains_the_raw_fallback() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    force_plan_interview_raw_fallback(&mut app);
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.brief = "Explain the fallback".into();
+        state.synthesis_requested = true;
+        state.phase = PlanInterviewPhase::Done;
+    } else {
+        panic!("expected plan interview mode");
+    }
+
+    app.continue_plan_interview_after_done().unwrap();
+
+    assert!(app.plan_interview_synthesis_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state
+                    .synthesized_plan
+                    .as_deref()
+                    .is_some_and(|plan| plan.contains("## Feature brief\n\nExplain the fallback"))
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No headless-capable harness available; using the raw Q&A plan")
+    );
+}
+
+/// No current transition re-enters `Done` after synthesis has been attempted,
+/// but if one is ever added it must re-open the plan already paid for instead
+/// of starting a second headless pass.
+#[test]
+fn done_after_synthesis_reopens_the_existing_plan_without_spending_tokens() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.ai_followups_opted_in = true;
+        state.skip_ai_rounds = true;
+        state.apply_synthesis(synthesized_plan_response());
+        assert!(state.synthesis_attempted);
+        state.phase = PlanInterviewPhase::Done;
+    } else {
+        panic!("expected plan interview mode");
+    }
+
+    app.continue_plan_interview_after_done().unwrap();
+
+    assert!(app.plan_interview_ai_bg.is_none());
+    assert!(app.plan_interview_synthesis_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref()
+                    == Some(synthesized_plan_response().as_str())
     ));
 }
 

@@ -55,6 +55,13 @@ impl App {
         if should_start_next_round {
             self.start_next_plan_interview_ai_round()
         } else if synthesis_attempted {
+            // Defensive only: both writers of `synthesis_attempted`
+            // (`begin_synthesis`/`apply_synthesis`) leave the phase at
+            // `SynthesisLoading`/`Review`, and nothing transitions back to
+            // `Done` from there, so no current call site reaches this arm. It
+            // stays as a backstop: were such a transition ever added, this
+            // re-opens the plan that was already paid for rather than silently
+            // spending tokens on a second synthesis pass.
             self.open_plan_interview_review(None);
             Ok(())
         } else if synthesis_allowed {
@@ -179,11 +186,28 @@ impl App {
         }
 
         let Some(harness) = harness else {
+            // Regenerating from the review gate is the only way to get here
+            // with a plan already on screen. The fallback re-renders that same
+            // plan, so without an explicit message the keypress would look
+            // unbound rather than deliberately declined.
+            let regenerating = matches!(
+                &self.mode,
+                AppMode::PlanInterview(state) if state.synthesized_plan.is_some()
+            );
             self.log_info(
                 "plan_interview",
-                "no headless-capable harness available; using raw Q&A plan".to_string(),
+                if regenerating {
+                    "no headless-capable harness available; keeping current plan".to_string()
+                } else {
+                    "no headless-capable harness available; using raw Q&A plan".to_string()
+                },
             );
             self.open_plan_interview_review(None);
+            self.message = Some(if regenerating {
+                "No headless-capable harness available; keeping current plan".into()
+            } else {
+                "No headless-capable harness available; using the raw Q&A plan".into()
+            });
             return Ok(());
         };
 

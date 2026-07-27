@@ -1004,6 +1004,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let fix_session_usage = app.pr_review_fix_session_usage();
         let triage_session_usage = app.pr_review_triage_session_usage();
         let dedicated_session_working = app.pr_review_dedicated_session_working();
+        // Resolved here, before the `&mut app.mode` borrow: the companion
+        // feature's name/harness/mode live on the store, not the pane state.
+        let triage_feature_summary = app.pr_review_triage_feature_summary();
         let ai_review_running = match &app.mode {
             AppMode::PrReview(state) => app.ai_review_running_for_workdir(&state.workdir),
             _ => false,
@@ -1020,6 +1023,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 },
                 dedicated_session_working,
                 ai_review_running,
+                triage_feature_summary.as_deref(),
             );
         }
         super::draw_toasts(frame, &app.toasts, &app.theme);
@@ -1871,6 +1875,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            triage_source: None,
         };
         App::new_for_test(
             ProjectStore {
@@ -2064,6 +2069,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            triage_source: None,
         };
         feature.add_session_named(SessionKind::Claude, "Claude 1".to_string());
         let project = Project {
@@ -2291,6 +2297,8 @@ mod tests {
             usage_baselines: HashMap::new(),
             review_harness: None,
             harness_pick: None,
+            new_feature_setup: None,
+            integrate: None,
             fix_confirm: None,
             fix_vim_enabled: false,
             mark_pick: None,
@@ -2540,6 +2548,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            triage_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -2644,6 +2653,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            triage_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -2751,6 +2761,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            triage_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -2858,6 +2869,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            triage_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -2951,6 +2963,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            triage_source: None,
         };
         let project = Project {
             id: "proj-1".into(),

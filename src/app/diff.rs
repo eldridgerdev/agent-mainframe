@@ -294,11 +294,23 @@ impl App {
             if rows.is_empty() {
                 return;
             }
-            let current = state.tree_cursor_row(&rows).unwrap_or(0) as isize;
-            let target = (current + delta).clamp(0, rows.len() as isize - 1) as usize;
-            if target == current as usize {
-                return;
-            }
+            let last = rows.len() - 1;
+            let target = match state.tree_cursor_row(&rows) {
+                Some(current) => {
+                    let target = (current as isize + delta).clamp(0, last as isize) as usize;
+                    if target == current {
+                        return;
+                    }
+                    target
+                }
+                // Nothing is highlighted at all — the selected file is filtered
+                // out and none of its ancestors have rows. Enter the list from
+                // the end the move is coming from instead of pretending the
+                // cursor already sits on row 0, which would make `j` skip the
+                // first row and `k` a no-op.
+                None if delta >= 0 => 0,
+                None => last,
+            };
             match &rows[target] {
                 FileTreeRow::Dir { path, .. } => {
                     state.tree_cursor_dir = Some(path.clone());
@@ -316,14 +328,8 @@ impl App {
     /// parks the cursor on it — so `z` always does something useful.
     pub fn diff_viewer_tree_toggle_collapsed(&mut self) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
-            let dir = match &state.tree_cursor_dir {
-                Some(dir) => Some(dir.clone()),
-                None => state
-                    .files
-                    .get(state.selected_file)
-                    .and_then(|file| crate::app::ancestor_dirs(&file.path).pop()),
-            };
-            let Some(dir) = dir else {
+            let rows = state.file_tree_rows();
+            let Some(dir) = state.tree_cursor_target_dir(&rows) else {
                 self.message = Some("No directory to collapse".to_string());
                 return;
             };
@@ -336,43 +342,57 @@ impl App {
     /// (or the cursor is on a file) — step out to the parent directory row.
     pub fn diff_viewer_tree_collapse_or_parent(&mut self) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
-            if let Some(dir) = state.tree_cursor_dir.clone() {
-                if !state.collapsed_dirs.contains(&dir) {
-                    state.collapsed_dirs.insert(dir);
-                    return;
-                }
-                // Already folded: move up a level, if there is one.
-                if let Some(pos) = dir.rfind('/') {
-                    state.tree_cursor_dir = Some(dir[..pos].to_string());
-                }
+            let rows = state.file_tree_rows();
+            let Some(pos) = state.tree_cursor_row(&rows) else {
                 return;
-            }
-            // On a file: step to its directory row rather than folding straight
-            // away, mirroring how a file explorer's left arrow behaves.
-            if let Some(parent) = state
-                .files
-                .get(state.selected_file)
-                .and_then(|file| crate::app::ancestor_dirs(&file.path).pop())
-            {
-                state.tree_cursor_dir = Some(parent);
+            };
+            match &rows[pos] {
+                FileTreeRow::Dir { path, .. } => {
+                    let dir = path.clone();
+                    if !state.collapsed_dirs.contains(&dir) {
+                        state.collapsed_dirs.insert(dir.clone());
+                        state.tree_cursor_dir = Some(dir);
+                        return;
+                    }
+                    // Already folded: move up a level, if there is one.
+                    if let Some(sep) = dir.rfind('/') {
+                        state.tree_cursor_dir = Some(dir[..sep].to_string());
+                    } else {
+                        state.tree_cursor_dir = Some(dir);
+                    }
+                }
+                // On a file: step to its directory row rather than folding
+                // straight away, mirroring how a file explorer's left arrow
+                // behaves.
+                FileTreeRow::File { index, .. } => {
+                    let parent = state
+                        .files
+                        .get(*index)
+                        .and_then(|file| crate::app::ancestor_dirs(&file.path).pop());
+                    if let Some(parent) = parent {
+                        state.tree_cursor_dir = Some(parent);
+                    }
+                }
             }
         }
     }
 
     /// `l`: expand the cursored directory, or step into its first row when it
-    /// is already open.
+    /// is already open. A file row has nothing to expand.
     pub fn diff_viewer_tree_expand(&mut self) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
-            let Some(dir) = state.tree_cursor_dir.clone() else {
-                return;
-            };
-            if state.collapsed_dirs.remove(&dir) {
-                return;
-            }
             let rows = state.file_tree_rows();
             let Some(pos) = state.tree_cursor_row(&rows) else {
                 return;
             };
+            let FileTreeRow::Dir { path, .. } = &rows[pos] else {
+                return;
+            };
+            let dir = path.clone();
+            if state.collapsed_dirs.remove(&dir) {
+                state.tree_cursor_dir = Some(dir);
+                return;
+            }
             match rows.get(pos + 1) {
                 Some(FileTreeRow::Dir { path, .. }) => state.tree_cursor_dir = Some(path.clone()),
                 Some(FileTreeRow::File { index, .. }) => {

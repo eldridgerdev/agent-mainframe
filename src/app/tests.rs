@@ -14968,3 +14968,80 @@ fn tree_cursor_row_falls_back_to_the_deepest_visible_ancestor() {
         "the highlight should fall back to the fold hiding the selected file"
     );
 }
+
+#[test]
+fn tree_move_enters_the_list_when_the_filter_hides_the_selection() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["README.md", "src/a.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        // Select a file the Undecided filter then drops, leaving a single
+        // root-level row and nothing highlighted.
+        state.selected_file = 1;
+        state
+            .decisions
+            .insert("src/a.rs".to_string(), crate::app::ReviewDecision::Approve);
+        state.file_filter = crate::app::FileFilter::Undecided;
+    }
+    assert!(
+        viewer_state(&app)
+            .tree_cursor_row(&tree_rows(&app))
+            .is_none(),
+        "the test needs a state with no highlighted row"
+    );
+
+    // j must reach the only row rather than stepping past it.
+    app.diff_viewer_tree_move(1);
+    assert_eq!(viewer_state(&app).selected_file, 0);
+
+    // ...and so must k, from the other end.
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.selected_file = 1;
+    }
+    app.diff_viewer_tree_move(-1);
+    assert_eq!(viewer_state(&app).selected_file, 0);
+}
+
+#[test]
+fn tree_toggle_folds_the_highlighted_row_not_the_hidden_selections_directory() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/a.rs", "src/app/mod.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.selected_file = 1;
+        state.decisions.insert(
+            "src/app/mod.rs".to_string(),
+            crate::app::ReviewDecision::Approve,
+        );
+        state.file_filter = crate::app::FileFilter::Undecided;
+    }
+    // With src/app/mod.rs filtered out, `src/app` has no row and the highlight
+    // falls back to `src`.
+    let rows = tree_rows(&app);
+    let cursor = viewer_state(&app)
+        .tree_cursor_row(&rows)
+        .expect("a row stays highlighted");
+    assert!(matches!(&rows[cursor], FileTreeRow::Dir { path, .. } if path == "src"));
+
+    app.diff_viewer_tree_toggle_collapsed();
+
+    let state = viewer_state(&app);
+    assert!(
+        state.collapsed_dirs.contains("src"),
+        "z should fold the directory the list highlights"
+    );
+    assert!(
+        !state.collapsed_dirs.contains("src/app"),
+        "z must not fold a directory that has no row: {:?}",
+        state.collapsed_dirs
+    );
+    assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
+}

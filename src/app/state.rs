@@ -1297,6 +1297,22 @@ impl DiffViewerState {
         })
     }
 
+    /// Directory the fold commands act on, derived from whichever row
+    /// `tree_cursor_row` highlights: a directory row folds itself, a file row
+    /// folds its own directory. Reading it back off the highlighted row —
+    /// rather than off the selected file — matters when the selection is
+    /// hidden by the active filter, where the highlight falls back to some
+    /// *shallower* ancestor than the selected file's own directory.
+    pub fn tree_cursor_target_dir(&self, rows: &[FileTreeRow]) -> Option<String> {
+        match rows.get(self.tree_cursor_row(rows)?)? {
+            FileTreeRow::Dir { path, .. } => Some(path.clone()),
+            FileTreeRow::File { index, .. } => self
+                .files
+                .get(*index)
+                .and_then(|file| ancestor_dirs(&file.path).pop()),
+        }
+    }
+
     /// Every row of the pre-finish summary, in file order: each file's verdict
     /// row, then its open line comments (already sorted by line) and open file
     /// comment, followed by the overall feedback if any was written. Ignores

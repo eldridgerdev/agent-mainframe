@@ -1486,17 +1486,20 @@ fn file_risk_marker(
 /// A collapsed directory's row summarises what it is hiding, so folding a tree
 /// never hides the fact that something under it still needs attention: how many
 /// files, how many still undecided, and whether any changed since the last
-/// review round.
+/// review round. Every count comes from `visible` — the files the active filter
+/// shows — so the badges always describe the same set as the row's `(n)`, which
+/// the tree also counts per filter.
 fn dir_row_summary(
     dir: &str,
     files: usize,
+    visible: &[usize],
     state: &DiffViewerState,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     let prefix = format!("{dir}/");
-    let under: Vec<&crate::diff::DiffFile> = state
-        .files
+    let under: Vec<&crate::diff::DiffFile> = visible
         .iter()
+        .filter_map(|&idx| state.files.get(idx))
         .filter(|file| file.path.starts_with(&prefix))
         .collect();
     let mut spans = vec![Span::styled(
@@ -1572,7 +1575,7 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
                         ),
                     ];
                     if *collapsed {
-                        spans.extend(dir_row_summary(path, *files, state, theme));
+                        spans.extend(dir_row_summary(path, *files, &visible, state, theme));
                     }
                     return ListItem::new(Line::from(spans));
                 }
@@ -4365,5 +4368,64 @@ index 0000000..1111111
             folded.contains("(2)"),
             "collapsed row should count its files"
         );
+    }
+
+    #[test]
+    fn collapsed_dir_summary_only_counts_files_the_filter_shows() {
+        let (mut state, _) = single_added_line_review_state();
+        state.files = ["src/app/mod.rs", "src/app/state.rs", "src/app/ui.rs"]
+            .iter()
+            .map(|path| DiffFile {
+                old_path: Some((*path).to_string()),
+                path: (*path).to_string(),
+                status: DiffFileStatus::Modified,
+                additions: 2,
+                deletions: 1,
+                is_binary: false,
+                old_content: None,
+                new_content: None,
+                patch: String::new(),
+                hunks: vec![],
+            })
+            .collect();
+        state.selected_file = 0;
+        // Only mod.rs stays undecided; the other two are decided and one of them
+        // also changed since the last round.
+        state
+            .decisions
+            .insert("src/app/state.rs".to_string(), ReviewDecision::Approve);
+        state.decisions.insert(
+            "src/app/ui.rs".to_string(),
+            ReviewDecision::Reject {
+                feedback: "no".to_string(),
+                severity: crate::app::Severity::default(),
+            },
+        );
+        state
+            .changed_since_last
+            .insert("src/app/state.rs".to_string());
+        state.file_filter = crate::app::FileFilter::Undecided;
+        state.toggle_dir_collapsed("src/app");
+
+        let rows = state.file_tree_rows();
+        let files = rows
+            .iter()
+            .find_map(|row| match row {
+                crate::app::FileTreeRow::Dir { path, files, .. } if path == "src/app" => {
+                    Some(*files)
+                }
+                _ => None,
+            })
+            .expect("the collapsed src/app row");
+        let visible = state.visible_file_indices();
+        let summary: String =
+            dir_row_summary("src/app", files, &visible, &state, &Theme::default())
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+
+        // The badges describe the one file the row is actually hiding — not the
+        // decisions and Δ of the two the filter dropped.
+        assert_eq!(summary.trim(), "(1) ·1", "summary was {summary:?}");
     }
 }

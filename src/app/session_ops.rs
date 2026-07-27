@@ -6,7 +6,7 @@ use super::*;
 use crate::project::LaunchOpts;
 use crate::tmux::TmuxManager;
 
-fn session_kind_for_agent(agent: &AgentKind) -> SessionKind {
+pub(crate) fn session_kind_for_agent(agent: &AgentKind) -> SessionKind {
     match agent {
         AgentKind::Claude => SessionKind::Claude,
         AgentKind::Opencode => SessionKind::Opencode,

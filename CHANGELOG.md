@@ -26,6 +26,25 @@ are tagged.
   navigation are unaffected by folding: landing on a file inside a folded
   directory simply opens it up. No migration is required.
 
+- **PR Triage can run a PR's fixes in a new feature of its own.** The
+  fix-target picker (the prompt on the first `f`/`B` of a visit) has a third
+  option: `New feature…`. It creates an isolated, worktree-backed feature just
+  for that PR's triage, with its harness and vibe mode picked in one compact
+  form — or from a feature preset — independently of the feature the PR was
+  built in. So you can build a PR in SuperVibe and apply the review fixes under
+  Vibeless supervision, and the triage agent's hooks and permissions land in its
+  own worktree instead of the source feature's. The companion is seeded from the
+  PR head onto its own branch (`<pr-branch>-triage`, since git can't check the
+  PR's branch out twice) and is reused for every fix in that PR, across restarts
+  — the pane header and the fix confirm both name it, so you always know which
+  feature and mode a fix will run in. `P` and `Ctrl+Space P` follow it.
+  Because that work happens off the PR branch, a new `I` key lands it: push the
+  companion branch onto the PR branch, or cherry-pick into the source worktree.
+  Both are explicit and show the commits first — the push is never forced, and
+  the cherry-pick refuses to run while the source worktree has uncommitted
+  changes. The existing two targets are unchanged and still commit straight onto
+  the PR branch, so they never see the `I` step. The database gains a column for
+  the PR link; it is added automatically and needs no migration step.
 - **Plan-mode interviews now pause at a review gate before launching the
   feature.** An opted-in AI flow turns the interview into a structured
   implementation plan, then shows the rendered markdown for review. You can

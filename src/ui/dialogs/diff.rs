@@ -2308,7 +2308,10 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
     }
     second_line.push(key("t"));
     let (target_label, target_color) = match state.fix_target {
-        crate::app::pr_review::FixTarget::DedicatedReview => {
+        // `NewFeature` is PR-Triage-only; the final review's `t` toggle never
+        // produces it, so it renders as the dedicated target it behaves like.
+        crate::app::pr_review::FixTarget::DedicatedReview
+        | crate::app::pr_review::FixTarget::NewFeature => {
             (" target: dedicated  ", theme.info.to_color())
         }
         crate::app::pr_review::FixTarget::ExistingLive => {

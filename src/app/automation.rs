@@ -42,7 +42,7 @@ impl App {
         }
     }
 
-    fn run_worktree_hook_sync(
+    pub(crate) fn run_worktree_hook_sync(
         script: &str,
         workdir: &Path,
         choice: Option<&str>,

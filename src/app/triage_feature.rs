@@ -236,9 +236,8 @@ impl App {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.new_feature_setup = None;
             state.pending_batch = false;
-            state.fix_target = FixTarget::default();
-            state.fix_target_picked = false;
         }
+        self.pr_review_clear_fix_target();
     }
 
     /// Create the companion feature from the overlay's settings and continue
@@ -293,10 +292,11 @@ impl App {
             anyhow::bail!("Branch name cannot be empty");
         }
 
-        let (state_workdir, pr_number, head_sha) = match &self.mode {
+        let (state_workdir, pr_number, head_ref, head_sha) = match &self.mode {
             AppMode::PrReview(state) => (
                 state.workdir.clone(),
                 state.review.pr.number,
+                state.review.pr.head_ref.trim().to_string(),
                 state.review.pr.head_sha.clone(),
             ),
             _ => anyhow::bail!("not reviewing a PR"),
@@ -309,7 +309,21 @@ impl App {
         let project_repo = self.store.projects[pi].repo.clone();
         let source = &self.store.projects[pi].features[source_fi];
         let source_feature_id = source.id.clone();
-        let source_branch = source.branch.clone();
+        // The branch the fixes have to land on is the *PR's* head branch, which
+        // is not necessarily what the source feature has checked out — triaging
+        // a PR picked from the "other PR" list is exactly the case where they
+        // differ. This value is the push destination in `push_branch`, so
+        // taking the feature's branch here would push the triage commits onto
+        // an unrelated remote branch. The setup overlay pre-fills the companion
+        // branch name from the same source (`head_ref`).
+        //
+        // An empty `head_ref` means a pre-`head_ref` cached PR row; the
+        // checked-out branch is then the only thing we know.
+        let pr_branch = if head_ref.is_empty() {
+            source.branch.clone()
+        } else {
+            head_ref.clone()
+        };
 
         if !self.store.projects[pi].is_git && self.worktree.repo_root(&project_repo).is_err() {
             anyhow::bail!("A triage feature needs a git repository (it runs in its own worktree)");
@@ -336,7 +350,7 @@ impl App {
         // Seed from the PR head. `triage_base` prefers the local branch when it
         // already contains the PR head (so unpushed work isn't dropped) and
         // falls back to the head SHA itself.
-        let base = triage_base(&state_workdir, &source_branch, &head_sha)
+        let base = triage_base(&state_workdir, &pr_branch, &head_sha)
             .ok_or_else(|| anyhow::anyhow!("could not resolve a base commit for the PR head"))?;
         let base_sha = rev_parse(&state_workdir, &base).unwrap_or_else(|| base.clone());
 
@@ -393,7 +407,7 @@ impl App {
         feature.triage_source = Some(TriageSource {
             pr_number,
             source_feature_id,
-            source_branch,
+            pr_branch,
             base_sha,
         });
         let feature_name = feature.name.clone();
@@ -508,10 +522,13 @@ impl App {
             &link.base_sha,
             Some(INTEGRATE_COMMIT_PREVIEW),
         );
+        // Names the worktree, not a branch: the cherry-pick lands in whatever
+        // the source feature has checked out, which isn't necessarily the PR's
+        // branch.
         let source_dirty = worktree_is_dirty(&source_workdir).then(|| {
             format!(
                 "the source worktree has uncommitted changes — commit or stash them in `{}` first",
-                link.source_branch
+                crate::app::util::shorten_path(&source_workdir)
             )
         });
         let triage_dirty = worktree_is_dirty(&triage_workdir);
@@ -519,7 +536,7 @@ impl App {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.integrate = Some(TriageIntegrateState {
                 triage_branch,
-                source_branch: link.source_branch,
+                pr_branch: link.pr_branch,
                 commits,
                 source_dirty,
                 triage_dirty,
@@ -557,12 +574,12 @@ impl App {
     /// overwritten), and the cherry-pick refuses to run against a dirty source
     /// worktree. Results — success or failure — stay in the overlay.
     pub fn pr_review_integrate_confirm(&mut self) -> Result<()> {
-        let Some((choice, triage_branch, source_branch, blocked)) = (match &self.mode {
+        let Some((choice, triage_branch, pr_branch, blocked)) = (match &self.mode {
             AppMode::PrReview(state) => state.integrate.as_ref().map(|i| {
                 (
                     i.focused(),
                     i.triage_branch.clone(),
-                    i.source_branch.clone(),
+                    i.pr_branch.clone(),
                     i.source_dirty.clone(),
                 )
             }),
@@ -595,7 +612,7 @@ impl App {
         };
 
         let outcome = match choice {
-            TriageIntegration::Push => push_branch(&triage_workdir, &triage_branch, &source_branch),
+            TriageIntegration::Push => push_branch(&triage_workdir, &triage_branch, &pr_branch),
             TriageIntegration::CherryPick => {
                 cherry_pick_range(&source_workdir, &triage_workdir, &base_sha, &triage_branch)
             }
@@ -651,21 +668,22 @@ impl App {
 
 /// Base commit for the companion worktree.
 ///
-/// Prefers the source feature's local branch when it already contains the PR
-/// head — that's the PR head plus any local commits not yet pushed, and
+/// Prefers the local branch of the PR's head when it already contains the PR
+/// head commit — that's the PR head plus any local commits not yet pushed, and
 /// branching from the SHA instead would silently drop them. Otherwise use the
-/// PR head itself (the local branch is behind, e.g. someone else pushed),
-/// fetching it first if it isn't present locally.
-fn triage_base(workdir: &Path, source_branch: &str, head_sha: &str) -> Option<String> {
+/// PR head itself (the local branch is behind, e.g. someone else pushed, or
+/// this checkout has never had that branch at all), fetching it first if it
+/// isn't present locally.
+fn triage_base(workdir: &Path, pr_branch: &str, head_sha: &str) -> Option<String> {
     let head_sha = head_sha.trim();
-    if !source_branch.is_empty()
-        && branch_exists(workdir, source_branch)
-        && (head_sha.is_empty() || contains_commit(workdir, source_branch, head_sha))
+    if !pr_branch.is_empty()
+        && branch_exists(workdir, pr_branch)
+        && (head_sha.is_empty() || contains_commit(workdir, pr_branch, head_sha))
     {
-        return Some(source_branch.to_string());
+        return Some(pr_branch.to_string());
     }
     if head_sha.is_empty() {
-        return branch_exists(workdir, source_branch).then(|| source_branch.to_string());
+        return branch_exists(workdir, pr_branch).then(|| pr_branch.to_string());
     }
     if rev_parse(workdir, head_sha).is_none() {
         // Best effort: the head may simply not have been fetched yet.
@@ -676,8 +694,8 @@ fn triage_base(workdir: &Path, source_branch: &str, head_sha: &str) -> Option<St
     }
     if rev_parse(workdir, head_sha).is_some() {
         Some(head_sha.to_string())
-    } else if branch_exists(workdir, source_branch) {
-        Some(source_branch.to_string())
+    } else if branch_exists(workdir, pr_branch) {
+        Some(pr_branch.to_string())
     } else {
         None
     }
@@ -765,18 +783,14 @@ pub(crate) fn commits_since(workdir: &Path, base: &str, limit: Option<usize>) ->
 /// `git push origin <triage>:<pr-branch>` — a plain fast-forward push. Never
 /// `--force`: if the PR branch moved on independently, that's reported so the
 /// user can rebase deliberately rather than silently losing the other commits.
-fn push_branch(triage_workdir: &Path, triage_branch: &str, source_branch: &str) -> Result<String> {
+fn push_branch(triage_workdir: &Path, triage_branch: &str, pr_branch: &str) -> Result<String> {
     let out = Command::new("git")
-        .args([
-            "push",
-            "origin",
-            &format!("{triage_branch}:{source_branch}"),
-        ])
+        .args(["push", "origin", &format!("{triage_branch}:{pr_branch}")])
         .current_dir(triage_workdir)
         .output()?;
     if out.status.success() {
         return Ok(format!(
-            "Pushed `{triage_branch}` onto the PR branch `{source_branch}`"
+            "Pushed `{triage_branch}` onto the PR branch `{pr_branch}`"
         ));
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -789,7 +803,7 @@ fn push_branch(triage_workdir: &Path, triage_branch: &str, source_branch: &str) 
         .to_string();
     if stderr.contains("non-fast-forward") || stderr.contains("fetch first") {
         anyhow::bail!(
-            "the PR branch has moved on — pull `{source_branch}` into `{triage_branch}` and try again ({detail})"
+            "the PR branch has moved on — pull `{pr_branch}` into `{triage_branch}` and try again ({detail})"
         );
     }
     anyhow::bail!("{detail}");

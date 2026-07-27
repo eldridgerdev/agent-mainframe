@@ -2275,7 +2275,9 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `pr_triage_session_index` finds it inside the companion exactly as it does
       the in-feature dedicated session. Since branch-based auto-detection can't
       get back, the link is persisted explicitly as `Feature::triage_source`
-      (`TriageSource { pr_number, source_feature_id, source_branch, base_sha }`,
+      (`TriageSource { pr_number, source_feature_id, pr_branch, base_sha }` —
+      `pr_branch` is the PR's own `head_ref`, which is what integration pushes
+      onto, and is not necessarily the source feature's checked-out branch,
       JSON blob column added by migration 015, `#[serde(default)]` so pre-existing
       rows/JSON still load).
 

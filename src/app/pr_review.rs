@@ -2605,6 +2605,8 @@ impl App {
         if state.fix_target_picked || state.review_harness.is_some() {
             return false;
         }
+        // Both short-circuits above are why anything that abandons a resolved
+        // target has to go through `pr_review_clear_fix_target`.
         match self.feature_indices_for_workdir(&state.workdir) {
             Some((pi, fi)) => {
                 let feature = &self.store.projects[pi].features[fi];
@@ -2612,6 +2614,18 @@ impl App {
             }
             // No feature resolved yet — let the inject path surface the error.
             None => false,
+        }
+    }
+
+    /// Un-resolve the pane's fix target so the next `f`/`B` re-opens the
+    /// picker. Clears every field [`Self::pr_review_needs_harness_pick`]
+    /// short-circuits on, not just `fix_target_picked` — leaving
+    /// `review_harness` set would keep the picker shut just as effectively.
+    pub(crate) fn pr_review_clear_fix_target(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.fix_target = FixTarget::default();
+            state.fix_target_picked = false;
+            state.review_harness = None;
         }
     }
 
@@ -2949,7 +2963,13 @@ impl App {
         let (pi, fi, si) = match self.resolve_fix_session() {
             Ok(target) => target,
             Err(e) => {
-                self.show_error(e);
+                // Every one of these errors tells the user to press a key *in
+                // PR Triage* to recover ("press f and pick a target again",
+                // "switch to the dedicated target (t)"), so report it over the
+                // pane rather than through `show_error`, which would drop them
+                // back to the dashboard and make that advice unfollowable.
+                self.log_error("pr_triage", format!("Fix target: {e}"));
+                self.push_toast_error(e.to_string());
                 return Ok(());
             }
         };
@@ -3607,15 +3627,20 @@ impl App {
             AppMode::PrReview(state) => (state.fix_target, state.review_harness.clone()),
             _ => anyhow::bail!("not reviewing a PR"),
         };
-        let (pi, fi) = self.pr_review_target_feature().ok_or_else(|| {
-            if target.is_companion_feature() {
-                anyhow::anyhow!(
+        let (pi, fi) = match self.pr_review_target_feature() {
+            Some(found) => found,
+            // The companion feature was deleted out from under the pane. Drop
+            // the resolved pick so `f` really does re-open the picker the way
+            // the message promises — otherwise every later fix this visit
+            // resolves against the same dead target.
+            None if target.is_companion_feature() => {
+                self.pr_review_clear_fix_target();
+                anyhow::bail!(
                     "the triage feature for this PR no longer exists — press f and pick a target again"
                 )
-            } else {
-                anyhow::anyhow!("could not find the feature for this PR")
             }
-        })?;
+            None => anyhow::bail!("could not find the feature for this PR"),
+        };
 
         self.ensure_feature_running_for_new_session(pi, fi)?;
 

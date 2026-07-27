@@ -679,7 +679,7 @@ mod tests {
             triage_source: Some(crate::project::TriageSource {
                 pr_number: 42,
                 source_feature_id: "feat-source".to_string(),
-                source_branch: "feature/my-feature".to_string(),
+                pr_branch: "feature/my-feature".to_string(),
                 base_sha: "abc123".to_string(),
             }),
         };
@@ -719,7 +719,7 @@ mod tests {
             Some(crate::project::TriageSource {
                 pr_number: 42,
                 source_feature_id: "feat-source".to_string(),
-                source_branch: "feature/my-feature".to_string(),
+                pr_branch: "feature/my-feature".to_string(),
                 base_sha: "abc123".to_string(),
             }),
             "the PR/source-feature link must survive a save/load round trip"

@@ -1374,7 +1374,7 @@ fn draw_triage_integrate(
             ),
             Span::styled(" → ", Style::default().fg(theme.text_muted.to_color())),
             Span::styled(
-                integrate.source_branch.clone(),
+                integrate.pr_branch.clone(),
                 Style::default()
                     .fg(theme.secondary.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -2409,7 +2409,7 @@ mod tests {
     fn sample_integrate() -> crate::app::TriageIntegrateState {
         crate::app::TriageIntegrateState {
             triage_branch: "main-triage".to_string(),
-            source_branch: "main".to_string(),
+            pr_branch: "main".to_string(),
             commits: vec!["abc1234 apply review comment".to_string()],
             source_dirty: None,
             triage_dirty: false,

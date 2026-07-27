@@ -360,8 +360,13 @@ pub struct TriageSource {
     pub pr_number: u32,
     /// `Feature::id` of the feature PR Triage was opened from.
     pub source_feature_id: String,
-    /// The source feature's branch — the PR head branch fixes must land on.
-    pub source_branch: String,
+    /// The PR's own head branch — the ref integration pushes onto. Recorded
+    /// from `PrRef::head_ref` rather than the source feature's checked-out
+    /// branch: the two diverge whenever a PR is triaged from a feature sitting
+    /// on some other branch, and pushing to the wrong one would land review
+    /// fixes on a branch nobody asked about.
+    #[serde(alias = "source_branch")]
+    pub pr_branch: String,
     /// Commit the companion worktree was branched from. Everything after it on
     /// the triage branch is what integration pushes or cherry-picks back.
     pub base_sha: String,
@@ -1320,7 +1325,7 @@ mod tests {
         feature.triage_source = Some(TriageSource {
             pr_number: 7,
             source_feature_id: "feat-source".to_string(),
-            source_branch: "main".to_string(),
+            pr_branch: "main".to_string(),
             base_sha: "abc".to_string(),
         });
 

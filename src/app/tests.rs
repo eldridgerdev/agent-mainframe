@@ -15156,6 +15156,123 @@ fn choosing_new_feature_opens_setup_instead_of_the_fix_confirm() {
 }
 
 #[test]
+fn triage_feature_records_the_prs_own_branch_not_the_checked_out_one() {
+    // The documented "other PR" flow triages a PR whose head branch is not what
+    // the feature has checked out. `TriageSource::pr_branch` is used verbatim as
+    // the `git push origin <triage>:<dest>` destination, so reading it off the
+    // source feature would push review fixes onto an unrelated remote branch.
+    let repo_dir = TempDir::new().unwrap();
+    let repo = repo_dir.path().to_path_buf();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {:?}", out.stderr);
+    };
+    git(&repo, &["init", "-q", "-b", "my-feat"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "T"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "base"]);
+    // The PR lives on its own branch, one commit ahead of what's checked out —
+    // so `my-feat` does not even contain the PR head.
+    git(&repo, &["checkout", "-q", "-b", "pr-head"]);
+    std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "pr work"]);
+    let head_sha = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    git(&repo, &["checkout", "-q", "my-feat"]);
+
+    let triage_workdir = repo.join(".worktrees").join("pr-head-triage");
+    std::fs::create_dir_all(&triage_workdir).unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_for_root = repo.clone();
+    worktree
+        .expect_repo_root()
+        .returning(move |_| Ok(repo_for_root.clone()));
+    let triage_workdir_clone = triage_workdir.clone();
+    worktree
+        .expect_create_from()
+        .times(1)
+        // The worktree is branched off the PR's branch, not the checkout's.
+        .withf(|_, _, branch, base| branch == "pr-head-triage" && base == "pr-head")
+        .returning(move |_, _, _, _| Ok(triage_workdir_clone.clone()));
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| false);
+    tmux.expect_create_session_with_window()
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].repo = repo.clone();
+    store.projects[0].features[0].workdir = repo.clone();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(worktree));
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+
+    enter_pr_review_for_feature(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.workdir = repo.clone();
+        state.review.pr.head_ref = "pr-head".to_string();
+        state.review.pr.head_sha = head_sha.clone();
+        state.checked_out_branch = Some("my-feat".to_string());
+    }
+
+    app.pr_review_open_fix_confirm();
+    select_new_feature_row(&mut app);
+    app.pr_review_harness_pick_confirm();
+    // The overlay pre-fills from the PR's branch, and the created feature has
+    // to agree with it.
+    assert_eq!(triage_setup(&app).branch, "pr-head-triage");
+    app.pr_review_triage_setup_confirm().unwrap();
+
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(
+            state.new_feature_setup.is_none(),
+            "creation failed: {:?}",
+            state
+                .new_feature_setup
+                .as_ref()
+                .and_then(|s| s.error.clone())
+        ),
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+
+    let companion = app.store.projects[0]
+        .features
+        .iter()
+        .find(|f| f.name == "pr-head-triage")
+        .expect("the companion feature should have been created");
+    let link = companion
+        .triage_source
+        .as_ref()
+        .expect("the companion is linked back to the PR");
+    assert_eq!(
+        link.pr_branch, "pr-head",
+        "fixes land on the PR's branch, not the source feature's `my-feat`"
+    );
+    assert_eq!(link.source_feature_id, "feat-1");
+}
+
+#[test]
 fn triage_setup_branch_is_deduplicated_against_existing_features() {
     let mut store = store_with_feature(ProjectStatus::Stopped);
     // A previous triage feature for this branch already claimed the name.
@@ -15308,7 +15425,6 @@ fn cancelling_triage_setup_leaves_the_fix_target_unresolved() {
 /// the source feature the way `create_triage_feature` persists it.
 fn push_companion_feature(store: &mut ProjectStore, agent: AgentKind, mode: VibeMode) {
     let source_id = store.projects[0].features[0].id.clone();
-    let source_branch = store.projects[0].features[0].branch.clone();
     let mut companion = store.projects[0].features[0].clone();
     companion.id = "feat-triage".to_string();
     companion.name = "main-triage".to_string();
@@ -15322,7 +15438,10 @@ fn push_companion_feature(store: &mut ProjectStore, agent: AgentKind, mode: Vibe
     companion.triage_source = Some(crate::project::TriageSource {
         pr_number: 7,
         source_feature_id: source_id,
-        source_branch,
+        // The PR's head branch (`pr_review_with_comments` puts the PR on
+        // `main`), not the source feature's own branch — that's what
+        // `create_triage_feature` records, and it's the push destination.
+        pr_branch: "main".to_string(),
         base_sha: "basesha".to_string(),
     });
     store.projects[0].features.push(companion);
@@ -15399,6 +15518,49 @@ fn adopt_is_a_no_op_without_a_companion_for_this_pr() {
     assert!(
         matches!(&app.mode, AppMode::PrReview(state) if !state.fix_target_picked),
         "an unrelated PR's triage feature is not adopted"
+    );
+}
+
+#[test]
+fn a_vanished_companion_really_does_reopen_the_picker() {
+    // The error text promises "press f and pick a target again", so the pane
+    // must actually un-resolve the target — both `fix_target_picked` and
+    // `review_harness` short-circuit the picker.
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    push_companion_feature(&mut store, AgentKind::Codex, VibeMode::Vibe);
+    let mut app = triage_target_app(store);
+    enter_pr_review_for_feature(&mut app, 1);
+    app.adopt_existing_triage_feature();
+
+    // The companion is deleted mid-visit (from the dashboard, say).
+    app.store.projects[0].features.remove(1);
+    app.pr_review_inject_fix().unwrap();
+
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.message.contains("no longer exists")),
+        "the pane reports it: {:?}",
+        app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
+    );
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(!state.fix_target_picked);
+            assert!(
+                state.review_harness.is_none(),
+                "the dead harness is dropped"
+            );
+        }
+        other => panic!(
+            "the pane stays open so `f` is still reachable, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+
+    app.pr_review_open_fix_confirm();
+    assert!(
+        matches!(&app.mode, AppMode::PrReview(state) if state.harness_pick.is_some()),
+        "`f` re-offers every target instead of resolving against the dead one"
     );
 }
 
@@ -15516,7 +15678,7 @@ fn integrate_reports_the_commits_and_blocks_cherry_pick_on_a_dirty_source() {
         AppMode::PrReview(state) => {
             let integrate = state.integrate.as_ref().expect("overlay should be open");
             assert_eq!(integrate.triage_branch, "main-triage");
-            assert_eq!(integrate.source_branch, "main");
+            assert_eq!(integrate.pr_branch, "main");
             (integrate.commits.clone(), integrate.source_dirty.clone())
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),

@@ -2191,8 +2191,9 @@ impl TriageIntegration {
 pub struct TriageIntegrateState {
     /// Companion branch holding the triage commits.
     pub triage_branch: String,
-    /// The PR's branch, in the source worktree.
-    pub source_branch: String,
+    /// The PR's own head branch — where a push lands. Not necessarily the
+    /// branch the source worktree has checked out.
+    pub pr_branch: String,
     /// One-line summaries of the commits on the triage branch since it
     /// branched (newest first), for the "what will land" preview.
     pub commits: Vec<String>,

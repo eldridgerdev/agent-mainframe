@@ -1261,8 +1261,10 @@ fn draw_review_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, 
         return;
     }
 
-    // Give the notes panel ~40% of the column, but always leave room for both.
-    let notes_height = (content_area.height * 2 / 5).clamp(
+    // Give the notes panel ~20% of the column — the diff is what the reviewer
+    // is actually reading, and `e` still expands notes to full height on
+    // demand. Always leave room for both.
+    let notes_height = (content_area.height / 5).clamp(
         5.min(content_area.height),
         content_area.height.saturating_sub(5).max(1),
     );
@@ -1481,17 +1483,112 @@ fn file_risk_marker(
     ))
 }
 
+/// A collapsed directory's row summarises what it is hiding, so folding a tree
+/// never hides the fact that something under it still needs attention: how many
+/// files, how many still undecided, and whether any changed since the last
+/// review round. Every count comes from `visible` — the files the active filter
+/// shows — so the badges always describe the same set as the row's `(n)`, which
+/// the tree also counts per filter.
+fn dir_row_summary(
+    dir: &str,
+    files: usize,
+    visible: &[usize],
+    state: &DiffViewerState,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let prefix = format!("{dir}/");
+    let under: Vec<&crate::diff::DiffFile> = visible
+        .iter()
+        .filter_map(|&idx| state.files.get(idx))
+        .filter(|file| file.path.starts_with(&prefix))
+        .collect();
+    let mut spans = vec![Span::styled(
+        format!("  ({files})"),
+        Style::default().fg(theme.text_muted.to_color()),
+    )];
+    if !state.review {
+        return spans;
+    }
+    let undecided = under
+        .iter()
+        .filter(|file| !state.decisions.contains_key(&file.path))
+        .count();
+    if undecided > 0 {
+        spans.push(Span::styled(
+            format!(" ·{undecided}"),
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    }
+    let rejected = under
+        .iter()
+        .filter(|file| {
+            matches!(
+                state.decisions.get(&file.path),
+                Some(crate::app::ReviewDecision::Reject { .. })
+            )
+        })
+        .count();
+    if rejected > 0 {
+        spans.push(Span::styled(
+            format!(" ✗{rejected}"),
+            Style::default().fg(theme.danger.to_color()),
+        ));
+    }
+    if under
+        .iter()
+        .any(|file| state.changed_since_last.contains(&file.path))
+    {
+        spans.push(Span::styled(
+            " Δ",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+    }
+    spans
+}
+
 fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
     let visible = state.visible_file_indices();
+    let rows = state.file_tree_rows();
     let changeset_has_tests = changeset_has_test_changes(&state.files);
-    let mut items: Vec<ListItem<'static>> = visible
+    let mut items: Vec<ListItem<'static>> = rows
         .iter()
-        .map(|&idx| {
+        .map(|row| {
+            let (idx, depth) = match row {
+                crate::app::FileTreeRow::Dir {
+                    path,
+                    label,
+                    depth,
+                    collapsed,
+                    files,
+                } => {
+                    let mut spans = vec![
+                        Span::raw(" ".repeat(depth * 2 + 1)),
+                        Span::styled(
+                            if *collapsed { "▸ " } else { "▾ " },
+                            Style::default().fg(theme.text_muted.to_color()),
+                        ),
+                        Span::styled(
+                            format!("{label}/"),
+                            Style::default()
+                                .fg(theme.info.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    if *collapsed {
+                        spans.extend(dir_row_summary(path, *files, &visible, state, theme));
+                    }
+                    return ListItem::new(Line::from(spans));
+                }
+                crate::app::FileTreeRow::File { index, depth, .. } => (*index, *depth),
+            };
             let file = &state.files[idx];
             let status_style = Style::default()
                 .fg(status_color(&file.status, theme))
                 .add_modifier(Modifier::BOLD);
             let mut spans = Vec::new();
+            if depth > 0 {
+                spans.push(Span::raw(" ".repeat(depth * 2)));
+            }
             if state.review {
                 let (symbol, color) = match state.decisions.get(&file.path) {
                     Some(crate::app::ReviewDecision::Approve) => ("✓", theme.success.to_color()),
@@ -1532,8 +1629,12 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ));
             }
+            // Only the basename: the directories are the rows above it.
             spans.push(Span::styled(
-                file.path.clone(),
+                match row {
+                    crate::app::FileTreeRow::File { name, .. } => name.clone(),
+                    crate::app::FileTreeRow::Dir { .. } => file.path.clone(),
+                },
                 Style::default().fg(theme.text.to_color()),
             ));
             spans.push(Span::styled(
@@ -1587,9 +1688,10 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
         .highlight_symbol(">");
 
     let mut list_state = ListState::default();
-    // Highlight maps onto the visible subset; None when the selection is hidden
-    // by the active filter.
-    list_state.select(visible.iter().position(|&i| i == state.selected_file));
+    // Highlight maps onto the rendered tree rows: the cursored directory when
+    // the cursor is parked on one, else the selected file's row. None when the
+    // selection is hidden by the active filter.
+    list_state.select(state.tree_cursor_row(&rows));
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
@@ -2293,6 +2395,12 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         Span::raw("/"),
         key("p"),
         Span::raw(" file  "),
+    ]);
+    // Tree folding only means something once the changeset spans directories.
+    if state.files.iter().any(|file| file.path.contains('/')) {
+        first_line.extend([key("z"), Span::raw("/"), key("Z"), Span::raw(" fold  ")]);
+    }
+    first_line.extend([
         key("e"),
         Span::raw(if state.notes_expanded {
             " show diff  "
@@ -2589,6 +2697,8 @@ fn diff_footer_lines(
     secondary.extend(vec![
         Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
         Span::raw(" move  "),
+        Span::styled("z/Z", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" fold  "),
         Span::styled("PgUp/PgDn", Style::default().fg(theme.warning.to_color())),
         Span::raw(" patch  "),
         Span::styled("g/G", Style::default().fg(theme.warning.to_color())),
@@ -4191,5 +4301,134 @@ index 0000000..1111111
         let changeset_has_tests = changeset_has_test_changes(&state.files);
         assert!(changeset_has_tests);
         assert!(file_risk_marker(&state.files[0], &state, changeset_has_tests, &theme).is_none());
+    }
+    #[test]
+    fn file_list_renders_a_directory_tree_and_folds_it() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut state, _) = single_added_line_review_state();
+        state.files = ["src/app/mod.rs", "src/app/state.rs", "src/ui/diff.rs"]
+            .iter()
+            .map(|path| DiffFile {
+                old_path: Some((*path).to_string()),
+                path: (*path).to_string(),
+                status: DiffFileStatus::Modified,
+                additions: 2,
+                deletions: 1,
+                is_binary: false,
+                old_content: None,
+                new_content: None,
+                patch: String::new(),
+                hunks: vec![],
+            })
+            .collect();
+        state.selected_file = 0;
+
+        // Only the file-list column: the patch panel beside it still titles
+        // itself with the full path, which would mask what the rows show.
+        const WIDTH: u16 = 120;
+        const FILE_LIST_COLS: usize = 34;
+        let render = |state: &mut DiffViewerState| {
+            let backend = TestBackend::new(WIDTH, 30);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| draw_diff_viewer(frame, state, &Theme::default()))
+                .unwrap();
+            let cells: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol().to_string())
+                .collect();
+            cells
+                .chunks(WIDTH as usize)
+                .map(|row| row[..FILE_LIST_COLS].concat())
+                .collect::<Vec<String>>()
+                .join("\n")
+        };
+
+        let rendered = render(&mut state);
+        // Directory headers replace the repeated path prefixes, and file rows
+        // show only their basename.
+        assert!(rendered.contains("▾ src/"), "expected a src directory row");
+        assert!(
+            rendered.contains("  ▾ app/"),
+            "expected a nested, indented app directory row: {rendered}"
+        );
+        assert!(rendered.contains("mod.rs"));
+        assert!(
+            !rendered.contains("src/app/mod.rs"),
+            "file rows should drop the prefix their directory rows already show"
+        );
+
+        // Folding hides the files beneath and summarises what it swallowed.
+        state.toggle_dir_collapsed("src/app");
+        let folded = render(&mut state);
+        assert!(!folded.contains("mod.rs"));
+        assert!(folded.contains("▸ app/"));
+        assert!(
+            folded.contains("(2)"),
+            "collapsed row should count its files"
+        );
+    }
+
+    #[test]
+    fn collapsed_dir_summary_only_counts_files_the_filter_shows() {
+        let (mut state, _) = single_added_line_review_state();
+        state.files = ["src/app/mod.rs", "src/app/state.rs", "src/app/ui.rs"]
+            .iter()
+            .map(|path| DiffFile {
+                old_path: Some((*path).to_string()),
+                path: (*path).to_string(),
+                status: DiffFileStatus::Modified,
+                additions: 2,
+                deletions: 1,
+                is_binary: false,
+                old_content: None,
+                new_content: None,
+                patch: String::new(),
+                hunks: vec![],
+            })
+            .collect();
+        state.selected_file = 0;
+        // Only mod.rs stays undecided; the other two are decided and one of them
+        // also changed since the last round.
+        state
+            .decisions
+            .insert("src/app/state.rs".to_string(), ReviewDecision::Approve);
+        state.decisions.insert(
+            "src/app/ui.rs".to_string(),
+            ReviewDecision::Reject {
+                feedback: "no".to_string(),
+                severity: crate::app::Severity::default(),
+            },
+        );
+        state
+            .changed_since_last
+            .insert("src/app/state.rs".to_string());
+        state.file_filter = crate::app::FileFilter::Undecided;
+        state.toggle_dir_collapsed("src/app");
+
+        let rows = state.file_tree_rows();
+        let files = rows
+            .iter()
+            .find_map(|row| match row {
+                crate::app::FileTreeRow::Dir { path, files, .. } if path == "src/app" => {
+                    Some(*files)
+                }
+                _ => None,
+            })
+            .expect("the collapsed src/app row");
+        let visible = state.visible_file_indices();
+        let summary: String =
+            dir_row_summary("src/app", files, &visible, &state, &Theme::default())
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+
+        // The badges describe the one file the row is actually hiding — not the
+        // decisions and Δ of the two the filter dropped.
+        assert_eq!(summary.trim(), "(1) ·1", "summary was {summary:?}");
     }
 }

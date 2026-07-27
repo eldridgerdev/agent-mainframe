@@ -454,16 +454,38 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('i') => {
             app.open_syntax_language_picker_for_selected_diff_file();
         }
+        // In the file list, j/k walk *tree rows* (directories included); n/p and
+        // the verdict-advance paths still move file-to-file.
         KeyCode::Char('j') | KeyCode::Down => match app.diff_viewer_focus() {
-            Some(DiffViewerFocus::FileList) => app.diff_viewer_select_next_file(),
+            Some(DiffViewerFocus::FileList) => app.diff_viewer_tree_move(1),
             Some(DiffViewerFocus::Patch) => app.diff_viewer_scroll_patch_down(PATCH_SCROLL_STEP),
             None => {}
         },
         KeyCode::Char('k') | KeyCode::Up => match app.diff_viewer_focus() {
-            Some(DiffViewerFocus::FileList) => app.diff_viewer_select_prev_file(),
+            Some(DiffViewerFocus::FileList) => app.diff_viewer_tree_move(-1),
             Some(DiffViewerFocus::Patch) => app.diff_viewer_scroll_patch_up(PATCH_SCROLL_STEP),
             None => {}
         },
+        // Tree folding is a file-list concern only, so it can't steal keys from
+        // the patch panel.
+        KeyCode::Char('z') | KeyCode::Enter
+            if app.diff_viewer_focus() == Some(DiffViewerFocus::FileList) =>
+        {
+            app.diff_viewer_tree_toggle_collapsed();
+        }
+        KeyCode::Char('Z') if app.diff_viewer_focus() == Some(DiffViewerFocus::FileList) => {
+            app.diff_viewer_tree_toggle_all();
+        }
+        KeyCode::Char('h') | KeyCode::Left
+            if app.diff_viewer_focus() == Some(DiffViewerFocus::FileList) =>
+        {
+            app.diff_viewer_tree_collapse_or_parent();
+        }
+        KeyCode::Char('l') | KeyCode::Right
+            if app.diff_viewer_focus() == Some(DiffViewerFocus::FileList) =>
+        {
+            app.diff_viewer_tree_expand();
+        }
         KeyCode::PageDown => {
             app.diff_viewer_scroll_patch_down(PATCH_PAGE_STEP);
         }
@@ -2926,5 +2948,93 @@ oldest
                 std::mem::discriminant(other)
             ),
         }
+    }
+    #[test]
+    fn file_list_j_k_walk_tree_rows_and_z_folds_a_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["README.md", "src/a.rs", "src/b.rs"]);
+
+        // Rows: README.md, dir src, a.rs, b.rs. j from the first file lands on
+        // the directory header without changing the diffed file.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        let state = match &app.mode {
+            AppMode::DiffViewer(state) => state,
+            _ => panic!("left the diff viewer"),
+        };
+        assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
+        assert_eq!(state.selected_file, 0);
+
+        // z folds it; the two files beneath lose their rows.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('z'))).unwrap();
+        let state = match &app.mode {
+            AppMode::DiffViewer(state) => state,
+            _ => panic!("left the diff viewer"),
+        };
+        assert!(state.collapsed_dirs.contains("src"));
+        assert_eq!(state.file_tree_rows().len(), 2);
+
+        // n keeps its file meaning and re-expands what it lands inside.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap();
+        let state = match &app.mode {
+            AppMode::DiffViewer(state) => state,
+            _ => panic!("left the diff viewer"),
+        };
+        assert_eq!(state.selected_file, 1);
+        assert!(state.collapsed_dirs.is_empty());
+    }
+
+    #[test]
+    fn tree_fold_keys_are_ignored_while_the_patch_is_focused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["src/a.rs"]);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.diff_viewer_focus(), Some(DiffViewerFocus::Patch));
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('z'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('Z'))).unwrap();
+
+        let state = match &app.mode {
+            AppMode::DiffViewer(state) => state,
+            _ => panic!("left the diff viewer"),
+        };
+        assert!(
+            state.collapsed_dirs.is_empty(),
+            "folding belongs to the file list, not the patch panel"
+        );
+    }
+    /// The tree is not a review-mode feature: the plain diff viewer (leader d)
+    /// shares `draw_file_list` and the same fold bindings, so it groups and
+    /// folds identically.
+    #[test]
+    fn plain_diff_viewer_gets_the_tree_and_fold_keys_too() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["README.md", "src/a.rs", "src/ui/b.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.review = false;
+        }
+
+        let rows = match &app.mode {
+            AppMode::DiffViewer(state) => state.file_tree_rows(),
+            _ => panic!("left the diff viewer"),
+        };
+        assert_eq!(
+            rows.len(),
+            5,
+            "expected README + src/ + a.rs + ui/ + b.rs outside review mode: {rows:?}"
+        );
+
+        // j walks onto the `src` directory row, z folds it.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('z'))).unwrap();
+        let state = match &app.mode {
+            AppMode::DiffViewer(state) => state,
+            _ => panic!("left the diff viewer"),
+        };
+        assert!(state.collapsed_dirs.contains("src"));
+        assert_eq!(state.file_tree_rows().len(), 2);
+        assert_eq!(
+            state.selected_file, 0,
+            "folding must not change the previewed file outside review mode either"
+        );
     }
 }

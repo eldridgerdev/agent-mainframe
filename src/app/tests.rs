@@ -15064,6 +15064,343 @@ fn pr_picker_choose_ai_review_is_noop_outside_picker_mode() {
     assert!(matches!(&app.mode, AppMode::Normal));
 }
 
+/// Build a final-review `DiffViewerState` over `paths` (already in the
+/// path-sorted order the diff loader produces) and install it as the mode, so
+/// tree navigation can be driven through the same `App` methods the handlers
+/// call.
+#[cfg(test)]
+fn enter_review_with_paths(app: &mut App, paths: &[&str]) {
+    let mut state = DiffViewerState::new(
+        ViewState::new(
+            "proj".into(),
+            "feat".into(),
+            "sess".into(),
+            "claude".into(),
+            "Claude".into(),
+            SessionKind::Claude,
+            VibeMode::Vibe,
+            false,
+        ),
+        std::path::PathBuf::from("/tmp"),
+    );
+    state.review = true;
+    state.files = paths
+        .iter()
+        .map(|path| crate::diff::DiffFile {
+            old_path: Some((*path).into()),
+            path: (*path).into(),
+            status: crate::diff::DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        })
+        .collect();
+    app.mode = AppMode::DiffViewer(state);
+}
+
+#[cfg(test)]
+fn tree_rows(app: &App) -> Vec<FileTreeRow> {
+    match &app.mode {
+        AppMode::DiffViewer(state) => state.file_tree_rows(),
+        _ => panic!("not in the diff viewer"),
+    }
+}
+
+#[cfg(test)]
+fn viewer_state(app: &App) -> &DiffViewerState {
+    match &app.mode {
+        AppMode::DiffViewer(state) => state,
+        _ => panic!("not in the diff viewer"),
+    }
+}
+
+#[test]
+fn ancestor_dirs_lists_each_level_shallowest_first() {
+    assert_eq!(ancestor_dirs("README.md"), Vec::<String>::new());
+    assert_eq!(ancestor_dirs("src/main.rs"), vec!["src".to_string()]);
+    assert_eq!(
+        ancestor_dirs("src/app/dialogs/diff.rs"),
+        vec![
+            "src".to_string(),
+            "src/app".to_string(),
+            "src/app/dialogs".to_string()
+        ]
+    );
+}
+
+#[test]
+fn file_tree_rows_group_by_directory_without_reordering_the_file_list() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    // Exactly the order `crate::diff` produces (files sorted by full path).
+    enter_review_with_paths(
+        &mut app,
+        &[
+            "README.md",
+            "src/a.rs",
+            "src/app/mod.rs",
+            "src/app/state.rs",
+        ],
+    );
+
+    let rows = tree_rows(&app);
+    let described: Vec<String> = rows
+        .iter()
+        .map(|row| match row {
+            FileTreeRow::Dir { path, depth, .. } => format!("dir {path} @{depth}"),
+            FileTreeRow::File { index, depth, name } => format!("file {name} #{index} @{depth}"),
+        })
+        .collect();
+    assert_eq!(
+        described,
+        vec![
+            "file README.md #0 @0",
+            "dir src @0",
+            "file a.rs #1 @1",
+            "dir src/app @1",
+            "file mod.rs #2 @2",
+            "file state.rs #3 @2",
+        ]
+    );
+    // File rows keep the original `files` order, so n/p and the tree agree.
+    let file_indices: Vec<usize> = rows
+        .iter()
+        .filter_map(|row| match row {
+            FileTreeRow::File { index, .. } => Some(*index),
+            FileTreeRow::Dir { .. } => None,
+        })
+        .collect();
+    assert_eq!(file_indices, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn collapsing_a_directory_hides_its_files_but_not_from_filters() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(
+        &mut app,
+        &["src/a.rs", "src/app/mod.rs", "src/app/state.rs"],
+    );
+
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.toggle_dir_collapsed("src/app");
+    }
+
+    let rows = tree_rows(&app);
+    assert!(
+        matches!(&rows[2], FileTreeRow::Dir { path, collapsed, files, .. }
+            if path == "src/app" && *collapsed && *files == 2),
+        "collapsed directory row should summarise the two files it hides: {rows:?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row, FileTreeRow::File { .. }))
+            .count(),
+        1,
+        "only the file outside the collapsed directory should have a row"
+    );
+    // Folding is a view concern only: filters and counts still see every file.
+    assert_eq!(viewer_state(&app).visible_file_indices(), vec![0, 1, 2]);
+}
+
+#[test]
+fn file_order_navigation_reveals_a_file_inside_a_collapsed_directory() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/a.rs", "src/app/mod.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.toggle_dir_collapsed("src/app");
+    }
+
+    // n (file-order navigation) must never strand the selection behind a fold.
+    app.diff_viewer_select_next_file();
+
+    let state = viewer_state(&app);
+    assert_eq!(state.selected_file, 1);
+    assert!(state.collapsed_dirs.is_empty());
+    assert!(state.tree_cursor_dir.is_none());
+}
+
+#[test]
+fn tree_move_walks_directory_rows_and_leaves_the_patch_alone() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["README.md", "src/a.rs"]);
+
+    // Row 0 is README.md; row 1 is the `src` directory header.
+    app.diff_viewer_tree_move(1);
+    let state = viewer_state(&app);
+    assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
+    assert_eq!(
+        state.selected_file, 0,
+        "parking on a directory must not change which file the patch shows"
+    );
+
+    // Folding from the directory row keeps the cursor there.
+    app.diff_viewer_tree_toggle_collapsed();
+    let state = viewer_state(&app);
+    assert!(state.collapsed_dirs.contains("src"));
+    assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
+
+    // Stepping down onto a file selects it and drops the directory cursor.
+    app.diff_viewer_tree_expand();
+    app.diff_viewer_tree_move(1);
+    let state = viewer_state(&app);
+    assert_eq!(state.selected_file, 1);
+    assert!(state.tree_cursor_dir.is_none());
+}
+
+#[test]
+fn toggle_all_folds_every_directory_then_unfolds_them() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/a.rs", "src/app/mod.rs"]);
+
+    app.diff_viewer_tree_toggle_all();
+    let state = viewer_state(&app);
+    assert!(state.collapsed_dirs.contains("src"));
+    assert!(state.collapsed_dirs.contains("src/app"));
+    // The selection is folded away, so the cursor parks on its outermost dir
+    // and the list still highlights a row.
+    assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
+    let rows = state.file_tree_rows();
+    assert_eq!(
+        rows.len(),
+        1,
+        "everything should fold into one row: {rows:?}"
+    );
+    assert!(state.tree_cursor_row(&rows).is_some());
+
+    app.diff_viewer_tree_toggle_all();
+    assert!(viewer_state(&app).collapsed_dirs.is_empty());
+}
+
+#[test]
+fn tree_cursor_row_falls_back_to_the_deepest_visible_ancestor() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/app/mod.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        // Fold the inner directory directly, without moving the selection.
+        state.toggle_dir_collapsed("src/app");
+    }
+
+    let state = viewer_state(&app);
+    let rows = state.file_tree_rows();
+    let cursor = state
+        .tree_cursor_row(&rows)
+        .expect("a row stays highlighted");
+    assert!(
+        matches!(&rows[cursor], FileTreeRow::Dir { path, .. } if path == "src/app"),
+        "the highlight should fall back to the fold hiding the selected file"
+    );
+}
+
+#[test]
+fn tree_move_enters_the_list_when_the_filter_hides_the_selection() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["README.md", "src/a.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        // Select a file the Undecided filter then drops, leaving a single
+        // root-level row and nothing highlighted.
+        state.selected_file = 1;
+        state
+            .decisions
+            .insert("src/a.rs".to_string(), crate::app::ReviewDecision::Approve);
+        state.file_filter = crate::app::FileFilter::Undecided;
+    }
+    assert!(
+        viewer_state(&app)
+            .tree_cursor_row(&tree_rows(&app))
+            .is_none(),
+        "the test needs a state with no highlighted row"
+    );
+
+    // j must reach the only row rather than stepping past it.
+    app.diff_viewer_tree_move(1);
+    assert_eq!(viewer_state(&app).selected_file, 0);
+
+    // ...and so must k, from the other end.
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.selected_file = 1;
+    }
+    app.diff_viewer_tree_move(-1);
+    assert_eq!(viewer_state(&app).selected_file, 0);
+}
+
+#[test]
+fn tree_toggle_folds_the_highlighted_row_not_the_hidden_selections_directory() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/a.rs", "src/app/mod.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.selected_file = 1;
+        state.decisions.insert(
+            "src/app/mod.rs".to_string(),
+            crate::app::ReviewDecision::Approve,
+        );
+        state.file_filter = crate::app::FileFilter::Undecided;
+    }
+    // With src/app/mod.rs filtered out, `src/app` has no row and the highlight
+    // falls back to `src`.
+    let rows = tree_rows(&app);
+    let cursor = viewer_state(&app)
+        .tree_cursor_row(&rows)
+        .expect("a row stays highlighted");
+    assert!(matches!(&rows[cursor], FileTreeRow::Dir { path, .. } if path == "src"));
+
+    app.diff_viewer_tree_toggle_collapsed();
+
+    let state = viewer_state(&app);
+    assert!(
+        state.collapsed_dirs.contains("src"),
+        "z should fold the directory the list highlights"
+    );
+    assert!(
+        !state.collapsed_dirs.contains("src/app"),
+        "z must not fold a directory that has no row: {:?}",
+        state.collapsed_dirs
+    );
+    assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
+}
+
 // ---------------------------------------------------------------------------
 // PR Triage: the `New feature…` fix target (companion triage feature)
 // ---------------------------------------------------------------------------

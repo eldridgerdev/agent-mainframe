@@ -12,6 +12,20 @@ are tagged.
 
 ### Added
 
+- **The diff viewers' changed-file list is now a collapsible directory tree.**
+  Files are grouped under their directories instead of repeating the full path
+  on every row, so a changeset spanning many folders is far easier to scan.
+  This applies both to Final Review and to the plain diff viewer (leader `d`).
+  In the file list, `j`/`k` move through the tree (directory headers included),
+  `z` or `Enter` folds the directory under the cursor, `Z` folds or unfolds
+  everything, and `h`/`l` step out to a parent or into a directory. Parking on
+  a directory never changes which file the diff shows. A folded directory
+  reports what it is hiding — how many files, and during a review how many are
+  still undecided, any rejections, and whether anything changed since the last
+  round — so folding cannot bury outstanding work. Filters, counts and `n`/`p` file
+  navigation are unaffected by folding: landing on a file inside a folded
+  directory simply opens it up. No migration is required.
+
 - **PR Triage can run a PR's fixes in a new feature of its own.** The
   fix-target picker (the prompt on the first `f`/`B` of a visit) has a third
   option: `New feature…`. It creates an isolated, worktree-backed feature just
@@ -92,6 +106,14 @@ are tagged.
   to `.claude/review-notes-archive.md` after each agent turn. Review
   surfaces merge both files, while agents only re-read the small live file.
   No migration is required; AMF archives existing notes automatically.
+
+### Changed
+
+- **Final Review's Developer Notes panel is half its former height.** It now
+  takes about a fifth of the column beside the diff rather than about two
+  fifths, leaving considerably more room for the change you are actually
+  reading. `e` still expands notes to full height when you want the whole
+  note.
 
 ### Fixed
 

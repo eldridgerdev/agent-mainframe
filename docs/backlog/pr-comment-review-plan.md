@@ -2444,6 +2444,34 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/ui/dialogs/pr_review.rs`,
       `docs/screenshots/pr-triage-amf-outbound-comments/`, `CHANGELOG.md`.
 
+- [x] **Show in-progress AI Review generation on the dashboard's PR item.**
+      While an AI Review is generating for a feature, append an `AI review`
+      activity marker to that feature's existing `[PR #N · M open]` badge in
+      the dashboard list. Reuse the workdir-scoped
+      `ai_review_running_for_workdir` state that drives the in-session PR
+      badge, so the marker appears only on the feature whose review is running,
+      remains visible if the user leaves the AI Review pane, and clears when
+      generation succeeds, fails, or is cancelled. Keep the existing PR number
+      and unresolved-thread count readable, and add render coverage for the
+      running, unrelated-feature, and completed states. →
+      `src/ui/list.rs`, `src/app/ai_review.rs`.
+
+      **Shipped, 2026-07-25.** The dashboard feature row's PR badge now reads
+      `[PR #N · M open · AI review]` while a background review runs, mirroring
+      the in-session `pr_triage_badge_span` marker and switching the badge to
+      the warning color, with the PR number and unresolved count left intact.
+      It reads the same workdir-scoped `ai_review_running_for_workdir` state
+      the pane badge uses, so it survives leaving the AI Review pane and is
+      scoped to the one feature whose review is running. `src/app/ai_review.rs`
+      needed no change — the existing accessor was already sufficient. Render
+      regressions cover the running, unrelated-feature, and completed states,
+      the last one asserting the marker is gone at the intermediate step where
+      `poll_ai_pr_review_bg` has cleared the background slot but not yet taken
+      the pending snapshot. Suite green (1263 passed, 1 ignored; the one
+      failure is the pre-existing `wsl_clipboard_round_trips_image_and_text`
+      test, which needs `wl-paste`/`xclip` and is unrelated); strict Clippy and
+      formatting clean. → `src/ui/list.rs`, `CHANGELOG.md`.
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

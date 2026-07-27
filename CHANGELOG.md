@@ -26,6 +26,19 @@ are tagged.
   navigation are unaffected by folding: landing on a file inside a folded
   directory simply opens it up. No migration is required.
 
+- **Plan-mode interviews now pause at a review gate before launching the
+  feature.** An opted-in AI flow turns the interview into a structured
+  implementation plan, then shows the rendered markdown for review. You can
+  edit the raw plan, regenerate it, scroll through the preview, or abort;
+  AMF writes `.claude/plan.md` and starts the feature only after you press
+  `Enter` to accept. If synthesis is unavailable or returns an invalid plan,
+  AMF shows the raw interview plan as a fallback. No migration is required.
+- **The dashboard now shows when an AI Review is generating.** A feature's PR
+  badge reads `[PR #123 · 4 open · AI review]` while its review runs, so you
+  can leave the AI Review pane, work elsewhere, and still see the pass is in
+  flight. The marker appears only on the feature whose review is running and
+  clears when generation succeeds, fails, or is cancelled. No migration is
+  required.
 - **Final Review now includes a review-round history browser.** Press `H` to
   move between the live review and earlier rounds, including their verdict
   counts, checks, comments, suggestions, and agent replies. Older archived

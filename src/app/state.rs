@@ -3429,6 +3429,16 @@ pub enum PlanInterviewPhase {
     /// A background AI-adaptive round is in flight (`App::poll_plan_interview_ai_bg`).
     /// Question navigation is frozen; `current_question()` returns `None`.
     AiLoading,
+    /// The completed interview is being synthesized into structured markdown
+    /// by a background headless call.
+    SynthesisLoading,
+    /// The proposed plan is rendered as markdown and awaits an explicit
+    /// accept, edit, regenerate, or abort action.
+    Review,
+    /// The proposed plan is open as raw markdown in the shared text editor.
+    Editing,
+    /// Transient question-flow completion used while app-level code decides
+    /// whether to run another adaptive round, synthesize, or use the fallback.
     Done,
 }
 
@@ -3455,14 +3465,15 @@ pub struct PlanInterviewState {
     pub pending_launch: Option<PreparedFeatureLaunch>,
     pub abort_confirmation: bool,
     /// The feature's configured agent, preferred as the AI-adaptive
-    /// interviewer engine before `HeadlessRunner::select_for_interview`
-    /// falls back to another installed harness.
+    /// interviewer/synthesis engine before
+    /// `HeadlessRunner::select_for_interview` falls back to another installed
+    /// harness.
     pub preferred_harness: AgentKind,
     /// Resolved lazily on the first AI round attempt. `None` = not yet
     /// resolved; `Some(None)` = resolution was attempted and no
-    /// headless-capable harness is available, so remaining rounds are
-    /// skipped silently; `Some(Some(harness))` = the engine powering AI
-    /// rounds for the rest of this interview.
+    /// headless-capable harness is available, so remaining AI work falls back
+    /// to the raw Q&A plan; `Some(Some(harness))` = the engine powering AI
+    /// work for the rest of this interview.
     pub ai_harness: Option<Option<AgentKind>>,
     /// Number of AI rounds that have finished (successfully or not),
     /// checked against [`crate::plan_interview::MAX_AI_ROUNDS`].
@@ -3474,6 +3485,10 @@ pub struct PlanInterviewState {
     /// Set when the user finishes early or declines the token-use prompt so
     /// the `Done` transition skips any remaining AI rounds.
     pub skip_ai_rounds: bool,
+    /// Set by the explicit "synthesize now" action. This permits the final
+    /// headless pass without opting into adaptive rounds while preserving the
+    /// consent screen's guarantee that ordinary completion spends no tokens.
+    pub synthesis_requested: bool,
     /// When set, an AI round is in flight; used to render elapsed time on
     /// the `AiLoading` frame. `None` outside `AiLoading`.
     pub ai_round_started_at: Option<std::time::Instant>,
@@ -3482,6 +3497,23 @@ pub struct PlanInterviewState {
     /// heuristic, not a harness-reported count — no headless call currently
     /// surfaces real usage).
     pub ai_round_token_estimate: usize,
+    /// True once plan synthesis has been started or deliberately bypassed
+    /// because no headless engine is available. Prevents a failed plan-file
+    /// write from spending tokens again when the user retries completion.
+    pub synthesis_attempted: bool,
+    /// The plan currently displayed at the review gate. App-level completion
+    /// fills this with either valid synthesized markdown or the raw-Q&A
+    /// fallback, and edits replace it before acceptance.
+    pub synthesized_plan: Option<String>,
+    /// Start time and prompt-size estimate for the synthesis loading frame.
+    pub synthesis_started_at: Option<std::time::Instant>,
+    pub synthesis_token_estimate: usize,
+    /// Cached markdown-viewer layout for the review gate.
+    pub review_scroll_offset: usize,
+    pub review_rendered_width: u16,
+    pub review_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    pub edit_scroll_offset: usize,
+    pub edit_sync_to_cursor: bool,
 }
 
 impl PlanInterviewState {
@@ -3519,8 +3551,18 @@ impl PlanInterviewState {
             ai_rounds_completed: 0,
             ai_followups_opted_in: false,
             skip_ai_rounds: false,
+            synthesis_requested: false,
             ai_round_started_at: None,
             ai_round_token_estimate: 0,
+            synthesis_attempted: false,
+            synthesized_plan: None,
+            synthesis_started_at: None,
+            synthesis_token_estimate: 0,
+            review_scroll_offset: 0,
+            review_rendered_width: 0,
+            review_rendered_lines: Vec::new(),
+            edit_scroll_offset: 0,
+            edit_sync_to_cursor: false,
         }
     }
 
@@ -3529,6 +3571,69 @@ impl PlanInterviewState {
         self.phase = PlanInterviewPhase::AiLoading;
         self.ai_round_started_at = Some(std::time::Instant::now());
         self.ai_round_token_estimate = token_estimate;
+    }
+
+    /// Move into the synthesis loading phase while the final plan is
+    /// generated off the UI thread.
+    pub fn begin_synthesis(&mut self, token_estimate: usize) {
+        self.synthesis_attempted = true;
+        self.phase = PlanInterviewPhase::SynthesisLoading;
+        self.synthesis_started_at = Some(std::time::Instant::now());
+        self.synthesis_token_estimate = token_estimate;
+    }
+
+    /// Store the synthesized or fallback plan and stop at the review gate.
+    pub fn apply_synthesis(&mut self, plan: String) {
+        self.synthesis_attempted = true;
+        self.synthesized_plan = Some(plan);
+        self.synthesis_started_at = None;
+        self.review_scroll_offset = 0;
+        self.review_rendered_width = 0;
+        self.review_rendered_lines.clear();
+        self.phase = PlanInterviewPhase::Review;
+    }
+
+    /// Open the reviewed plan as raw markdown without changing the staged
+    /// plan until the user explicitly saves the edit.
+    pub fn begin_plan_edit(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Review {
+            return false;
+        }
+        let Some(plan) = self.synthesized_plan.clone() else {
+            return false;
+        };
+        self.editor = TextEditor::new(plan);
+        self.edit_scroll_offset = 0;
+        self.edit_sync_to_cursor = true;
+        self.phase = PlanInterviewPhase::Editing;
+        true
+    }
+
+    /// Save the raw markdown edit and return to the rendered preview.
+    /// Empty plans are rejected so acceptance can never write a blank file.
+    pub fn save_plan_edit(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Editing || self.editor.text().trim().is_empty() {
+            return false;
+        }
+        let mut plan = self.editor.text().to_string();
+        if !plan.ends_with('\n') {
+            plan.push('\n');
+        }
+        self.synthesized_plan = Some(plan);
+        self.review_scroll_offset = 0;
+        self.review_rendered_width = 0;
+        self.review_rendered_lines.clear();
+        self.phase = PlanInterviewPhase::Review;
+        true
+    }
+
+    /// Discard the editor buffer and return to the last rendered plan.
+    pub fn cancel_plan_edit(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Editing {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::Review;
+        true
     }
 
     /// Explicitly accept the optional token-spending AI follow-up stage.
@@ -3628,7 +3733,11 @@ impl PlanInterviewState {
                 self.skip_ai_rounds = true;
                 self.phase = PlanInterviewPhase::Done;
             }
-            PlanInterviewPhase::AiLoading | PlanInterviewPhase::Done => {}
+            PlanInterviewPhase::AiLoading
+            | PlanInterviewPhase::SynthesisLoading
+            | PlanInterviewPhase::Review
+            | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::Done => {}
         }
         Ok(())
     }
@@ -3692,12 +3801,15 @@ impl PlanInterviewState {
             }
             // Loading is a transient App-driven state; there is nothing to
             // navigate back to until it resolves.
-            PlanInterviewPhase::AiLoading => false,
+            PlanInterviewPhase::AiLoading
+            | PlanInterviewPhase::SynthesisLoading
+            | PlanInterviewPhase::Review
+            | PlanInterviewPhase::Editing => false,
         }
     }
 
-    /// End questioning with the answers collected so far, skipping any
-    /// remaining AI-adaptive rounds.
+    /// End questioning with the answers collected so far, skip any remaining
+    /// adaptive rounds, and explicitly request plan synthesis.
     pub fn finish_early(&mut self) -> Result<(), PlanInterviewAdvanceError> {
         match self.phase {
             PlanInterviewPhase::Brief => {
@@ -3707,12 +3819,18 @@ impl PlanInterviewState {
                 self.brief = self.editor.text().to_string();
             }
             PlanInterviewPhase::StaticQuestions => self.save_current_draft(),
-            PlanInterviewPhase::AiConsent
-            | PlanInterviewPhase::AiLoading
-            | PlanInterviewPhase::Done => {}
+            PlanInterviewPhase::AiConsent => {}
+            // Do not overlap paid calls or mutate a retryable completed
+            // synthesis. The UI does not advertise this action while loading.
+            PlanInterviewPhase::AiLoading
+            | PlanInterviewPhase::SynthesisLoading
+            | PlanInterviewPhase::Review
+            | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::Done => return Ok(()),
         }
         self.ai_round_started_at = None;
         self.skip_ai_rounds = true;
+        self.synthesis_requested = true;
         self.phase = PlanInterviewPhase::Done;
         Ok(())
     }
@@ -4026,6 +4144,7 @@ mod tests {
 
         assert_eq!(state.phase, PlanInterviewPhase::Done);
         assert!(state.skip_ai_rounds);
+        assert!(state.synthesis_requested);
     }
 
     #[test]
@@ -4063,6 +4182,7 @@ mod tests {
         assert_eq!(state.phase, PlanInterviewPhase::Done);
         assert!(!state.ai_followups_opted_in);
         assert!(state.skip_ai_rounds);
+        assert!(!state.synthesis_requested);
     }
 
     #[test]
@@ -4075,6 +4195,72 @@ mod tests {
         assert!(state.ai_round_started_at.is_some());
         assert_eq!(state.ai_round_token_estimate, 1200);
         assert!(state.current_question().is_none());
+    }
+
+    #[test]
+    fn plan_interview_synthesis_is_cached_and_opens_review() {
+        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+
+        state.begin_synthesis(900);
+
+        assert_eq!(state.phase, PlanInterviewPhase::SynthesisLoading);
+        assert!(state.synthesis_attempted);
+        assert!(state.synthesis_started_at.is_some());
+        assert_eq!(state.synthesis_token_estimate, 900);
+        assert!(state.current_question().is_none());
+
+        state.apply_synthesis("# Plan: feature\n".into());
+
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
+        assert!(state.synthesis_started_at.is_none());
+        assert_eq!(state.synthesized_plan.as_deref(), Some("# Plan: feature\n"));
+    }
+
+    #[test]
+    fn plan_interview_plan_edits_are_staged_until_saved() {
+        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        state.apply_synthesis("# Plan: original\n".into());
+
+        assert!(state.begin_plan_edit());
+        assert_eq!(state.phase, PlanInterviewPhase::Editing);
+        state.editor = TextEditor::new("# Plan: changed".into());
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+
+        assert!(state.save_plan_edit());
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
+        assert_eq!(state.synthesized_plan.as_deref(), Some("# Plan: changed\n"));
+    }
+
+    #[test]
+    fn plan_interview_plan_edit_can_be_discarded_and_cannot_save_empty() {
+        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        state.apply_synthesis("# Plan: original\n".into());
+
+        assert!(state.begin_plan_edit());
+        state.editor = TextEditor::new(String::new());
+        assert!(!state.save_plan_edit());
+        assert_eq!(state.phase, PlanInterviewPhase::Editing);
+        assert!(state.cancel_plan_edit());
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+    }
+
+    #[test]
+    fn plan_interview_finish_early_does_not_overlap_in_flight_ai_work() {
+        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        state.begin_ai_round(500);
+
+        state.finish_early().unwrap();
+
+        assert_eq!(state.phase, PlanInterviewPhase::AiLoading);
+        assert!(!state.synthesis_requested);
+        assert!(!state.skip_ai_rounds);
     }
 
     #[test]

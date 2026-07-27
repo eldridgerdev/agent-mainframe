@@ -251,8 +251,8 @@ Create-project and batch-feature templates, examples, and the JSON response form
    (Claude, Codex, Opencode, or Pi), and pick a vibe mode. A git worktree
    is created automatically when needed, and features auto-start on
    creation. With plan mode enabled, AMF first runs a guided interview and
-   writes the answers to the feature's `.claude/plan.md`; the agent starts
-   after the interview completes. Codex supports `Vibe` and `SuperVibe`;
+   lets you review or edit the proposed `.claude/plan.md`; the agent starts
+   only after you accept the plan. Codex supports `Vibe` and `SuperVibe`;
    `Vibeless` is only available for agents with diff-review hook support.
 
 <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/328be46c-b8db-4150-9955-436377c03295" />
@@ -315,7 +315,11 @@ When plan mode is enabled during feature creation, AMF collects a required
 feature brief followed by optional built-in discovery questions before the
 agent launches. After those questions, AMF offers optional AI-adaptive
 follow-ups and clearly warns that they use agent tokens. No headless AI call
-runs unless you explicitly opt in.
+runs unless you explicitly opt in. An opted-in flow synthesizes the collected
+interview into a structured implementation plan before launch; unavailable or
+invalid synthesis falls back to the raw interview plan. Every completed flow
+stops at a rendered review gate; AMF does not write the plan or launch the
+feature until you explicitly accept it.
 
 | Key | Action |
 | --- | --- |
@@ -325,8 +329,19 @@ runs unless you explicitly opt in.
 | `j` / `k` / `↑` / `↓` | Navigate select-option answers |
 | `Ctrl+B` | Return to the previous question |
 | `Ctrl+S` | Skip an optional question or decline AI follow-ups |
-| `Ctrl+F` | Finish early without starting any remaining AI rounds |
+| `Ctrl+F` | Synthesize now with the answers so far (uses agent tokens, but skips remaining adaptive rounds) |
 | `Esc` | Cancel, then choose whether to launch without a plan or cancel the feature |
+
+At the plan review gate:
+
+| Key | Action |
+| --- | --- |
+| `j` / `k` / `PgUp` / `PgDn` | Scroll the rendered plan |
+| `e` | Edit the raw plan markdown |
+| `r` | Regenerate the plan (uses agent tokens when a headless harness is available) |
+| `Enter` | Accept the reviewed plan, write it, and launch the feature |
+| `Ctrl+S` | Save a raw-markdown edit and return to the rendered preview |
+| `Esc` | Discard a raw-markdown edit, or open abort confirmation from the preview |
 
 ### Viewing Mode (Embedded tmux)
 

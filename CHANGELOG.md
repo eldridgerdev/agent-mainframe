@@ -17,9 +17,10 @@ are tagged.
   gaps, risks, contradictions, unclear decisions, and missing acceptance
   criteria, then shows the analysis alongside the plan. It is advice, not an
   edit: the plan is left exactly as it was unless you press `r` to fold the
-  feedback into a fresh revision. `Esc` returns you to the plan, and doing so
-  while the review is still running just drops the review — your plan is never
-  at risk. The review reuses whichever agent is already powering the
+  feedback into a fresh revision. `Esc` returns you to the plan — your plan is
+  never at risk — and nothing you paid for is lost: `a` re-opens the review you
+  already have (including one that finished after you dismissed it) instead of
+  running a second one. The review reuses whichever agent is already powering the
   interview, and the progress screen names it along with elapsed time and an
   estimated token cost, so a paid call is never silent. If no agent is
   available, or one answers with something unusable, AMF says so and leaves

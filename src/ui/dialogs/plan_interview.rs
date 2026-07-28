@@ -470,7 +470,13 @@ fn draw_plan_review(
         hint("e", theme),
         Span::raw(" edit  "),
         hint("a", theme),
-        Span::raw(" agent review  "),
+        // A review already held for this plan is re-opened, not re-run, so the
+        // hint says which of the two `a` does before it costs anything.
+        Span::raw(if state.critique.is_some() {
+            " show review  "
+        } else {
+            " agent review  "
+        }),
         hint("r", theme),
         Span::raw(" regenerate  "),
         hint("Enter", theme),

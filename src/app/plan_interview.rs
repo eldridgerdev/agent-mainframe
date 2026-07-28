@@ -181,7 +181,10 @@ impl App {
                     .as_ref()
                     .map(|prepared| prepared.workdir.clone())
                     .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
-                state.take_revision_critique(),
+                // Read, not taken: a revision that cannot run must leave the
+                // feedback staged rather than spend it on a pass that never
+                // happens.
+                state.staged_revision_critique().map(str::to_string),
             ),
             _ => return Ok(()),
         };
@@ -198,27 +201,40 @@ impl App {
             // Regenerating from the review gate is the only way to get here
             // with a plan already on screen. The fallback re-renders that same
             // plan, so without an explicit message the keypress would look
-            // unbound rather than deliberately declined.
+            // unbound rather than deliberately declined. The staged feedback is
+            // deliberately left untaken: the review is still on `a`, and `r`
+            // retries the revision if a harness turns up.
             let regenerating = matches!(
                 &self.mode,
                 AppMode::PlanInterview(state) if state.synthesized_plan.is_some()
             );
             self.log_info(
                 "plan_interview",
-                if regenerating {
+                if revision_critique.is_some() {
+                    "no headless-capable harness available; keeping current plan and its review"
+                        .to_string()
+                } else if regenerating {
                     "no headless-capable harness available; keeping current plan".to_string()
                 } else {
                     "no headless-capable harness available; using raw Q&A plan".to_string()
                 },
             );
             self.open_plan_interview_review(None);
-            self.message = Some(if regenerating {
+            self.message = Some(if revision_critique.is_some() {
+                "No headless-capable harness available; the plan and its review are unchanged"
+                    .into()
+            } else if regenerating {
                 "No headless-capable harness available; keeping current plan".into()
             } else {
                 "No headless-capable harness available; using the raw Q&A plan".into()
             });
             return Ok(());
         };
+
+        // Committed to the pass now, so the staged feedback is spent.
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.take_revision_critique();
+        }
 
         let context = plan_interview::gather_repository_context(&workdir);
         let prompt = plan_interview::build_synthesis_prompt(
@@ -264,6 +280,25 @@ impl App {
     /// A missing headless engine leaves the user at the review gate with a
     /// notice rather than blocking acceptance.
     pub(crate) fn start_plan_interview_critique(&mut self) -> Result<()> {
+        // A review already held for this plan is re-opened rather than paid
+        // for again; it is dropped whenever the plan changes, so one that
+        // survives still describes what is on screen.
+        let reopened = match &mut self.mode {
+            AppMode::PlanInterview(state) => state.reopen_critique(),
+            _ => false,
+        };
+        if reopened {
+            self.message = None;
+            return Ok(());
+        }
+
+        // A dismissed review leaves its worker running. Starting a second call
+        // would pay twice for the same analysis and drop the first result.
+        if self.plan_interview_critique_bg.is_some() {
+            self.message = Some("Plan review still running".into());
+            return Ok(());
+        }
+
         let (
             preferred_harness,
             resolved_harness,
@@ -390,9 +425,25 @@ impl App {
                 if state.phase == PlanInterviewPhase::CritiqueLoading
         );
         if !is_loading {
-            // The user dismissed the review or moved on; discard the late
-            // result rather than pulling them back into it.
-            return false;
+            // The user dismissed the review or moved on. Don't pull them back
+            // into it — but the call was paid for, so keep a usable result
+            // where `a` can re-open it instead of dropping it on the floor.
+            let stashed = match (result, &mut self.mode) {
+                (Ok(response), AppMode::PlanInterview(state)) => {
+                    match plan_interview::parse_plan_critique(&response) {
+                        Some(critique) => state.stash_critique(critique),
+                        None => false,
+                    }
+                }
+                _ => false,
+            };
+            if stashed {
+                self.log_info(
+                    "plan_interview",
+                    "dismissed plan review finished; kept for re-open".to_string(),
+                );
+            }
+            return stashed;
         }
 
         // A call that never ran and a call that answered off-contract are

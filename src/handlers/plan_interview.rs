@@ -207,7 +207,7 @@ fn handle_plan_critique_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 state.close_critique();
             }
             app.message = if loading {
-                Some("Plan review dismissed".into())
+                Some("Plan review dismissed; press a to see it if it lands".into())
             } else {
                 None
             };

@@ -126,7 +126,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     let plan_review_keybinds: Vec<(&str, &str)> = vec![
         ("j/k / PgUp/PgDn", "Scroll the rendered plan"),
         ("e", "Edit raw plan markdown"),
-        ("a", "Agent review of the plan (uses tokens)"),
+        (
+            "a",
+            "Agent review of the plan, or re-open one already held (uses tokens for a new review)",
+        ),
         ("r", "Regenerate the plan (uses tokens)"),
         ("Enter", "Accept plan and launch feature"),
         ("Ctrl+S", "Save edit and return to preview"),

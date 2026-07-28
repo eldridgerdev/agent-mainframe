@@ -301,12 +301,21 @@ pub fn parse_synthesized_plan(response: &str) -> Option<String> {
 ///
 /// Validation is deliberately looser than [`parse_synthesized_plan`]'s: the
 /// review is prose rendered straight into the markdown viewer and no section
-/// is machine-read, so requiring the title and at least one section is enough
-/// to tell an analysis from a refusal or a stray rewritten plan — while a
-/// merely reordered or renamed heading still reaches the user who paid for it.
+/// is machine-read, so any level-1 heading followed by at least one section is
+/// accepted — a retitled, recased, or reordered review still reaches the user
+/// who paid for it. What must still be rejected is a refusal (no headings at
+/// all) and a rewritten plan, which is caught by the structure the synthesis
+/// contract defines rather than by the wording of the title.
 pub fn parse_plan_critique(response: &str) -> Option<String> {
     let critique = strip_markdown_fence(response);
-    if !critique.starts_with("# Plan review:") {
+    let title = critique.lines().next()?;
+    if !title.starts_with("# ") {
+        return None;
+    }
+    // `# Plan: <name>` is the synthesis contract's title, so a reply wearing it
+    // is a rewritten plan rather than analysis — the one thing the review is
+    // forbidden to return.
+    if title.to_ascii_lowercase().starts_with("# plan:") {
         return None;
     }
     if !critique.lines().any(|line| line.starts_with("## ")) {
@@ -316,15 +325,26 @@ pub fn parse_plan_critique(response: &str) -> Option<String> {
 }
 
 /// Drop a whole-response markdown code fence, which models occasionally add
-/// despite prompts asking for bare markdown.
+/// despite prompts asking for bare markdown. A bare ` ``` ` opener counts:
+/// models wrap the reply with and without the `markdown` tag.
 fn strip_markdown_fence(response: &str) -> &str {
     let trimmed = response.trim();
-    trimmed
-        .strip_prefix("```markdown")
-        .or_else(|| trimmed.strip_prefix("```md"))
-        .and_then(|body| body.strip_suffix("```"))
-        .map(str::trim)
-        .unwrap_or(trimmed)
+    let Some(after_fence) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    let body = after_fence
+        .strip_prefix("markdown")
+        .or_else(|| after_fence.strip_prefix("md"))
+        .unwrap_or(after_fence);
+    // Anything else between the fence and the newline is a language tag for
+    // some other language, which makes the fence content rather than a wrapper.
+    if !body.starts_with('\n') && !body.starts_with("\r\n") {
+        return trimmed;
+    }
+    match body.strip_suffix("```") {
+        Some(inner) => inner.trim(),
+        None => trimmed,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -778,16 +798,34 @@ mod tests {
     /// live against Claude, where that sentence was the entire response.
     #[test]
     fn every_interview_prompt_says_it_is_running_without_tools() {
-        for (name, prompt) in [
-            ("interviewer", INTERVIEWER_PROMPT),
-            ("synthesis", SYNTHESIS_PROMPT),
-            ("critique", CRITIQUE_PROMPT),
-        ] {
+        let checked = [
+            ("INTERVIEWER_PROMPT", INTERVIEWER_PROMPT),
+            ("SYNTHESIS_PROMPT", SYNTHESIS_PROMPT),
+            ("CRITIQUE_PROMPT", CRITIQUE_PROMPT),
+        ];
+        for (name, prompt) in checked {
             assert!(
                 prompt.contains("running without tools") && prompt.contains("no file access"),
-                "{name} prompt does not tell the model it has no tools"
+                "{name} does not tell the model it has no tools"
             );
         }
+
+        // Scan this module's own source so a fourth prompt constant fails here
+        // instead of passing by simply being absent from the list above.
+        let declared: Vec<&str> = include_str!("plan_interview.rs")
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("pub const "))
+            .filter_map(|rest| rest.split(':').next())
+            .filter(|name| name.ends_with("_PROMPT"))
+            .collect();
+        let unchecked: Vec<&&str> = declared
+            .iter()
+            .filter(|name| !checked.iter().any(|(checked, _)| checked == *name))
+            .collect();
+        assert!(
+            unchecked.is_empty(),
+            "prompt constants not covered by this test: {unchecked:?}"
+        );
     }
 
     #[test]
@@ -836,12 +874,38 @@ mod tests {
     }
 
     #[test]
+    fn critique_parser_keeps_analysis_whose_title_merely_varies() {
+        // The review is prose nothing machine-reads, so a recased, repunctuated
+        // or renamed title is still the analysis the user paid for. Discarding
+        // it would spend tokens for nothing.
+        for title in [
+            "# Plan Review: guided-plans",
+            "# Plan review — guided-plans",
+            "# plan review",
+            "# Review of the guided-plans plan",
+        ] {
+            let response = format!("{title}\n\n## Summary\nReady with caveats.\n");
+            assert!(
+                parse_plan_critique(&response).is_some(),
+                "rejected a usable review titled {title:?}"
+            );
+        }
+
+        // A bare fence is as common a wrapper as a tagged one.
+        let fenced = "```\n# Plan review: guided-plans\n\n## Summary\nReady.\n```";
+        let critique = parse_plan_critique(fenced).unwrap();
+        assert!(critique.starts_with("# Plan review: guided-plans"));
+        assert!(!critique.contains("```"));
+    }
+
+    #[test]
     fn critique_parser_rejects_refusals_and_rewritten_plans() {
         // A bare refusal, and a reply that ignored the advisory contract and
         // returned a plan instead — accepting either would show the user a
         // "review" that reviews nothing.
         assert!(parse_plan_critique("I cannot help with that.").is_none());
         assert!(parse_plan_critique("# Plan: guided-plans\n\n## Goal\nShip it.\n").is_none());
+        assert!(parse_plan_critique("# plan: guided-plans\n\n## Goal\nShip it.\n").is_none());
         // The title alone, with no findings section, is not an analysis.
         assert!(parse_plan_critique("# Plan review: guided-plans\n\nLooks fine.").is_none());
     }

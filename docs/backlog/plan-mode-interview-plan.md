@@ -218,8 +218,10 @@ pub struct PlanQuestion {
   an offer to go read the repo and nothing else — observed live during
   the Epic 4 agent-review work, where that reply was the entire
   response. All three prompts (interviewer, synthesis, critique) now say
-  they run without tools and that the supplied context is all there is,
-  pinned by a unit test so a fourth prompt cannot quietly skip it. Every
+  they run without tools and that the supplied context is all there is.
+  A unit test asserts the line on each and then scans the module source
+  for `pub const *_PROMPT` declarations, so a fourth prompt fails the
+  test rather than silently escaping a hand-written list. Every
   parse-failure path logs a bounded ~300-char prefix of the reply; that
   breadcrumb is what makes this class of failure diagnosable at all.
 - All headless calls run off the UI thread using the existing

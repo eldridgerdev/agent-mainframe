@@ -270,6 +270,26 @@ pub struct CodexSessionPickerState {
     pub workdir: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoppedSessionChoice {
+    Resume,
+    Clear,
+    Cancel,
+}
+
+impl StoppedSessionChoice {
+    pub const ALL: [Self; 3] = [Self::Resume, Self::Clear, Self::Cancel];
+}
+
+#[derive(Debug, Clone)]
+pub struct StoppedSessionDialogState {
+    pub project_id: String,
+    pub feature_id: String,
+    pub session_id: String,
+    pub selected: usize,
+    pub resume_available: bool,
+}
+
 #[derive(Clone)]
 pub struct BookmarkPickerState {
     pub selected: usize,
@@ -2844,6 +2864,7 @@ pub enum AppMode {
         session_id: String,
         workdir: PathBuf,
     },
+    StoppedSessionDialog(StoppedSessionDialogState),
     BookmarkPicker(BookmarkPickerState),
     DiffPicker(DiffPickerState),
     DiffViewerLoading(DiffViewerState),

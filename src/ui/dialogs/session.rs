@@ -8,11 +8,93 @@ use ratatui::{
 
 use crate::app::{
     NewSessionNameState, ProjectAgentConfigState, RenameFeatureState, RenameSessionState,
-    SessionConfigState,
+    SessionConfigState, StoppedSessionChoice, StoppedSessionDialogState,
 };
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
+
+pub fn draw_stopped_session_dialog(
+    frame: &mut Frame,
+    state: &StoppedSessionDialogState,
+    theme: &Theme,
+) {
+    let area = centered_rect(58, 38, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Session Not Running ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.warning.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            " The saved agent pane is no longer running.",
+            Style::default().fg(theme.text.to_color()),
+        )),
+        Line::from(""),
+    ];
+
+    for (index, choice) in StoppedSessionChoice::ALL.iter().enumerate() {
+        let (label, disabled) = match choice {
+            StoppedSessionChoice::Resume => (
+                "Resume the previous session",
+                if state.resume_available {
+                    None
+                } else {
+                    Some(" (no saved session ID)")
+                },
+            ),
+            StoppedSessionChoice::Clear => ("Start a clear session", None),
+            StoppedSessionChoice::Cancel => ("Cancel", None),
+        };
+        let selected = index == state.selected;
+        let mut style = if disabled.is_some() {
+            Style::default().fg(theme.text_muted.to_color())
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        if selected {
+            style = style
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {}{}{}",
+                if selected { "› " } else { "  " },
+                label,
+                disabled.unwrap_or("")
+            ),
+            style,
+        )));
+    }
+
+    lines.extend([
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " select  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("r", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " resume  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("c", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" clear  ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+        ]),
+    ]);
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
 
 pub fn draw_rename_session_dialog(frame: &mut Frame, state: &RenameSessionState, theme: &Theme) {
     let area = centered_rect(50, 25, frame.area());

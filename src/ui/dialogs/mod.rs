@@ -53,7 +53,7 @@ pub use review_harness::draw_review_harness_pick;
 pub use search::draw_search_dialog;
 pub use session::{
     draw_new_session_name_dialog, draw_project_agent_config_dialog, draw_rename_feature_dialog,
-    draw_rename_session_dialog, draw_session_config_dialog,
+    draw_rename_session_dialog, draw_session_config_dialog, draw_stopped_session_dialog,
 };
 pub use theme::draw_theme_picker;
 pub use todos::{draw_todo_quick_capture_dialog, draw_todos_host_reassign_dialog, draw_todos_view};

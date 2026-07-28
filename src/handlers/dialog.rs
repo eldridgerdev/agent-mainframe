@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, AppMode, CreateProjectStep};
+use crate::app::{App, AppMode, CreateProjectStep, StoppedSessionChoice};
 
 const STEERING_PROMPT_PAGE_SCROLL: usize = 6;
 
@@ -535,6 +535,76 @@ pub fn handle_session_config_key(app: &mut App, key: KeyCode) -> Result<()> {
         }
         KeyCode::Esc | KeyCode::Char('q') => {
             app.cancel_session_config();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn handle_stopped_session_dialog_key(app: &mut App, key: KeyCode) -> Result<()> {
+    let selectable = |choice: StoppedSessionChoice, resume_available: bool| {
+        choice != StoppedSessionChoice::Resume || resume_available
+    };
+
+    match key {
+        KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => {
+            if let AppMode::StoppedSessionDialog(state) = &mut app.mode {
+                let start = state.selected;
+                loop {
+                    state.selected = (state.selected + 1) % StoppedSessionChoice::ALL.len();
+                    if selectable(
+                        StoppedSessionChoice::ALL[state.selected],
+                        state.resume_available,
+                    ) || state.selected == start
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => {
+            if let AppMode::StoppedSessionDialog(state) = &mut app.mode {
+                let start = state.selected;
+                loop {
+                    state.selected = state
+                        .selected
+                        .checked_sub(1)
+                        .unwrap_or(StoppedSessionChoice::ALL.len() - 1);
+                    if selectable(
+                        StoppedSessionChoice::ALL[state.selected],
+                        state.resume_available,
+                    ) || state.selected == start
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        KeyCode::Char('r') => {
+            let resume_available = matches!(
+                &app.mode,
+                AppMode::StoppedSessionDialog(state) if state.resume_available
+            );
+            if resume_available {
+                app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+            }
+        }
+        KeyCode::Char('c') => {
+            app.confirm_stopped_session_choice(StoppedSessionChoice::Clear);
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.confirm_stopped_session_choice(StoppedSessionChoice::Cancel);
+        }
+        KeyCode::Enter => {
+            let choice = match &app.mode {
+                AppMode::StoppedSessionDialog(state) => {
+                    StoppedSessionChoice::ALL.get(state.selected).copied()
+                }
+                _ => None,
+            };
+            if let Some(choice) = choice {
+                app.confirm_stopped_session_choice(choice);
+            }
         }
         _ => {}
     }

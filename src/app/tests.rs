@@ -1031,6 +1031,404 @@ fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
     }
 }
 
+fn store_with_stopped_agent_session(kind: SessionKind, resume_id: Option<&str>) -> ProjectStore {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    let session = store.projects[0].features[0].add_session_named(kind.clone(), "Agent".into());
+    match kind {
+        SessionKind::Claude => {
+            session.claude_session_id = resume_id.map(str::to_string);
+        }
+        SessionKind::Codex => {
+            if let Some(id) = resume_id {
+                session.set_token_usage_source_exact(TokenUsageSource {
+                    provider: TokenUsageProvider::Codex,
+                    id: id.to_string(),
+                });
+            }
+        }
+        SessionKind::Opencode => {
+            if let Some(id) = resume_id {
+                session.set_token_usage_source_exact(TokenUsageSource {
+                    provider: TokenUsageProvider::Opencode,
+                    id: id.to_string(),
+                });
+            }
+        }
+        _ => {}
+    }
+    store
+}
+
+#[test]
+fn enter_on_stopped_agent_session_opens_recovery_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+
+    assert!(matches!(
+        app.mode,
+        AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+            selected: 0,
+            resume_available: true,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn uppercase_s_uses_the_same_stopped_session_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Codex, Some("codex-resume"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        app.mode,
+        AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+            selected: 0,
+            resume_available: true,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn stopped_session_without_resume_metadata_defaults_to_clear_start() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, None);
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(app.open_stopped_session_dialog().unwrap());
+
+    assert!(matches!(
+        app.mode,
+        AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+            selected: 1,
+            resume_available: false,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn stopped_session_with_blank_resume_id_treats_it_as_invalid() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("   "));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(app.open_stopped_session_dialog().unwrap());
+
+    assert!(matches!(
+        app.mode,
+        AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+            selected: 1,
+            resume_available: false,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn running_agent_session_still_opens_directly() {
+    let mut store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    store.projects[0].features[0].status = ProjectStatus::Idle;
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).return_const(true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+
+    assert!(
+        matches!(app.mode, AppMode::Viewing(_) | AppMode::Compose(_)),
+        "running sessions should keep the existing open behavior"
+    );
+}
+
+#[test]
+fn uppercase_s_for_running_agent_keeps_existing_resume_picker_behavior() {
+    let mut store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    store.projects[0].features[0].status = ProjectStatus::Idle;
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    assert!(!matches!(app.mode, AppMode::StoppedSessionDialog(_)));
+}
+
+#[test]
+fn stopped_session_dialog_cancel_returns_to_dashboard() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+        project_id: "proj-1".into(),
+        feature_id: "feat-1".into(),
+        session_id: app.store.projects[0].features[0].sessions[0].id.clone(),
+        selected: 0,
+        resume_available: true,
+    });
+
+    crate::handlers::handle_stopped_session_dialog_key(&mut app, KeyCode::Esc).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn stopped_terminal_session_keeps_existing_start_and_open_behavior() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].add_session_named(SessionKind::Terminal, "Shell".into());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+
+    assert!(matches!(
+        app.mode,
+        AppMode::Viewing(ViewState {
+            session_kind: SessionKind::Terminal,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn recovery_resumes_saved_codex_session_and_opens_its_pane() {
+    let store = store_with_stopped_agent_session(SessionKind::Codex, Some("codex-resume"));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_for_exists = calls.clone();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .times(4)
+        .returning(move |_| calls_for_exists.fetch_add(1, Ordering::SeqCst) == 3);
+    tmux.expect_check_harness_available()
+        .withf(|kind| *kind == AgentKind::Codex)
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_run_shell_command()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_codex()
+        .withf(|_, window, _, resume_id, _| {
+            window == "codex" && resume_id.as_deref() == Some("codex-resume")
+        })
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(
+        app.mode,
+        AppMode::Viewing(ViewState {
+            session_kind: SessionKind::Codex,
+            ..
+        })
+    ));
+    assert_eq!(app.message.as_deref(), Some("Resumed Codex session"));
+}
+
+#[test]
+fn clear_recovery_launches_without_resume_and_clears_saved_metadata() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("old-session"));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_for_exists = calls.clone();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .times(4)
+        .returning(move |_| calls_for_exists.fetch_add(1, Ordering::SeqCst) == 3);
+    tmux.expect_check_harness_available()
+        .withf(|kind| *kind == AgentKind::Claude)
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|_, window, _, resume_id, _| window == "claude" && resume_id.is_none())
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Clear);
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(session.claude_session_id, None);
+    assert_eq!(session.token_usage_source, None);
+    assert_eq!(app.message.as_deref(), Some("Started clear Claude session"));
+}
+
+#[test]
+fn recovery_rejects_stale_session_selection_safely() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let session_id = app.store.projects[0].features[0].sessions[0].id.clone();
+    app.mode = AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+        project_id: "proj-1".into(),
+        feature_id: "feat-1".into(),
+        session_id,
+        selected: 0,
+        resume_available: true,
+    });
+    app.store.projects[0].features[0].sessions.clear();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("no longer exists"))
+    );
+}
+
+#[test]
+fn recovery_surfaces_missing_harness_without_creating_tmux() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).return_const(false);
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Err(anyhow::anyhow!("claude CLI not found")));
+    tmux.expect_create_session_with_window().times(0);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("claude CLI not found"))
+    );
+}
+
+#[test]
+fn recovery_launch_failure_removes_partial_tmux_session() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(3).return_const(false);
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .times(1)
+        .returning(|_, _, _, _, _| Err(anyhow::anyhow!("launch failed")));
+    tmux.expect_kill_session().times(1).returning(|_| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Stopped
+    );
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("launch failed"))
+    );
+}
+
+#[test]
+fn recovery_tmux_creation_failure_does_not_kill_an_unowned_session() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(3).return_const(false);
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Err(anyhow::anyhow!("tmux create failed")));
+    tmux.expect_kill_session().times(0);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("tmux create failed"))
+    );
+}
+
 #[test]
 fn redraw_signature_changes_when_view_selection_moves() {
     let mut app = App::new_for_test(

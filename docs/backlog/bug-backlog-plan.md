@@ -14,6 +14,37 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~Stopped agent sessions open an empty shell after tmux disappears~~ (Fixed)
+
+- **Status:** Fixed (2026-07-28)
+- **Reported:** 2026-07-28
+- **Relates to:** dashboard session opening and resume handling
+- **Root cause:** `Enter` recreated a stopped feature through the ordinary
+  bulk-start path, which could leave the selected saved agent window at a
+  shell prompt when the restart limit skipped it. `S` used a separate
+  harness-specific path, so the two entry points did not share the same
+  missing-tmux decision or selected-session validation.
+- **Fix:** `Enter` and `S` now share a stopped-agent recovery dialog with
+  resume, clear-start, and cancel actions. Recovery recreates the saved tmux
+  layout, always launches the selected agent pane, passes the persisted
+  harness ID only for resume, and reports setup or launch failures in AMF.
+
+### Repro
+
+1. Start a feature with a Claude, Codex, Opencode, or Pi session.
+2. Stop its tmux session externally, or restart the computer.
+3. Relaunch AMF, select the saved agent session, and press `Enter` or `S`.
+
+### Expected
+
+AMF offers to resume the previous harness session or start a clear one, then
+opens the selected agent pane.
+
+### Actual
+
+The selected pane could open as an empty shell, or the independent resume path
+could fail against missing tmux state.
+
 ## PR Triage fix agents sometimes target the wrong lines
 
 - **Status:** Backlog

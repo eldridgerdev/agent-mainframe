@@ -110,7 +110,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ConfirmingClaudeSession { .. } => handle_claude_session_confirm_key(app, key.code),
         AppMode::CodexSessionPicker(_) => handle_codex_session_picker_key(app, key.code),
         AppMode::ConfirmingCodexSession { .. } => handle_codex_session_confirm_key(app, key.code),
-        AppMode::StoppedSessionDialog(_) => handle_stopped_session_dialog_key(app, key.code),
+        AppMode::StoppedSessionDialog(_) => handle_stopped_session_dialog_key(app, key),
         AppMode::SessionPicker(_) => handle_session_picker_key(app, key.code),
         AppMode::BookmarkPicker(_) => handle_bookmark_picker_key(app, key.code),
         AppMode::DiffPicker(_) => handle_diff_picker_key(app, key),

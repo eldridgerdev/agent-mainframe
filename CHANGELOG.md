@@ -117,13 +117,16 @@ are tagged.
 
 ### Fixed
 
-- **Stopped agent sessions can now be recovered after their tmux process
-  disappears.** Selecting a saved Claude, Codex, Opencode, or Pi pane and
-  pressing `Enter` or `S` opens a recovery dialog instead of dropping into an
-  empty shell. Resume continues the previous harness session when AMF has its
-  saved identifier; clear start launches a new session, and cancel leaves the
-  feature stopped. Running sessions and terminal panes keep their existing
-  behavior. No migration is required.
+- **Agent sessions lost with their tmux process can now be recovered.** When a
+  saved Claude, Codex, or Opencode pane's tmux session has vanished — a crash,
+  a reboot, an external `tmux kill-server` — `Enter` opens a recovery dialog
+  instead of dropping you into an empty shell: resume the saved session, start
+  a clear one, pick a different saved session, or cancel. The dialog only
+  appears when AMF actually holds a saved harness ID, so features you stopped
+  yourself with `x`, features that were never started, terminal panes, and
+  harnesses without resume support (Pi) keep their existing one-keypress start.
+  `S` still goes straight to the saved-transcript picker. No migration is
+  required.
 - **AI Review's model picker can now go back to harness selection.** Pressing
   `Esc` or `q` from the model list returns to the harness picker with the
   current harness highlighted, so a mistaken harness choice can be corrected

@@ -274,11 +274,10 @@ pub struct CodexSessionPickerState {
 pub enum StoppedSessionChoice {
     Resume,
     Clear,
+    /// Hand off to the harness's saved-transcript picker (the `S` path), so
+    /// older sessions than the one AMF has recorded stay reachable.
+    PickSession,
     Cancel,
-}
-
-impl StoppedSessionChoice {
-    pub const ALL: [Self; 3] = [Self::Resume, Self::Clear, Self::Cancel];
 }
 
 #[derive(Debug, Clone)]
@@ -287,7 +286,12 @@ pub struct StoppedSessionDialogState {
     pub feature_id: String,
     pub session_id: String,
     pub selected: usize,
-    pub resume_available: bool,
+    /// Choices offered for this session, in display order. Only harnesses with
+    /// a transcript picker get [`StoppedSessionChoice::PickSession`]; every
+    /// entry present is selectable, so there is no disabled state to skip.
+    pub choices: Vec<StoppedSessionChoice>,
+    /// Harness name used in the dialog copy ("Claude", "Codex", ...).
+    pub harness_label: String,
 }
 
 #[derive(Clone)]

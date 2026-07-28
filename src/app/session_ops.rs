@@ -48,6 +48,17 @@ fn agent_for_session_kind(kind: &SessionKind) -> Option<AgentKind> {
     }
 }
 
+/// The harness whose saved-transcript picker (`S`) covers `kind`, if any.
+/// Pi has no resume support, so it has no picker.
+fn harness_session_picker_kind(kind: &SessionKind) -> Option<AgentKind> {
+    match kind {
+        SessionKind::Claude => Some(AgentKind::Claude),
+        SessionKind::Codex => Some(AgentKind::Codex),
+        SessionKind::Opencode => Some(AgentKind::Opencode),
+        _ => None,
+    }
+}
+
 fn persisted_resume_id(session: &FeatureSession) -> Option<String> {
     let id = match session.kind {
         SessionKind::Claude => session.claude_session_id.clone().or_else(|| {
@@ -76,15 +87,24 @@ fn persisted_resume_id(session: &FeatureSession) -> Option<String> {
 
 impl App {
     /// Intercept opening a persisted agent pane whose tmux session has
-    /// disappeared. Returns `true` when the stopped-session dialog was opened,
-    /// allowing callers to preserve their normal running-session behavior.
+    /// disappeared *and* that AMF can offer a real choice about. Returns `true`
+    /// when the stopped-session dialog was opened, allowing callers to preserve
+    /// their normal running-session behavior.
+    ///
+    /// Deliberately narrow: the dialog only earns its keypress when the pane
+    /// vanished behind the user's back (a crash, a reboot, an external
+    /// `tmux kill-server`) *and* AMF holds a saved harness ID, so "resume" and
+    /// "clear" actually differ. Everything else — a feature stopped from the
+    /// dashboard with `x`, a feature created but never started, a harness with
+    /// no resume support such as Pi — falls through to the ordinary start path
+    /// it has always used.
     pub fn open_stopped_session_dialog(&mut self) -> Result<bool> {
         let (pi, fi, si) = match self.selection {
             Selection::Session(pi, fi, si) => (pi, fi, si),
             _ => return Ok(false),
         };
 
-        let Some((project_id, feature_id, session_id, tmux_session, is_agent, resume_available)) =
+        let Some((project_id, feature_id, session_id, tmux_session, kind, has_resume_id)) =
             self.store.projects.get(pi).and_then(|project| {
                 project.features.get(fi).and_then(|feature| {
                     feature.sessions.get(si).map(|session| {
@@ -93,7 +113,7 @@ impl App {
                             feature.id.clone(),
                             session.id.clone(),
                             feature.tmux_session.clone(),
-                            session.kind.is_agent_harness(),
+                            session.kind.clone(),
                             persisted_resume_id(session).is_some(),
                         )
                     })
@@ -103,7 +123,20 @@ impl App {
             return Ok(false);
         };
 
-        if !is_agent || self.tmux.session_exists(&tmux_session) {
+        // Without a saved harness ID both branches start the same clear
+        // session, so there is nothing to ask.
+        if !kind.is_agent_harness() || !has_resume_id {
+            return Ok(false);
+        }
+
+        // The user stopped this feature from the dashboard in this run, so its
+        // missing tmux session is expected: restart and resume in one keypress
+        // the way `x` then `Enter` always has.
+        if self.user_stopped_features.contains(&feature_id) {
+            return Ok(false);
+        }
+
+        if self.tmux.session_exists(&tmux_session) {
             return Ok(false);
         }
 
@@ -111,12 +144,19 @@ impl App {
             return Ok(true);
         }
 
+        let mut choices = vec![StoppedSessionChoice::Resume, StoppedSessionChoice::Clear];
+        if harness_session_picker_kind(&kind).is_some() {
+            choices.push(StoppedSessionChoice::PickSession);
+        }
+        choices.push(StoppedSessionChoice::Cancel);
+
         self.mode = AppMode::StoppedSessionDialog(StoppedSessionDialogState {
             project_id,
             feature_id,
             session_id,
-            selected: usize::from(!resume_available),
-            resume_available,
+            selected: 0,
+            choices,
+            harness_label: kind_label(&kind).to_string(),
         });
         self.message = None;
         Ok(true)
@@ -177,6 +217,17 @@ impl App {
             )
         };
 
+        self.selection = Selection::Session(pi, fi, si);
+
+        // Hand off to the harness's own transcript picker, which lists every
+        // saved session on disk (not just the one AMF recorded) and knows how
+        // to start a stopped feature against the chosen one.
+        if choice == StoppedSessionChoice::PickSession {
+            self.mode = AppMode::Normal;
+            self.open_harness_session_picker(&kind);
+            return;
+        }
+
         let resume_id = match choice {
             StoppedSessionChoice::Resume => {
                 let Some(resume_id) = resume_id else {
@@ -189,10 +240,8 @@ impl App {
                 Some(resume_id)
             }
             StoppedSessionChoice::Clear => None,
-            StoppedSessionChoice::Cancel => unreachable!(),
+            StoppedSessionChoice::PickSession | StoppedSessionChoice::Cancel => unreachable!(),
         };
-
-        self.selection = Selection::Session(pi, fi, si);
 
         // A sync tick or another AMF process may have recreated the tmux
         // session while the dialog was open. In that case, open it without
@@ -264,8 +313,19 @@ impl App {
             StoppedSessionChoice::Clear => {
                 format!("Started clear {} session", kind_label(&kind))
             }
-            StoppedSessionChoice::Cancel => unreachable!(),
+            StoppedSessionChoice::PickSession | StoppedSessionChoice::Cancel => unreachable!(),
         });
+    }
+
+    /// Open the saved-transcript picker for `kind` — the same picker `S`
+    /// reaches from the dashboard.
+    fn open_harness_session_picker(&mut self, kind: &SessionKind) {
+        match harness_session_picker_kind(kind) {
+            Some(AgentKind::Claude) => self.pick_claude_session(),
+            Some(AgentKind::Codex) => self.pick_codex_session(),
+            Some(AgentKind::Opencode) => self.pick_opencode_session(),
+            _ => {}
+        }
     }
 
     pub(crate) fn ensure_feature_running_for_new_session(

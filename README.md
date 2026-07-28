@@ -287,7 +287,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `G` | Open PR Triage |
 | `W` | Open AI Review (AMF's own review of this feature's PR diff) |
 | `s` | Open session picker / add a session |
-| `S` | Resume picker, or recover a stopped agent session |
+| `S` | Resume a saved Claude, Opencode, or Codex session |
 | `r` | Rename selected feature or session |
 | `d` | Delete selected project, feature, or session |
 | `c` | Start selected feature |
@@ -449,11 +449,13 @@ resume for the selected feature.
 Press `Enter` to enter the embedded view, which streams the tmux pane
 output live through a vt100 parser and renders it with full ANSI color:
 
-If a saved agent session's tmux process is no longer running, `Enter`
-or `S` opens a recovery dialog. You can resume the previous harness
-session when AMF has its saved identifier, start a clear session, or
-cancel. Terminal and other non-agent sessions keep their normal start
-behavior.
+If an agent session's tmux process disappeared behind your back — a
+crash, a reboot, an external `tmux kill-server` — and AMF still holds
+its saved harness ID, `Enter` opens a recovery dialog: resume the saved
+session, start a clear one, pick a different saved session (the `S`
+picker), or cancel. Everything else keeps its usual one-keypress start:
+a feature you stopped yourself with `x`, a feature that was never
+started, terminal panes, and harnesses without resume support.
 
 This view includes a custom header and amf commands accesible with a leader key (ctrl+space default)
 

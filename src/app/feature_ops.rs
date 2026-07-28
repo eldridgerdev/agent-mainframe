@@ -724,6 +724,8 @@ impl App {
         if let Some(created_session) = created_session {
             *created_session = true;
         }
+        // Running again: a later disappearance is no longer an expected stop.
+        self.user_stopped_features.remove(&feature.id);
         self.tmux
             .set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
 
@@ -1102,6 +1104,11 @@ impl App {
         };
         feature.status = ProjectStatus::Stopped;
         let name = feature.name.clone();
+        let feature_id = feature.id.clone();
+        // Remember that this stop was deliberate so reopening a saved agent
+        // pane restarts and resumes in one keypress instead of asking whether
+        // the session was lost.
+        self.user_stopped_features.insert(feature_id);
         self.clear_sidebar_state_for_session(&tmux_session);
         self.save()?;
         self.message = Some(format!("Stopped '{}'", name));

@@ -23,7 +23,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("l / \u{2192}", "Expand project/feature"),
         ("Enter", "Toggle expand / view or recover session"),
         ("s", "Add session (picker)"),
-        ("S", "Resume picker / recover stopped session"),
+        ("S", "Pick session to resume"),
         ("N", "Create new project"),
         ("n", "Create new feature"),
         ("B", "Create batch features"),

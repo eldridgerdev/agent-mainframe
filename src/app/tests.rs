@@ -1059,6 +1059,13 @@ fn store_with_stopped_agent_session(kind: SessionKind, resume_id: Option<&str>) 
     store
 }
 
+fn dialog_choices(app: &App) -> Vec<StoppedSessionChoice> {
+    match &app.mode {
+        AppMode::StoppedSessionDialog(state) => state.choices.clone(),
+        _ => panic!("expected the stopped-session dialog"),
+    }
+}
+
 #[test]
 fn enter_on_stopped_agent_session_opens_recovery_dialog() {
     let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
@@ -1070,21 +1077,26 @@ fn enter_on_stopped_agent_session_opens_recovery_dialog() {
     crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .unwrap();
 
+    assert_eq!(
+        dialog_choices(&app),
+        vec![
+            StoppedSessionChoice::Resume,
+            StoppedSessionChoice::Clear,
+            StoppedSessionChoice::PickSession,
+            StoppedSessionChoice::Cancel,
+        ]
+    );
     assert!(matches!(
         app.mode,
-        AppMode::StoppedSessionDialog(StoppedSessionDialogState {
-            selected: 0,
-            resume_available: true,
-            ..
-        })
+        AppMode::StoppedSessionDialog(StoppedSessionDialogState { selected: 0, .. })
     ));
 }
 
 #[test]
-fn uppercase_s_uses_the_same_stopped_session_dialog() {
+fn uppercase_s_keeps_the_saved_transcript_picker_for_a_stopped_feature() {
     let store = store_with_stopped_agent_session(SessionKind::Codex, Some("codex-resume"));
     let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists().times(1).return_const(false);
+    tmux.expect_session_exists().return_const(false);
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.selection = Selection::Session(0, 0, 0);
 
@@ -1094,53 +1106,123 @@ fn uppercase_s_uses_the_same_stopped_session_dialog() {
     )
     .unwrap();
 
-    assert!(matches!(
-        app.mode,
-        AppMode::StoppedSessionDialog(StoppedSessionDialogState {
-            selected: 0,
-            resume_available: true,
-            ..
-        })
-    ));
+    assert!(
+        !matches!(app.mode, AppMode::StoppedSessionDialog(_)),
+        "`S` must stay on the transcript picker so older sessions on disk \
+         remain reachable from a stopped feature"
+    );
 }
 
 #[test]
-fn stopped_session_without_resume_metadata_defaults_to_clear_start() {
+fn stopped_session_without_resume_metadata_starts_directly() {
     let store = store_with_stopped_agent_session(SessionKind::Claude, None);
-    let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists().times(1).return_const(false);
-    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
     app.selection = Selection::Session(0, 0, 0);
 
-    assert!(app.open_stopped_session_dialog().unwrap());
-
-    assert!(matches!(
-        app.mode,
-        AppMode::StoppedSessionDialog(StoppedSessionDialogState {
-            selected: 1,
-            resume_available: false,
-            ..
-        })
-    ));
+    assert!(
+        !app.open_stopped_session_dialog().unwrap(),
+        "with no saved ID both choices start the same clear session, so the \
+         dialog has nothing to ask"
+    );
 }
 
 #[test]
-fn stopped_session_with_blank_resume_id_treats_it_as_invalid() {
+fn stopped_session_with_blank_resume_id_starts_directly() {
     let store = store_with_stopped_agent_session(SessionKind::Claude, Some("   "));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(!app.open_stopped_session_dialog().unwrap());
+}
+
+#[test]
+fn pi_session_has_no_recovery_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Pi, Some("ignored"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(
+        !app.open_stopped_session_dialog().unwrap(),
+        "Pi cannot resume, so it must keep its plain start path rather than \
+         showing a dialog with nothing to resume"
+    );
+}
+
+#[test]
+fn feature_stopped_from_the_dashboard_restarts_without_the_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+    app.user_stopped_features.insert("feat-1".to_string());
+
+    assert!(
+        !app.open_stopped_session_dialog().unwrap(),
+        "a deliberate `x` stop should restart and resume in one keypress"
+    );
+}
+
+#[test]
+fn ctrl_c_cancels_the_recovery_dialog_instead_of_clearing_the_saved_id() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("keep-me"));
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().times(1).return_const(false);
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.selection = Selection::Session(0, 0, 0);
-
     assert!(app.open_stopped_session_dialog().unwrap());
 
+    crate::handlers::handle_stopped_session_dialog_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].claude_session_id,
+        Some("keep-me".to_string()),
+        "Ctrl+C must not discard the saved resume ID"
+    );
+}
+
+#[test]
+fn pick_session_choice_leaves_the_dialog_for_the_transcript_picker() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    // No launch is expected: the picker owns starting the feature.
+    tmux.expect_create_session_with_window().times(0);
+    tmux.expect_launch_claude().times(0);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    assert!(app.open_stopped_session_dialog().unwrap());
+
+    crate::handlers::handle_stopped_session_dialog_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    // The picker itself may find no transcripts in a test environment; what
+    // matters is that the dialog handed off instead of launching a harness.
     assert!(matches!(
         app.mode,
-        AppMode::StoppedSessionDialog(StoppedSessionDialogState {
-            selected: 1,
-            resume_available: false,
-            ..
-        })
+        AppMode::Normal | AppMode::ClaudeSessionPicker(_)
     ));
 }
 
@@ -1167,7 +1249,7 @@ fn uppercase_s_for_running_agent_keeps_existing_resume_picker_behavior() {
     let mut store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
     store.projects[0].features[0].status = ProjectStatus::Idle;
     let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists().times(1).return_const(true);
+    tmux.expect_session_exists().return_const(true);
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.selection = Selection::Session(0, 0, 0);
 
@@ -1193,10 +1275,19 @@ fn stopped_session_dialog_cancel_returns_to_dashboard() {
         feature_id: "feat-1".into(),
         session_id: app.store.projects[0].features[0].sessions[0].id.clone(),
         selected: 0,
-        resume_available: true,
+        choices: vec![
+            StoppedSessionChoice::Resume,
+            StoppedSessionChoice::Clear,
+            StoppedSessionChoice::Cancel,
+        ],
+        harness_label: "Claude".into(),
     });
 
-    crate::handlers::handle_stopped_session_dialog_key(&mut app, KeyCode::Esc).unwrap();
+    crate::handlers::handle_stopped_session_dialog_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    )
+    .unwrap();
 
     assert!(matches!(app.mode, AppMode::Normal));
 }
@@ -1330,7 +1421,12 @@ fn recovery_rejects_stale_session_selection_safely() {
         feature_id: "feat-1".into(),
         session_id,
         selected: 0,
-        resume_available: true,
+        choices: vec![
+            StoppedSessionChoice::Resume,
+            StoppedSessionChoice::Clear,
+            StoppedSessionChoice::Cancel,
+        ],
+        harness_label: "Claude".into(),
     });
     app.store.projects[0].features[0].sessions.clear();
 

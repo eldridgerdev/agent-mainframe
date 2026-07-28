@@ -21,19 +21,21 @@ strike it through with the fixing commit/PR) once resolved.
 - **Relates to:** dashboard session opening and resume handling
 - **Root cause:** `Enter` recreated a stopped feature through the ordinary
   bulk-start path, which could leave the selected saved agent window at a
-  shell prompt when the restart limit skipped it. `S` used a separate
-  harness-specific path, so the two entry points did not share the same
-  missing-tmux decision or selected-session validation.
-- **Fix:** `Enter` and `S` now share a stopped-agent recovery dialog with
-  resume, clear-start, and cancel actions. Recovery recreates the saved tmux
-  layout, always launches the selected agent pane, passes the persisted
+  shell prompt when the agent-autostart limit skipped it.
+- **Fix:** `Enter` on a saved agent pane whose tmux session has vanished opens
+  a recovery dialog (resume / clear start / pick a different saved session /
+  cancel). Recovery recreates the saved tmux layout, always launches the
+  selected agent pane regardless of the autostart limit, passes the persisted
   harness ID only for resume, and reports setup or launch failures in AMF.
+  The dialog is deliberately narrow — it needs a persisted resume ID and a
+  stop AMF did not perform itself — so ordinary restarts keep their one
+  keypress, and `S` keeps its saved-transcript picker.
 
 ### Repro
 
-1. Start a feature with a Claude, Codex, Opencode, or Pi session.
+1. Start a feature with a Claude, Codex, or Opencode session.
 2. Stop its tmux session externally, or restart the computer.
-3. Relaunch AMF, select the saved agent session, and press `Enter` or `S`.
+3. Relaunch AMF, select the saved agent session, and press `Enter`.
 
 ### Expected
 
@@ -42,8 +44,7 @@ opens the selected agent pane.
 
 ### Actual
 
-The selected pane could open as an empty shell, or the independent resume path
-could fail against missing tmux state.
+The selected pane could open as an empty shell.
 
 ## PR Triage fix agents sometimes target the wrong lines
 

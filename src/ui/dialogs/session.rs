@@ -32,66 +32,66 @@ pub fn draw_stopped_session_dialog(
 
     let mut lines = vec![
         Line::from(Span::styled(
-            " The saved agent pane is no longer running.",
+            format!(" This {} pane's tmux session is gone.", state.harness_label),
             Style::default().fg(theme.text.to_color()),
         )),
         Line::from(""),
     ];
 
-    for (index, choice) in StoppedSessionChoice::ALL.iter().enumerate() {
-        let (label, disabled) = match choice {
-            StoppedSessionChoice::Resume => (
-                "Resume the previous session",
-                if state.resume_available {
-                    None
-                } else {
-                    Some(" (no saved session ID)")
-                },
-            ),
-            StoppedSessionChoice::Clear => ("Start a clear session", None),
-            StoppedSessionChoice::Cancel => ("Cancel", None),
+    for (index, choice) in state.choices.iter().enumerate() {
+        let label = match choice {
+            StoppedSessionChoice::Resume => "Resume the saved session",
+            StoppedSessionChoice::Clear => "Start a clear session",
+            StoppedSessionChoice::PickSession => "Pick a different saved session…",
+            StoppedSessionChoice::Cancel => "Cancel",
         };
         let selected = index == state.selected;
-        let mut style = if disabled.is_some() {
-            Style::default().fg(theme.text_muted.to_color())
-        } else {
-            Style::default().fg(theme.text.to_color())
-        };
+        let mut style = Style::default().fg(theme.text.to_color());
         if selected {
             style = style
                 .bg(theme.effective_selection_bg())
                 .add_modifier(Modifier::BOLD);
         }
         lines.push(Line::from(Span::styled(
-            format!(
-                "  {}{}{}",
-                if selected { "› " } else { "  " },
-                label,
-                disabled.unwrap_or("")
-            ),
+            format!("  {}{}", if selected { "› " } else { "  " }, label),
             style,
         )));
     }
 
-    lines.extend([
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " select  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("r", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " resume  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("c", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" clear  ", Style::default().fg(theme.text_muted.to_color())),
-            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
-        ]),
-    ]);
+    let mut hints = vec![
+        Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " select  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("r", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " resume  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("c", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" clear  ", Style::default().fg(theme.text_muted.to_color())),
+    ];
+    if state.choices.contains(&StoppedSessionChoice::PickSession) {
+        hints.push(Span::styled(
+            "p",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        hints.push(Span::styled(
+            " pick  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    }
+    hints.push(Span::styled(
+        "Esc",
+        Style::default().fg(theme.warning.to_color()),
+    ));
+    hints.push(Span::styled(
+        " cancel",
+        Style::default().fg(theme.text_muted.to_color()),
+    ));
+
+    lines.extend([Line::from(""), Line::from(hints)]);
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

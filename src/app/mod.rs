@@ -713,6 +713,10 @@ pub struct App {
     /// from adaptive rounds so late results can only be applied to the
     /// matching loading phase.
     pub plan_interview_synthesis_bg: Option<Receiver<Result<String>>>,
+    /// Receiver for the optional agent review of a draft plan. Separate again
+    /// so a late review can never be mistaken for a synthesis result and
+    /// overwrite the plan it was only meant to comment on.
+    pub plan_interview_critique_bg: Option<Receiver<Result<String>>>,
     /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
@@ -2114,6 +2118,7 @@ impl App {
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
+            plan_interview_critique_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
@@ -2326,6 +2331,7 @@ impl App {
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
+            plan_interview_critique_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,

@@ -3615,10 +3615,15 @@ pub enum PlanInterviewPhase {
     /// by a background headless call.
     SynthesisLoading,
     /// The proposed plan is rendered as markdown and awaits an explicit
-    /// accept, edit, regenerate, or abort action.
+    /// accept, edit, regenerate, review, or abort action.
     Review,
     /// The proposed plan is open as raw markdown in the shared text editor.
     Editing,
+    /// A background headless call is reviewing the draft plan.
+    CritiqueLoading,
+    /// An agent's advisory review of the draft plan is on screen. The plan
+    /// itself is untouched unless the user asks for a revision from here.
+    Critique,
     /// Transient question-flow completion used while app-level code decides
     /// whether to run another adaptive round, synthesize, or use the fallback.
     Done,
@@ -3696,6 +3701,20 @@ pub struct PlanInterviewState {
     pub review_rendered_lines: Vec<ratatui::text::Line<'static>>,
     pub edit_scroll_offset: usize,
     pub edit_sync_to_cursor: bool,
+    /// An agent's advisory review of the plan currently at the review gate.
+    /// Cleared whenever the plan changes, since the findings describe the
+    /// draft they were written against.
+    pub critique: Option<String>,
+    /// Start time and prompt-size estimate for the agent-review loading frame.
+    pub critique_started_at: Option<std::time::Instant>,
+    pub critique_token_estimate: usize,
+    /// Cached markdown-viewer layout for the advisory review.
+    pub critique_scroll_offset: usize,
+    pub critique_rendered_width: u16,
+    pub critique_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    /// Advisory review staged as input for the next synthesis pass by the
+    /// review's "revise" action. Consumed when that prompt is built.
+    pub revision_critique: Option<String>,
 }
 
 impl PlanInterviewState {
@@ -3745,6 +3764,13 @@ impl PlanInterviewState {
             review_rendered_lines: Vec::new(),
             edit_scroll_offset: 0,
             edit_sync_to_cursor: false,
+            critique: None,
+            critique_started_at: None,
+            critique_token_estimate: 0,
+            critique_scroll_offset: 0,
+            critique_rendered_width: 0,
+            critique_rendered_lines: Vec::new(),
+            revision_critique: None,
         }
     }
 
@@ -3772,7 +3798,74 @@ impl PlanInterviewState {
         self.review_scroll_offset = 0;
         self.review_rendered_width = 0;
         self.review_rendered_lines.clear();
+        self.clear_critique();
         self.phase = PlanInterviewPhase::Review;
+    }
+
+    /// Move into the agent-review loading phase. Returns false outside the
+    /// review gate so a stray keypress cannot start a paid call from a phase
+    /// that has no plan to review.
+    pub fn begin_critique(&mut self, token_estimate: usize) -> bool {
+        if self.phase != PlanInterviewPhase::Review || self.synthesized_plan.is_none() {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::CritiqueLoading;
+        self.critique_started_at = Some(std::time::Instant::now());
+        self.critique_token_estimate = token_estimate;
+        true
+    }
+
+    /// Show a finished advisory review. The plan is deliberately untouched.
+    pub fn apply_critique(&mut self, critique: String) {
+        self.critique = Some(critique);
+        self.critique_started_at = None;
+        self.critique_scroll_offset = 0;
+        self.critique_rendered_width = 0;
+        self.critique_rendered_lines.clear();
+        self.phase = PlanInterviewPhase::Critique;
+    }
+
+    /// Return to the plan from the advisory review, or from a review still in
+    /// flight — the poller discards a result that arrives after this.
+    pub fn close_critique(&mut self) -> bool {
+        if !matches!(
+            self.phase,
+            PlanInterviewPhase::Critique | PlanInterviewPhase::CritiqueLoading
+        ) {
+            return false;
+        }
+        self.critique_started_at = None;
+        self.phase = PlanInterviewPhase::Review;
+        true
+    }
+
+    /// Stage the advisory review as input for the next synthesis pass. The
+    /// caller starts that pass; until it lands the plan is unchanged.
+    pub fn revise_from_critique(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Critique {
+            return false;
+        }
+        let Some(critique) = self.critique.clone() else {
+            return false;
+        };
+        self.revision_critique = Some(critique);
+        self.phase = PlanInterviewPhase::Review;
+        true
+    }
+
+    /// Take the staged revision feedback, leaving none behind so a later
+    /// regenerate is a clean pass rather than a repeat of the same revision.
+    pub fn take_revision_critique(&mut self) -> Option<String> {
+        self.revision_critique.take()
+    }
+
+    /// Drop an advisory review that no longer describes the current plan.
+    fn clear_critique(&mut self) {
+        self.critique = None;
+        self.critique_started_at = None;
+        self.critique_scroll_offset = 0;
+        self.critique_rendered_width = 0;
+        self.critique_rendered_lines.clear();
     }
 
     /// Open the reviewed plan as raw markdown without changing the staged
@@ -3805,6 +3898,7 @@ impl PlanInterviewState {
         self.review_scroll_offset = 0;
         self.review_rendered_width = 0;
         self.review_rendered_lines.clear();
+        self.clear_critique();
         self.phase = PlanInterviewPhase::Review;
         true
     }
@@ -3919,6 +4013,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::CritiqueLoading
+            | PlanInterviewPhase::Critique
             | PlanInterviewPhase::Done => {}
         }
         Ok(())
@@ -3982,11 +4078,14 @@ impl PlanInterviewState {
                 true
             }
             // Loading is a transient App-driven state; there is nothing to
-            // navigate back to until it resolves.
+            // navigate back to until it resolves. The review-gate phases have
+            // their own dedicated navigation.
             PlanInterviewPhase::AiLoading
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
-            | PlanInterviewPhase::Editing => false,
+            | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::CritiqueLoading
+            | PlanInterviewPhase::Critique => false,
         }
     }
 
@@ -4008,6 +4107,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::CritiqueLoading
+            | PlanInterviewPhase::Critique
             | PlanInterviewPhase::Done => return Ok(()),
         }
         self.ai_round_started_at = None;

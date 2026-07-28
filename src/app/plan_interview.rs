@@ -159,23 +159,32 @@ impl App {
     /// headless engine is not fatal: completion retains Epic 1's raw-Q&A plan
     /// as a deterministic fallback.
     pub(crate) fn start_plan_interview_synthesis(&mut self) -> Result<()> {
-        let (preferred_harness, resolved_harness, feature_name, brief, questions, answers, workdir) =
-            match &self.mode {
-                AppMode::PlanInterview(state) => (
-                    state.preferred_harness.clone(),
-                    state.ai_harness.clone(),
-                    state.feature_name.clone(),
-                    state.brief.clone(),
-                    state.questions.clone(),
-                    state.answers.clone(),
-                    state
-                        .pending_launch
-                        .as_ref()
-                        .map(|prepared| prepared.workdir.clone())
-                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
-                ),
-                _ => return Ok(()),
-            };
+        let (
+            preferred_harness,
+            resolved_harness,
+            feature_name,
+            brief,
+            questions,
+            answers,
+            workdir,
+            revision_critique,
+        ) = match &mut self.mode {
+            AppMode::PlanInterview(state) => (
+                state.preferred_harness.clone(),
+                state.ai_harness.clone(),
+                state.feature_name.clone(),
+                state.brief.clone(),
+                state.questions.clone(),
+                state.answers.clone(),
+                state
+                    .pending_launch
+                    .as_ref()
+                    .map(|prepared| prepared.workdir.clone())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                state.take_revision_critique(),
+            ),
+            _ => return Ok(()),
+        };
 
         let harness = match resolved_harness {
             Some(resolved) => resolved,
@@ -218,13 +227,19 @@ impl App {
             &questions,
             &answers,
             &context,
+            revision_critique.as_deref(),
         );
         let token_estimate = estimate_tokens(&prompt);
 
         self.log_info(
             "plan_interview",
             format!(
-                "starting plan synthesis with {} (~{token_estimate} tokens)",
+                "starting plan {} with {} (~{token_estimate} tokens)",
+                if revision_critique.is_some() {
+                    "revision"
+                } else {
+                    "synthesis"
+                },
                 harness.display_name()
             ),
         );
@@ -241,6 +256,192 @@ impl App {
             state.begin_synthesis(token_estimate);
         }
         Ok(())
+    }
+
+    /// Spawn the optional agent review of the draft plan off the UI thread.
+    ///
+    /// Purely advisory: the plan on screen is never modified by the result.
+    /// A missing headless engine leaves the user at the review gate with a
+    /// notice rather than blocking acceptance.
+    pub(crate) fn start_plan_interview_critique(&mut self) -> Result<()> {
+        let (
+            preferred_harness,
+            resolved_harness,
+            feature_name,
+            brief,
+            questions,
+            answers,
+            workdir,
+            plan,
+        ) = match &self.mode {
+            AppMode::PlanInterview(state) => {
+                let Some(plan) = state.synthesized_plan.clone() else {
+                    return Ok(());
+                };
+                (
+                    state.preferred_harness.clone(),
+                    state.ai_harness.clone(),
+                    state.feature_name.clone(),
+                    state.brief.clone(),
+                    state.questions.clone(),
+                    state.answers.clone(),
+                    state
+                        .pending_launch
+                        .as_ref()
+                        .map(|prepared| prepared.workdir.clone())
+                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                    plan,
+                )
+            }
+            _ => return Ok(()),
+        };
+
+        let harness = match resolved_harness {
+            Some(resolved) => resolved,
+            None => HeadlessRunner::select_for_interview(&preferred_harness),
+        };
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.ai_harness = Some(harness.clone());
+        }
+
+        let Some(harness) = harness else {
+            self.log_info(
+                "plan_interview",
+                "no headless-capable harness available; skipping plan review".to_string(),
+            );
+            self.message = Some("No headless-capable harness available to review the plan".into());
+            return Ok(());
+        };
+
+        let context = plan_interview::gather_repository_context(&workdir);
+        let prompt = plan_interview::build_critique_prompt(
+            &feature_name,
+            &plan,
+            &brief,
+            &questions,
+            &answers,
+            &context,
+        );
+        let token_estimate = estimate_tokens(&prompt);
+
+        // Claim the loading phase before spawning so a keypress in the same
+        // tick cannot start a second paid review.
+        let started = match &mut self.mode {
+            AppMode::PlanInterview(state) => state.begin_critique(token_estimate),
+            _ => false,
+        };
+        if !started {
+            return Ok(());
+        }
+
+        self.log_info(
+            "plan_interview",
+            format!(
+                "starting plan review with {} (~{token_estimate} tokens)",
+                harness.display_name()
+            ),
+        );
+
+        let (tx, rx) = mpsc::channel();
+        self.plan_interview_critique_bg = Some(rx);
+        std::thread::spawn(move || {
+            let result = HeadlessRunner::run(&harness, &workdir, &prompt, None, true);
+            let _ = tx.send(result);
+        });
+        self.message = None;
+        Ok(())
+    }
+
+    /// Poll the in-flight agent review. A failure, or output that does not
+    /// match the advisory contract, returns the user to the unchanged plan
+    /// with a notice — there is nothing to fall back to and nothing to lose.
+    pub fn poll_plan_interview_critique_bg(&mut self) -> bool {
+        let Some(rx) = self.plan_interview_critique_bg.as_ref() else {
+            return false;
+        };
+        let confirming_abort = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state) if state.abort_confirmation
+        );
+        if confirming_abort {
+            return false;
+        }
+
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.plan_interview_critique_bg = None;
+                self.log_warn(
+                    "plan_interview",
+                    "plan review worker thread ended unexpectedly".to_string(),
+                );
+                if self.close_plan_interview_critique_loading() {
+                    self.message = Some("Plan review failed; the plan is unchanged".into());
+                }
+                return true;
+            }
+        };
+        self.plan_interview_critique_bg = None;
+
+        let is_loading = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state)
+                if state.phase == PlanInterviewPhase::CritiqueLoading
+        );
+        if !is_loading {
+            // The user dismissed the review or moved on; discard the late
+            // result rather than pulling them back into it.
+            return false;
+        }
+
+        // A call that never ran and a call that answered off-contract are
+        // different problems with different fixes, so they get different
+        // messages rather than one catch-all.
+        let (critique, failure) = match result {
+            Ok(response) => match plan_interview::parse_plan_critique(&response) {
+                Some(critique) => (Some(critique), None),
+                None => {
+                    self.log_warn(
+                        "plan_interview",
+                        format!(
+                            "plan review returned output that does not match the review contract: {}",
+                            truncate_for_log(&response)
+                        ),
+                    );
+                    (None, Some("Plan review returned no usable analysis"))
+                }
+            },
+            Err(e) => {
+                self.log_warn("plan_interview", format!("plan review failed: {e}"));
+                (None, Some("Plan review failed; the plan is unchanged"))
+            }
+        };
+
+        match critique {
+            Some(critique) => {
+                if let AppMode::PlanInterview(state) = &mut self.mode {
+                    state.apply_critique(critique);
+                }
+                self.message = None;
+            }
+            None => {
+                self.close_plan_interview_critique_loading();
+                self.message = failure.map(Into::into);
+            }
+        }
+        true
+    }
+
+    /// Return from an unresolved review to the plan. Returns whether the
+    /// caller is the one that ended the loading phase.
+    fn close_plan_interview_critique_loading(&mut self) -> bool {
+        match &mut self.mode {
+            AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::CritiqueLoading => {
+                state.close_critique()
+            }
+            _ => false,
+        }
     }
 
     /// Poll the in-flight AI-adaptive round. Returns `true` when a redraw is
@@ -534,6 +735,22 @@ impl App {
             "Feature creation cancelled".into()
         });
         Ok(())
+    }
+}
+
+/// Bound an unexpected harness reply before it reaches the debug log, so a
+/// contract mismatch is diagnosable without dumping a whole response into it.
+fn truncate_for_log(response: &str) -> String {
+    const MAX_CHARS: usize = 300;
+    let trimmed = response.trim();
+    if trimmed.is_empty() {
+        return "<empty response>".to_string();
+    }
+    let truncated: String = trimmed.chars().take(MAX_CHARS).collect();
+    if truncated.chars().count() < trimmed.chars().count() {
+        format!("{truncated}...")
+    } else {
+        truncated
     }
 }
 

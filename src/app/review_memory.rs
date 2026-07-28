@@ -6,6 +6,12 @@
 //! history, and the "add to memory" pane key appends to it incrementally. See
 //! `docs/backlog/pr-comment-review-plan.md` (Epic E).
 //!
+//! There are **two** such docs, distinguished by [`MemoryScope`]: each repo's
+//! own committed doc (the default target for every write) and one
+//! cross-project doc in the AMF config dir for habits that outlive a single
+//! repo. The AI reviewer reads both, merged by [`merge_memory_context`]; every
+//! other flow writes to exactly one, chosen by the user.
+//!
 //! AMF only ever *appends* here (dedup-aware, grouped by category) — it never
 //! rewrites existing prose, so hand-edits are safe across runs. The one
 //! exception is the explicit, user-triggered "compact" pass ([`compact_prompt`]),
@@ -18,6 +24,58 @@ use std::path::{Path, PathBuf};
 /// Default location of the review-memory doc, relative to the repo root.
 pub const DEFAULT_REVIEW_MEMORY_PATH: &str = ".amf/review-memory.md";
 
+/// Default filename of the cross-project review-memory doc, relative to the
+/// AMF config dir — i.e. `~/.config/amf/review-memory.md`.
+pub const DEFAULT_GLOBAL_REVIEW_MEMORY_FILE: &str = "review-memory.md";
+
+/// Which of the two review-memory docs a flow reads or writes: the repo's own
+/// committed doc, or the user's cross-project one. Writes always target
+/// exactly one (the user picks); only the AI reviewer's context reads both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MemoryScope {
+    /// `{repo}/.amf/review-memory.md` — committed, shared with the team.
+    #[default]
+    Project,
+    /// `~/.config/amf/review-memory.md` — this user's, across every repo.
+    Global,
+}
+
+impl MemoryScope {
+    /// Lowercase word for dialog titles and toasts ("project" / "global").
+    pub fn label(self) -> &'static str {
+        match self {
+            MemoryScope::Project => "project",
+            MemoryScope::Global => "global",
+        }
+    }
+
+    /// The other scope — what a `g` keypress switches a dialog to.
+    pub fn toggled(self) -> Self {
+        match self {
+            MemoryScope::Project => MemoryScope::Global,
+            MemoryScope::Global => MemoryScope::Project,
+        }
+    }
+}
+
+/// Both resolved review-memory doc paths for one project, so a caller that
+/// needs either (or both, as the AI reviewer does) resolves them once instead
+/// of repeating the config lookup per scope.
+#[derive(Debug, Clone)]
+pub struct ReviewMemoryPaths {
+    pub project: PathBuf,
+    pub global: PathBuf,
+}
+
+impl ReviewMemoryPaths {
+    pub fn for_scope(&self, scope: MemoryScope) -> &Path {
+        match scope {
+            MemoryScope::Project => &self.project,
+            MemoryScope::Global => &self.global,
+        }
+    }
+}
+
 const HEADER_TEMPLATE: &str = "\
 # Review memory
 
@@ -26,6 +84,16 @@ findings here (from PR triage and AI review) and reads this file as context
 before each AI review, so the same issue doesn't need rediscovering every
 time. Edit freely — AMF only ever appends, it never rewrites what's already
 here.
+";
+
+const GLOBAL_HEADER_TEMPLATE: &str = "\
+# Review memory (cross-project)
+
+Recurring code-review findings that apply across every repo you work in, not
+just one. AMF reads this file *in addition to* each repo's own
+`.amf/review-memory.md` before an AI review, so put durable personal habits
+here and repo-specific rules there. Edit freely — AMF only ever appends, it
+never rewrites what's already here.
 ";
 
 /// Resolve the review-memory doc path for `repo`, honoring a configured
@@ -42,17 +110,41 @@ pub fn review_memory_path(repo: &Path, configured: Option<&str>) -> PathBuf {
     }
 }
 
+/// Resolve the cross-project review-memory doc path, honoring a configured
+/// override. Mirrors [`review_memory_path`] but anchors relative paths to the
+/// AMF config dir (`~/.config/amf`) rather than a repo, since this doc belongs
+/// to no single repo.
+pub fn global_review_memory_path(configured: Option<&str>) -> PathBuf {
+    global_review_memory_path_in(&crate::project::amf_config_dir(), configured)
+}
+
+/// [`global_review_memory_path`] with the config dir injected, so tests can
+/// resolve against a temp dir instead of the developer's real `~/.config/amf`.
+pub fn global_review_memory_path_in(config_dir: &Path, configured: Option<&str>) -> PathBuf {
+    let configured = configured.map(str::trim).filter(|s| !s.is_empty());
+    let rel = Path::new(configured.unwrap_or(DEFAULT_GLOBAL_REVIEW_MEMORY_FILE));
+    if rel.is_absolute() {
+        rel.to_path_buf()
+    } else {
+        config_dir.join(rel)
+    }
+}
+
 /// Ensure the doc exists at `path`, creating it (and any missing parent
-/// directories) with the header template if it doesn't. No-op if it's
+/// directories) with `scope`'s header template if it doesn't. No-op if it's
 /// already there.
-pub fn ensure_review_memory_doc(path: &Path) -> std::io::Result<()> {
+pub fn ensure_review_memory_doc(path: &Path, scope: MemoryScope) -> std::io::Result<()> {
     if path.exists() {
         return Ok(());
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, HEADER_TEMPLATE)
+    let header = match scope {
+        MemoryScope::Project => HEADER_TEMPLATE,
+        MemoryScope::Global => GLOBAL_HEADER_TEMPLATE,
+    };
+    std::fs::write(path, header)
 }
 
 /// Normalize a free-form category into a `## Heading`, e.g. `concurrency` ->
@@ -72,15 +164,24 @@ fn category_heading(category: &str) -> String {
 }
 
 /// Append `finding` under `category` in the doc at `path`, creating the doc
-/// and/or the category section as needed. Dedup-aware: if a
-/// case-insensitive, trimmed match of `finding` already appears anywhere in
-/// the doc, this is a no-op. Returns whether the finding was newly appended.
-pub fn append_finding(path: &Path, category: &str, finding: &str) -> std::io::Result<bool> {
+/// (with `scope`'s header) and/or the category section as needed. Dedup-aware:
+/// if a case-insensitive, trimmed match of `finding` already appears anywhere
+/// in the doc, this is a no-op. Returns whether the finding was newly appended.
+///
+/// Dedup is per-doc: promoting a project finding to the global doc appends it
+/// there even though it also sits in the project doc. [`merge_memory_context`]
+/// collapses that overlap at read time, so the reviewer never sees it twice.
+pub fn append_finding(
+    path: &Path,
+    scope: MemoryScope,
+    category: &str,
+    finding: &str,
+) -> std::io::Result<bool> {
     let finding = finding.trim();
     if finding.is_empty() {
         return Ok(false);
     }
-    ensure_review_memory_doc(path)?;
+    ensure_review_memory_doc(path, scope)?;
     let contents = std::fs::read_to_string(path)?;
 
     let already_present = contents.lines().any(|line| {
@@ -131,6 +232,97 @@ pub fn append_finding(path: &Path, category: &str, finding: &str) -> std::io::Re
 
     std::fs::write(path, updated)?;
     Ok(true)
+}
+
+const PROJECT_CONTEXT_LABEL: &str = "--- This repository's review memory ---";
+const GLOBAL_CONTEXT_LABEL: &str = "--- Cross-project review memory (applies to every repo) ---";
+
+/// Merge the project doc and the cross-project doc into the single context
+/// block the AI reviewer is given.
+///
+/// When only one doc has content the result is that doc verbatim — the
+/// single-doc case reads exactly as it did before the global layer existed.
+/// When both do, each is introduced by a plain-text label rather than a
+/// Markdown heading, so the labels can't be confused with the `## Category`
+/// headings inside either doc.
+///
+/// Global findings the project doc already states are dropped, along with any
+/// global section left empty by that pruning: the two docs overlap by design
+/// (a rule gets promoted from one repo to all of them), and paying twice for
+/// the same rule in every review's prompt is exactly the token waste this
+/// feature is supposed to avoid.
+pub fn merge_memory_context(project: &str, global: &str) -> String {
+    let project = project.trim();
+    let global = prune_duplicate_findings(global, project);
+    let global = global.trim();
+
+    match (project.is_empty(), global.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => project.to_string(),
+        (true, false) => global.to_string(),
+        (false, false) => {
+            format!("{PROJECT_CONTEXT_LABEL}\n{project}\n\n{GLOBAL_CONTEXT_LABEL}\n{global}")
+        }
+    }
+}
+
+/// Drop every `- ` bullet in `doc` that already appears (case- and
+/// whitespace-insensitively) as a line in `other`, then drop any `## ` section
+/// left with no bullets under it. Prose outside a section, and sections that
+/// keep at least one bullet, are preserved as written.
+fn prune_duplicate_findings(doc: &str, other: &str) -> String {
+    if other.trim().is_empty() {
+        return doc.to_string();
+    }
+    let existing: Vec<String> = other
+        .lines()
+        .map(|line| line.trim().trim_start_matches('-').trim().to_lowercase())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let is_duplicate = |bullet: &str| existing.contains(&bullet.trim().to_lowercase());
+
+    // Buffer each section so a heading can be dropped once it turns out every
+    // bullet under it was a duplicate.
+    let mut out: Vec<String> = Vec::new();
+    let mut section: Option<(String, Vec<String>, bool)> = None;
+    let flush = |section: Option<(String, Vec<String>, bool)>, out: &mut Vec<String>| {
+        if let Some((heading, body, kept_bullet)) = section
+            && kept_bullet
+        {
+            out.push(heading);
+            out.extend(body);
+        }
+    };
+
+    for line in doc.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("## ") {
+            flush(section.take(), &mut out);
+            section = Some((line.to_string(), Vec::new(), false));
+            continue;
+        }
+        let duplicate = trimmed.strip_prefix("- ").is_some_and(&is_duplicate);
+        match &mut section {
+            Some((_, body, kept_bullet)) => {
+                if duplicate {
+                    continue;
+                }
+                if trimmed.starts_with("- ") {
+                    *kept_bullet = true;
+                }
+                body.push(line.to_string());
+            }
+            // Before the first heading: keep the doc's own header/prose, but
+            // still prune stray duplicate bullets.
+            None => {
+                if !duplicate {
+                    out.push(line.to_string());
+                }
+            }
+        }
+    }
+    flush(section.take(), &mut out);
+    out.join("\n")
 }
 
 /// Count of `- ` bullet findings in a review-memory doc's raw contents. Used
@@ -242,7 +434,7 @@ mod tests {
         let path = dir.path().join(".amf").join("review-memory.md");
         assert!(!path.exists());
 
-        ensure_review_memory_doc(&path).unwrap();
+        ensure_review_memory_doc(&path, MemoryScope::Project).unwrap();
 
         assert!(path.exists());
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -255,7 +447,7 @@ mod tests {
         let path = dir.path().join("review-memory.md");
         std::fs::write(&path, "# Custom\n\nhand-written content\n").unwrap();
 
-        ensure_review_memory_doc(&path).unwrap();
+        ensure_review_memory_doc(&path, MemoryScope::Project).unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
         assert_eq!(contents, "# Custom\n\nhand-written content\n");
@@ -266,8 +458,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("review-memory.md");
 
-        let appended =
-            append_finding(&path, "concurrency", "Guard shared state behind a lock").unwrap();
+        let appended = append_finding(
+            &path,
+            MemoryScope::Project,
+            "concurrency",
+            "Guard shared state behind a lock",
+        )
+        .unwrap();
 
         assert!(appended);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -279,9 +476,21 @@ mod tests {
     fn append_finding_reuses_existing_section() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("review-memory.md");
-        append_finding(&path, "naming", "Prefer full words over abbreviations").unwrap();
+        append_finding(
+            &path,
+            MemoryScope::Project,
+            "naming",
+            "Prefer full words over abbreviations",
+        )
+        .unwrap();
 
-        append_finding(&path, "naming", "Avoid single-letter identifiers").unwrap();
+        append_finding(
+            &path,
+            MemoryScope::Project,
+            "naming",
+            "Avoid single-letter identifiers",
+        )
+        .unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
         // Exactly one "## Naming" heading, both findings under it.
@@ -294,10 +503,10 @@ mod tests {
     fn append_finding_does_not_bleed_into_next_section() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("review-memory.md");
-        append_finding(&path, "naming", "Prefer full words").unwrap();
-        append_finding(&path, "tests", "Cover the error path").unwrap();
+        append_finding(&path, MemoryScope::Project, "naming", "Prefer full words").unwrap();
+        append_finding(&path, MemoryScope::Project, "tests", "Cover the error path").unwrap();
 
-        append_finding(&path, "naming", "Avoid abbreviations").unwrap();
+        append_finding(&path, MemoryScope::Project, "naming", "Avoid abbreviations").unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
         let naming_idx = contents.find("## Naming").unwrap();
@@ -310,9 +519,15 @@ mod tests {
     fn append_finding_dedupes_case_and_whitespace_insensitively() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("review-memory.md");
-        append_finding(&path, "tests", "Cover the error path").unwrap();
+        append_finding(&path, MemoryScope::Project, "tests", "Cover the error path").unwrap();
 
-        let appended = append_finding(&path, "tests", "  cover THE error path  ").unwrap();
+        let appended = append_finding(
+            &path,
+            MemoryScope::Project,
+            "tests",
+            "  cover THE error path  ",
+        )
+        .unwrap();
 
         assert!(!appended);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -324,7 +539,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("review-memory.md");
 
-        let appended = append_finding(&path, "tests", "   ").unwrap();
+        let appended = append_finding(&path, MemoryScope::Project, "tests", "   ").unwrap();
 
         assert!(!appended);
         assert!(!path.exists());
@@ -335,7 +550,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("review-memory.md");
 
-        append_finding(&path, "  ", "Some finding with no category").unwrap();
+        append_finding(
+            &path,
+            MemoryScope::Project,
+            "  ",
+            "Some finding with no category",
+        )
+        .unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("## General"));
@@ -351,7 +572,7 @@ mod tests {
         )
         .unwrap();
 
-        append_finding(&path, "concurrency", "A new finding").unwrap();
+        append_finding(&path, MemoryScope::Project, "concurrency", "A new finding").unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("Some hand-written prose explaining context."));
@@ -419,6 +640,137 @@ mod tests {
             count_findings("# Review memory\n\nJust prose, no bullets.\n"),
             0
         );
+    }
+
+    #[test]
+    fn global_review_memory_path_defaults_into_the_config_dir() {
+        let config_dir = Path::new("/home/u/.config/amf");
+        assert_eq!(
+            global_review_memory_path_in(config_dir, None),
+            PathBuf::from("/home/u/.config/amf/review-memory.md")
+        );
+        assert_eq!(
+            global_review_memory_path_in(config_dir, Some("   ")),
+            PathBuf::from("/home/u/.config/amf/review-memory.md")
+        );
+    }
+
+    #[test]
+    fn global_review_memory_path_honors_relative_and_absolute_overrides() {
+        let config_dir = Path::new("/home/u/.config/amf");
+        assert_eq!(
+            global_review_memory_path_in(config_dir, Some("notes/lessons.md")),
+            PathBuf::from("/home/u/.config/amf/notes/lessons.md")
+        );
+        assert_eq!(
+            global_review_memory_path_in(config_dir, Some("/srv/shared/lessons.md")),
+            PathBuf::from("/srv/shared/lessons.md")
+        );
+    }
+
+    #[test]
+    fn ensure_review_memory_doc_writes_the_scope_specific_header() {
+        let dir = TempDir::new().unwrap();
+        let global = dir.path().join("global.md");
+
+        ensure_review_memory_doc(&global, MemoryScope::Global).unwrap();
+
+        let contents = std::fs::read_to_string(&global).unwrap();
+        assert!(contents.starts_with("# Review memory (cross-project)"));
+        assert!(contents.contains("every repo you work in"));
+    }
+
+    #[test]
+    fn append_finding_creates_a_global_doc_with_the_global_header() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("global.md");
+
+        let appended =
+            append_finding(&path, MemoryScope::Global, "tests", "Cover the error path").unwrap();
+
+        assert!(appended);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.starts_with("# Review memory (cross-project)"));
+        assert!(contents.contains("- Cover the error path"));
+    }
+
+    #[test]
+    fn memory_scope_labels_and_toggles() {
+        assert_eq!(MemoryScope::default(), MemoryScope::Project);
+        assert_eq!(MemoryScope::Project.label(), "project");
+        assert_eq!(MemoryScope::Global.label(), "global");
+        assert_eq!(MemoryScope::Project.toggled(), MemoryScope::Global);
+        assert_eq!(MemoryScope::Global.toggled(), MemoryScope::Project);
+    }
+
+    #[test]
+    fn review_memory_paths_selects_by_scope() {
+        let paths = ReviewMemoryPaths {
+            project: PathBuf::from("/repo/.amf/review-memory.md"),
+            global: PathBuf::from("/home/u/.config/amf/review-memory.md"),
+        };
+        assert_eq!(
+            paths.for_scope(MemoryScope::Project),
+            Path::new("/repo/.amf/review-memory.md")
+        );
+        assert_eq!(
+            paths.for_scope(MemoryScope::Global),
+            Path::new("/home/u/.config/amf/review-memory.md")
+        );
+    }
+
+    #[test]
+    fn merge_memory_context_single_doc_is_verbatim() {
+        let project = "# Review memory\n\n## Tests\n- Cover the error path\n";
+        assert_eq!(merge_memory_context(project, ""), project.trim());
+        assert_eq!(merge_memory_context("", project), project.trim());
+        assert_eq!(merge_memory_context("", "   \n  "), "");
+    }
+
+    #[test]
+    fn merge_memory_context_labels_both_docs() {
+        let merged = merge_memory_context(
+            "## Tests\n- Cover the error path\n",
+            "## Naming\n- Prefer full words\n",
+        );
+        let project_at = merged.find(PROJECT_CONTEXT_LABEL).unwrap();
+        let global_at = merged.find(GLOBAL_CONTEXT_LABEL).unwrap();
+        assert!(project_at < global_at, "project doc comes first");
+        assert!(merged.contains("- Cover the error path"));
+        assert!(merged.contains("- Prefer full words"));
+    }
+
+    #[test]
+    fn merge_memory_context_drops_global_findings_the_project_doc_already_states() {
+        let merged = merge_memory_context(
+            "## Tests\n- Cover the error path\n",
+            "## Tests\n-   cover THE error path  \n- Assert on the message, not the type\n",
+        );
+        assert_eq!(merged.matches("Cover the error path").count(), 1);
+        assert!(merged.contains("- Assert on the message, not the type"));
+    }
+
+    #[test]
+    fn merge_memory_context_drops_a_global_section_left_empty_by_pruning() {
+        let merged = merge_memory_context(
+            "## Tests\n- Cover the error path\n",
+            "# Review memory (cross-project)\n\n## Tests\n- Cover the error path\n\n## Naming\n- Prefer full words\n",
+        );
+        // The wholly-duplicated "Tests" section is gone from the global side,
+        // but its heading survives on the project side.
+        assert_eq!(merged.matches("## Tests").count(), 1);
+        assert!(merged.find("## Tests").unwrap() < merged.find(GLOBAL_CONTEXT_LABEL).unwrap());
+        assert!(merged.contains("## Naming"));
+        assert!(merged.contains("- Prefer full words"));
+        assert!(merged.contains("# Review memory (cross-project)"));
+    }
+
+    #[test]
+    fn merge_memory_context_wholly_duplicated_global_doc_falls_back_to_project_only() {
+        let project = "## Tests\n- Cover the error path\n";
+        let merged = merge_memory_context(project, "## Tests\n- Cover the error path\n");
+        assert_eq!(merged, project.trim());
+        assert!(!merged.contains(GLOBAL_CONTEXT_LABEL));
     }
 
     #[test]

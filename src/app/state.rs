@@ -1739,6 +1739,10 @@ pub struct PrPickerState {
 pub struct BootstrapPickState {
     /// Index into [`crate::app::pr_review::BootstrapDepth::ALL`].
     pub selected: usize,
+    /// Which doc the distilled findings land in, toggled with `g`. Defaults to
+    /// `Project`: a bootstrap learns from *this* repo's PR history, so its
+    /// findings belong to this repo unless the user says otherwise.
+    pub scope: crate::app::review_memory::MemoryScope,
 }
 
 /// Full-screen progress view for the lookback bootstrap's background fetch +
@@ -1748,6 +1752,9 @@ pub struct BootstrapRunState {
     /// The PR picker to return to on completion or cancel.
     pub origin: PrPickerState,
     pub depth: crate::app::pr_review::BootstrapDepth,
+    /// Which doc the run is appending to, carried through from the picker so
+    /// the running screen and completion toast can name it.
+    pub scope: crate::app::review_memory::MemoryScope,
     pub stage: crate::app::pr_review::BootstrapStage,
 }
 
@@ -2334,11 +2341,15 @@ pub struct MemoryAddState {
     pub comment_id: u64,
     /// Index into `crate::app::pr_review::MEMORY_CATEGORIES`, cycled with `Tab`.
     pub category: usize,
+    /// Which doc the finding lands in, toggled with `g`. Defaults to
+    /// `Project` — a finding from this PR is about this repo until the user
+    /// says it's a habit worth carrying everywhere.
+    pub scope: crate::app::review_memory::MemoryScope,
     /// The finding text, editable before it's appended.
     pub editor: TextEditor,
     /// True while keystrokes go to the editor (`e` to enter); false in the
-    /// confirm view (`⏎` append / `e` edit / `Tab` cycle category / `esc`
-    /// cancel).
+    /// confirm view (`⏎` append / `e` edit / `Tab` cycle category / `g` toggle
+    /// scope / `esc` cancel).
     pub editing: bool,
 }
 

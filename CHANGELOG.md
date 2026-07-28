@@ -12,6 +12,23 @@ are tagged.
 
 ### Added
 
+- **Review memory now has a cross-project layer.** Alongside each repo's
+  committed `.amf/review-memory.md`, AMF keeps one doc of its own at
+  `~/.config/amf/review-memory.md` for the review lessons that follow you
+  between repos. An AI review (`A`/`W`) reads **both** — the repo's findings
+  first, then the cross-project ones, each labeled so the model can tell a
+  house rule from a personal habit. Findings the repo doc already states are
+  dropped from the cross-project side before the prompt is built, so a rule you
+  promoted from one repo to all of them isn't paid for twice on every review.
+  Writes still go to exactly one doc, and you pick which: `g` in the "add to
+  memory" dialog (`M`) and in the lookback bootstrap's depth picker (`b`)
+  toggles between the project and global doc, with the destination file named
+  on screen before you commit to it. Everything defaults to the project doc, so
+  nothing changes until you reach for `g`. The global path is overridable with
+  a top-level `global_review_memory_path` in `~/.config/amf/config.json`
+  (relative values resolve inside the config dir). Compacting (`c`) still
+  targets the project doc only.
+
 - **PR Triage can run a PR's fixes in a new feature of its own.** The
   fix-target picker (the prompt on the first `f`/`B` of a visit) has a third
   option: `New feature…`. It creates an isolated, worktree-backed feature just

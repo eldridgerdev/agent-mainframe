@@ -78,9 +78,15 @@ pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, the
 /// Full-screen PR picker: a scrollable list of the repo's PRs to open for
 /// triage. `⏎` opens the highlighted one, `a` toggles closed/merged, `#` drops
 /// to the manual number prompt, `b` opens the review-memory lookback
-/// bootstrap. `memory_path` is the resolved review-memory doc path, shown in
-/// the bootstrap depth picker.
-pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, memory_path: &Path) {
+/// bootstrap. `memory_paths` holds both resolved review-memory doc paths: the
+/// bootstrap depth picker shows whichever its `g` scope toggle points at, and
+/// the compact overlay always shows the project one (it only compacts that).
+pub fn draw_pr_picker(
+    frame: &mut Frame,
+    state: &PrPickerState,
+    theme: &Theme,
+    memory_paths: &crate::app::review_memory::ReviewMemoryPaths,
+) {
     let area = frame.area();
     let block = pane_block(theme).title(" Pick a PR to triage (experimental) ");
     let inner = block.inner(area);
@@ -165,10 +171,10 @@ pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, m
     frame.render_widget(footer, layout[3]);
 
     if let Some(pick) = &state.bootstrap_pick {
-        draw_bootstrap_pick(frame, pick, memory_path, theme);
+        draw_bootstrap_pick(frame, pick, memory_paths.for_scope(pick.scope), theme);
     }
     if let Some(confirm) = &state.compact_confirm {
-        draw_compact_confirm(frame, confirm, memory_path, theme);
+        draw_compact_confirm(frame, confirm, &memory_paths.project, theme);
     }
 }
 
@@ -202,15 +208,21 @@ fn draw_bootstrap_pick(
         ])
         .split(inner);
 
+    // Two explicit lines rather than one wrapped sentence: the destination is
+    // now a choice (`g`), and the scope word plus a real path is more than a
+    // 60%-wide overlay fits on one row without splitting mid-word.
+    let muted = Style::default().fg(theme.text_muted.to_color());
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(
-                "  Distill common findings from merged/closed PRs into {}.",
-                memory_path.display()
-            ),
-            Style::default().fg(theme.text_muted.to_color()),
-        )))
-        .wrap(Wrap { trim: false }),
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "  Distill common findings from merged/closed PRs into:",
+                muted,
+            )),
+            Line::from(Span::styled(
+                format!("  {} doc · {}", pick.scope.label(), memory_path.display()),
+                muted,
+            )),
+        ]),
         chunks[0],
     );
 
@@ -249,7 +261,7 @@ fn draw_bootstrap_pick(
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "[⏎] run   [j/k] move   [esc] cancel",
+            "[⏎] run   [j/k] move   [g] project/global   [esc] cancel",
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[4],
@@ -324,7 +336,10 @@ pub fn draw_review_memory_bootstrap_running(
     theme: &Theme,
 ) {
     let area = frame.area();
-    let block = pane_block(theme).title(" Bootstrap review memory (experimental) ");
+    let block = pane_block(theme).title(format!(
+        " Bootstrap {} review memory (experimental) ",
+        state.scope.label()
+    ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -612,6 +627,7 @@ pub struct PrReviewUsage<'a> {
     pub pricing: &'a TokenPricingConfig,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_pr_review(
     frame: &mut Frame,
     state: &mut PrReviewState,
@@ -624,6 +640,11 @@ pub fn draw_pr_review(
     // feature (and which mode) a fix will run in. `None` for the in-feature
     // targets, which run in the feature already on screen.
     triage_feature_summary: Option<&str>,
+    // Both review-memory doc paths, so the "add to memory" dialog can name the
+    // exact file its `g` scope toggle currently points at. `None` when that
+    // dialog is closed — resolving them shells out to git, so the caller only
+    // pays for it on the frames that actually need it.
+    memory_paths: Option<&crate::app::review_memory::ReviewMemoryPaths>,
 ) {
     let area = frame.area();
     let review = &state.review;
@@ -872,7 +893,13 @@ pub fn draw_pr_review(
             .find(|c| c.id == memory_add.comment_id)
             .map(|c| c.author.as_str())
             .unwrap_or("reviewer");
-        draw_memory_add_dialog(frame, memory_add, author, theme);
+        draw_memory_add_dialog(
+            frame,
+            memory_add,
+            author,
+            memory_paths.map(|paths| paths.for_scope(memory_add.scope)),
+            theme,
+        );
     }
 }
 
@@ -946,19 +973,22 @@ fn draw_reply_dialog(
 
 /// "Add to memory" dialog: the selected comment's distilled finding, editable,
 /// awaiting approval before it's appended to the review-memory doc. `Tab`
-/// cycles the category in the confirm view.
+/// cycles the category in the confirm view and `g` toggles which doc it lands
+/// in — this repo's, or the user's cross-project one.
 fn draw_memory_add_dialog(
     frame: &mut Frame,
     memory_add: &crate::app::MemoryAddState,
     author: &str,
+    memory_path: Option<&Path>,
     theme: &Theme,
 ) {
     let area = super::super::dashboard::centered_rect(70, 50, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let category = crate::app::pr_review::MEMORY_CATEGORIES[memory_add.category];
+    let scope = memory_add.scope.label();
     let block = Block::default()
-        .title(format!(" Add to memory · {category} · @{author} "))
+        .title(format!(" Add to {scope} memory · {category} · @{author} "))
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -969,6 +999,7 @@ fn draw_memory_add_dialog(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),    // finding text
+            Constraint::Length(1), // destination doc
             Constraint::Length(1), // key hints
         ])
         .split(inner);
@@ -980,17 +1011,29 @@ fn draw_memory_add_dialog(
         chunks[0],
     );
 
+    // The title names the scope; this names the exact file, so "global" is
+    // never a guess about where the finding actually went.
+    if let Some(memory_path) = memory_path {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("→ {}", memory_path.display()),
+                Style::default().fg(theme.text_muted.to_color()),
+            ))),
+            chunks[1],
+        );
+    }
+
     let hints = if memory_add.editing {
         "[esc] done editing"
     } else {
-        "[⏎] add   [e] edit   [Tab] category   [esc] cancel"
+        "[⏎] add   [e] edit   [Tab] category   [g] project/global   [esc] cancel"
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             hints,
             Style::default().fg(theme.primary.to_color()),
         ))),
-        chunks[1],
+        chunks[2],
     );
 }
 
@@ -2492,6 +2535,99 @@ mod tests {
     fn fix_confirm_hides_branch_mismatch_warning_when_absent() {
         let rendered = render_fix_confirm(None);
         assert!(!rendered.contains("this worktree is on"));
+    }
+
+    fn render_memory_add(scope: crate::app::review_memory::MemoryScope) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let memory_add = crate::app::MemoryAddState {
+            comment_id: 1,
+            category: 0,
+            scope,
+            editor: crate::editor::TextEditor::new("Guard shared state".to_string()),
+            editing: false,
+        };
+        let paths = crate::app::review_memory::ReviewMemoryPaths {
+            project: std::path::PathBuf::from("/repo/.amf/review-memory.md"),
+            global: std::path::PathBuf::from("/home/u/.config/amf/review-memory.md"),
+        };
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_memory_add_dialog(
+                    frame,
+                    &memory_add,
+                    "alice",
+                    Some(paths.for_scope(scope)),
+                    &theme,
+                )
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn memory_add_dialog_names_the_project_doc_by_default() {
+        let rendered = render_memory_add(crate::app::review_memory::MemoryScope::Project);
+        assert!(rendered.contains("Add to project memory"));
+        assert!(rendered.contains("/repo/.amf/review-memory.md"));
+        assert!(rendered.contains("[g] project/global"));
+    }
+
+    #[test]
+    fn memory_add_dialog_names_the_global_doc_under_global_scope() {
+        let rendered = render_memory_add(crate::app::review_memory::MemoryScope::Global);
+        assert!(rendered.contains("Add to global memory"));
+        assert!(rendered.contains("/home/u/.config/amf/review-memory.md"));
+        assert!(
+            !rendered.contains("/repo/.amf/review-memory.md"),
+            "the project path shouldn't linger once the scope is global"
+        );
+    }
+
+    fn render_bootstrap_pick(scope: crate::app::review_memory::MemoryScope) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let pick = crate::app::BootstrapPickState { selected: 0, scope };
+        let path = match scope {
+            crate::app::review_memory::MemoryScope::Project => "/repo/.amf/review-memory.md",
+            crate::app::review_memory::MemoryScope::Global => {
+                "/home/u/.config/amf/review-memory.md"
+            }
+        };
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_bootstrap_pick(frame, &pick, std::path::Path::new(path), &theme))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn bootstrap_pick_names_the_destination_doc_for_each_scope() {
+        let project = render_bootstrap_pick(crate::app::review_memory::MemoryScope::Project);
+        assert!(project.contains("project doc"));
+        assert!(project.contains("/repo/.amf/review-memory.md"));
+        assert!(project.contains("[g] project/global"));
+
+        let global = render_bootstrap_pick(crate::app::review_memory::MemoryScope::Global);
+        assert!(global.contains("global doc"));
+        assert!(global.contains("/home/u/.config/amf/review-memory.md"));
     }
 
     #[test]

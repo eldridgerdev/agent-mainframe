@@ -225,7 +225,9 @@ pub fn ai_review_prompt(diff: &str, memory: &str, skill: Option<&str>) -> String
          if any. Skip praise and style nitpicks the diff already handles well.\n\n",
     );
     if !memory.trim().is_empty() {
-        out.push_str("Known recurring findings for this project:\n");
+        // Deliberately not "for this project": `memory` may merge the repo's
+        // own doc with the user's cross-project one, each labeled inside.
+        out.push_str("Known recurring findings to check for:\n");
         out.push_str(memory.trim());
         out.push_str("\n\n");
     }
@@ -996,11 +998,14 @@ impl App {
         );
 
         let repo = self.repo_for_project_path(&workdir);
-        let memory_path = review_memory::review_memory_path(
-            &repo,
-            self.configured_review_memory_path(&repo).as_deref(),
+        // Both docs feed the reviewer: the repo's own findings plus the
+        // user's cross-project ones, with the overlap between them collapsed
+        // so a promoted rule isn't paid for twice in the prompt.
+        let memory_paths = self.review_memory_paths(&repo);
+        let memory = review_memory::merge_memory_context(
+            &std::fs::read_to_string(&memory_paths.project).unwrap_or_default(),
+            &std::fs::read_to_string(&memory_paths.global).unwrap_or_default(),
         );
-        let memory = std::fs::read_to_string(&memory_path).unwrap_or_default();
         let skill = self.config.ai_review_skill.clone();
 
         let (tx, rx) = std::sync::mpsc::channel();

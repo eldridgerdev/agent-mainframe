@@ -436,6 +436,15 @@ pub struct AppConfig {
     /// [`review_memory::DEFAULT_REVIEW_MEMORY_PATH`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_memory_path: Option<String>,
+    /// Path to the **cross-project** review-findings memory doc, read by the
+    /// AI reviewer in addition to each repo's own doc and writable from the
+    /// `M` / bootstrap flows' "global" scope. Relative values resolve against
+    /// the AMF config dir; absolute ones are used as-is. Defaults to
+    /// [`review_memory::DEFAULT_GLOBAL_REVIEW_MEMORY_FILE`] there (i.e.
+    /// `~/.config/amf/review-memory.md`) when unset. Global-only by nature —
+    /// unlike [`Self::review_memory_path`] there is no per-project override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_review_memory_path: Option<String>,
     /// Name of an existing Claude Code skill/command (without the leading `/`,
     /// e.g. `"review"`) to lead the AI PR-review prompt (`A` in the PR-review
     /// pane, Epic E of `pr-comment-review-plan.md`) with, so its review
@@ -552,6 +561,7 @@ impl Default for AppConfig {
             final_review_submit_prompt: true,
             final_review_post_to_pr: false,
             review_memory_path: None,
+            global_review_memory_path: None,
             ai_review_skill: None,
             review_model: None,
             review_models: std::collections::BTreeMap::new(),
@@ -2884,6 +2894,22 @@ impl App {
         self.extension_for_repo(repo)
             .review_memory_path
             .or_else(|| self.config.review_memory_path.clone())
+    }
+
+    /// Both review-memory doc paths for `repo`: its own committed doc (via
+    /// [`Self::configured_review_memory_path`]) and the user's cross-project
+    /// one. Every review-memory flow resolves through this, so a scope toggle
+    /// is just a lookup rather than a second round of config plumbing.
+    pub(crate) fn review_memory_paths(&self, repo: &Path) -> review_memory::ReviewMemoryPaths {
+        review_memory::ReviewMemoryPaths {
+            project: review_memory::review_memory_path(
+                repo,
+                self.configured_review_memory_path(repo).as_deref(),
+            ),
+            global: review_memory::global_review_memory_path(
+                self.config.global_review_memory_path.as_deref(),
+            ),
+        }
     }
 
     pub(crate) fn allowed_agents_for_project_path(&self, path: &Path) -> Vec<AgentKind> {

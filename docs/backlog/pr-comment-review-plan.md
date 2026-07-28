@@ -1,6 +1,7 @@
 # PR Triage
 
-- **Status:** Shipped (one open question remains)
+- **Status:** Shipped — all epics and open questions closed; one small
+  backlog item remains (compacting the global review-memory doc)
 - **Owner:** unassigned
 - **Relates to:** `trigger_final_review` / `DiffViewer` mode
   (`src/app/review.rs`), embedded tmux view (`AppMode::Viewing`,
@@ -1446,6 +1447,67 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/mod.rs`,
       `src/ui/dialogs/help.rs`, `src/ui/dashboard.rs`, `src/ui/status.rs`,
       `src/app/tests.rs`, `CHANGELOG.md`.
+- [x] **Cross-project (global) review-memory layer (resolves the last Open
+      Questions item).** Per-project *path* configurability had already
+      shipped; what was undecided was *content* — whether a separate
+      cross-project lessons file should be merged on top of each repo's doc,
+      or per-repo stay strictly isolated. **Decided: merge one in.** Review
+      lessons split cleanly into house rules (this repo's `.amf/review-memory.md`,
+      committed and shared) and personal habits that follow you between repos,
+      and there was no home for the second kind — so they were either retyped
+      per repo or lost. AMF now keeps one at
+      `~/.config/amf/review-memory.md`, resolved by a new
+      `review_memory::global_review_memory_path` (relative overrides anchor to
+      the config dir, absolute ones are used as-is, override key
+      `AppConfig::global_review_memory_path` — global-only by nature, so
+      unlike `review_memory_path` there's deliberately no `ExtensionConfig`
+      per-project counterpart). A `MemoryScope` (`Project`/`Global`) enum now
+      threads through the module: it picks the header template a
+      newly-created doc gets (the global one says "cross-project" and explains
+      the split) and is a required argument to `append_finding`, so no write
+      can reach a doc without having named which one.
+
+      **Reads merge; writes pick one.** Only the AI reviewer reads both, via a
+      new `merge_memory_context(project, global)`: one doc alone comes back
+      verbatim (so the pre-existing single-doc case is byte-identical), and
+      when both have content each is introduced by a plain-text label — not a
+      Markdown heading, which would collide with the `## Category` headings
+      inside the docs themselves — with the project doc first. Global findings
+      the project doc already states are pruned first (`prune_duplicate_findings`,
+      case/whitespace-insensitive, also dropping any global section left with
+      no bullets), because the two docs overlap *by design* — promoting a rule
+      from one repo to all of them is the point — and paying for the same rule
+      twice in every review prompt is exactly the token waste this feature
+      exists to avoid. `ai_review_prompt`'s context header stopped saying "for
+      this project" to match. Every write flow still targets exactly one doc,
+      chosen by the user: `g` toggles the scope in the `M` "add to memory"
+      dialog and in the bootstrap's (`b`) depth picker, both defaulting to
+      `Project` (a finding from this PR, or distilled from this repo's PR
+      history, is about this repo until the user says otherwise) and both
+      naming the destination *file* on screen, so "global" is never a guess
+      about where the finding went. Toasts and the bootstrap running screen
+      name the scope too. Compacting (`c`) deliberately stays project-only —
+      see the Backlog item below.
+
+      The four scattered path lookups collapsed into one
+      `App::review_memory_paths(repo) -> ReviewMemoryPaths` holding both, with
+      `for_scope`. The pane's renderer resolves it **only while the `M` dialog
+      is open** (`Option<&ReviewMemoryPaths>`): `repo_for_project_path` shells
+      out to git, and `draw_pr_review` runs every frame. Unit-tested
+      (global path resolution incl. both override shapes, scope-specific
+      headers, a global-scope `append_finding` creating the cross-project doc,
+      and five `merge_memory_context` cases: single-doc verbatim, labeled
+      both-docs ordering, duplicate pruning, an emptied section dropped, and a
+      wholly-duplicated global doc collapsing back to project-only), plus
+      App-level tests (scope defaults + toggles for both dialogs, a global
+      write leaving the project doc untouched, and combined project-override /
+      global resolution) and render tests proving each dialog names the right
+      file per scope. Full suite green (1331 passed, 1 ignored), `cargo
+      clippy`/`cargo fmt` clean. → `src/app/review_memory.rs`, `src/app/mod.rs`,
+      `src/app/pr_review.rs`, `src/app/ai_review.rs`, `src/app/state.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dialogs/help.rs`, `src/ui/dashboard.rs`, `src/app/tests.rs`,
+      `CHANGELOG.md`.
 
 ## Nice to have
 
@@ -1608,15 +1670,14 @@ first), and the reviewer's output (plus comments triaged in the pane)
 
 ## Open questions
 
-- [ ] **Add an optional global review-memory layer (Epic E).** Per-project
-  path configurability shipped (see the Epic E Progress item above — a
-  project's `.amf/config.json` can now point `review_memory_path` at its
-  own file). What's still undecided is *content*, not path: whether a
-  separate cross-project lessons file should be merged in on top of each
-  repo's own doc, or whether per-repo stays strictly isolated (today's
-  behavior).
+None. The last one — whether to add a cross-project review-memory layer —
+was decided in favor of merging one in, and shipped; see the Epic E
+Progress item "Cross-project (global) review-memory layer".
+
 Resolved and no longer tracked here (see the linked Epic item for the
-decision and implementation): which agent session runs fixes (Epic B,
+decision and implementation): the cross-project review-memory layer (Epic E
+"Cross-project (global) review-memory layer" — merged in, not isolated),
+which agent session runs fixes (Epic B,
 dedicated-session default), AI-authored content attribution (Epic D "AI
 attribution on AMF-posted comments"), templated-reply channel disclosure
 (Epic C "posted via AMF" footer), conversation-comment grouping (Epic D's
@@ -1630,6 +1691,22 @@ non-goal for v1 (GitHub `gh` only), not an open question.
 
 ## Backlog
 
+- [ ] **Let `c` compact the global review-memory doc too.** The cross-project
+      layer shipped with a scope toggle on the two *append* flows (`M`, `b`)
+      but not on the compact pass — `c` still always targets the project doc,
+      which is where the decided scope of that work ended. So the global doc
+      can grow indefinitely (via `M`'s global scope) with no pruning path
+      short of hand-editing it, which is the same rot the project doc's
+      compact pass exists to prevent. The fix is small and mirrors what's
+      already there: a `scope` on `CompactConfirmState` toggled by `g`,
+      re-reading `count_findings` for the newly selected doc on each toggle,
+      and `review_memory_compact_confirm_run` resolving through
+      `review_memory_paths(repo).for_scope(scope)` instead of `.project`.
+      Worth watching first whether a hand-curated global doc actually rots
+      the way an auto-fed project doc does — it's fed one deliberate `M` at a
+      time, so it may not need the machinery. →
+      `src/app/pr_review.rs`, `src/app/state.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`.
 - [x] **Split AI Review into its own workflow (resolves the "does AI review
       belong in this pane" open question).** AMF's own review of a PR's diff
       (`A`/`W`) used to live inside PR Triage, converting each finding into a

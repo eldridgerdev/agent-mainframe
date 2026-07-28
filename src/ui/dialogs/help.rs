@@ -256,7 +256,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("", "(Ctrl+Space P there jumps back)"),
         ("R", "Reply — pick Done / not-needed, then post"),
         ("M", "Add finding to review-memory doc"),
-        ("", "(e edit · Tab category)"),
+        ("", "(e edit · Tab category · g project/global)"),
         (
             "m",
             "Mark — Done (local) / Skip (local) / Resolve on GitHub",
@@ -335,6 +335,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("a", "Include/hide closed & merged PRs"),
         ("#", "Enter a PR number instead"),
         ("b", "Bootstrap review memory from recent PRs"),
+        ("", "(g picks the project or global doc)"),
         ("c", "Compact review memory (merge dupes, prune stale)"),
         ("q / Esc", "Close picker"),
     ];

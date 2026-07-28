@@ -8,11 +8,93 @@ use ratatui::{
 
 use crate::app::{
     NewSessionNameState, ProjectAgentConfigState, RenameFeatureState, RenameSessionState,
-    SessionConfigState,
+    SessionConfigState, StoppedSessionChoice, StoppedSessionDialogState,
 };
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
+
+pub fn draw_stopped_session_dialog(
+    frame: &mut Frame,
+    state: &StoppedSessionDialogState,
+    theme: &Theme,
+) {
+    let area = centered_rect(58, 38, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Session Not Running ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.warning.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!(" This {} pane's tmux session is gone.", state.harness_label),
+            Style::default().fg(theme.text.to_color()),
+        )),
+        Line::from(""),
+    ];
+
+    for (index, choice) in state.choices.iter().enumerate() {
+        let label = match choice {
+            StoppedSessionChoice::Resume => "Resume the saved session",
+            StoppedSessionChoice::Clear => "Start a clear session",
+            StoppedSessionChoice::PickSession => "Pick a different saved session…",
+            StoppedSessionChoice::Cancel => "Cancel",
+        };
+        let selected = index == state.selected;
+        let mut style = Style::default().fg(theme.text.to_color());
+        if selected {
+            style = style
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(Span::styled(
+            format!("  {}{}", if selected { "› " } else { "  " }, label),
+            style,
+        )));
+    }
+
+    let mut hints = vec![
+        Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " select  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("r", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " resume  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("c", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" clear  ", Style::default().fg(theme.text_muted.to_color())),
+    ];
+    if state.choices.contains(&StoppedSessionChoice::PickSession) {
+        hints.push(Span::styled(
+            "p",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        hints.push(Span::styled(
+            " pick  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    }
+    hints.push(Span::styled(
+        "Esc",
+        Style::default().fg(theme.warning.to_color()),
+    ));
+    hints.push(Span::styled(
+        " cancel",
+        Style::default().fg(theme.text_muted.to_color()),
+    ));
+
+    lines.extend([Line::from(""), Line::from(hints)]);
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
 
 pub fn draw_rename_session_dialog(frame: &mut Frame, state: &RenameSessionState, theme: &Theme) {
     let area = centered_rect(50, 25, frame.area());

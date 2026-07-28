@@ -381,6 +381,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         | AppMode::OpencodeSessionPicker(_)
         | AppMode::ClaudeSessionPicker(_)
         | AppMode::CodexSessionPicker(_)
+        | AppMode::StoppedSessionDialog(_)
         | AppMode::SessionPicker(_)
         | AppMode::BookmarkPicker(_) => Line::from(vec![
             Span::styled("j/k or \u{2191}/\u{2193}", key_style()),

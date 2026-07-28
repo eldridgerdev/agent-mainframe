@@ -21,7 +21,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("j/k / \u{2191}/\u{2193}", "Navigate up/down"),
         ("h / \u{2190}", "Collapse project/feature"),
         ("l / \u{2192}", "Expand project/feature"),
-        ("Enter", "Toggle expand / view session"),
+        ("Enter", "Toggle expand / view or recover session"),
         ("s", "Add session (picker)"),
         ("S", "Pick session to resume"),
         ("N", "Create new project"),

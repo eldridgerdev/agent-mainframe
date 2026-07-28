@@ -79,7 +79,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.toggle_collapse();
             }
             Selection::Session(_, _, _) => {
-                app.enter_view()?;
+                if !app.open_stopped_session_dialog()? {
+                    app.enter_view()?;
+                }
             }
         },
         KeyCode::Char('c') => match &app.selection {
@@ -121,6 +123,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.open_session_picker()?;
         }
         KeyCode::Char('S') => {
+            // `S` stays on the saved-transcript picker even for a stopped
+            // feature: the pickers start the feature themselves, and they are
+            // the only way to reach transcripts older than the ID AMF recorded.
             let (is_opencode, is_claude, is_codex) = match &app.selection {
                 Selection::Feature(pi, fi) => {
                     let agent = app

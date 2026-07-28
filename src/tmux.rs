@@ -1997,6 +1997,10 @@ impl TmuxManager {
 // ── TmuxOps trait implementation ─────────────────────────────────────────────
 
 impl TmuxOps for TmuxManager {
+    fn check_harness_available(&self, kind: &crate::project::AgentKind) -> Result<()> {
+        crate::app::App::check_harness_available(kind)
+    }
+
     fn session_exists(&self, session: &str) -> bool {
         TmuxManager::session_exists(session)
     }

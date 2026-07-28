@@ -516,7 +516,10 @@ impl App {
                 if parsed.is_empty() {
                     self.log_debug(
                         "plan_interview",
-                        format!("AI round {round} returned no usable follow-up questions"),
+                        format!(
+                            "AI round {round} returned no usable follow-up questions: {}",
+                            truncate_for_log(&response)
+                        ),
                     );
                 }
                 parsed
@@ -598,8 +601,10 @@ impl App {
                 if plan.is_none() {
                     self.log_warn(
                         "plan_interview",
-                        "plan synthesis returned incomplete markdown; using raw Q&A plan"
-                            .to_string(),
+                        format!(
+                            "plan synthesis returned incomplete markdown; using raw Q&A plan: {}",
+                            truncate_for_log(&response)
+                        ),
                     );
                 }
                 plan

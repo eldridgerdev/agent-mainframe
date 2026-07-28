@@ -217,9 +217,11 @@ pub struct PlanQuestion {
   model to "ground this in the repository" invites it to answer with
   an offer to go read the repo and nothing else — observed live during
   the Epic 4 agent-review work, where that reply was the entire
-  response. Every prompt says the supplied context is all there is and
-  that no files can be read. Bounded logging of an off-contract reply's
-  first ~300 chars is what makes this class of failure diagnosable.
+  response. All three prompts (interviewer, synthesis, critique) now say
+  they run without tools and that the supplied context is all there is,
+  pinned by a unit test so a fourth prompt cannot quietly skip it. Every
+  parse-failure path logs a bounded ~300-char prefix of the reply; that
+  breadcrumb is what makes this class of failure diagnosable at all.
 - All headless calls run off the UI thread using the existing
   spawn-then-poll pattern (`PrReviewLoading` /
   `ReviewMemoryBootstrapRunning` are the precedents), with a

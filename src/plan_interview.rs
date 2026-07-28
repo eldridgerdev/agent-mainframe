@@ -37,6 +37,8 @@ Return at most 5 questions in exactly one fenced ```json block and no other text
 {"questions":[{"id":"stable-kebab-case-id","text":"Question?","kind":"free_text"},{"id":"choice-id","text":"Choose one","kind":"select","options":["First","Second"]}]}
 
 Rules:
+- Work from the supplied input alone. You are running without tools and have no file access, so do
+  not offer to inspect the repository — the supplied repository context is all you get.
 - `id` must be a unique kebab-case slug and must not reuse an existing question ID.
 - `kind` must be `free_text` or `select`.
 - A `select` question must have 2-6 distinct, non-empty options; omit `options` for `free_text`.
@@ -63,6 +65,8 @@ Return only markdown, with no preamble and no fenced code block. Use exactly thi
 ## Risks / open questions
 
 Requirements:
+- Work from the supplied input alone. You are running without tools and have no file access, so do
+  not offer to inspect the repository — the supplied repository context is all you get.
 - Make the goal concise and outcome-oriented.
 - Record interview decisions as concrete bullets.
 - Ground architecture and UI sections in the supplied repository context; write "No changes identified." when a section does not apply.
@@ -766,6 +770,24 @@ mod tests {
         assert!(prompt.contains("This request is a revision"));
         assert!(prompt.contains("\"reviewer_feedback\""));
         assert!(prompt.contains("No rollback story."));
+    }
+
+    /// Every interview prompt is sent through `HeadlessRunner::run(.., restricted:
+    /// true)`, which leaves the model no tools. A prompt that omits this invites a
+    /// reply that is nothing but an offer to go read the repository — observed
+    /// live against Claude, where that sentence was the entire response.
+    #[test]
+    fn every_interview_prompt_says_it_is_running_without_tools() {
+        for (name, prompt) in [
+            ("interviewer", INTERVIEWER_PROMPT),
+            ("synthesis", SYNTHESIS_PROMPT),
+            ("critique", CRITIQUE_PROMPT),
+        ] {
+            assert!(
+                prompt.contains("running without tools") && prompt.contains("no file access"),
+                "{name} prompt does not tell the model it has no tools"
+            );
+        }
     }
 
     #[test]

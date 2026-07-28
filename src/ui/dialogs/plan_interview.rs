@@ -20,9 +20,14 @@ pub fn draw_plan_interview_dialog(
     theme: &Theme,
     throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
+    // The whole review gate shares one frame size so moving between the plan,
+    // its editor, and an agent review does not resize the dialog underfoot.
     let review_gate = matches!(
         state.phase,
-        PlanInterviewPhase::Review | PlanInterviewPhase::Editing
+        PlanInterviewPhase::Review
+            | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::Critique
+            | PlanInterviewPhase::CritiqueLoading
     );
     let area = if review_gate {
         centered_rect(86, 86, frame.area())
@@ -34,6 +39,9 @@ pub fn draw_plan_interview_dialog(
     let title = match state.phase {
         PlanInterviewPhase::Review => format!(" Plan Review · {} ", state.feature_name),
         PlanInterviewPhase::Editing => format!(" Edit Plan · {} ", state.feature_name),
+        PlanInterviewPhase::Critique | PlanInterviewPhase::CritiqueLoading => {
+            format!(" Agent Review · {} ", state.feature_name)
+        }
         _ => format!(" Plan Mode · {} ", state.feature_name),
     };
     let block = Block::default()
@@ -84,6 +92,10 @@ pub fn draw_plan_interview_dialog(
     }
     if state.phase == PlanInterviewPhase::Editing {
         draw_plan_edit(frame, inner, state, message, theme);
+        return;
+    }
+    if state.phase == PlanInterviewPhase::Critique {
+        draw_plan_critique(frame, inner, state, message, theme);
         return;
     }
 
@@ -153,7 +165,12 @@ pub fn draw_plan_interview_dialog(
         PlanInterviewPhase::SynthesisLoading => {
             draw_synthesis_loading(frame, chunks[2], state, theme, throbber_state)
         }
-        PlanInterviewPhase::Review | PlanInterviewPhase::Editing => unreachable!(),
+        PlanInterviewPhase::CritiqueLoading => {
+            draw_critique_loading(frame, chunks[2], state, theme, throbber_state)
+        }
+        PlanInterviewPhase::Review | PlanInterviewPhase::Editing | PlanInterviewPhase::Critique => {
+            unreachable!()
+        }
         PlanInterviewPhase::Done => {
             frame.render_widget(
                 Paragraph::new(
@@ -189,6 +206,8 @@ pub fn draw_plan_interview_dialog(
             hint("Esc", theme),
             Span::raw(" cancel"),
         ])
+    } else if state.phase == PlanInterviewPhase::CritiqueLoading {
+        Line::from(vec![hint("Esc", theme), Span::raw(" back to plan")])
     } else if matches!(
         state.phase,
         PlanInterviewPhase::AiLoading | PlanInterviewPhase::SynthesisLoading
@@ -235,6 +254,9 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             format!("AI round {}", state.ai_rounds_completed + 1),
         ),
         PlanInterviewPhase::SynthesisLoading => (total, "Plan synthesis".to_string()),
+        PlanInterviewPhase::CritiqueLoading | PlanInterviewPhase::Critique => {
+            (total, "Agent review".to_string())
+        }
         PlanInterviewPhase::Review => (total, "Plan review".to_string()),
         PlanInterviewPhase::Editing => (total, "Edit plan".to_string()),
         PlanInterviewPhase::Done => (total, "Complete".to_string()),
@@ -264,6 +286,8 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         PlanInterviewPhase::SynthesisLoading => {
             ("Synthesizing implementation plan".to_string(), false)
         }
+        PlanInterviewPhase::CritiqueLoading => ("Reviewing the draft plan".to_string(), false),
+        PlanInterviewPhase::Critique => ("Agent review of the plan".to_string(), false),
         PlanInterviewPhase::Review => ("Review implementation plan".to_string(), false),
         PlanInterviewPhase::Editing => ("Edit raw markdown".to_string(), false),
         PlanInterviewPhase::Done => ("Interview complete".to_string(), false),
@@ -282,9 +306,7 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
 }
 
 /// Loading frame shown while an AI-adaptive round runs off the UI thread
-/// (`App::poll_plan_interview_ai_bg`). Shows the engine, elapsed time, and a
-/// cheap token estimate for the prompt — mirrors the PR-review family's
-/// running frames (`draw_ai_pr_review_running`).
+/// (`App::poll_plan_interview_ai_bg`).
 fn draw_ai_loading(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -292,40 +314,18 @@ fn draw_ai_loading(
     theme: &Theme,
     throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
-    let throbber = throbber_widgets_tui::Throbber::default()
-        .style(Style::default().fg(theme.warning.to_color()));
-    let spinner = throbber.to_symbol_span(throbber_state);
-
-    let engine = state
-        .ai_harness
-        .as_ref()
-        .and_then(|resolved| resolved.as_ref())
-        .map(|harness| harness.display_name())
-        .unwrap_or("agent");
-    let elapsed = state
-        .ai_round_started_at
-        .map(|started_at| started_at.elapsed().as_secs())
-        .unwrap_or(0);
     let round = state.ai_rounds_completed + 1;
-
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(""),
-            Line::from(vec![
-                spinner,
-                Span::styled(
-                    format!(
-                        " Generating follow-up questions ({engine}) · round {round} · {elapsed}s · ~{} tokens...",
-                        state.ai_round_token_estimate
-                    ),
-                    Style::default()
-                        .fg(theme.text.to_color())
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-        ])
-        .wrap(Wrap { trim: false }),
+    draw_headless_loading(
+        frame,
         area,
+        theme,
+        throbber_state,
+        format!(
+            "Generating follow-up questions ({}) · round {round}",
+            interview_engine(state)
+        ),
+        state.ai_round_started_at,
+        state.ai_round_token_estimate,
     );
 }
 
@@ -337,18 +337,55 @@ fn draw_synthesis_loading(
     theme: &Theme,
     throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
+    draw_headless_loading(
+        frame,
+        area,
+        theme,
+        throbber_state,
+        format!(
+            "Synthesizing implementation plan ({})",
+            interview_engine(state)
+        ),
+        state.synthesis_started_at,
+        state.synthesis_token_estimate,
+    );
+}
+
+/// Loading frame for the optional advisory review of the draft plan.
+fn draw_critique_loading(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    theme: &Theme,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+) {
+    draw_headless_loading(
+        frame,
+        area,
+        theme,
+        throbber_state,
+        format!("Reviewing the draft plan ({})", interview_engine(state)),
+        state.critique_started_at,
+        state.critique_token_estimate,
+    );
+}
+
+/// Shared spinner frame for the interview's headless passes, showing elapsed
+/// time and a cheap prompt-size token estimate — mirrors the PR-review
+/// family's running frames (`draw_ai_pr_review_running`).
+fn draw_headless_loading(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    theme: &Theme,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    head: String,
+    started_at: Option<std::time::Instant>,
+    token_estimate: usize,
+) {
     let throbber = throbber_widgets_tui::Throbber::default()
         .style(Style::default().fg(theme.warning.to_color()));
     let spinner = throbber.to_symbol_span(throbber_state);
-
-    let engine = state
-        .ai_harness
-        .as_ref()
-        .and_then(|resolved| resolved.as_ref())
-        .map(|harness| harness.display_name())
-        .unwrap_or("agent");
-    let elapsed = state
-        .synthesis_started_at
+    let elapsed = started_at
         .map(|started_at| started_at.elapsed().as_secs())
         .unwrap_or(0);
 
@@ -358,10 +395,7 @@ fn draw_synthesis_loading(
             Line::from(vec![
                 spinner,
                 Span::styled(
-                    format!(
-                        " Synthesizing implementation plan ({engine}) · {elapsed}s · ~{} tokens...",
-                        state.synthesis_token_estimate
-                    ),
+                    format!(" {head} · {elapsed}s · ~{token_estimate} tokens..."),
                     Style::default()
                         .fg(theme.text.to_color())
                         .add_modifier(Modifier::BOLD),
@@ -371,6 +405,17 @@ fn draw_synthesis_loading(
         .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+/// Name of the harness powering this interview's headless calls, or a neutral
+/// placeholder before one has been resolved.
+fn interview_engine(state: &PlanInterviewState) -> &str {
+    state
+        .ai_harness
+        .as_ref()
+        .and_then(|resolved| resolved.as_ref())
+        .map(|harness| harness.display_name())
+        .unwrap_or("agent")
 }
 
 fn draw_plan_review(
@@ -422,16 +467,85 @@ fn draw_plan_review(
     let hints = Line::from(vec![
         hint("j/k", theme),
         Span::raw(" scroll  "),
-        hint("PgUp/PgDn", theme),
-        Span::raw(" page  "),
         hint("e", theme),
         Span::raw(" edit  "),
+        hint("a", theme),
+        // A review already held for this plan is re-opened, not re-run, so the
+        // hint says which of the two `a` does before it costs anything.
+        Span::raw(if state.critique.is_some() {
+            " show review  "
+        } else {
+            " agent review  "
+        }),
         hint("r", theme),
         Span::raw(" regenerate  "),
         hint("Enter", theme),
         Span::raw(" accept  "),
         hint("Esc", theme),
         Span::raw(" abort"),
+    ]);
+    frame.render_widget(
+        Paragraph::new(vec![context, hints])
+            .style(Style::default().bg(theme.effective_header_bg()))
+            .wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+}
+
+/// The agent's advisory review of the draft plan. Rendered through the same
+/// markdown viewer as the plan, and pointedly read-only: the plan itself is
+/// only touched if the user asks for a revision from here.
+fn draw_plan_critique(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &mut PlanInterviewState,
+    message: Option<&str>,
+    theme: &Theme,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .split(area);
+    let content = state.critique.as_deref().unwrap_or_default();
+    super::markdown::draw_markdown_document(
+        frame,
+        chunks[0],
+        content,
+        std::path::Path::new("agent review"),
+        &mut state.critique_scroll_offset,
+        &mut state.critique_rendered_width,
+        &mut state.critique_rendered_lines,
+        theme,
+    );
+
+    let context = if let Some(message) = message {
+        let color = if message.starts_with("Error:") {
+            theme.danger.to_color()
+        } else {
+            theme.text_muted.to_color()
+        };
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(color),
+        ))
+    } else {
+        Line::from(Span::styled(
+            format!(
+                "Advisory only ({}) — the plan is unchanged.",
+                interview_engine(state)
+            ),
+            Style::default()
+                .fg(theme.secondary.to_color())
+                .add_modifier(Modifier::ITALIC),
+        ))
+    };
+    let hints = Line::from(vec![
+        hint("j/k", theme),
+        Span::raw(" scroll  "),
+        hint("r", theme),
+        Span::raw(" revise plan with this feedback  "),
+        hint("Esc", theme),
+        Span::raw(" back to plan"),
     ]);
     frame.render_widget(
         Paragraph::new(vec![context, hints])

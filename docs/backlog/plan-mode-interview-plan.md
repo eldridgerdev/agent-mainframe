@@ -212,6 +212,18 @@ pub struct PlanQuestion {
   block from the reply. One prompt contract + one parsing path works
   identically across every harness; parsing stays defensive
   (malformed ⇒ skip round, log, continue).
+- **Interview prompts must state that the model has no tools.** These
+  calls run restricted (no file access), so a prompt that asks the
+  model to "ground this in the repository" invites it to answer with
+  an offer to go read the repo and nothing else — observed live during
+  the Epic 4 agent-review work, where that reply was the entire
+  response. All three prompts (interviewer, synthesis, critique) now say
+  they run without tools and that the supplied context is all there is.
+  A unit test asserts the line on each and then scans the module source
+  for `pub const *_PROMPT` declarations, so a fourth prompt fails the
+  test rather than silently escaping a hand-written list. Every
+  parse-failure path logs a bounded ~300-char prefix of the reply; that
+  breadcrumb is what makes this class of failure diagnosable at all.
 - All headless calls run off the UI thread using the existing
   spawn-then-poll pattern (`PrReviewLoading` /
   `ReviewMemoryBootstrapRunning` are the precedents), with a
@@ -409,11 +421,18 @@ seeded kickoff composer), or abort.
       raw markdown in TextEditor, `r` regenerate, `Enter` accept,
       `Esc` abort-with-confirm (`Ctrl+S` saves an edit back to preview;
       `Esc` from the editor discards the edit)
-- [ ] Optional agent-review action from the review gate: have an agent
+- [x] Optional agent-review action from the review gate: have an agent
       inspect the draft plan and provide a detailed analysis of gaps,
       risks, contradictions, unclear decisions, and missing acceptance
       criteria; present the analysis as advisory feedback without
-      changing the plan unless the user chooses to revise it
+      changing the plan unless the user chooses to revise it — `a` at the
+      review gate runs `CRITIQUE_PROMPT` through the same headless engine
+      and opens the analysis in the markdown viewer (`Esc`/`Enter` back to
+      the untouched plan, `r` revises). Revision reuses the synthesis pass
+      with the review attached as `reviewer_feedback`; a stale review is
+      dropped whenever the plan changes. `Esc` during the review returns
+      to the plan rather than opening the interview's abort confirmation,
+      so a generated plan can't be lost to a stray keypress
 - [ ] Accept path: write `.claude/plan.md`, augment the instruction
       block ("plan is user-approved"), run deferred launch, seed
       composer kickoff prompt via `open_compose_seeded`

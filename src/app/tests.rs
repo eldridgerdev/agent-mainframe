@@ -2820,6 +2820,297 @@ fn synthesized_plan_response() -> String {
         .to_string()
 }
 
+fn plan_critique_response() -> String {
+    "# Plan review: planned-feature\n\n\
+     ## Summary\nReady with caveats.\n\n\
+     ## Gaps\n- No rollback story.\n\n\
+     ## Risks\n- None identified.\n\n\
+     ## Contradictions\n- None identified.\n\n\
+     ## Unclear decisions\n- None identified.\n\n\
+     ## Missing acceptance criteria\n- None identified.\n"
+        .to_string()
+}
+
+/// Drop straight into an in-flight agent review, as
+/// `start_plan_interview_critique` would leave it, without spawning a real
+/// headless call.
+fn begin_plan_critique_for_test(app: &mut App) -> std::sync::mpsc::Sender<anyhow::Result<String>> {
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    assert!(state.begin_critique(500));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_critique_bg = Some(rx);
+    tx
+}
+
+#[test]
+fn agent_review_is_advisory_and_leaves_the_plan_untouched() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+
+    assert!(app.poll_plan_interview_critique_bg());
+    assert!(app.plan_interview_critique_bg.is_none());
+    let expected_plan = synthesized_plan_response();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Critique
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+                // The whole point of the action: the reviewed plan is the
+                // plan the user still has.
+                && state.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+    ));
+
+    // Leaving the review returns to that same plan.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && !state.abort_confirmation
+                && state.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+    ));
+}
+
+#[test]
+fn unusable_agent_review_returns_to_the_plan_with_a_notice() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok("I cannot help with that.".to_string())).unwrap();
+
+    assert!(app.poll_plan_interview_critique_bg());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Plan review returned no usable analysis")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.critique.is_none()
+                && state.synthesized_plan.as_deref()
+                    == Some(synthesized_plan_response().as_str())
+    ));
+}
+
+#[test]
+fn a_failed_agent_review_call_is_reported_separately_from_bad_output() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Err(anyhow::anyhow!("claude exited with status 1")))
+        .unwrap();
+
+    assert!(app.poll_plan_interview_critique_bg());
+    // A call that never ran and a call that answered off-contract need
+    // different fixes, so they must not share one catch-all message.
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Plan review failed; the plan is unchanged")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review && state.critique.is_none()
+    ));
+}
+
+#[test]
+fn dismissing_an_in_flight_agent_review_keeps_its_late_result_without_reopening_it() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    // Esc during the review must return to the plan, not open the
+    // abort-the-whole-interview confirmation that would risk the plan.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review && !state.abort_confirmation
+    ));
+
+    tx.send(Ok(plan_critique_response())).unwrap();
+    app.poll_plan_interview_critique_bg();
+
+    // The call was already paid for: the result is kept where `a` can reach it,
+    // but the user is not yanked back into a screen they just dismissed.
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+    ));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Critique
+    ));
+}
+
+#[test]
+fn a_dismissed_agent_review_reopens_instead_of_paying_for_a_second_call() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+    // No harness: any path that actually spends tokens would bail out here
+    // with a notice instead of re-opening what is already in hand.
+    force_plan_interview_raw_fallback(&mut app);
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+    assert!(app.poll_plan_interview_critique_bg());
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert_eq!(app.message, None);
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Critique
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+    ));
+}
+
+#[test]
+fn a_stale_agent_review_result_is_dropped_rather_than_kept_against_a_new_plan() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    // The plan moves on while the dismissed review is still running.
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis("# Plan: replaced\n\n## Goal\nSomething else.\n".into());
+    }
+
+    tx.send(Ok(plan_critique_response())).unwrap();
+    app.poll_plan_interview_critique_bg();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            // The findings describe a draft the user no longer has.
+            if state.critique.is_none()
+                && state.synthesized_plan.as_deref()
+                    == Some("# Plan: replaced\n\n## Goal\nSomething else.\n")
+    ));
+}
+
+#[test]
+fn a_second_agent_review_is_not_started_while_the_first_is_still_running() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let _tx = begin_plan_critique_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    // Dismissing leaves the worker running; `a` must not spend a second time
+    // for the analysis already on its way.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert_eq!(app.message.as_deref(), Some("Plan review still running"));
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review
+    ));
+}
+
+#[test]
+fn a_revision_that_cannot_run_keeps_the_feedback_and_the_plan() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+    force_plan_interview_raw_fallback(&mut app);
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+    assert!(app.poll_plan_interview_critique_bg());
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+
+    // No harness here, so the revision never runs. Consuming the feedback
+    // anyway would throw away the review the user asked to act on, leaving
+    // "revise with this" with nothing behind it.
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No headless-capable harness available; the plan and its review are unchanged")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.revision_critique.as_deref()
+                    == Some(plan_critique_response().as_str())
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+                && state.synthesized_plan.as_deref()
+                    == Some(synthesized_plan_response().as_str())
+    ));
+
+    // And the review itself is still one keypress away.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Critique
+    ));
+}
+
+#[test]
+fn editing_the_plan_drops_a_review_of_the_superseded_draft() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+    assert!(app.poll_plan_interview_critique_bg());
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('e'))).unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("# Plan: edited".into());
+    }
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some("# Plan: edited\n")
+                // The findings described the draft the user just replaced.
+                && state.critique.is_none()
+    ));
+}
+
 #[test]
 fn plan_interview_done_without_ai_consent_uses_raw_fallback_without_headless_work() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();

@@ -12,6 +12,21 @@ are tagged.
 
 ### Added
 
+- **You can now have an agent review a plan before you accept it.** Press `a`
+  at the plan review gate and AMF asks an agent to look the draft over for
+  gaps, risks, contradictions, unclear decisions, and missing acceptance
+  criteria, then shows the analysis alongside the plan. It is advice, not an
+  edit: the plan is left exactly as it was unless you press `r` to fold the
+  feedback into a fresh revision. `Esc` returns you to the plan — your plan is
+  never at risk — and nothing you paid for is lost: `a` re-opens the review you
+  already have (including one that finished after you dismissed it) instead of
+  running a second one. The review reuses whichever agent is already powering the
+  interview, and the progress screen names it along with elapsed time and an
+  estimated token cost, so a paid call is never silent. If no agent is
+  available, or one answers with something unusable, AMF says so and leaves
+  the plan untouched. Reviewing costs agent tokens and is entirely optional.
+  No migration is required.
+
 - **The diff viewers' changed-file list is now a collapsible directory tree.**
   Files are grouped under their directories instead of repeating the full path
   on every row, so a changeset spanning many folders is far easier to scan.

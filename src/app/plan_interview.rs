@@ -894,13 +894,16 @@ fn render_static_plan(
 ) -> String {
     let mut plan = format!("# Plan: {feature_name}\n\n## Feature brief\n\n{brief}\n");
 
-    let answered = questions.iter().enumerate().filter_map(|(index, question)| {
-        answers
-            .get(index)
-            .and_then(|answer| answer.as_deref())
-            .filter(|answer| !answer.trim().is_empty())
-            .map(|answer| (question, answer))
-    });
+    let answered = questions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, question)| {
+            answers
+                .get(index)
+                .and_then(|answer| answer.as_deref())
+                .filter(|answer| !answer.trim().is_empty())
+                .map(|answer| (question, answer))
+        });
 
     let mut wrote_heading = false;
     for (question, answer) in answered {
@@ -1001,7 +1004,10 @@ mod tests {
 
         let plan = render_static_plan("guided-plans", "Ship it.", &questions, &[None]);
 
-        assert_eq!(plan, "# Plan: guided-plans\n\n## Feature brief\n\nShip it.\n");
+        assert_eq!(
+            plan,
+            "# Plan: guided-plans\n\n## Feature brief\n\nShip it.\n"
+        );
         assert!(!plan.contains("## Q&A"));
     }
 

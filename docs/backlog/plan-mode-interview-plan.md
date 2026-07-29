@@ -460,9 +460,25 @@ Demo: press the keybinding on an existing feature, re-run the
 interview with prior answers pre-filled, get an updated
 `.claude/plan.md`.
 
-- [ ] Migration + `src/db/plan_interviews.rs`: interview store keyed
+- [x] Migration + `src/db/plan_interviews.rs`: interview store keyed
       by feature id (questions, answers, source, plan, timestamps,
-      draft-vs-final state)
+      draft-vs-final state) — `MIGRATION_016` keys on
+      `(feature_id, stage)` rather than `feature_id` alone so a re-run
+      can save a draft without destroying the accepted transcript it is
+      revising; `finalize_draft` promotes one to the other in a single
+      transaction. `questions`/`answers` are JSON columns (read and
+      written whole, and `PlanQuestion` already serializes), padded to
+      equal length on both save and load so every reader gets an aligned
+      pair; `answer_for(id)` is the id-keyed lookup the re-run pre-fill
+      needs when config has changed the bank between runs.
+      `ai_rounds_completed` is stored rather than derived from the
+      question list: a round that returned nothing usable still counted
+      against the cap, and resuming a draft must not hand back paid
+      rounds. Like `todo_lists`, `feature_id` carries no FK —
+      `store::save` full-replaces `features` and would cascade-wipe the
+      rows (covered by a test) — so cleanup is explicit via
+      `delete_for_feature`, wired into the feature-delete path with the
+      next item
 - [ ] Draft persistence: save answers as given; on interview entry
       with an existing draft, offer resume/discard; clean up drafts
       when their feature is deleted

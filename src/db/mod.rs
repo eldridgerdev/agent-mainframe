@@ -1,6 +1,7 @@
 mod ai_review_cache;
 mod debug_log;
 mod migrations;
+pub mod plan_interviews;
 mod pr_comment_triage;
 mod pr_review_cache;
 mod session_status;
@@ -317,6 +318,72 @@ impl AmfDb {
 
     pub fn reorder_todos(&self, ordered_ids: &[String]) -> Result<()> {
         todos::reorder_todos(&self.conn, ordered_ids)
+    }
+}
+
+/// Plan-interview drafts and accepted transcripts. Driven by the rest of
+/// Epic 5 (see `docs/backlog/plan-mode-interview-plan.md`), so unused until
+/// then.
+#[allow(dead_code)]
+impl AmfDb {
+    /// The feature's in-progress interview, if it has one to resume.
+    pub fn plan_interview_draft(
+        &self,
+        feature_id: &str,
+    ) -> Result<Option<plan_interviews::PlanInterviewRecord>> {
+        plan_interviews::load(
+            &self.conn,
+            feature_id,
+            plan_interviews::PlanInterviewStage::Draft,
+        )
+    }
+
+    /// The interview behind the feature's last accepted plan, used to pre-fill
+    /// a re-run.
+    pub fn plan_interview_final(
+        &self,
+        feature_id: &str,
+    ) -> Result<Option<plan_interviews::PlanInterviewRecord>> {
+        plan_interviews::load(
+            &self.conn,
+            feature_id,
+            plan_interviews::PlanInterviewStage::Final,
+        )
+    }
+
+    /// Insert or overwrite the interview at `record.stage`.
+    pub fn save_plan_interview(&self, record: &plan_interviews::PlanInterviewRecord) -> Result<()> {
+        plan_interviews::save(&self.conn, record)
+    }
+
+    /// Promote the feature's draft to its accepted transcript. `false` when
+    /// there was no draft to promote.
+    pub fn finalize_plan_interview_draft(&self, feature_id: &str, plan: &str) -> Result<bool> {
+        plan_interviews::finalize_draft(&self.conn, feature_id, plan)
+    }
+
+    /// Discard the feature's in-progress interview, keeping any accepted
+    /// transcript.
+    pub fn delete_plan_interview_draft(&self, feature_id: &str) -> Result<()> {
+        plan_interviews::delete(
+            &self.conn,
+            feature_id,
+            plan_interviews::PlanInterviewStage::Draft,
+        )
+    }
+
+    /// Drop both stages when the feature is deleted; there is no FK cascade.
+    pub fn delete_plan_interviews_for_feature(&self, feature_id: &str) -> Result<()> {
+        plan_interviews::delete_for_feature(&self.conn, feature_id)
+    }
+
+    #[cfg(test)]
+    fn count_plan_interviews(&self, feature_id: &str) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM plan_interviews WHERE feature_id = ?1",
+            rusqlite::params![feature_id],
+            |row| row.get(0),
+        )?)
     }
 }
 

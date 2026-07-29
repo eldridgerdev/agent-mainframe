@@ -1011,6 +1011,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             AppMode::PrReview(state) => app.ai_review_running_for_workdir(&state.workdir),
             _ => false,
         };
+        // Same pattern: resolved off `app` before the `&mut app.mode` borrow —
+        // but only while the "add to memory" dialog is actually open, since
+        // `repo_for_project_path` shells out to git and this runs every frame.
+        let memory_paths = match &app.mode {
+            AppMode::PrReview(state) if state.memory_add.is_some() => {
+                let repo = app.repo_for_project_path(&state.workdir);
+                Some(app.review_memory_paths(&repo))
+            }
+            _ => None,
+        };
         if let AppMode::PrReview(state) = &mut app.mode {
             super::dialogs::draw_pr_review(
                 frame,
@@ -1024,6 +1034,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 dedicated_session_working,
                 ai_review_running,
                 triage_feature_summary.as_deref(),
+                memory_paths.as_ref(),
             );
         }
         super::draw_toasts(frame, &app.toasts, &app.theme);
@@ -1045,11 +1056,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let AppMode::PrPicker(state) = &app.mode {
         let repo = app.repo_for_project_path(&state.workdir);
-        let memory_path = crate::app::review_memory::review_memory_path(
-            &repo,
-            app.configured_review_memory_path(&repo).as_deref(),
-        );
-        super::dialogs::draw_pr_picker(frame, state, &app.theme, &memory_path);
+        let memory_paths = app.review_memory_paths(&repo);
+        super::dialogs::draw_pr_picker(frame, state, &app.theme, &memory_paths);
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }

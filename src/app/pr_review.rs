@@ -20,6 +20,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::app::review_memory::MemoryScope;
 use crate::editor::TextEditor;
 use crate::github::{
     GhCli, IssueComment, PrListEntry, PrRef, PrResolution, Review, ReviewComment, ReviewThread,
@@ -1461,6 +1462,7 @@ fn bootstrap_prompt(pr_bodies: &[(u32, String, String)]) -> String {
 fn run_review_memory_bootstrap(
     workdir: PathBuf,
     memory_path: PathBuf,
+    memory_scope: MemoryScope,
     entries: Vec<PrListEntry>,
     model: Option<String>,
     tx: std::sync::mpsc::Sender<BootstrapProgress>,
@@ -1500,7 +1502,7 @@ fn run_review_memory_bootstrap(
         let findings = review_memory::parse_findings_markdown(&output);
         let mut appended = 0;
         for (category, finding) in &findings {
-            if review_memory::append_finding(&memory_path, category, finding)? {
+            if review_memory::append_finding(&memory_path, memory_scope, category, finding)? {
                 appended += 1;
             }
         }
@@ -3427,6 +3429,7 @@ impl App {
             state.memory_add = Some(MemoryAddState {
                 comment_id,
                 category: 0,
+                scope: MemoryScope::Project,
                 editor: TextEditor::new(seed),
                 editing: false,
             });
@@ -3470,6 +3473,16 @@ impl App {
         }
     }
 
+    /// Toggle which doc the finding is appended to (confirm view only):
+    /// this repo's committed doc, or the user's cross-project one.
+    pub fn pr_review_toggle_memory_scope(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.scope = memory_add.scope.toggled();
+        }
+    }
+
     /// Close the "add to memory" dialog without appending.
     pub fn pr_review_cancel_memory_add(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
@@ -3497,12 +3510,13 @@ impl App {
                 (
                     state.workdir.clone(),
                     MEMORY_CATEGORIES[memory_add.category],
+                    memory_add.scope,
                     memory_add.editor.text(),
                 )
             }),
             _ => return Ok(()),
         };
-        let Some((workdir, category, finding)) = prep else {
+        let Some((workdir, category, scope, finding)) = prep else {
             return Ok(());
         };
 
@@ -3513,19 +3527,18 @@ impl App {
         }
 
         let repo = self.repo_for_project_path(&workdir);
-        let path = review_memory::review_memory_path(
-            &repo,
-            self.configured_review_memory_path(&repo).as_deref(),
-        );
-        let appended = review_memory::append_finding(&path, category, &finding)?;
+        let paths = self.review_memory_paths(&repo);
+        let appended =
+            review_memory::append_finding(paths.for_scope(scope), scope, category, &finding)?;
 
         if let AppMode::PrReview(state) = &mut self.mode {
             state.memory_add = None;
         }
+        let scope_label = scope.label();
         let toast = if appended {
-            format!("Added to memory · {category}")
+            format!("Added to {scope_label} memory · {category}")
         } else {
-            "Already in memory · skipped".to_string()
+            format!("Already in {scope_label} memory · skipped")
         };
         self.push_toast_success(toast);
         Ok(())
@@ -3859,7 +3872,18 @@ impl App {
                     .iter()
                     .position(|d| *d == BootstrapDepth::default())
                     .unwrap_or(0),
+                scope: MemoryScope::Project,
             });
+        }
+    }
+
+    /// Toggle which doc the bootstrap's distilled findings are appended to:
+    /// this repo's committed doc, or the user's cross-project one.
+    pub fn review_memory_bootstrap_toggle_scope(&mut self) {
+        if let AppMode::PrPicker(state) = &mut self.mode
+            && let Some(pick) = &mut state.bootstrap_pick
+        {
+            pick.scope = pick.scope.toggled();
         }
     }
 
@@ -3891,13 +3915,13 @@ impl App {
     /// per-PR comment fetch loop and the one distill pass — to a background
     /// thread and switch to the full-screen running view.
     pub fn review_memory_bootstrap_pick_confirm(&mut self) {
-        let (workdir, depth, mut origin) = match &self.mode {
+        let (workdir, depth, scope, mut origin) = match &self.mode {
             AppMode::PrPicker(state) => {
                 let Some(pick) = &state.bootstrap_pick else {
                     return;
                 };
                 let depth = BootstrapDepth::ALL[pick.selected];
-                (state.workdir.clone(), depth, state.clone())
+                (state.workdir.clone(), depth, pick.scope, state.clone())
             }
             _ => return,
         };
@@ -3918,15 +3942,16 @@ impl App {
         }
 
         let repo = self.repo_for_project_path(&workdir);
-        let memory_path = review_memory::review_memory_path(
-            &repo,
-            self.configured_review_memory_path(&repo).as_deref(),
-        );
+        let memory_path = self
+            .review_memory_paths(&repo)
+            .for_scope(scope)
+            .to_path_buf();
 
         self.log_info(
             "pr_review",
             format!(
-                "bootstrapping review memory from {} PRs (depth: {})",
+                "bootstrapping {} review memory from {} PRs (depth: {})",
+                scope.label(),
                 entries.len(),
                 depth.label()
             ),
@@ -3937,12 +3962,13 @@ impl App {
         self.review_memory_bootstrap_bg = Some(rx);
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || {
-            run_review_memory_bootstrap(thread_workdir, memory_path, entries, model, tx);
+            run_review_memory_bootstrap(thread_workdir, memory_path, scope, entries, model, tx);
         });
 
         self.mode = AppMode::ReviewMemoryBootstrapRunning(BootstrapRunState {
             origin,
             depth,
+            scope,
             stage: BootstrapStage::FetchingComments,
         });
     }
@@ -3980,14 +4006,17 @@ impl App {
                     // `Normal` for any non-Normal/Help/Viewing mode, which would
                     // otherwise clobber the running screen's stashed picker
                     // before we get a chance to restore it.
-                    let mut origin = match &self.mode {
-                        AppMode::ReviewMemoryBootstrapRunning(state) => Some(state.origin.clone()),
-                        _ => None,
+                    let (mut origin, scope) = match &self.mode {
+                        AppMode::ReviewMemoryBootstrapRunning(state) => {
+                            (Some(state.origin.clone()), state.scope)
+                        }
+                        _ => (None, MemoryScope::default()),
                     };
                     match result {
                         Ok(outcome) => {
                             self.push_toast_success(format!(
-                                "Bootstrapped review memory from {} PR{} · {} new finding{}",
+                                "Bootstrapped {} review memory from {} PR{} · {} new finding{}",
+                                scope.label(),
                                 outcome.pr_count,
                                 if outcome.pr_count == 1 { "" } else { "s" },
                                 outcome.appended,
@@ -4049,10 +4078,7 @@ impl App {
             _ => return,
         };
         let repo = self.repo_for_project_path(&workdir);
-        let path = review_memory::review_memory_path(
-            &repo,
-            self.configured_review_memory_path(&repo).as_deref(),
-        );
+        let path = self.review_memory_paths(&repo).project;
         let existing_findings = std::fs::read_to_string(&path)
             .map(|contents| review_memory::count_findings(&contents))
             .unwrap_or(0);
@@ -4089,10 +4115,7 @@ impl App {
         origin.compact_confirm = None;
 
         let repo = self.repo_for_project_path(&workdir);
-        let memory_path = review_memory::review_memory_path(
-            &repo,
-            self.configured_review_memory_path(&repo).as_deref(),
-        );
+        let memory_path = self.review_memory_paths(&repo).project;
 
         self.log_info("pr_review", "compacting review memory doc".to_string());
 

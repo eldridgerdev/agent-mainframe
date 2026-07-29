@@ -193,13 +193,15 @@ pub fn handle_pr_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Key handling for the lookback-bootstrap depth picker: `j/k` move, `⏎` run,
+/// Key handling for the lookback-bootstrap depth picker: `j/k` move, `g`
+/// toggles the destination doc (this repo's / cross-project), `⏎` run,
 /// `esc`/`q` cancel back to the PR picker.
 fn handle_bootstrap_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.review_memory_bootstrap_pick_cancel(),
         KeyCode::Down | KeyCode::Char('j') => app.review_memory_bootstrap_pick_move(1),
         KeyCode::Up | KeyCode::Char('k') => app.review_memory_bootstrap_pick_move(-1),
+        KeyCode::Char('g') => app.review_memory_bootstrap_toggle_scope(),
         KeyCode::Enter => app.review_memory_bootstrap_pick_confirm(),
         _ => {}
     }
@@ -293,7 +295,8 @@ fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
 
 /// Key handling while the "add to memory" dialog is open.
 ///
-/// Confirm view: `⏎` appends, `e` edits, `Tab` cycles the category, `esc`/`q`
+/// Confirm view: `⏎` appends, `e` edits, `Tab` cycles the category, `g`
+/// toggles the destination doc (this repo's / cross-project), `esc`/`q`
 /// cancels. Edit mode: keystrokes flow to the finding editor; `esc` returns to
 /// the confirm view.
 fn handle_memory_add_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
@@ -309,6 +312,7 @@ fn handle_memory_add_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<
         KeyCode::Enter => app.pr_review_append_memory()?,
         KeyCode::Char('e') => app.pr_review_memory_add_edit(),
         KeyCode::Tab => app.pr_review_cycle_memory_category(),
+        KeyCode::Char('g') => app.pr_review_toggle_memory_scope(),
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_memory_add(),
         _ => {}
     }

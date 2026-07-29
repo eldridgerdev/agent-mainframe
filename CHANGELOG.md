@@ -10,168 +10,76 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.33.0] - 2026-07-28
+
 ### Added
 
-- **You can now have an agent review a plan before you accept it.** Press `a`
-  at the plan review gate and AMF asks an agent to look the draft over for
-  gaps, risks, contradictions, unclear decisions, and missing acceptance
-  criteria, then shows the analysis alongside the plan. It is advice, not an
-  edit: the plan is left exactly as it was unless you press `r` to fold the
-  feedback into a fresh revision. `Esc` returns you to the plan — your plan is
-  never at risk — and nothing you paid for is lost: `a` re-opens the review you
-  already have (including one that finished after you dismissed it) instead of
-  running a second one. The review reuses whichever agent is already powering the
-  interview, and the progress screen names it along with elapsed time and an
-  estimated token cost, so a paid call is never silent. If no agent is
-  available, or one answers with something unusable, AMF says so and leaves
-  the plan untouched. Reviewing costs agent tokens and is entirely optional.
-  No migration is required.
-
-- **The diff viewers' changed-file list is now a collapsible directory tree.**
-  Files are grouped under their directories instead of repeating the full path
-  on every row, so a changeset spanning many folders is far easier to scan.
-  This applies both to Final Review and to the plain diff viewer (leader `d`).
-  In the file list, `j`/`k` move through the tree (directory headers included),
-  `z` or `Enter` folds the directory under the cursor, `Z` folds or unfolds
-  everything, and `h`/`l` step out to a parent or into a directory. Parking on
-  a directory never changes which file the diff shows. A folded directory
-  reports what it is hiding — how many files, and during a review how many are
-  still undecided, any rejections, and whether anything changed since the last
-  round — so folding cannot bury outstanding work. Filters, counts and `n`/`p` file
-  navigation are unaffected by folding: landing on a file inside a folded
-  directory simply opens it up. No migration is required.
-
-- **Review memory now has a cross-project layer.** Alongside each repo's
-  committed `.amf/review-memory.md`, AMF keeps one doc of its own at
-  `~/.config/amf/review-memory.md` for the review lessons that follow you
-  between repos. An AI review (`A`/`W`) reads **both** — the repo's findings
-  first, then the cross-project ones, each labeled so the model can tell a
-  house rule from a personal habit. Findings the repo doc already states are
-  dropped from the cross-project side before the prompt is built, so a rule you
-  promoted from one repo to all of them isn't paid for twice on every review.
-  Writes still go to exactly one doc, and you pick which: `g` in the "add to
-  memory" dialog (`M`) and in the lookback bootstrap's depth picker (`b`)
-  toggles between the project and global doc, with the destination file named
-  on screen before you commit to it. Everything defaults to the project doc, so
-  nothing changes until you reach for `g`. The global path is overridable with
-  a top-level `global_review_memory_path` in `~/.config/amf/config.json`
-  (relative values resolve inside the config dir). Compacting (`c`) still
-  targets the project doc only.
-
-- **PR Triage can run a PR's fixes in a new feature of its own.** The
-  fix-target picker (the prompt on the first `f`/`B` of a visit) has a third
-  option: `New feature…`. It creates an isolated, worktree-backed feature just
-  for that PR's triage, with its harness and vibe mode picked in one compact
-  form — or from a feature preset — independently of the feature the PR was
-  built in. So you can build a PR in SuperVibe and apply the review fixes under
-  Vibeless supervision, and the triage agent's hooks and permissions land in its
-  own worktree instead of the source feature's. The companion is seeded from the
-  PR head onto its own branch (`<pr-branch>-triage`, since git can't check the
-  PR's branch out twice) and is reused for every fix in that PR, across restarts
-  — the pane header and the fix confirm both name it, so you always know which
-  feature and mode a fix will run in. `P` and `Ctrl+Space P` follow it.
-  Because that work happens off the PR branch, a new `I` key lands it: push the
-  companion branch onto the PR branch, or cherry-pick into the source worktree.
-  Both are explicit and show the commits first — the push is never forced, and
-  the cherry-pick refuses to run while the source worktree has uncommitted
-  changes. The existing two targets are unchanged and still commit straight onto
-  the PR branch, so they never see the `I` step. The database gains a column for
-  the PR link; it is added automatically and needs no migration step.
-- **Plan-mode interviews now pause at a review gate before launching the
-  feature.** An opted-in AI flow turns the interview into a structured
-  implementation plan, then shows the rendered markdown for review. You can
-  edit the raw plan, regenerate it, scroll through the preview, or abort;
-  AMF writes `.claude/plan.md` and starts the feature only after you press
-  `Enter` to accept. If synthesis is unavailable or returns an invalid plan,
-  AMF shows the raw interview plan as a fallback. No migration is required.
-- **The dashboard now shows when an AI Review is generating.** A feature's PR
-  badge reads `[PR #123 · 4 open · AI review]` while its review runs, so you
-  can leave the AI Review pane, work elsewhere, and still see the pass is in
-  flight. The marker appears only on the feature whose review is running and
-  clears when generation succeeds, fails, or is cancelled. No migration is
-  required.
-- **Final Review now includes a review-round history browser.** Press `H` to
-  move between the live review and earlier rounds, including their verdict
-  counts, checks, comments, suggestions, and agent replies. Older archived
-  rounds load only when you navigate past the recent history, while `Enter`
-  on `Current` returns directly to the editable review. No migration is
-  required.
-- **Plan-mode interviews now ask AI-generated follow-up questions.** After
-  the configured questions, AMF offers an explicit opt-in before using any
-  agent tokens. If accepted, the feature's agent harness (or an available
-  fallback) tailors up to two more rounds to the brief and prior answers,
-  with a progress screen while each round runs. Declining or finishing early
-  uses no adaptive-interview tokens; an unavailable or failed harness lets
-  the interview complete normally. No setup or migration is required.
-- **Final Review shows a summary before it writes and dispatches anything.**
-  `q` used to gate on undecided files and then finish immediately; it now
-  opens a navigable summary listing every file's verdict, every open line/file
-  comment (and suggestion), and the general feedback, in one place. `j`/`k`
-  (and `g`/`G`) move through the list, `Enter` jumps back into the diff at
-  that item and opens its editor pre-filled — a rejection's feedback, a line
-  or file comment, or the general note — so fixing something you spot in the
-  summary no longer means hunting it down again. `q` from the summary is the
-  real finish; `Esc` just closes it and returns to reviewing, with nothing
-  written, posted, or dispatched. No migration is required.
-- **PR Triage's detail pane now shows a comment's replies, however they got
-  posted.** A reply posted outside AMF's own `R`/`n` flow — e.g. an agent
-  working the PR with its own `gh` access — previously left no trace next to
-  the original comment; you had to hunt the flat list for the reply entry. A
-  new "Replies" section lists each reply with its author, a `[via AMF]` chip
-  when it carries AMF's own posting disclosure, and the thread's current
-  `[outdated]`/`[✓ resolved]` chips, so confirming a thread already got
-  answered is a glance at the comment, refreshed on demand with `r`. The
-  `pr-continue` skill also now explicitly avoids posting a "done" reply on
-  its own initiative, and only cites a commit after confirming it actually
-  touches the comment's file.
-- **Review actions can each use a different model.** A new `review_models`
-  config setting maps an action name (`walkthrough`, `co_review`,
-  `changeset_overview`, `diff_explain`, `pr_review`, `review_memory`) to its
-  own `--model` override, so a whole-changeset overview can run on a
-  stronger model while a single-file walkthrough runs on a cheaper one. Any
-  action left unset still falls back to the existing shared `review_model`
-  setting, so nothing changes for configs that don't opt in. No migration is
-  required; existing `review_model` configs continue to work.
-- **Review Mode note reads stay bounded without losing history.** AMF now
-  keeps only the latest note for each of the 50 most recently documented
-  files in `.claude/review-notes.md`, moving older and superseded sections
-  to `.claude/review-notes-archive.md` after each agent turn. Review
-  surfaces merge both files, while agents only re-read the small live file.
-  No migration is required; AMF archives existing notes automatically.
+- **Plan-mode interviews now stop at a review gate before launching.** Review
+  the rendered plan, edit its source, regenerate it, or abort. AMF writes the
+  plan and starts the feature only after you explicitly accept it.
+- **Plan interviews can ask optional AI-generated follow-up questions.** After
+  the configured questions, you can spend agent tokens on up to two adaptive
+  rounds tailored to the brief and your answers. Declining or finishing early
+  uses no adaptive-interview tokens.
+- **Plans can receive an optional agent review before acceptance.** Press
+  `a` at the review gate to check the draft for gaps, risks, contradictions,
+  and missing acceptance criteria. The review never edits the plan directly;
+  press `r` to generate a revision from its feedback. Completed reviews are
+  retained if you leave and return.
+- **Diff file lists are now collapsible directory trees.** Final Review and
+  the plain diff viewer group files by folder. Use `z` or `Enter` to fold
+  one directory, `Z` to fold all, and `h`/`l` to move through the tree.
+  Folded directories summarize hidden files and outstanding review work.
+- **Review memory now has a cross-project layer.** AI Review reads both the
+  repository memory and a personal memory file at
+  `~/.config/amf/review-memory.md`. Use `g` when adding or bootstrapping
+  memory to choose the global destination; project memory remains the
+  default.
+- **PR Triage fixes can run in a dedicated companion feature.** Choose
+  `New feature…` as the fix target to create an isolated worktree with its
+  own harness, mode, or preset. AMF reuses that companion for the PR and
+  clearly identifies where fixes are running. Press `I` to review and land
+  its commits by pushing to the PR branch or cherry-picking into the source
+  worktree.
+- **The dashboard shows active AI Review generation.** The relevant feature's
+  PR badge includes `AI review` while generation is running and clears when
+  it finishes, fails, or is cancelled.
+- **Final Review includes a review-round history browser.** Press `H` to
+  inspect earlier verdicts, checks, comments, suggestions, and agent replies,
+  then return directly to the editable current review.
+- **Review actions can use different models.** The new `review_models`
+  setting supports per-action overrides for walkthroughs, co-review,
+  changeset overviews, explanations, PR review, and review memory. Unset
+  actions continue to use `review_model`.
+- **Review Mode keeps note reads bounded without losing history.** The live
+  notes file retains the latest note for each of the 50 most recently
+  documented files; older and superseded notes move to an archive that review
+  surfaces still read.
 
 ### Changed
 
-- **Final Review's Developer Notes panel is half its former height.** It now
-  takes about a fifth of the column beside the diff rather than about two
-  fifths, leaving considerably more room for the change you are actually
-  reading. `e` still expands notes to full height when you want the whole
-  note.
+- **Final Review leaves more room for the diff.** The Developer Notes panel is
+  now about half its previous height. Press `e` to expand it when needed.
 
 ### Fixed
 
-- **Agent sessions lost with their tmux process can now be recovered.** When a
-  saved Claude, Codex, or Opencode pane's tmux session has vanished — a crash,
-  a reboot, an external `tmux kill-server` — `Enter` opens a recovery dialog
-  instead of dropping you into an empty shell: resume the saved session, start
-  a clear one, pick a different saved session, or cancel. The dialog only
-  appears when AMF actually holds a saved harness ID, so features you stopped
-  yourself with `x`, features that were never started, terminal panes, and
-  harnesses without resume support (Pi) keep their existing one-keypress start.
-  `S` still goes straight to the saved-transcript picker. No migration is
-  required.
-- **AI Review's model picker can now go back to harness selection.** Pressing
-  `Esc` or `q` from the model list returns to the harness picker with the
-  current harness highlighted, so a mistaken harness choice can be corrected
-  without leaving AI Review. Changing the harness rebuilds its model choices
-  instead of carrying over an incompatible selection. Repeatedly switching
-  harnesses and backing out no longer resurrects a model choice that isn't
-  valid for the newly chosen harness. No migration is required.
-- **PR Triage no longer lets AMF's “fixed in” replies crowd out new
-  feedback.** Follow-up replies posted through PR Triage now stay with their
-  original comment instead of reappearing as actionable rows after refresh;
-  orphaned follow-ups remain available as muted context. Standalone findings,
-  including AI Review findings posted by AMF, remain actionable. No migration
-  is required.
+- **Agent sessions can recover after their tmux process disappears.** Opening
+  a saved Claude, Codex, or OpenCode session whose tmux session was lost now
+  offers to resume it, start clean, choose another saved session, or cancel.
+- **AI Review's model picker can return to harness selection.** Press
+  `Esc` or `q` to correct the harness without leaving AI Review; model
+  choices are rebuilt for the newly selected harness.
+- **AMF-authored follow-up replies no longer crowd out new PR feedback.**
+  Replies stay attached to their original comment after refresh, while
+  standalone findings remain actionable.
+
+### Migration
+
+- No migration is required. AMF adds the PR companion-feature database field
+  and archives older Review Mode notes automatically. Existing
+  `review_model` settings continue to work unchanged.
 
 ## [v0.32.0] - 2026-07-24
 

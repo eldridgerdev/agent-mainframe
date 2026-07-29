@@ -284,6 +284,7 @@ fn handle_click(
             | AppMode::ConfirmingClaudeSession { .. }
             | AppMode::CodexSessionPicker(_)
             | AppMode::ConfirmingCodexSession { .. }
+            | AppMode::StoppedSessionDialog(_)
             | AppMode::SessionPicker(_)
             | AppMode::NamingNewSession(_)
             | AppMode::BookmarkPicker(_)

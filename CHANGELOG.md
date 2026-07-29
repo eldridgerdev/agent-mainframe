@@ -12,6 +12,35 @@ are tagged.
 
 ### Added
 
+- **You can now have an agent review a plan before you accept it.** Press `a`
+  at the plan review gate and AMF asks an agent to look the draft over for
+  gaps, risks, contradictions, unclear decisions, and missing acceptance
+  criteria, then shows the analysis alongside the plan. It is advice, not an
+  edit: the plan is left exactly as it was unless you press `r` to fold the
+  feedback into a fresh revision. `Esc` returns you to the plan — your plan is
+  never at risk — and nothing you paid for is lost: `a` re-opens the review you
+  already have (including one that finished after you dismissed it) instead of
+  running a second one. The review reuses whichever agent is already powering the
+  interview, and the progress screen names it along with elapsed time and an
+  estimated token cost, so a paid call is never silent. If no agent is
+  available, or one answers with something unusable, AMF says so and leaves
+  the plan untouched. Reviewing costs agent tokens and is entirely optional.
+  No migration is required.
+
+- **The diff viewers' changed-file list is now a collapsible directory tree.**
+  Files are grouped under their directories instead of repeating the full path
+  on every row, so a changeset spanning many folders is far easier to scan.
+  This applies both to Final Review and to the plain diff viewer (leader `d`).
+  In the file list, `j`/`k` move through the tree (directory headers included),
+  `z` or `Enter` folds the directory under the cursor, `Z` folds or unfolds
+  everything, and `h`/`l` step out to a parent or into a directory. Parking on
+  a directory never changes which file the diff shows. A folded directory
+  reports what it is hiding — how many files, and during a review how many are
+  still undecided, any rejections, and whether anything changed since the last
+  round — so folding cannot bury outstanding work. Filters, counts and `n`/`p` file
+  navigation are unaffected by folding: landing on a file inside a folded
+  directory simply opens it up. No migration is required.
+
 - **Review memory now has a cross-project layer.** Alongside each repo's
   committed `.amf/review-memory.md`, AMF keeps one doc of its own at
   `~/.config/amf/review-memory.md` for the review lessons that follow you
@@ -110,8 +139,26 @@ are tagged.
   surfaces merge both files, while agents only re-read the small live file.
   No migration is required; AMF archives existing notes automatically.
 
+### Changed
+
+- **Final Review's Developer Notes panel is half its former height.** It now
+  takes about a fifth of the column beside the diff rather than about two
+  fifths, leaving considerably more room for the change you are actually
+  reading. `e` still expands notes to full height when you want the whole
+  note.
+
 ### Fixed
 
+- **Agent sessions lost with their tmux process can now be recovered.** When a
+  saved Claude, Codex, or Opencode pane's tmux session has vanished — a crash,
+  a reboot, an external `tmux kill-server` — `Enter` opens a recovery dialog
+  instead of dropping you into an empty shell: resume the saved session, start
+  a clear one, pick a different saved session, or cancel. The dialog only
+  appears when AMF actually holds a saved harness ID, so features you stopped
+  yourself with `x`, features that were never started, terminal panes, and
+  harnesses without resume support (Pi) keep their existing one-keypress start.
+  `S` still goes straight to the saved-transcript picker. No migration is
+  required.
 - **AI Review's model picker can now go back to harness selection.** Pressing
   `Esc` or `q` from the model list returns to the harness picker with the
   current harness highlighted, so a mistaken harness choice can be corrected

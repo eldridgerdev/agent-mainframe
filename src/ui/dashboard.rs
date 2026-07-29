@@ -1541,6 +1541,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_codex_session_confirm(frame, &app.theme);
     }
 
+    if let AppMode::StoppedSessionDialog(state) = &app.mode {
+        super::dialogs::draw_stopped_session_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::SessionPicker(state) = &app.mode {
         super::picker::draw_session_picker(frame, state, app.config.nerd_font, &app.theme);
     }

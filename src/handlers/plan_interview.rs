@@ -34,6 +34,12 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if phase == PlanInterviewPhase::Review {
         return handle_plan_review_key(app, key);
     }
+    if matches!(
+        phase,
+        PlanInterviewPhase::Critique | PlanInterviewPhase::CritiqueLoading
+    ) {
+        return handle_plan_critique_key(app, key);
+    }
 
     let is_select = matches!(
         &app.mode,
@@ -147,7 +153,6 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
 const REVIEW_FAST_SCROLL_STEP: usize = 8;
 
 fn handle_plan_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
-    let control = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
@@ -173,53 +178,78 @@ fn handle_plan_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.message = None;
             app.start_plan_interview_synthesis()?;
         }
-        KeyCode::Char('j') | KeyCode::Down if control => {
+        KeyCode::Char('a') if key.modifiers.is_empty() => {
+            app.start_plan_interview_critique()?;
+        }
+        _ => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
-                state.review_scroll_offset = state
-                    .review_scroll_offset
-                    .saturating_add(REVIEW_FAST_SCROLL_STEP);
+                apply_scroll_key(key, &mut state.review_scroll_offset);
             }
         }
-        KeyCode::Char('k') | KeyCode::Up if control => {
+    }
+    Ok(())
+}
+
+/// The advisory agent review of the draft plan. Every action here either
+/// scrolls, returns to the untouched plan, or asks for an explicit revision —
+/// the review never rewrites the plan on its own.
+fn handle_plan_critique_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let loading = matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::CritiqueLoading
+    );
+    match key.code {
+        // Esc backs out to the plan rather than aborting the interview: the
+        // plan is already generated, so losing it to a stray Esc would be a
+        // far worse trade than dropping an in-flight review.
+        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
-                state.review_scroll_offset = state
-                    .review_scroll_offset
-                    .saturating_sub(REVIEW_FAST_SCROLL_STEP);
+                state.close_critique();
+            }
+            app.message = if loading {
+                Some("Plan review dismissed; press a to see it if it lands".into())
+            } else {
+                None
+            };
+        }
+        KeyCode::Char('r') if !loading && key.modifiers.is_empty() => {
+            let revising = match &mut app.mode {
+                AppMode::PlanInterview(state) => state.revise_from_critique(),
+                _ => false,
+            };
+            if revising {
+                app.message = None;
+                app.start_plan_interview_synthesis()?;
             }
         }
-        KeyCode::Char('j') | KeyCode::Down => {
+        _ if !loading => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
-                state.review_scroll_offset = state.review_scroll_offset.saturating_add(1);
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if let AppMode::PlanInterview(state) = &mut app.mode {
-                state.review_scroll_offset = state.review_scroll_offset.saturating_sub(1);
-            }
-        }
-        KeyCode::PageDown => {
-            if let AppMode::PlanInterview(state) = &mut app.mode {
-                state.review_scroll_offset = state.review_scroll_offset.saturating_add(10);
-            }
-        }
-        KeyCode::PageUp => {
-            if let AppMode::PlanInterview(state) = &mut app.mode {
-                state.review_scroll_offset = state.review_scroll_offset.saturating_sub(10);
-            }
-        }
-        KeyCode::Home | KeyCode::Char('g') => {
-            if let AppMode::PlanInterview(state) = &mut app.mode {
-                state.review_scroll_offset = 0;
-            }
-        }
-        KeyCode::End | KeyCode::Char('G') => {
-            if let AppMode::PlanInterview(state) = &mut app.mode {
-                state.review_scroll_offset = usize::MAX;
+                apply_scroll_key(key, &mut state.critique_scroll_offset);
             }
         }
         _ => {}
     }
     Ok(())
+}
+
+/// Shared markdown scrolling for the review gate and the advisory review.
+fn apply_scroll_key(key: KeyEvent, offset: &mut usize) {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down if control => {
+            *offset = offset.saturating_add(REVIEW_FAST_SCROLL_STEP);
+        }
+        KeyCode::Char('k') | KeyCode::Up if control => {
+            *offset = offset.saturating_sub(REVIEW_FAST_SCROLL_STEP);
+        }
+        KeyCode::Char('j') | KeyCode::Down => *offset = offset.saturating_add(1),
+        KeyCode::Char('k') | KeyCode::Up => *offset = offset.saturating_sub(1),
+        KeyCode::PageDown => *offset = offset.saturating_add(10),
+        KeyCode::PageUp => *offset = offset.saturating_sub(10),
+        KeyCode::Home | KeyCode::Char('g') => *offset = 0,
+        KeyCode::End | KeyCode::Char('G') => *offset = usize::MAX,
+        _ => {}
+    }
 }
 
 fn handle_plan_edit_key(app: &mut App, key: KeyEvent) -> Result<()> {

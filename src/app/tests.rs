@@ -1031,6 +1031,500 @@ fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
     }
 }
 
+fn store_with_stopped_agent_session(kind: SessionKind, resume_id: Option<&str>) -> ProjectStore {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    let session = store.projects[0].features[0].add_session_named(kind.clone(), "Agent".into());
+    match kind {
+        SessionKind::Claude => {
+            session.claude_session_id = resume_id.map(str::to_string);
+        }
+        SessionKind::Codex => {
+            if let Some(id) = resume_id {
+                session.set_token_usage_source_exact(TokenUsageSource {
+                    provider: TokenUsageProvider::Codex,
+                    id: id.to_string(),
+                });
+            }
+        }
+        SessionKind::Opencode => {
+            if let Some(id) = resume_id {
+                session.set_token_usage_source_exact(TokenUsageSource {
+                    provider: TokenUsageProvider::Opencode,
+                    id: id.to_string(),
+                });
+            }
+        }
+        _ => {}
+    }
+    store
+}
+
+fn dialog_choices(app: &App) -> Vec<StoppedSessionChoice> {
+    match &app.mode {
+        AppMode::StoppedSessionDialog(state) => state.choices.clone(),
+        _ => panic!("expected the stopped-session dialog"),
+    }
+}
+
+#[test]
+fn enter_on_stopped_agent_session_opens_recovery_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+
+    assert_eq!(
+        dialog_choices(&app),
+        vec![
+            StoppedSessionChoice::Resume,
+            StoppedSessionChoice::Clear,
+            StoppedSessionChoice::PickSession,
+            StoppedSessionChoice::Cancel,
+        ]
+    );
+    assert!(matches!(
+        app.mode,
+        AppMode::StoppedSessionDialog(StoppedSessionDialogState { selected: 0, .. })
+    ));
+}
+
+#[test]
+fn uppercase_s_keeps_the_saved_transcript_picker_for_a_stopped_feature() {
+    let store = store_with_stopped_agent_session(SessionKind::Codex, Some("codex-resume"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    assert!(
+        !matches!(app.mode, AppMode::StoppedSessionDialog(_)),
+        "`S` must stay on the transcript picker so older sessions on disk \
+         remain reachable from a stopped feature"
+    );
+}
+
+#[test]
+fn stopped_session_without_resume_metadata_starts_directly() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, None);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(
+        !app.open_stopped_session_dialog().unwrap(),
+        "with no saved ID both choices start the same clear session, so the \
+         dialog has nothing to ask"
+    );
+}
+
+#[test]
+fn stopped_session_with_blank_resume_id_starts_directly() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("   "));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(!app.open_stopped_session_dialog().unwrap());
+}
+
+#[test]
+fn pi_session_has_no_recovery_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Pi, Some("ignored"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(
+        !app.open_stopped_session_dialog().unwrap(),
+        "Pi cannot resume, so it must keep its plain start path rather than \
+         showing a dialog with nothing to resume"
+    );
+}
+
+#[test]
+fn feature_stopped_from_the_dashboard_restarts_without_the_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+    app.user_stopped_features.insert("feat-1".to_string());
+
+    assert!(
+        !app.open_stopped_session_dialog().unwrap(),
+        "a deliberate `x` stop should restart and resume in one keypress"
+    );
+}
+
+#[test]
+fn ctrl_c_cancels_the_recovery_dialog_instead_of_clearing_the_saved_id() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("keep-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    assert!(app.open_stopped_session_dialog().unwrap());
+
+    crate::handlers::handle_stopped_session_dialog_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].claude_session_id,
+        Some("keep-me".to_string()),
+        "Ctrl+C must not discard the saved resume ID"
+    );
+}
+
+#[test]
+fn pick_session_choice_leaves_the_dialog_for_the_transcript_picker() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    // No launch is expected: the picker owns starting the feature.
+    tmux.expect_create_session_with_window().times(0);
+    tmux.expect_launch_claude().times(0);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    assert!(app.open_stopped_session_dialog().unwrap());
+
+    crate::handlers::handle_stopped_session_dialog_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    // The picker itself may find no transcripts in a test environment; what
+    // matters is that the dialog handed off instead of launching a harness.
+    assert!(matches!(
+        app.mode,
+        AppMode::Normal | AppMode::ClaudeSessionPicker(_)
+    ));
+}
+
+#[test]
+fn running_agent_session_still_opens_directly() {
+    let mut store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    store.projects[0].features[0].status = ProjectStatus::Idle;
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).return_const(true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+
+    assert!(
+        matches!(app.mode, AppMode::Viewing(_) | AppMode::Compose(_)),
+        "running sessions should keep the existing open behavior"
+    );
+}
+
+#[test]
+fn uppercase_s_for_running_agent_keeps_existing_resume_picker_behavior() {
+    let mut store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    store.projects[0].features[0].status = ProjectStatus::Idle;
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    assert!(!matches!(app.mode, AppMode::StoppedSessionDialog(_)));
+}
+
+#[test]
+fn stopped_session_dialog_cancel_returns_to_dashboard() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+        project_id: "proj-1".into(),
+        feature_id: "feat-1".into(),
+        session_id: app.store.projects[0].features[0].sessions[0].id.clone(),
+        selected: 0,
+        choices: vec![
+            StoppedSessionChoice::Resume,
+            StoppedSessionChoice::Clear,
+            StoppedSessionChoice::Cancel,
+        ],
+        harness_label: "Claude".into(),
+    });
+
+    crate::handlers::handle_stopped_session_dialog_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn stopped_terminal_session_keeps_existing_start_and_open_behavior() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].add_session_named(SessionKind::Terminal, "Shell".into());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+
+    assert!(matches!(
+        app.mode,
+        AppMode::Viewing(ViewState {
+            session_kind: SessionKind::Terminal,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn recovery_resumes_saved_codex_session_and_opens_its_pane() {
+    let store = store_with_stopped_agent_session(SessionKind::Codex, Some("codex-resume"));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_for_exists = calls.clone();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .times(4)
+        .returning(move |_| calls_for_exists.fetch_add(1, Ordering::SeqCst) == 3);
+    tmux.expect_check_harness_available()
+        .withf(|kind| *kind == AgentKind::Codex)
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_run_shell_command()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_codex()
+        .withf(|_, window, _, resume_id, _| {
+            window == "codex" && resume_id.as_deref() == Some("codex-resume")
+        })
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(
+        app.mode,
+        AppMode::Viewing(ViewState {
+            session_kind: SessionKind::Codex,
+            ..
+        })
+    ));
+    assert_eq!(app.message.as_deref(), Some("Resumed Codex session"));
+}
+
+#[test]
+fn clear_recovery_launches_without_resume_and_clears_saved_metadata() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("old-session"));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_for_exists = calls.clone();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .times(4)
+        .returning(move |_| calls_for_exists.fetch_add(1, Ordering::SeqCst) == 3);
+    tmux.expect_check_harness_available()
+        .withf(|kind| *kind == AgentKind::Claude)
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|_, window, _, resume_id, _| window == "claude" && resume_id.is_none())
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Clear);
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(session.claude_session_id, None);
+    assert_eq!(session.token_usage_source, None);
+    assert_eq!(app.message.as_deref(), Some("Started clear Claude session"));
+}
+
+#[test]
+fn recovery_rejects_stale_session_selection_safely() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let session_id = app.store.projects[0].features[0].sessions[0].id.clone();
+    app.mode = AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+        project_id: "proj-1".into(),
+        feature_id: "feat-1".into(),
+        session_id,
+        selected: 0,
+        choices: vec![
+            StoppedSessionChoice::Resume,
+            StoppedSessionChoice::Clear,
+            StoppedSessionChoice::Cancel,
+        ],
+        harness_label: "Claude".into(),
+    });
+    app.store.projects[0].features[0].sessions.clear();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("no longer exists"))
+    );
+}
+
+#[test]
+fn recovery_surfaces_missing_harness_without_creating_tmux() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).return_const(false);
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Err(anyhow::anyhow!("claude CLI not found")));
+    tmux.expect_create_session_with_window().times(0);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("claude CLI not found"))
+    );
+}
+
+#[test]
+fn recovery_launch_failure_removes_partial_tmux_session() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(3).return_const(false);
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .times(1)
+        .returning(|_, _, _, _, _| Err(anyhow::anyhow!("launch failed")));
+    tmux.expect_kill_session().times(1).returning(|_| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Stopped
+    );
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("launch failed"))
+    );
+}
+
+#[test]
+fn recovery_tmux_creation_failure_does_not_kill_an_unowned_session() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(3).return_const(false);
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Err(anyhow::anyhow!("tmux create failed")));
+    tmux.expect_kill_session().times(0);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("tmux create failed"))
+    );
+}
+
 #[test]
 fn redraw_signature_changes_when_view_selection_moves() {
     let mut app = App::new_for_test(
@@ -2325,6 +2819,297 @@ fn synthesized_plan_response() -> String {
      ## Tasks\n- [ ] Implement the feature\n- [ ] Verify it\n\n\
      ## Risks / open questions\n- None identified.\n"
         .to_string()
+}
+
+fn plan_critique_response() -> String {
+    "# Plan review: planned-feature\n\n\
+     ## Summary\nReady with caveats.\n\n\
+     ## Gaps\n- No rollback story.\n\n\
+     ## Risks\n- None identified.\n\n\
+     ## Contradictions\n- None identified.\n\n\
+     ## Unclear decisions\n- None identified.\n\n\
+     ## Missing acceptance criteria\n- None identified.\n"
+        .to_string()
+}
+
+/// Drop straight into an in-flight agent review, as
+/// `start_plan_interview_critique` would leave it, without spawning a real
+/// headless call.
+fn begin_plan_critique_for_test(app: &mut App) -> std::sync::mpsc::Sender<anyhow::Result<String>> {
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    assert!(state.begin_critique(500));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_critique_bg = Some(rx);
+    tx
+}
+
+#[test]
+fn agent_review_is_advisory_and_leaves_the_plan_untouched() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+
+    assert!(app.poll_plan_interview_critique_bg());
+    assert!(app.plan_interview_critique_bg.is_none());
+    let expected_plan = synthesized_plan_response();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Critique
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+                // The whole point of the action: the reviewed plan is the
+                // plan the user still has.
+                && state.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+    ));
+
+    // Leaving the review returns to that same plan.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && !state.abort_confirmation
+                && state.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+    ));
+}
+
+#[test]
+fn unusable_agent_review_returns_to_the_plan_with_a_notice() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok("I cannot help with that.".to_string())).unwrap();
+
+    assert!(app.poll_plan_interview_critique_bg());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Plan review returned no usable analysis")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.critique.is_none()
+                && state.synthesized_plan.as_deref()
+                    == Some(synthesized_plan_response().as_str())
+    ));
+}
+
+#[test]
+fn a_failed_agent_review_call_is_reported_separately_from_bad_output() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Err(anyhow::anyhow!("claude exited with status 1")))
+        .unwrap();
+
+    assert!(app.poll_plan_interview_critique_bg());
+    // A call that never ran and a call that answered off-contract need
+    // different fixes, so they must not share one catch-all message.
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Plan review failed; the plan is unchanged")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review && state.critique.is_none()
+    ));
+}
+
+#[test]
+fn dismissing_an_in_flight_agent_review_keeps_its_late_result_without_reopening_it() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    // Esc during the review must return to the plan, not open the
+    // abort-the-whole-interview confirmation that would risk the plan.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review && !state.abort_confirmation
+    ));
+
+    tx.send(Ok(plan_critique_response())).unwrap();
+    app.poll_plan_interview_critique_bg();
+
+    // The call was already paid for: the result is kept where `a` can reach it,
+    // but the user is not yanked back into a screen they just dismissed.
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+    ));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Critique
+    ));
+}
+
+#[test]
+fn a_dismissed_agent_review_reopens_instead_of_paying_for_a_second_call() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+    // No harness: any path that actually spends tokens would bail out here
+    // with a notice instead of re-opening what is already in hand.
+    force_plan_interview_raw_fallback(&mut app);
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+    assert!(app.poll_plan_interview_critique_bg());
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert_eq!(app.message, None);
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Critique
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+    ));
+}
+
+#[test]
+fn a_stale_agent_review_result_is_dropped_rather_than_kept_against_a_new_plan() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    // The plan moves on while the dismissed review is still running.
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis("# Plan: replaced\n\n## Goal\nSomething else.\n".into());
+    }
+
+    tx.send(Ok(plan_critique_response())).unwrap();
+    app.poll_plan_interview_critique_bg();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            // The findings describe a draft the user no longer has.
+            if state.critique.is_none()
+                && state.synthesized_plan.as_deref()
+                    == Some("# Plan: replaced\n\n## Goal\nSomething else.\n")
+    ));
+}
+
+#[test]
+fn a_second_agent_review_is_not_started_while_the_first_is_still_running() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let _tx = begin_plan_critique_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    // Dismissing leaves the worker running; `a` must not spend a second time
+    // for the analysis already on its way.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert_eq!(app.message.as_deref(), Some("Plan review still running"));
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review
+    ));
+}
+
+#[test]
+fn a_revision_that_cannot_run_keeps_the_feedback_and_the_plan() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+    force_plan_interview_raw_fallback(&mut app);
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+    assert!(app.poll_plan_interview_critique_bg());
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+
+    // No harness here, so the revision never runs. Consuming the feedback
+    // anyway would throw away the review the user asked to act on, leaving
+    // "revise with this" with nothing behind it.
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No headless-capable harness available; the plan and its review are unchanged")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.revision_critique.as_deref()
+                    == Some(plan_critique_response().as_str())
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+                && state.synthesized_plan.as_deref()
+                    == Some(synthesized_plan_response().as_str())
+    ));
+
+    // And the review itself is still one keypress away.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Critique
+    ));
+}
+
+#[test]
+fn editing_the_plan_drops_a_review_of_the_superseded_draft() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+    assert!(app.poll_plan_interview_critique_bg());
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('e'))).unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("# Plan: edited".into());
+    }
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some("# Plan: edited\n")
+                // The findings described the draft the user just replaced.
+                && state.critique.is_none()
+    ));
 }
 
 #[test]
@@ -15201,6 +15986,343 @@ fn pr_picker_choose_ai_review_is_noop_outside_picker_mode() {
     );
     app.pr_picker_choose_ai_review();
     assert!(matches!(&app.mode, AppMode::Normal));
+}
+
+/// Build a final-review `DiffViewerState` over `paths` (already in the
+/// path-sorted order the diff loader produces) and install it as the mode, so
+/// tree navigation can be driven through the same `App` methods the handlers
+/// call.
+#[cfg(test)]
+fn enter_review_with_paths(app: &mut App, paths: &[&str]) {
+    let mut state = DiffViewerState::new(
+        ViewState::new(
+            "proj".into(),
+            "feat".into(),
+            "sess".into(),
+            "claude".into(),
+            "Claude".into(),
+            SessionKind::Claude,
+            VibeMode::Vibe,
+            false,
+        ),
+        std::path::PathBuf::from("/tmp"),
+    );
+    state.review = true;
+    state.files = paths
+        .iter()
+        .map(|path| crate::diff::DiffFile {
+            old_path: Some((*path).into()),
+            path: (*path).into(),
+            status: crate::diff::DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        })
+        .collect();
+    app.mode = AppMode::DiffViewer(state);
+}
+
+#[cfg(test)]
+fn tree_rows(app: &App) -> Vec<FileTreeRow> {
+    match &app.mode {
+        AppMode::DiffViewer(state) => state.file_tree_rows(),
+        _ => panic!("not in the diff viewer"),
+    }
+}
+
+#[cfg(test)]
+fn viewer_state(app: &App) -> &DiffViewerState {
+    match &app.mode {
+        AppMode::DiffViewer(state) => state,
+        _ => panic!("not in the diff viewer"),
+    }
+}
+
+#[test]
+fn ancestor_dirs_lists_each_level_shallowest_first() {
+    assert_eq!(ancestor_dirs("README.md"), Vec::<String>::new());
+    assert_eq!(ancestor_dirs("src/main.rs"), vec!["src".to_string()]);
+    assert_eq!(
+        ancestor_dirs("src/app/dialogs/diff.rs"),
+        vec![
+            "src".to_string(),
+            "src/app".to_string(),
+            "src/app/dialogs".to_string()
+        ]
+    );
+}
+
+#[test]
+fn file_tree_rows_group_by_directory_without_reordering_the_file_list() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    // Exactly the order `crate::diff` produces (files sorted by full path).
+    enter_review_with_paths(
+        &mut app,
+        &[
+            "README.md",
+            "src/a.rs",
+            "src/app/mod.rs",
+            "src/app/state.rs",
+        ],
+    );
+
+    let rows = tree_rows(&app);
+    let described: Vec<String> = rows
+        .iter()
+        .map(|row| match row {
+            FileTreeRow::Dir { path, depth, .. } => format!("dir {path} @{depth}"),
+            FileTreeRow::File { index, depth, name } => format!("file {name} #{index} @{depth}"),
+        })
+        .collect();
+    assert_eq!(
+        described,
+        vec![
+            "file README.md #0 @0",
+            "dir src @0",
+            "file a.rs #1 @1",
+            "dir src/app @1",
+            "file mod.rs #2 @2",
+            "file state.rs #3 @2",
+        ]
+    );
+    // File rows keep the original `files` order, so n/p and the tree agree.
+    let file_indices: Vec<usize> = rows
+        .iter()
+        .filter_map(|row| match row {
+            FileTreeRow::File { index, .. } => Some(*index),
+            FileTreeRow::Dir { .. } => None,
+        })
+        .collect();
+    assert_eq!(file_indices, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn collapsing_a_directory_hides_its_files_but_not_from_filters() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(
+        &mut app,
+        &["src/a.rs", "src/app/mod.rs", "src/app/state.rs"],
+    );
+
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.toggle_dir_collapsed("src/app");
+    }
+
+    let rows = tree_rows(&app);
+    assert!(
+        matches!(&rows[2], FileTreeRow::Dir { path, collapsed, files, .. }
+            if path == "src/app" && *collapsed && *files == 2),
+        "collapsed directory row should summarise the two files it hides: {rows:?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row, FileTreeRow::File { .. }))
+            .count(),
+        1,
+        "only the file outside the collapsed directory should have a row"
+    );
+    // Folding is a view concern only: filters and counts still see every file.
+    assert_eq!(viewer_state(&app).visible_file_indices(), vec![0, 1, 2]);
+}
+
+#[test]
+fn file_order_navigation_reveals_a_file_inside_a_collapsed_directory() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/a.rs", "src/app/mod.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.toggle_dir_collapsed("src/app");
+    }
+
+    // n (file-order navigation) must never strand the selection behind a fold.
+    app.diff_viewer_select_next_file();
+
+    let state = viewer_state(&app);
+    assert_eq!(state.selected_file, 1);
+    assert!(state.collapsed_dirs.is_empty());
+    assert!(state.tree_cursor_dir.is_none());
+}
+
+#[test]
+fn tree_move_walks_directory_rows_and_leaves_the_patch_alone() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["README.md", "src/a.rs"]);
+
+    // Row 0 is README.md; row 1 is the `src` directory header.
+    app.diff_viewer_tree_move(1);
+    let state = viewer_state(&app);
+    assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
+    assert_eq!(
+        state.selected_file, 0,
+        "parking on a directory must not change which file the patch shows"
+    );
+
+    // Folding from the directory row keeps the cursor there.
+    app.diff_viewer_tree_toggle_collapsed();
+    let state = viewer_state(&app);
+    assert!(state.collapsed_dirs.contains("src"));
+    assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
+
+    // Stepping down onto a file selects it and drops the directory cursor.
+    app.diff_viewer_tree_expand();
+    app.diff_viewer_tree_move(1);
+    let state = viewer_state(&app);
+    assert_eq!(state.selected_file, 1);
+    assert!(state.tree_cursor_dir.is_none());
+}
+
+#[test]
+fn toggle_all_folds_every_directory_then_unfolds_them() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/a.rs", "src/app/mod.rs"]);
+
+    app.diff_viewer_tree_toggle_all();
+    let state = viewer_state(&app);
+    assert!(state.collapsed_dirs.contains("src"));
+    assert!(state.collapsed_dirs.contains("src/app"));
+    // The selection is folded away, so the cursor parks on its outermost dir
+    // and the list still highlights a row.
+    assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
+    let rows = state.file_tree_rows();
+    assert_eq!(
+        rows.len(),
+        1,
+        "everything should fold into one row: {rows:?}"
+    );
+    assert!(state.tree_cursor_row(&rows).is_some());
+
+    app.diff_viewer_tree_toggle_all();
+    assert!(viewer_state(&app).collapsed_dirs.is_empty());
+}
+
+#[test]
+fn tree_cursor_row_falls_back_to_the_deepest_visible_ancestor() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/app/mod.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        // Fold the inner directory directly, without moving the selection.
+        state.toggle_dir_collapsed("src/app");
+    }
+
+    let state = viewer_state(&app);
+    let rows = state.file_tree_rows();
+    let cursor = state
+        .tree_cursor_row(&rows)
+        .expect("a row stays highlighted");
+    assert!(
+        matches!(&rows[cursor], FileTreeRow::Dir { path, .. } if path == "src/app"),
+        "the highlight should fall back to the fold hiding the selected file"
+    );
+}
+
+#[test]
+fn tree_move_enters_the_list_when_the_filter_hides_the_selection() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["README.md", "src/a.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        // Select a file the Undecided filter then drops, leaving a single
+        // root-level row and nothing highlighted.
+        state.selected_file = 1;
+        state
+            .decisions
+            .insert("src/a.rs".to_string(), crate::app::ReviewDecision::Approve);
+        state.file_filter = crate::app::FileFilter::Undecided;
+    }
+    assert!(
+        viewer_state(&app)
+            .tree_cursor_row(&tree_rows(&app))
+            .is_none(),
+        "the test needs a state with no highlighted row"
+    );
+
+    // j must reach the only row rather than stepping past it.
+    app.diff_viewer_tree_move(1);
+    assert_eq!(viewer_state(&app).selected_file, 0);
+
+    // ...and so must k, from the other end.
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.selected_file = 1;
+    }
+    app.diff_viewer_tree_move(-1);
+    assert_eq!(viewer_state(&app).selected_file, 0);
+}
+
+#[test]
+fn tree_toggle_folds_the_highlighted_row_not_the_hidden_selections_directory() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/a.rs", "src/app/mod.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.selected_file = 1;
+        state.decisions.insert(
+            "src/app/mod.rs".to_string(),
+            crate::app::ReviewDecision::Approve,
+        );
+        state.file_filter = crate::app::FileFilter::Undecided;
+    }
+    // With src/app/mod.rs filtered out, `src/app` has no row and the highlight
+    // falls back to `src`.
+    let rows = tree_rows(&app);
+    let cursor = viewer_state(&app)
+        .tree_cursor_row(&rows)
+        .expect("a row stays highlighted");
+    assert!(matches!(&rows[cursor], FileTreeRow::Dir { path, .. } if path == "src"));
+
+    app.diff_viewer_tree_toggle_collapsed();
+
+    let state = viewer_state(&app);
+    assert!(
+        state.collapsed_dirs.contains("src"),
+        "z should fold the directory the list highlights"
+    );
+    assert!(
+        !state.collapsed_dirs.contains("src/app"),
+        "z must not fold a directory that has no row: {:?}",
+        state.collapsed_dirs
+    );
+    assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
 }
 
 // ---------------------------------------------------------------------------

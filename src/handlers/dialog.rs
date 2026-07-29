@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, AppMode, CreateProjectStep};
+use crate::app::{App, AppMode, CreateProjectStep, StoppedSessionChoice};
 
 const STEERING_PROMPT_PAGE_SCROLL: usize = 6;
 
@@ -535,6 +535,75 @@ pub fn handle_session_config_key(app: &mut App, key: KeyCode) -> Result<()> {
         }
         KeyCode::Esc | KeyCode::Char('q') => {
             app.cancel_session_config();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn handle_stopped_session_dialog_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let choice_count = match &app.mode {
+        AppMode::StoppedSessionDialog(state) => state.choices.len(),
+        _ => return Ok(()),
+    };
+    if choice_count == 0 {
+        return Ok(());
+    }
+
+    // Ctrl+C is a cancel reflex in a TUI, not a request to discard the saved
+    // resume ID, and no letter shortcut here should fire with a modifier held.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if matches!(key.code, KeyCode::Char('c')) {
+            app.confirm_stopped_session_choice(StoppedSessionChoice::Cancel);
+        }
+        return Ok(());
+    }
+    if matches!(key.code, KeyCode::Char(_)) && key.modifiers != KeyModifiers::NONE {
+        return Ok(());
+    }
+
+    let shortcut = |wanted: StoppedSessionChoice| match &app.mode {
+        AppMode::StoppedSessionDialog(state) => state.choices.contains(&wanted),
+        _ => false,
+    };
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => {
+            if let AppMode::StoppedSessionDialog(state) = &mut app.mode {
+                state.selected = (state.selected + 1) % choice_count;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => {
+            if let AppMode::StoppedSessionDialog(state) = &mut app.mode {
+                state.selected = state.selected.checked_sub(1).unwrap_or(choice_count - 1);
+            }
+        }
+        KeyCode::Char('r') => {
+            if shortcut(StoppedSessionChoice::Resume) {
+                app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+            }
+        }
+        KeyCode::Char('c') => {
+            if shortcut(StoppedSessionChoice::Clear) {
+                app.confirm_stopped_session_choice(StoppedSessionChoice::Clear);
+            }
+        }
+        KeyCode::Char('p') => {
+            if shortcut(StoppedSessionChoice::PickSession) {
+                app.confirm_stopped_session_choice(StoppedSessionChoice::PickSession);
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.confirm_stopped_session_choice(StoppedSessionChoice::Cancel);
+        }
+        KeyCode::Enter => {
+            let choice = match &app.mode {
+                AppMode::StoppedSessionDialog(state) => state.choices.get(state.selected).copied(),
+                _ => None,
+            };
+            if let Some(choice) = choice {
+                app.confirm_stopped_session_choice(choice);
+            }
         }
         _ => {}
     }

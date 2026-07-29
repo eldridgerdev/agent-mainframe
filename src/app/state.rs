@@ -270,6 +270,30 @@ pub struct CodexSessionPickerState {
     pub workdir: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoppedSessionChoice {
+    Resume,
+    Clear,
+    /// Hand off to the harness's saved-transcript picker (the `S` path), so
+    /// older sessions than the one AMF has recorded stay reachable.
+    PickSession,
+    Cancel,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoppedSessionDialogState {
+    pub project_id: String,
+    pub feature_id: String,
+    pub session_id: String,
+    pub selected: usize,
+    /// Choices offered for this session, in display order. Only harnesses with
+    /// a transcript picker get [`StoppedSessionChoice::PickSession`]; every
+    /// entry present is selectable, so there is no disabled state to skip.
+    pub choices: Vec<StoppedSessionChoice>,
+    /// Harness name used in the dialog copy ("Claude", "Codex", ...).
+    pub harness_label: String,
+}
+
 #[derive(Clone)]
 pub struct BookmarkPickerState {
     pub selected: usize,
@@ -634,6 +658,47 @@ impl FileFilter {
     }
 }
 
+/// One rendered row of the changed-file tree: either a directory header or a
+/// file beneath it. Produced by `DiffViewerState::file_tree_rows`, which is the
+/// single source of truth for both the file-list rendering and the `j`/`k` row
+/// cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileTreeRow {
+    Dir {
+        /// Full directory path from the repo root, e.g. `src/app`. Also the key
+        /// used in `collapsed_dirs` / `tree_cursor_dir`.
+        path: String,
+        /// Just this level's segment, e.g. `app` — what the row displays.
+        label: String,
+        depth: usize,
+        collapsed: bool,
+        /// Visible files anywhere beneath this directory.
+        files: usize,
+    },
+    File {
+        /// Index into `DiffViewerState::files` — the selection everything else
+        /// in the viewer is keyed by.
+        index: usize,
+        depth: usize,
+        /// Basename only; the path's directories are shown by the rows above.
+        name: String,
+    },
+}
+
+/// Every ancestor directory of `path`, shallowest first (`src`, `src/app`, …).
+/// Empty for a repo-root file.
+pub fn ancestor_dirs(path: &str) -> Vec<String> {
+    let Some(dir_end) = path.rfind('/') else {
+        return Vec::new();
+    };
+    let mut dirs = Vec::new();
+    for (i, _) in path[..dir_end].match_indices('/') {
+        dirs.push(path[..i].to_string());
+    }
+    dirs.push(path[..dir_end].to_string());
+    dirs
+}
+
 /// A reply the feature's agent wrote back under a review item in the previous
 /// round. Parsed out of `.claude/final-review-feedback.md` on re-review (from the
 /// `**Agent:**` blocks `REVIEW_FEEDBACK_PROMPT` asks the agent to append) and
@@ -897,6 +962,16 @@ pub struct DiffViewerState {
     /// closed. Historical rounds are loaded from the live feedback log first;
     /// the archive is read only when the reviewer navigates beyond that tail.
     pub review_history: Option<ReviewHistoryState>,
+    /// Directory paths (repo-relative, no trailing slash) currently collapsed in
+    /// the file tree. Purely a view concern: a collapsed directory hides its
+    /// rows, but never its files from filters, counts or file-order navigation —
+    /// landing on a file inside one re-expands its ancestors
+    /// (`reveal_selected_file`) so the selection is always reachable.
+    pub collapsed_dirs: std::collections::BTreeSet<String>,
+    /// Set while the file-list row cursor is parked on a *directory* row rather
+    /// than a file. The selected file (and therefore the patch panel) is left
+    /// alone, so collapsing a tree never changes what's being diffed.
+    pub tree_cursor_dir: Option<String>,
 }
 
 impl DiffViewerState {
@@ -972,6 +1047,8 @@ impl DiffViewerState {
             summary_open: false,
             summary_selected: 0,
             review_history: None,
+            collapsed_dirs: std::collections::BTreeSet::new(),
+            tree_cursor_dir: None,
         }
     }
 
@@ -1000,6 +1077,11 @@ impl DiffViewerState {
         // Search matches are anchored to a single file; end the search rather
         // than leaving a stale query pointing at the previous file.
         self.clear_search();
+        // The cursor is on a file again, and that file must be visible: every
+        // file-order navigation path funnels through here, so no caller has to
+        // know the tree can be folded.
+        self.tree_cursor_dir = None;
+        self.reveal_selected_file();
     }
 
     /// Whether the file at `path` carries a `Blocker`-severity signal: either a
@@ -1105,6 +1187,154 @@ impl DiffViewerState {
             .filter(|(_, file)| self.file_passes_filter(file))
             .map(|(i, _)| i)
             .collect()
+    }
+
+    /// The file list as a directory tree, in the same order as
+    /// `visible_file_indices` — `files` is sorted by full path
+    /// (`crate::diff`), and comparing a directory as `name/` against a file as
+    /// `name` reproduces exactly that ordering, so grouping never reorders the
+    /// list. Directory rows are emitted when the path prefix changes; a
+    /// collapsed directory emits its own row and swallows everything beneath
+    /// it.
+    pub fn file_tree_rows(&self) -> Vec<FileTreeRow> {
+        let visible = self.visible_file_indices();
+        // Visible-file count per ancestor directory, for the row's `(n)` badge.
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for &idx in &visible {
+            for dir in ancestor_dirs(&self.files[idx].path) {
+                *counts.entry(dir).or_default() += 1;
+            }
+        }
+
+        let mut rows = Vec::new();
+        // Directory segments of the previous file, so a shared prefix is only
+        // emitted once.
+        let mut open: Vec<&str> = Vec::new();
+        for &idx in &visible {
+            let path = self.files[idx].path.as_str();
+            let (dir_part, name) = match path.rfind('/') {
+                Some(pos) => (&path[..pos], &path[pos + 1..]),
+                None => ("", path),
+            };
+            let comps: Vec<&str> = if dir_part.is_empty() {
+                Vec::new()
+            } else {
+                dir_part.split('/').collect()
+            };
+
+            let mut common = 0;
+            while common < open.len() && common < comps.len() && open[common] == comps[common] {
+                common += 1;
+            }
+            open.truncate(common);
+
+            // A directory already on the stack may be collapsed, in which case
+            // its row was emitted earlier and everything below it is hidden.
+            let mut hidden = (1..=open.len())
+                .any(|depth| self.collapsed_dirs.contains(&comps[..depth].join("/")));
+
+            for depth in common..comps.len() {
+                open.push(comps[depth]);
+                if hidden {
+                    continue;
+                }
+                let full = comps[..=depth].join("/");
+                let collapsed = self.collapsed_dirs.contains(&full);
+                rows.push(FileTreeRow::Dir {
+                    label: comps[depth].to_string(),
+                    depth,
+                    collapsed,
+                    files: counts.get(&full).copied().unwrap_or(0),
+                    path: full,
+                });
+                if collapsed {
+                    hidden = true;
+                }
+            }
+
+            if !hidden {
+                rows.push(FileTreeRow::File {
+                    index: idx,
+                    depth: comps.len(),
+                    name: name.to_string(),
+                });
+            }
+        }
+        rows
+    }
+
+    /// Expand every collapsed ancestor of the selected file so the selection is
+    /// always on a row the reviewer can see. Called from `on_file_changed`, so
+    /// every file-order navigation path (n/p, verdict advance, filters, search,
+    /// summary jumps) reveals its target without having to know about the tree.
+    pub fn reveal_selected_file(&mut self) {
+        let Some(file) = self.files.get(self.selected_file) else {
+            return;
+        };
+        for dir in ancestor_dirs(&file.path) {
+            self.collapsed_dirs.remove(&dir);
+        }
+    }
+
+    /// Toggle a directory's collapsed state. Collapsing an ancestor of the
+    /// selected file is allowed — the file stays selected and the patch panel
+    /// keeps showing it; only the row is folded away.
+    pub fn toggle_dir_collapsed(&mut self, dir: &str) {
+        if !self.collapsed_dirs.remove(dir) {
+            self.collapsed_dirs.insert(dir.to_string());
+        }
+    }
+
+    /// Every directory that currently has a row in the tree (regardless of
+    /// collapse state), in row order.
+    pub fn tree_dirs(&self) -> Vec<String> {
+        self.file_tree_rows()
+            .into_iter()
+            .filter_map(|row| match row {
+                FileTreeRow::Dir { path, .. } => Some(path),
+                FileTreeRow::File { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Row index the file-list cursor sits on: the directory row when the
+    /// cursor is parked on one, else the selected file's row. Falls back to the
+    /// deepest visible ancestor directory if the selected file happens to be
+    /// folded away, so a row is always highlighted.
+    pub fn tree_cursor_row(&self, rows: &[FileTreeRow]) -> Option<usize> {
+        if let Some(dir) = &self.tree_cursor_dir
+            && let Some(pos) = rows
+                .iter()
+                .position(|row| matches!(row, FileTreeRow::Dir { path, .. } if path == dir))
+        {
+            return Some(pos);
+        }
+        if let Some(pos) = rows.iter().position(
+            |row| matches!(row, FileTreeRow::File { index, .. } if *index == self.selected_file),
+        ) {
+            return Some(pos);
+        }
+        let path = self.files.get(self.selected_file)?.path.as_str();
+        ancestor_dirs(path).into_iter().rev().find_map(|dir| {
+            rows.iter()
+                .position(|row| matches!(row, FileTreeRow::Dir { path, .. } if *path == dir))
+        })
+    }
+
+    /// Directory the fold commands act on, derived from whichever row
+    /// `tree_cursor_row` highlights: a directory row folds itself, a file row
+    /// folds its own directory. Reading it back off the highlighted row —
+    /// rather than off the selected file — matters when the selection is
+    /// hidden by the active filter, where the highlight falls back to some
+    /// *shallower* ancestor than the selected file's own directory.
+    pub fn tree_cursor_target_dir(&self, rows: &[FileTreeRow]) -> Option<String> {
+        match rows.get(self.tree_cursor_row(rows)?)? {
+            FileTreeRow::Dir { path, .. } => Some(path.clone()),
+            FileTreeRow::File { index, .. } => self
+                .files
+                .get(*index)
+                .and_then(|file| ancestor_dirs(&file.path).pop()),
+        }
     }
 
     /// Every row of the pre-finish summary, in file order: each file's verdict
@@ -2649,6 +2879,7 @@ pub enum AppMode {
         session_id: String,
         workdir: PathBuf,
     },
+    StoppedSessionDialog(StoppedSessionDialogState),
     BookmarkPicker(BookmarkPickerState),
     DiffPicker(DiffPickerState),
     DiffViewerLoading(DiffViewerState),
@@ -3420,10 +3651,15 @@ pub enum PlanInterviewPhase {
     /// by a background headless call.
     SynthesisLoading,
     /// The proposed plan is rendered as markdown and awaits an explicit
-    /// accept, edit, regenerate, or abort action.
+    /// accept, edit, regenerate, review, or abort action.
     Review,
     /// The proposed plan is open as raw markdown in the shared text editor.
     Editing,
+    /// A background headless call is reviewing the draft plan.
+    CritiqueLoading,
+    /// An agent's advisory review of the draft plan is on screen. The plan
+    /// itself is untouched unless the user asks for a revision from here.
+    Critique,
     /// Transient question-flow completion used while app-level code decides
     /// whether to run another adaptive round, synthesize, or use the fallback.
     Done,
@@ -3501,6 +3737,27 @@ pub struct PlanInterviewState {
     pub review_rendered_lines: Vec<ratatui::text::Line<'static>>,
     pub edit_scroll_offset: usize,
     pub edit_sync_to_cursor: bool,
+    /// An agent's advisory review of the plan currently at the review gate.
+    /// Cleared whenever the plan changes, since the findings describe the
+    /// draft they were written against.
+    pub critique: Option<String>,
+    /// Start time and prompt-size estimate for the agent-review loading frame.
+    pub critique_started_at: Option<std::time::Instant>,
+    pub critique_token_estimate: usize,
+    /// Cached markdown-viewer layout for the advisory review.
+    pub critique_scroll_offset: usize,
+    pub critique_rendered_width: u16,
+    pub critique_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    /// Advisory review staged as input for the next synthesis pass by the
+    /// review's "revise" action. Consumed once that pass actually starts, so a
+    /// revision that cannot run leaves the feedback recoverable.
+    pub revision_critique: Option<String>,
+    /// Bumped whenever `synthesized_plan` changes. A review is written against
+    /// one revision, so a result that lands after the plan moved on can be
+    /// recognized as stale without keeping a second copy of the plan.
+    pub plan_revision: u64,
+    /// The `plan_revision` the in-flight or displayed review describes.
+    pub critique_plan_revision: Option<u64>,
 }
 
 impl PlanInterviewState {
@@ -3550,6 +3807,15 @@ impl PlanInterviewState {
             review_rendered_lines: Vec::new(),
             edit_scroll_offset: 0,
             edit_sync_to_cursor: false,
+            critique: None,
+            critique_started_at: None,
+            critique_token_estimate: 0,
+            critique_scroll_offset: 0,
+            critique_rendered_width: 0,
+            critique_rendered_lines: Vec::new(),
+            revision_critique: None,
+            plan_revision: 0,
+            critique_plan_revision: None,
         }
     }
 
@@ -3570,14 +3836,136 @@ impl PlanInterviewState {
     }
 
     /// Store the synthesized or fallback plan and stop at the review gate.
+    ///
+    /// A pass that returns the plan already on screen — the "keep the current
+    /// plan" path taken when no headless engine is available — is not a plan
+    /// change, so any review of that plan stays valid.
     pub fn apply_synthesis(&mut self, plan: String) {
+        let changed = self.synthesized_plan.as_deref() != Some(plan.as_str());
         self.synthesis_attempted = true;
         self.synthesized_plan = Some(plan);
         self.synthesis_started_at = None;
+        if changed {
+            self.mark_plan_changed();
+        }
+        self.phase = PlanInterviewPhase::Review;
+    }
+
+    /// Move into the agent-review loading phase. Returns false outside the
+    /// review gate so a stray keypress cannot start a paid call from a phase
+    /// that has no plan to review.
+    pub fn begin_critique(&mut self, token_estimate: usize) -> bool {
+        if self.phase != PlanInterviewPhase::Review || self.synthesized_plan.is_none() {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::CritiqueLoading;
+        self.critique_started_at = Some(std::time::Instant::now());
+        self.critique_token_estimate = token_estimate;
+        self.critique_plan_revision = Some(self.plan_revision);
+        true
+    }
+
+    /// Show a finished advisory review. The plan is deliberately untouched.
+    pub fn apply_critique(&mut self, critique: String) {
+        self.critique = Some(critique);
+        self.critique_started_at = None;
+        self.critique_scroll_offset = 0;
+        self.critique_rendered_width = 0;
+        self.critique_rendered_lines.clear();
+        self.critique_plan_revision = Some(self.plan_revision);
+        self.phase = PlanInterviewPhase::Critique;
+    }
+
+    /// Keep a review that finished after the user dismissed it, without
+    /// pulling them back into it. Returns false when there is nothing to keep
+    /// or the plan moved on while the review was in flight, since the findings
+    /// then describe a draft that is gone.
+    pub fn stash_critique(&mut self, critique: String) -> bool {
+        if self.phase != PlanInterviewPhase::Review
+            || self.critique.is_some()
+            || self.critique_plan_revision != Some(self.plan_revision)
+        {
+            return false;
+        }
+        self.critique = Some(critique);
+        self.critique_started_at = None;
+        self.critique_scroll_offset = 0;
+        self.critique_rendered_width = 0;
+        self.critique_rendered_lines.clear();
+        true
+    }
+
+    /// Re-open the review already held for the current plan. This is what
+    /// makes a dismissed review recoverable instead of leaving the user to pay
+    /// for an identical second call.
+    pub fn reopen_critique(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Review || self.critique.is_none() {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::Critique;
+        true
+    }
+
+    /// Return to the plan from the advisory review, or from a review still in
+    /// flight — a result that arrives after this is stashed rather than shown.
+    pub fn close_critique(&mut self) -> bool {
+        if !matches!(
+            self.phase,
+            PlanInterviewPhase::Critique | PlanInterviewPhase::CritiqueLoading
+        ) {
+            return false;
+        }
+        self.critique_started_at = None;
+        self.phase = PlanInterviewPhase::Review;
+        true
+    }
+
+    /// Stage the advisory review as input for the next synthesis pass. The
+    /// caller starts that pass; until it lands the plan is unchanged.
+    pub fn revise_from_critique(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Critique {
+            return false;
+        }
+        let Some(critique) = self.critique.clone() else {
+            return false;
+        };
+        self.revision_critique = Some(critique);
+        self.phase = PlanInterviewPhase::Review;
+        true
+    }
+
+    /// The advisory review staged for the next synthesis pass, if any. Read
+    /// without consuming so a pass that turns out to be impossible leaves the
+    /// feedback where the user can still reach it.
+    pub fn staged_revision_critique(&self) -> Option<&str> {
+        self.revision_critique.as_deref()
+    }
+
+    /// Take the staged revision feedback, leaving none behind so a later
+    /// regenerate is a clean pass rather than a repeat of the same revision.
+    /// Called only once the revision pass has actually started.
+    pub fn take_revision_critique(&mut self) -> Option<String> {
+        self.revision_critique.take()
+    }
+
+    /// Record that the plan on screen is a different plan: reset its rendered
+    /// layout and drop an advisory review that no longer describes it.
+    fn mark_plan_changed(&mut self) {
+        self.plan_revision = self.plan_revision.wrapping_add(1);
         self.review_scroll_offset = 0;
         self.review_rendered_width = 0;
         self.review_rendered_lines.clear();
-        self.phase = PlanInterviewPhase::Review;
+        self.clear_critique();
+    }
+
+    /// Drop an advisory review that no longer describes the current plan.
+    fn clear_critique(&mut self) {
+        self.critique = None;
+        self.critique_started_at = None;
+        self.critique_scroll_offset = 0;
+        self.critique_rendered_width = 0;
+        self.critique_rendered_lines.clear();
+        self.critique_plan_revision = None;
     }
 
     /// Open the reviewed plan as raw markdown without changing the staged
@@ -3606,10 +3994,11 @@ impl PlanInterviewState {
         if !plan.ends_with('\n') {
             plan.push('\n');
         }
+        let changed = self.synthesized_plan.as_deref() != Some(plan.as_str());
         self.synthesized_plan = Some(plan);
-        self.review_scroll_offset = 0;
-        self.review_rendered_width = 0;
-        self.review_rendered_lines.clear();
+        if changed {
+            self.mark_plan_changed();
+        }
         self.phase = PlanInterviewPhase::Review;
         true
     }
@@ -3724,6 +4113,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::CritiqueLoading
+            | PlanInterviewPhase::Critique
             | PlanInterviewPhase::Done => {}
         }
         Ok(())
@@ -3787,11 +4178,14 @@ impl PlanInterviewState {
                 true
             }
             // Loading is a transient App-driven state; there is nothing to
-            // navigate back to until it resolves.
+            // navigate back to until it resolves. The review-gate phases have
+            // their own dedicated navigation.
             PlanInterviewPhase::AiLoading
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
-            | PlanInterviewPhase::Editing => false,
+            | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::CritiqueLoading
+            | PlanInterviewPhase::Critique => false,
         }
     }
 
@@ -3813,6 +4207,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::CritiqueLoading
+            | PlanInterviewPhase::Critique
             | PlanInterviewPhase::Done => return Ok(()),
         }
         self.ai_round_started_at = None;

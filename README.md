@@ -278,7 +278,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `j` / `k` / `↑` / `↓` | Navigate project tree |
 | `h` | Collapse project / go to parent |
 | `l` | Expand project / feature |
-| `Enter` | Toggle expand or view selected session |
+| `Enter` | Toggle expand, view a running session, or recover a stopped agent session |
 | `N` | Create new project |
 | `n` | Create new feature |
 | `B` | Batch-create features for a workspace |
@@ -287,7 +287,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `G` | Open PR Triage |
 | `W` | Open AI Review (AMF's own review of this feature's PR diff) |
 | `s` | Open session picker / add a session |
-| `S` | Resume a Claude or Opencode session |
+| `S` | Resume a saved Claude, Opencode, or Codex session |
 | `r` | Rename selected feature or session |
 | `d` | Delete selected project, feature, or session |
 | `c` | Start selected feature |
@@ -443,11 +443,19 @@ Use `s` to open the session picker and add more sessions at any time:
 | Custom entries | Commands defined in `extension.custom_sessions` |
 
 Sessions can be renamed with `r` when a feature or session item is
-selected. `S` can resume Claude or Opencode sessions for the selected
-feature.
+selected. `S` can pick a saved Claude, Opencode, or Codex session to
+resume for the selected feature.
 
 Press `Enter` to enter the embedded view, which streams the tmux pane
 output live through a vt100 parser and renders it with full ANSI color:
+
+If an agent session's tmux process disappeared behind your back — a
+crash, a reboot, an external `tmux kill-server` — and AMF still holds
+its saved harness ID, `Enter` opens a recovery dialog: resume the saved
+session, start a clear one, pick a different saved session (the `S`
+picker), or cancel. Everything else keeps its usual one-keypress start:
+a feature you stopped yourself with `x`, a feature that was never
+started, terminal panes, and harnesses without resume support.
 
 This view includes a custom header and amf commands accesible with a leader key (ctrl+space default)
 

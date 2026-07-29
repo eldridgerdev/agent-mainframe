@@ -680,6 +680,13 @@ pub struct App {
     pub last_view_activity_at: Option<Instant>,
     pub view_input_batch: Option<ViewInputBatch>,
     pub pending_inputs: Vec<PendingInput>,
+    /// Feature IDs stopped from the dashboard (`x`) during this run. Their
+    /// missing tmux session is expected, so opening a saved agent pane
+    /// restarts and resumes directly instead of asking (see
+    /// `open_stopped_session_dialog`). In-memory only: after an AMF restart a
+    /// missing session is indistinguishable from a crash, which is exactly the
+    /// case the recovery dialog is for.
+    pub user_stopped_features: std::collections::HashSet<String>,
     /// Tmux "session:window" targets where compose interception is
     /// disabled and keys pass straight through to Claude Code.
     pub compose_direct_targets: std::collections::HashSet<String>,
@@ -723,6 +730,10 @@ pub struct App {
     /// from adaptive rounds so late results can only be applied to the
     /// matching loading phase.
     pub plan_interview_synthesis_bg: Option<Receiver<Result<String>>>,
+    /// Receiver for the optional agent review of a draft plan. Separate again
+    /// so a late review can never be mistaken for a synthesis result and
+    /// overwrite the plan it was only meant to comment on.
+    pub plan_interview_critique_bg: Option<Receiver<Result<String>>>,
     /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
@@ -2095,6 +2106,7 @@ impl App {
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            user_stopped_features: std::collections::HashSet::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
             compose_clipboard_paste: None,
@@ -2124,6 +2136,7 @@ impl App {
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
+            plan_interview_critique_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
@@ -2307,6 +2320,7 @@ impl App {
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            user_stopped_features: std::collections::HashSet::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
             compose_clipboard_paste: None,
@@ -2336,6 +2350,7 @@ impl App {
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
+            plan_interview_critique_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,

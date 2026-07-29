@@ -21,7 +21,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("j/k / \u{2191}/\u{2193}", "Navigate up/down"),
         ("h / \u{2190}", "Collapse project/feature"),
         ("l / \u{2192}", "Expand project/feature"),
-        ("Enter", "Toggle expand / view session"),
+        ("Enter", "Toggle expand / view or recover session"),
         ("s", "Add session (picker)"),
         ("S", "Pick session to resume"),
         ("N", "Create new project"),
@@ -126,6 +126,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     let plan_review_keybinds: Vec<(&str, &str)> = vec![
         ("j/k / PgUp/PgDn", "Scroll the rendered plan"),
         ("e", "Edit raw plan markdown"),
+        (
+            "a",
+            "Agent review of the plan, or re-open one already held (uses tokens for a new review)",
+        ),
         ("r", "Regenerate the plan (uses tokens)"),
         ("Enter", "Accept plan and launch feature"),
         ("Ctrl+S", "Save edit and return to preview"),
@@ -133,6 +137,33 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     ];
 
     for (key, desc) in &plan_review_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  During an agent review of the plan:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let plan_critique_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k / PgUp/PgDn", "Scroll the review"),
+        ("r", "Revise the plan with this feedback (uses tokens)"),
+        ("Esc / Enter", "Back to the plan, unchanged"),
+    ];
+
+    for (key, desc) in &plan_critique_keybinds {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:>14}", key),

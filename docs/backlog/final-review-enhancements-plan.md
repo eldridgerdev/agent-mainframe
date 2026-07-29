@@ -7,7 +7,8 @@
   re-review, the "fixes ready — re-review?" notification, local application of
   suggestion blocks, the **finish summary screen**, a **Cost** batch, the
   high-priority **close / pause without finishing** viewer item, and the
-  **`v` layout toggle** fix, and the **review-round timeline/history browser**
+  **`v` layout toggle** fix, the **review-round timeline/history browser**, and
+  the **hierarchical file tree + shorter Developer Notes panel**
   have shipped — that closes out every item in the Loop group. The Cost batch
   makes
   bounded headless passes honor `review_model`, caps
@@ -965,9 +966,36 @@ Viewer:
       fix prompt. State/loading lives in `src/app/state.rs` and
       `src/app/review.rs`; modal rendering and key capture live in
       `src/ui/dialogs/diff.rs` and `src/handlers/diff.rs`.
-- [ ] Hierarchical, collapsible file tree for easier path-based navigation +
-      reduce the Developer Notes panel's default height from ~40% to ~20%
-      (preserve full-height expansion)
+- [x] Hierarchical, collapsible file tree + shorter Developer Notes panel — the
+      changed-file list now renders as a directory tree
+      (`DiffViewerState::file_tree_rows` / `FileTreeRow` in `src/app/state.rs`).
+      Directory headers absorb the shared path prefix and file rows show only
+      their basename, indented by depth, keeping every existing marker (verdict
+      symbol, `Δ` changed-since-last, `◆`/`◇` file comment, `+/-` counts,
+      `[L,N,T]` risk flags). Row order is unchanged: `crate::diff` sorts `files`
+      by full path, and comparing a directory as `name/` against a file as
+      `name` reproduces exactly that ordering, so grouping never reorders the
+      list and the tree agrees with `n`/`p` file order. In the file list `j`/`k`
+      now walk *rows* (directories included) — parking on a directory leaves
+      `selected_file` and the patch panel alone — while `z`/Enter fold the
+      cursored directory, `Z` folds/unfolds the whole tree, and `h`/`l` (or
+      left/right) collapse-or-step-out and expand-or-step-in. Folding is
+      strictly a view concern: `visible_file_indices`, filters, counts and every
+      file-order navigation path are untouched, and `on_file_changed` calls
+      `reveal_selected_file` so landing on a file inside a fold re-expands its
+      ancestors rather than stranding the selection — no caller had to learn
+      about the tree. A collapsed directory's row summarises what it hides
+      (file count, undecided count, `✗n` rejected, `Δ`) so folding can't bury
+      outstanding work, and `tree_cursor_row` falls back to the deepest visible
+      ancestor so a row is always highlighted. Fold keys are gated on file-list
+      focus so the patch panel keeps its bindings. Separately, the Developer
+      Notes panel's default share of the right column drops from ~40% to ~20%
+      (`draw_review_body`, `src/ui/dialogs/diff.rs`), leaving the diff most of
+      the height; `e` still expands notes to full height. Fold state is
+      per-session (not persisted to
+      `.claude/final-review-progress.json`). Navigation/collapse ops live in
+      `src/app/diff.rs`, key dispatch in `src/handlers/diff.rs`, rendering
+      (including `dir_row_summary`) in `src/ui/dialogs/diff.rs`.
 - [ ] Expand context around hunks (old/new content already loaded)
 - [ ] Word-level intra-line diff highlighting + ignore-whitespace toggle
 - [ ] Global comment navigation across files + undo last verdict

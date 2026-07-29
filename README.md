@@ -591,6 +591,15 @@ In the PR Triage pane:
   locally, or resolve/reopen its GitHub thread (the one option here
   that writes to GitHub — labeled as such). Triage state is stored in
   SQLite and survives restarts, re-opens, and new pushes.
+- `M` adds the comment as a recurring finding to a **review-memory**
+  doc, so the next AI review checks for it instead of rediscovering
+  it. There are two: this repo's committed `.amf/review-memory.md`
+  (the default) and a cross-project `~/.config/amf/review-memory.md`
+  for lessons that follow you between repos — `g` picks which, and the
+  dialog names the exact file before you commit to it. In the PR
+  picker, `b` bootstraps a doc from recent merged PRs (`g` picks the
+  doc there too) and `c` compacts the project one, merging duplicates
+  and pruning stale rules behind a review-and-confirm step.
 - `A` opens the AI Review pane for this same PR (see below).
 
 ### AI Review
@@ -604,7 +613,9 @@ other reviewers already said.
 - `A` fetches the diff and runs one headless agent pass (the first run
   asks which harness/model to use); findings are cached by the PR's
   head SHA, so reopening the pane after a same-SHA visit is instant and
-  spends no tokens.
+  spends no tokens. Both review-memory docs feed the pass as context —
+  this repo's first, then your cross-project one, with anything the
+  repo doc already says dropped from the second so it isn't sent twice.
 - `j`/`k` navigate findings; `s` skips a finding (excluding it from a
   post without discarding it) and `e` edits its body.
 - `W` posts every kept finding to GitHub as a single review (an

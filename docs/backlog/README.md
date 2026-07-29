@@ -147,7 +147,7 @@ doc always says exactly what remains.
   comment re-anchoring, a manual changeset overview, a per-project
   build/test gate, file-level PR comments, and jump-by-hunk / in-diff
   search.
-- [PR Triage](pr-comment-review-plan.md) — _Partial._ Triage a
+- [PR Triage](pr-comment-review-plan.md) — _Shipped._ Triage a
   GitHub PR's comments (inline, review summaries, conversation, bots)
   inside AMF and, per comment, inject a token-minimal fix into the live
   agent session, post an AI-drafted reply, or skip. Token efficiency is
@@ -157,12 +157,15 @@ doc always says exactly what remains.
   replies/resolution → throughput epics, with a planned Epic E adding an
   AI code review of the diff and a committed `review-memory.md` of common
   findings (bootstrapped from the last N PRs, grown one comment at a time).
-  All epics and the backlog have now shipped — most recently a
+  All epics and open questions have now closed — most recently a
   `New feature…` fix target that runs a PR's triage in its own
   worktree-backed feature, with its harness and vibe mode chosen
-  independently of the source feature, and an explicit `I` step to land
-  those commits on the PR. Only one open question remains (whether to add
-  a cross-project review-memory layer on top of each repo's own doc).
+  independently of the source feature, an explicit `I` step to land
+  those commits on the PR, and a cross-project review-memory layer
+  (`~/.config/amf/review-memory.md`) that AI review merges on top of each
+  repo's own doc, with `g` picking which doc `M` and the bootstrap write to.
+  One small backlog item remains: teaching the compact pass (`c`) to prune
+  the global doc as well as the project one.
 - [Screenshot & video review harness](screenshot-review-plan.md) —
   _All epics shipped._ Lets an agent run AMF in an isolated scratch
   instance (private `XDG_CONFIG_HOME`/`XDG_STATE_HOME` + tmux session, no

@@ -2203,6 +2203,7 @@ fn visible_animation_is_enabled_for_pr_review_running_screens() {
         _ => unreachable!(),
     };
     app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        scope: crate::app::review_memory::MemoryScope::Project,
         origin,
         depth: crate::app::pr_review::BootstrapDepth::default(),
         stage: crate::app::pr_review::BootstrapStage::FetchingComments,
@@ -10912,6 +10913,35 @@ fn review_memory_bootstrap_pick_opens_defaulting_to_fifty() {
 }
 
 #[test]
+fn review_memory_bootstrap_pick_defaults_to_project_scope_and_toggles() {
+    use crate::app::review_memory::MemoryScope;
+
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    app.open_review_memory_bootstrap_pick();
+
+    let scope = |app: &App| match &app.mode {
+        AppMode::PrPicker(state) => state.bootstrap_pick.as_ref().unwrap().scope,
+        _ => panic!("expected PrPicker"),
+    };
+    assert_eq!(
+        scope(&app),
+        MemoryScope::Project,
+        "a bootstrap learns from this repo's history, so it defaults to this repo's doc"
+    );
+
+    app.review_memory_bootstrap_toggle_scope();
+    assert_eq!(scope(&app), MemoryScope::Global);
+    app.review_memory_bootstrap_toggle_scope();
+    assert_eq!(scope(&app), MemoryScope::Project);
+}
+
+#[test]
 fn review_memory_bootstrap_pick_move_wraps() {
     let store = store_with_feature(ProjectStatus::Active);
     let mut app = App::new_for_test(
@@ -10976,6 +11006,7 @@ fn poll_review_memory_bootstrap_bg_surfaces_result_and_returns_to_picker() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.review_memory_bootstrap_bg = Some(rx);
     app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        scope: crate::app::review_memory::MemoryScope::Project,
         origin,
         depth: crate::app::pr_review::BootstrapDepth::default(),
         stage: crate::app::pr_review::BootstrapStage::FetchingComments,
@@ -11035,6 +11066,7 @@ fn poll_review_memory_bootstrap_bg_error_still_returns_to_picker() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.review_memory_bootstrap_bg = Some(rx);
     app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        scope: crate::app::review_memory::MemoryScope::Project,
         origin,
         depth: crate::app::pr_review::BootstrapDepth::default(),
         stage: crate::app::pr_review::BootstrapStage::FetchingComments,
@@ -11078,6 +11110,7 @@ fn cancel_review_memory_bootstrap_returns_to_picker_without_dropping_the_bg_resu
     let (tx, rx) = std::sync::mpsc::channel();
     app.review_memory_bootstrap_bg = Some(rx);
     app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        scope: crate::app::review_memory::MemoryScope::Project,
         origin,
         depth: crate::app::pr_review::BootstrapDepth::default(),
         stage: crate::app::pr_review::BootstrapStage::FetchingComments,
@@ -13728,6 +13761,112 @@ fn pr_review_append_memory_honors_project_review_memory_path_override() {
     let overridden_path = repo.join(".amf").join("team-review-memory.md");
     let contents = std::fs::read_to_string(&overridden_path).unwrap();
     assert!(contents.contains("- comment 1 (src/file1.rs:1)"));
+}
+
+#[test]
+fn pr_review_memory_add_defaults_to_project_scope_and_toggles() {
+    use crate::app::review_memory::MemoryScope;
+
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+
+    let scope = |app: &App| match &app.mode {
+        AppMode::PrReview(state) => state.memory_add.as_ref().unwrap().scope,
+        _ => panic!("expected PrReview"),
+    };
+    assert_eq!(
+        scope(&app),
+        MemoryScope::Project,
+        "a finding from this PR is about this repo until the user says otherwise"
+    );
+
+    app.pr_review_toggle_memory_scope();
+    assert_eq!(scope(&app), MemoryScope::Global);
+    app.pr_review_toggle_memory_scope();
+    assert_eq!(scope(&app), MemoryScope::Project);
+}
+
+#[test]
+fn pr_review_append_memory_global_scope_writes_the_cross_project_doc() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let global_doc = tmp.path().join("global").join("review-memory.md");
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    // An absolute override keeps the test off the developer's real
+    // `~/.config/amf/review-memory.md`.
+    app.config.global_review_memory_path = Some(global_doc.display().to_string());
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_memory_add();
+    app.pr_review_toggle_memory_scope();
+    app.pr_review_append_memory().unwrap();
+
+    assert_eq!(app.pr_review_memory_add_view(), None, "dialog closes");
+    let contents = std::fs::read_to_string(&global_doc).unwrap();
+    assert!(
+        contents.starts_with("# Review memory (cross-project)"),
+        "a freshly created global doc gets the cross-project header, got: {contents}"
+    );
+    assert!(contents.contains("- comment 1 (src/file1.rs:1)"));
+    assert!(
+        !repo.join(".amf").join("review-memory.md").exists(),
+        "the project doc should be untouched when the global scope is picked"
+    );
+}
+
+#[test]
+fn review_memory_paths_resolves_project_override_and_global_together() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(repo.join(".amf")).unwrap();
+    std::fs::write(
+        repo.join(".amf").join("config.json"),
+        r#"{"review_memory_path": ".amf/team-review-memory.md"}"#,
+    )
+    .unwrap();
+    let global_doc = tmp.path().join("global-lessons.md");
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.global_review_memory_path = Some(global_doc.display().to_string());
+
+    let paths = app.review_memory_paths(&repo);
+    assert_eq!(
+        paths.project,
+        repo.join(".amf").join("team-review-memory.md")
+    );
+    assert_eq!(paths.global, global_doc);
 }
 
 #[test]

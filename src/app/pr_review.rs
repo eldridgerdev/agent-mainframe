@@ -1514,6 +1514,15 @@ fn run_review_memory_bootstrap(
     let _ = tx.send(BootstrapProgress::Done(result));
 }
 
+/// Findings currently in the review-memory doc at `path`, or `0` when it's
+/// missing or unreadable. A local file read, cheap enough to do synchronously
+/// when the compact overlay opens and again on every `g` scope toggle.
+fn count_findings_at(path: &Path) -> usize {
+    std::fs::read_to_string(path)
+        .map(|contents| review_memory::count_findings(&contents))
+        .unwrap_or(0)
+}
+
 /// Background body of the review-memory compact pass ("prevent review-memory
 /// rot"): read the doc, make **one** headless agent pass to merge
 /// near-duplicate findings and prune stale ones, and report the proposed
@@ -4070,24 +4079,51 @@ impl App {
     /// Open the review-memory compact confirm overlay (`c` in the PR picker):
     /// a synchronous local file read to show how many findings are currently
     /// in the doc before spending an agent pass on them (Epic E "prevent
-    /// review-memory rot"). A no-op with a message if the doc is missing or
-    /// empty — nothing to compact.
+    /// review-memory rot"). A no-op with a message only when *both* docs are
+    /// missing or empty — there's nothing to compact anywhere. When just one
+    /// has findings the overlay opens on that one, so an empty project doc
+    /// doesn't block reaching a grown global one.
     pub fn open_review_memory_compact_confirm(&mut self) {
         let workdir = match &self.mode {
             AppMode::PrPicker(state) => state.workdir.clone(),
             _ => return,
         };
         let repo = self.repo_for_project_path(&workdir);
-        let path = self.review_memory_paths(&repo).project;
-        let existing_findings = std::fs::read_to_string(&path)
-            .map(|contents| review_memory::count_findings(&contents))
-            .unwrap_or(0);
-        if existing_findings == 0 {
-            self.message = Some("Review memory doc is empty — nothing to compact".into());
+        let paths = self.review_memory_paths(&repo);
+        let project_findings = count_findings_at(paths.for_scope(MemoryScope::Project));
+        let global_findings = count_findings_at(paths.for_scope(MemoryScope::Global));
+        let (scope, existing_findings) = if project_findings > 0 {
+            (MemoryScope::Project, project_findings)
+        } else if global_findings > 0 {
+            (MemoryScope::Global, global_findings)
+        } else {
+            self.message = Some("Review memory is empty — nothing to compact".into());
             return;
-        }
+        };
         if let AppMode::PrPicker(state) = &mut self.mode {
-            state.compact_confirm = Some(CompactConfirmState { existing_findings });
+            state.compact_confirm = Some(CompactConfirmState {
+                existing_findings,
+                scope,
+            });
+        }
+    }
+
+    /// Toggle which doc the compact pass rewrites: this repo's committed doc,
+    /// or the user's cross-project one. Re-reads the finding count for the
+    /// newly selected doc so the overlay's "N findings" never describes the
+    /// doc the user just toggled away from.
+    pub fn review_memory_compact_toggle_scope(&mut self) {
+        let workdir = match &self.mode {
+            AppMode::PrPicker(state) if state.compact_confirm.is_some() => state.workdir.clone(),
+            _ => return,
+        };
+        let repo = self.repo_for_project_path(&workdir);
+        let paths = self.review_memory_paths(&repo);
+        if let AppMode::PrPicker(state) = &mut self.mode
+            && let Some(confirm) = &mut state.compact_confirm
+        {
+            confirm.scope = confirm.scope.toggled();
+            confirm.existing_findings = count_findings_at(paths.for_scope(confirm.scope));
         }
     }
 
@@ -4104,20 +4140,42 @@ impl App {
     }
 
     /// Confirm the overlay: hand the doc read + one agent pass to a
-    /// background thread and switch to the full-screen running view.
+    /// background thread and switch to the full-screen running view. Refuses
+    /// (with a message, staying on the overlay) when the selected doc is
+    /// empty — reachable by toggling `g` onto a doc that has no findings, and
+    /// not worth an agent pass.
     pub fn review_memory_compact_confirm_run(&mut self) {
-        let (workdir, mut origin) = match &self.mode {
-            AppMode::PrPicker(state) if state.compact_confirm.is_some() => {
-                (state.workdir.clone(), state.clone())
-            }
+        let (workdir, scope, empty, mut origin) = match &self.mode {
+            AppMode::PrPicker(state) => match &state.compact_confirm {
+                Some(confirm) => (
+                    state.workdir.clone(),
+                    confirm.scope,
+                    confirm.existing_findings == 0,
+                    state.clone(),
+                ),
+                None => return,
+            },
             _ => return,
         };
+        if empty {
+            self.message = Some(format!(
+                "The {} review memory doc is empty — nothing to compact",
+                scope.label()
+            ));
+            return;
+        }
         origin.compact_confirm = None;
 
         let repo = self.repo_for_project_path(&workdir);
-        let memory_path = self.review_memory_paths(&repo).project;
+        let memory_path = self
+            .review_memory_paths(&repo)
+            .for_scope(scope)
+            .to_path_buf();
 
-        self.log_info("pr_review", "compacting review memory doc".to_string());
+        self.log_info(
+            "pr_review",
+            format!("compacting {} review memory doc", scope.label()),
+        );
 
         let model = self.config.review_model_for(ReviewAction::ReviewMemory);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -4131,6 +4189,7 @@ impl App {
         let run_state = CompactRunState {
             origin,
             path: memory_path,
+            scope,
             stage: CompactStage::ReadingDoc,
         };
         self.review_memory_compact_pending = Some(run_state.clone());
@@ -4183,6 +4242,7 @@ impl App {
                                     AppMode::ReviewMemoryCompactReview(CompactReviewState {
                                         origin: pending.origin,
                                         path: pending.path,
+                                        scope: pending.scope,
                                         original_findings: outcome.original_findings,
                                         proposed_findings: outcome.proposed_findings,
                                         editor: TextEditor::new(outcome.proposed_content),
@@ -4200,8 +4260,10 @@ impl App {
                             }
                         }
                         Ok(None) => {
-                            self.message =
-                                Some("Review memory doc is empty — nothing to compact".into());
+                            self.message = Some(format!(
+                                "The {} review memory doc is empty — nothing to compact",
+                                pending.scope.label()
+                            ));
                             if still_watching {
                                 self.mode = AppMode::PrPicker(pending.origin);
                             }
@@ -4302,10 +4364,12 @@ impl App {
         match std::fs::write(&state.path, &content) {
             Ok(()) => {
                 let (original, proposed) = (state.original_findings, state.proposed_findings);
+                let scope = state.scope;
                 let origin = state.origin.clone();
                 self.mode = AppMode::PrPicker(origin);
                 self.push_toast_success(format!(
-                    "Review memory compacted · {original} \u{2192} {proposed} findings"
+                    "Compacted {} review memory · {original} \u{2192} {proposed} findings",
+                    scope.label()
                 ));
             }
             Err(e) => {

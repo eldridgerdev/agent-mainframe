@@ -368,6 +368,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("b", "Bootstrap review memory from recent PRs"),
         ("", "(g picks the project or global doc)"),
         ("c", "Compact review memory (merge dupes, prune stale)"),
+        ("", "(g picks the project or global doc)"),
         ("q / Esc", "Close picker"),
     ];
 

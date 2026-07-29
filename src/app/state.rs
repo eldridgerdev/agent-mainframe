@@ -1996,7 +1996,13 @@ pub struct BootstrapRunState {
 pub struct CompactConfirmState {
     /// Bullet count in the doc as it stands, read synchronously when the
     /// overlay opens (a local file read — cheap enough not to background).
+    /// Re-read for the newly selected doc on every `scope` toggle, so the
+    /// number always describes what `⏎` would actually compact.
     pub existing_findings: usize,
+    /// Which doc gets compacted, toggled with `g`. Defaults to `Project` when
+    /// that doc has findings, otherwise `Global` — so `c` still reaches the
+    /// only non-empty doc without the user having to know to press `g`.
+    pub scope: crate::app::review_memory::MemoryScope,
 }
 
 /// Full-screen progress view for the review-memory compact pass's background
@@ -2010,6 +2016,10 @@ pub struct CompactRunState {
     /// re-resolve it (a second `repo_root` lookup) once the background
     /// thread reports back.
     pub path: PathBuf,
+    /// Which doc the run is rewriting, carried through from confirm so the
+    /// running screen can name it (the path alone doesn't read as
+    /// project-vs-global at a glance).
+    pub scope: crate::app::review_memory::MemoryScope,
     pub stage: crate::app::pr_review::CompactStage,
 }
 
@@ -2026,6 +2036,8 @@ pub struct CompactReviewState {
     pub origin: PrPickerState,
     /// Resolved path of the review-memory doc this will write to.
     pub path: PathBuf,
+    /// Which doc is being rewritten, so the success toast names it.
+    pub scope: crate::app::review_memory::MemoryScope,
     /// Bullet count in the doc before compacting, for the "N -> M" summary.
     pub original_findings: usize,
     /// Bullet count in the agent's proposed replacement, for the same summary.

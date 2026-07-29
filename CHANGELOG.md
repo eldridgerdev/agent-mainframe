@@ -10,7 +10,17 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **Global review memory can now be compacted from PR Triage.** Press `c` in
+  the PR picker, then `g` to switch between the project and cross-project
+  memory docs. AMF shows the selected path and finding count before spending
+  agent tokens, and opens directly on the global doc when it is the only one
+  with findings.
+
+### Migration
+
+- No migration is required.
 
 ## [v0.33.0] - 2026-07-28
 

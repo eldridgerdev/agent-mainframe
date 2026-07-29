@@ -3175,7 +3175,6 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
 
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
-    assert!(matches!(app.mode, AppMode::Normal));
     assert_eq!(
         std::fs::read_to_string(workdir.join(".claude/plan.md")).unwrap(),
         synthesized_plan_response()
@@ -3186,17 +3185,34 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
             .iter()
             .any(|f| f.name == "planned-feature" && !f.pending_worktree_script)
     );
+    // Accepting lands in the launched session's composer with an editable
+    // kickoff prompt — seeded, never submitted.
+    match &app.mode {
+        AppMode::Compose(state) => {
+            let seed = state.editor.text();
+            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("decisions are settled"));
+            assert_eq!(state.view.feature_name, "planned-feature");
+        }
+        _ => panic!("expected the composer to be seeded"),
+    }
 }
 
 #[test]
 fn poll_plan_interview_synthesis_bg_uses_raw_fallback_for_incomplete_markdown() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
-    let workdir = match &mut app.mode {
+    let (workdir, first_question) = match &mut app.mode {
         AppMode::PlanInterview(state) => {
             state.brief = "Fallback brief".into();
+            // One answered question and the rest skipped: the fallback must
+            // carry the answer and drop every question the user passed over.
+            state.answers[0] = Some("Answered this one".into());
             state.begin_synthesis(300);
-            state.pending_launch.as_ref().unwrap().workdir.clone()
+            (
+                state.pending_launch.as_ref().unwrap().workdir.clone(),
+                state.questions[0].text.clone(),
+            )
         }
         _ => panic!("expected plan interview mode"),
     };
@@ -3214,6 +3230,8 @@ fn poll_plan_interview_synthesis_bg_uses_raw_fallback_for_incomplete_markdown() 
     };
     assert!(plan.contains("## Feature brief\n\nFallback brief"));
     assert!(plan.contains("## Q&A"));
+    assert!(plan.contains(&format!("### {first_question}\n\nAnswered this one")));
+    assert!(!plan.contains("_Skipped._"));
     assert!(!workdir.join(".claude/plan.md").exists());
     assert!(
         app.debug_log

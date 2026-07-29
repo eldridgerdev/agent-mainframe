@@ -433,13 +433,26 @@ seeded kickoff composer), or abort.
       dropped whenever the plan changes. `Esc` during the review returns
       to the plan rather than opening the interview's abort confirmation,
       so a generated plan can't be lost to a stray keypress
-- [ ] Accept path: write `.claude/plan.md`, augment the instruction
+- [x] Accept path: write `.claude/plan.md`, augment the instruction
       block ("plan is user-approved"), run deferred launch, seed
-      composer kickoff prompt via `open_compose_seeded`
+      composer kickoff prompt via `open_compose_seeded` — the launch's
+      `ensure_feature_running` already injects the approved-plan block,
+      so accept adds the seeding step and lands the user in the new
+      session's composer with an editable, unsubmitted kickoff prompt.
+      Best-effort by design: it runs after the feature is created and
+      started, so a startup-steering prompt or a feature with no
+      tmux-backed agent session skips the seed rather than failing the
+      accept
 - [x] Replace Epic 1's raw-Q&A plan-file write with synthesized doc
       (raw Q&A kept as fallback when synthesis fails)
-- [ ] Omit skipped and unanswered questions from both synthesis input
+- [x] Omit skipped and unanswered questions from both synthesis input
       and the raw-Q&A fallback plan so they do not add irrelevant context
+      — blank answers count as skips, and an interview with nothing
+      answered degrades to the brief alone (no empty `## Q&A`). The
+      interviewer and critique prompts deliberately still receive the
+      full asked-set with `answer: null`: the interviewer must not
+      re-ask what the user passed over, and the reviewer judges the plan
+      against everything the interview covered
 
 ### Epic 5 — On-demand interviews + persistence
 

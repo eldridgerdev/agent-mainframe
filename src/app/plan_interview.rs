@@ -16,6 +16,16 @@ use crate::plan_interview::{self, PlanQuestion};
 
 const PLAN_FILE_NAME: &str = "plan.md";
 
+/// Composer seed offered after an accepted interview. Deliberately short and
+/// editable: the plan itself carries the detail, and the instruction block
+/// already told the agent to treat its decisions as settled.
+const PLAN_KICKOFF_PROMPT: &str = "\
+Read `.claude/plan.md`. It is the plan I approved for this feature — its \
+decisions are settled unless I say otherwise.
+
+Start with the first unchecked task, and keep the task checkboxes current as \
+you go.";
+
 impl App {
     pub(crate) fn start_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
         let questions = self
@@ -729,10 +739,69 @@ impl App {
         self.mode = AppMode::Normal;
 
         if let Some(prepared) = pending {
-            self.finish_feature_launch_without_interview(prepared)
+            let project_name = prepared.project_name.clone();
+            let branch = prepared.branch.clone();
+            // The launch injects the plan-mode instruction block into the
+            // harness's instruction file (via `ensure_feature_running`), so the
+            // agent already knows the plan is user-approved before it reads the
+            // kickoff prompt.
+            self.finish_feature_launch_without_interview(prepared)?;
+            self.seed_plan_kickoff_prompt(&project_name, &branch);
+            Ok(())
         } else {
             self.message = Some("Plan interview complete".into());
             Ok(())
+        }
+    }
+
+    /// Open the freshly launched agent session with its composer seeded with a
+    /// kickoff prompt pointing at the accepted plan.
+    ///
+    /// Best-effort by design: this runs *after* the feature is created and
+    /// started, so nothing here is allowed to fail the accept. If the launch
+    /// took the user somewhere else (the startup steering prompt) or the
+    /// feature has no tmux-backed agent session, the plan file and instruction
+    /// block are already in place and the seed is simply skipped.
+    fn seed_plan_kickoff_prompt(&mut self, project_name: &str, branch: &str) {
+        if !matches!(self.mode, AppMode::Normal) {
+            return;
+        }
+
+        let Some((pi, fi, si)) = self
+            .store
+            .projects
+            .iter()
+            .position(|project| project.name == project_name)
+            .and_then(|pi| {
+                let fi = self.store.projects[pi]
+                    .features
+                    .iter()
+                    .position(|feature| feature.name == branch)?;
+                let si = self.store.projects[pi].features[fi]
+                    .sessions
+                    .iter()
+                    .position(|session| {
+                        session.kind.is_agent_harness() && session.kind.is_tmux_backed()
+                    })?;
+                Some((pi, fi, si))
+            })
+        else {
+            return;
+        };
+
+        self.selection = Selection::Session(pi, fi, si);
+        if let Err(e) = self.enter_view_without_auto_compose() {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to open the new session for the plan kickoff prompt: {e}"),
+            );
+            return;
+        }
+        if let Err(e) = self.open_compose_seeded(PLAN_KICKOFF_PROMPT.to_string()) {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to seed the plan kickoff prompt: {e}"),
+            );
         }
     }
 
@@ -810,22 +879,39 @@ fn truncate_for_log(response: &str) -> String {
     }
 }
 
+/// Deterministic plan used whenever synthesis is unavailable or fails.
+///
+/// Skipped and blank answers are omitted rather than listed as "_Skipped._":
+/// this file is what the implementing agent reads, and a wall of unanswered
+/// prompts is context it has to spend attention discarding. An interview where
+/// nothing was answered degrades to the brief alone, which is still the whole
+/// of what the user said.
 fn render_static_plan(
     feature_name: &str,
     brief: &str,
     questions: &[PlanQuestion],
     answers: &[Option<String>],
 ) -> String {
-    let mut plan = format!("# Plan: {feature_name}\n\n## Feature brief\n\n{brief}\n\n## Q&A\n");
+    let mut plan = format!("# Plan: {feature_name}\n\n## Feature brief\n\n{brief}\n");
 
-    for (index, question) in questions.iter().enumerate() {
+    let answered = questions.iter().enumerate().filter_map(|(index, question)| {
+        answers
+            .get(index)
+            .and_then(|answer| answer.as_deref())
+            .filter(|answer| !answer.trim().is_empty())
+            .map(|answer| (question, answer))
+    });
+
+    let mut wrote_heading = false;
+    for (question, answer) in answered {
+        if !wrote_heading {
+            plan.push_str("\n## Q&A\n");
+            wrote_heading = true;
+        }
         plan.push_str("\n### ");
         plan.push_str(&question.text);
         plan.push_str("\n\n");
-        match answers.get(index).and_then(|answer| answer.as_deref()) {
-            Some(answer) => plan.push_str(answer),
-            None => plan.push_str("_Skipped._"),
-        }
+        plan.push_str(answer);
         plan.push('\n');
     }
 
@@ -870,36 +956,53 @@ mod tests {
     use crate::markdown::{preferred_plan_markdown_path, read_plan_preview};
     use crate::plan_interview::{PlanQuestionKind, QuestionSource};
 
+    fn free_text_question(id: &str, text: &str) -> PlanQuestion {
+        PlanQuestion {
+            id: id.into(),
+            text: text.into(),
+            kind: PlanQuestionKind::FreeText,
+            source: QuestionSource::Builtin,
+            optional: true,
+        }
+    }
+
     #[test]
-    fn static_plan_preserves_brief_answers_and_skipped_questions() {
+    fn static_plan_keeps_brief_and_answers_but_omits_unanswered_questions() {
         let questions = vec![
-            PlanQuestion {
-                id: "scope".into(),
-                text: "What is in scope?".into(),
-                kind: PlanQuestionKind::FreeText,
-                source: QuestionSource::Builtin,
-                optional: true,
-            },
-            PlanQuestion {
-                id: "risks".into(),
-                text: "What are the risks?".into(),
-                kind: PlanQuestionKind::FreeText,
-                source: QuestionSource::Builtin,
-                optional: true,
-            },
+            free_text_question("scope", "What is in scope?"),
+            free_text_question("risks", "What are the risks?"),
+            free_text_question("ui", "What is the UI surface?"),
         ];
 
         let plan = render_static_plan(
             "guided-plans",
             "Collect a brief\nbefore launch.",
             &questions,
-            &[Some("Native TUI only.\nNo AI yet.".into()), None],
+            &[
+                Some("Native TUI only.\nNo AI yet.".into()),
+                None,
+                // Blank answers are skips too — a config-authored select option
+                // can be an empty string.
+                Some("   ".into()),
+            ],
         );
 
         assert!(plan.starts_with("# Plan: guided-plans\n\n## Feature brief"));
         assert!(plan.contains("Collect a brief\nbefore launch."));
         assert!(plan.contains("### What is in scope?\n\nNative TUI only.\nNo AI yet."));
-        assert!(plan.contains("### What are the risks?\n\n_Skipped._"));
+        assert!(!plan.contains("What are the risks?"));
+        assert!(!plan.contains("What is the UI surface?"));
+        assert!(!plan.contains("_Skipped._"));
+    }
+
+    #[test]
+    fn static_plan_without_any_answers_is_brief_only() {
+        let questions = vec![free_text_question("scope", "What is in scope?")];
+
+        let plan = render_static_plan("guided-plans", "Ship it.", &questions, &[None]);
+
+        assert_eq!(plan, "# Plan: guided-plans\n\n## Feature brief\n\nShip it.\n");
+        assert!(!plan.contains("## Q&A"));
     }
 
     #[test]

@@ -131,7 +131,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Agent review of the plan, or re-open one already held (uses tokens for a new review)",
         ),
         ("r", "Regenerate the plan (uses tokens)"),
-        ("Enter", "Accept plan and launch feature"),
+        (
+            "Enter",
+            "Accept plan, launch feature, and seed the kickoff prompt",
+        ),
         ("Ctrl+S", "Save edit and return to preview"),
         ("Esc", "Discard edit or confirm abort"),
     ];

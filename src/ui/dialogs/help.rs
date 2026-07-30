@@ -93,6 +93,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     )));
 
     let plan_interview_keybinds: Vec<(&str, &str)> = vec![
+        ("r / d", "Resume or discard a saved draft (on entry)"),
         ("Enter", "Save answer and continue"),
         ("Alt+Enter", "Insert a newline (free-text answers)"),
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),

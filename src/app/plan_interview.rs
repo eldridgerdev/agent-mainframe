@@ -11,6 +11,7 @@ use super::pr_review::estimate_tokens;
 use super::{
     App, AppMode, PlanInterviewPhase, PlanInterviewState, PreparedFeatureLaunch, Selection,
 };
+use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
 use crate::plan_interview::{self, PlanQuestion};
 
@@ -36,9 +37,94 @@ impl App {
                     .plan_interview_questions()
             })
             .unwrap_or_else(crate::plan_interview::builtin_questions);
-        self.mode = AppMode::PlanInterview(PlanInterviewState::for_feature_creation(
-            prepared, questions,
-        ));
+        let mut state = PlanInterviewState::for_feature_creation(prepared, questions);
+        if let Some(draft) = self.load_plan_interview_draft(&state.interview_key) {
+            state.offer_resume(draft);
+        }
+        self.mode = AppMode::PlanInterview(state);
+        self.message = None;
+    }
+
+    /// The saved draft for `interview_key`, or `None` when there is nothing to
+    /// resume.
+    ///
+    /// An unreadable row is treated as "no draft" so a corrupt or
+    /// older-format record cannot block the interview; the reason lands in the
+    /// debug log rather than in the user's way.
+    fn load_plan_interview_draft(&mut self, interview_key: &str) -> Option<PlanInterviewRecord> {
+        match self.db.as_ref()?.plan_interview_draft(interview_key) {
+            Ok(draft) => draft,
+            Err(e) => {
+                self.log_warn(
+                    "plan_interview",
+                    format!("ignoring unreadable saved draft for {interview_key}: {e}"),
+                );
+                None
+            }
+        }
+    }
+
+    /// Save the interview as it stands so abandoning the mode — or losing the
+    /// process — does not cost the user their answers.
+    ///
+    /// Called after every action that records an answer. Deliberately silent on
+    /// failure: persistence is a convenience layered under a flow that works
+    /// entirely from memory, and a DB error must not interrupt the interview.
+    /// Nothing is saved before the brief is entered, since an interview with no
+    /// brief has nothing worth resuming into.
+    pub(crate) fn persist_plan_interview_draft(&mut self) {
+        let record = match &self.mode {
+            AppMode::PlanInterview(state) if !state.brief.trim().is_empty() => {
+                state.to_draft_record()
+            }
+            _ => return,
+        };
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        if let Err(e) = db.save_plan_interview(&record) {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to save plan interview draft: {e}"),
+            );
+        }
+    }
+
+    /// Resume the offered draft, restoring answers and any plan already
+    /// generated for it.
+    pub(crate) fn resume_plan_interview_draft(&mut self) -> Result<()> {
+        let resumed = match &mut self.mode {
+            AppMode::PlanInterview(state) => state.resume_from_draft(),
+            _ => false,
+        };
+        if !resumed {
+            return Ok(());
+        }
+        self.message = None;
+        // Resuming can land directly on `Done` when the draft answered
+        // everything and had already opted into adaptive rounds.
+        self.continue_plan_interview_after_done()
+    }
+
+    /// Discard the offered draft and start over from a blank brief.
+    pub(crate) fn discard_plan_interview_draft(&mut self) {
+        let discarded = match &mut self.mode {
+            AppMode::PlanInterview(state) => {
+                state.discard_draft().then(|| state.interview_key.clone())
+            }
+            _ => None,
+        };
+        let Some(interview_key) = discarded else {
+            return;
+        };
+        if let Some(db) = self.db.as_ref()
+            && let Err(e) = db.delete_plan_interview_draft(&interview_key)
+        {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to discard saved plan interview draft: {e}"),
+            );
+        }
         self.message = None;
     }
 
@@ -594,6 +680,9 @@ impl App {
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.apply_ai_round(round, new_questions);
         }
+        // A spent round is recorded even when it produced nothing usable, so the
+        // draft has to capture it: resuming must not hand back a paid round.
+        self.persist_plan_interview_draft();
 
         let reached_done = matches!(
             &self.mode,
@@ -703,12 +792,16 @@ impl App {
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.apply_synthesis(plan);
         }
+        // The plan at the review gate was paid for. Persisting it means an
+        // abandoned review resumes straight back to it instead of synthesizing
+        // again.
+        self.persist_plan_interview_draft();
         self.message = None;
     }
 
     /// Accept the reviewed plan and execute the launch it has been holding.
     pub(crate) fn complete_plan_interview(&mut self) -> Result<()> {
-        let (workdir, plan) = match &self.mode {
+        let (workdir, plan, interview_key) = match &self.mode {
             AppMode::PlanInterview(state) => {
                 let Some(prepared) = state.pending_launch.as_ref() else {
                     return Ok(());
@@ -723,6 +816,7 @@ impl App {
                             &state.answers,
                         )
                     }),
+                    state.interview_key.clone(),
                 )
             }
             _ => return Ok(()),
@@ -731,6 +825,13 @@ impl App {
         // Keep the interview open if either write fails so the user can retry
         // or abort without losing the answers they just entered.
         write_plan_file(&workdir, &plan)?;
+
+        // The draft has to exist for the accept to finalize it, and it only
+        // exists if something was saved during the interview. Save the accepted
+        // state first so a plan reached without a persisted draft — a DB that
+        // appeared mid-interview, or a flow that skipped straight to synthesis —
+        // still leaves a transcript behind.
+        self.persist_plan_interview_draft();
 
         let pending = match &mut self.mode {
             AppMode::PlanInterview(state) => state.pending_launch.take(),
@@ -746,11 +847,59 @@ impl App {
             // agent already knows the plan is user-approved before it reads the
             // kickoff prompt.
             self.finish_feature_launch_without_interview(prepared)?;
+            self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
             self.seed_plan_kickoff_prompt(&project_name, &branch);
             Ok(())
         } else {
+            self.finalize_plan_interview_transcript(&interview_key, "", "", &plan);
             self.message = Some("Plan interview complete".into());
             Ok(())
+        }
+    }
+
+    /// Promote the accepted interview's draft into the feature's transcript.
+    ///
+    /// A feature-creation interview saved its draft under a pending key, because
+    /// the feature had no id yet; the transcript is re-filed under the id the
+    /// launch just created so a later re-run on that feature finds it. Called
+    /// after the launch for exactly that reason.
+    ///
+    /// Best-effort: the plan file is already written and the session already
+    /// running by this point, so nothing here is allowed to fail the accept.
+    fn finalize_plan_interview_transcript(
+        &mut self,
+        interview_key: &str,
+        project_name: &str,
+        branch: &str,
+        plan: &str,
+    ) {
+        let feature_id = self
+            .store
+            .find_project(project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == branch)
+            })
+            .map(|feature| feature.id.clone())
+            // No feature to re-file under (an on-demand interview, or a launch
+            // that did not produce one) leaves the transcript on its own key.
+            .unwrap_or_else(|| interview_key.to_string());
+
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        match db.finalize_plan_interview_draft(interview_key, &feature_id, plan) {
+            Ok(true) => {}
+            Ok(false) => self.log_debug(
+                "plan_interview",
+                format!("no saved draft to finalize for {interview_key}"),
+            ),
+            Err(e) => self.log_warn(
+                "plan_interview",
+                format!("failed to save the accepted plan interview transcript: {e}"),
+            ),
         }
     }
 
@@ -801,6 +950,51 @@ impl App {
             self.log_warn(
                 "plan_interview",
                 format!("failed to seed the plan kickoff prompt: {e}"),
+            );
+        }
+    }
+
+    /// Drop a deleted feature's stored interviews.
+    ///
+    /// `plan_interviews.feature_id` carries no foreign key (the store's
+    /// full-replace save would cascade-wipe the rows), so deletion is explicit.
+    /// Two keys are cleared: the feature's id, holding anything saved once the
+    /// feature existed, and the pending key from
+    /// [`crate::plan_interview::pending_interview_key`], which still holds a
+    /// draft if the feature was created after its interview was abandoned.
+    ///
+    /// Best-effort: the feature is going away regardless, and a leftover row is
+    /// inert — it is only ever read by an interview for this same feature.
+    pub(crate) fn delete_plan_interviews_for_deleted_feature(
+        &mut self,
+        project_name: &str,
+        feature_name: &str,
+        feature_id: &Option<String>,
+    ) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let mut keys = vec![plan_interview::pending_interview_key(
+            project_name,
+            feature_name,
+        )];
+        keys.extend(feature_id.clone());
+
+        let failures: Vec<String> = keys
+            .iter()
+            .filter_map(|key| {
+                db.delete_plan_interviews_for_feature(key)
+                    .err()
+                    .map(|e| format!("{key}: {e}"))
+            })
+            .collect();
+        if !failures.is_empty() {
+            self.log_warn(
+                "plan_interview",
+                format!(
+                    "failed to delete stored interviews for '{feature_name}': {}",
+                    failures.join("; ")
+                ),
             );
         }
     }

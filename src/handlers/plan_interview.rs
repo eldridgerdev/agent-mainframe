@@ -28,6 +28,9 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
         AppMode::PlanInterview(state) => state.phase,
         _ => return Ok(()),
     };
+    if phase == PlanInterviewPhase::ResumePrompt {
+        return handle_plan_resume_key(app, key);
+    }
     if phase == PlanInterviewPhase::Editing {
         return handle_plan_edit_key(app, key);
     }
@@ -83,9 +86,13 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 AppMode::PlanInterview(state) => state.advance(),
                 _ => return Ok(()),
             };
-            let completed = result.is_ok()
+            let recorded = result.is_ok();
+            let completed = recorded
                 && matches!(&app.mode, AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Done);
             set_advance_message(app, result);
+            if recorded {
+                app.persist_plan_interview_draft();
+            }
             if completed {
                 app.continue_plan_interview_after_done()?;
             }
@@ -98,22 +105,31 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('b') if control => {
-            if let AppMode::PlanInterview(state) = &mut app.mode {
-                if !state.back() {
-                    app.message = Some("Already at the feature brief".into());
-                } else {
-                    app.message = None;
-                }
-            }
+            let moved = match &mut app.mode {
+                AppMode::PlanInterview(state) => state.back(),
+                _ => false,
+            };
+            app.message = if moved {
+                // Stepping back keeps the answer that was on screen, so the
+                // draft has to record it before the editor is reloaded.
+                app.persist_plan_interview_draft();
+                None
+            } else {
+                Some("Already at the feature brief".into())
+            };
         }
         KeyCode::Char('s') if control => {
             let result = match &mut app.mode {
                 AppMode::PlanInterview(state) => state.skip(),
                 _ => return Ok(()),
             };
-            let completed = result.is_ok()
+            let recorded = result.is_ok();
+            let completed = recorded
                 && matches!(&app.mode, AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Done);
             set_advance_message(app, result);
+            if recorded {
+                app.persist_plan_interview_draft();
+            }
             if completed {
                 app.continue_plan_interview_after_done()?;
             }
@@ -123,9 +139,13 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 AppMode::PlanInterview(state) => state.finish_early(),
                 _ => return Ok(()),
             };
-            let completed = result.is_ok()
+            let recorded = result.is_ok();
+            let completed = recorded
                 && matches!(&app.mode, AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Done);
             set_advance_message(app, result);
+            if recorded {
+                app.persist_plan_interview_draft();
+            }
             if completed {
                 app.continue_plan_interview_after_done()?;
             }
@@ -144,6 +164,27 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 state.editor.handle_key(key);
             }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The resume-or-discard choice shown when the interview finds a saved draft.
+///
+/// Deliberately the first thing the user sees and deliberately explicit: resume
+/// silently would overwrite a blank interview with stale answers, and discard
+/// silently would throw away work they never chose to abandon. `Esc` keeps the
+/// draft and falls through to the interview's normal abort choice.
+fn handle_plan_resume_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Char('r') | KeyCode::Enter => app.resume_plan_interview_draft()?,
+        KeyCode::Char('d') => app.discard_plan_interview_draft(),
+        KeyCode::Esc => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.abort_confirmation = true;
+            }
+            app.message = None;
         }
         _ => {}
     }
@@ -267,6 +308,7 @@ fn handle_plan_edit_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 _ => false,
             };
             app.message = if saved {
+                app.persist_plan_interview_draft();
                 None
             } else {
                 Some("Error: plan markdown cannot be empty".into())

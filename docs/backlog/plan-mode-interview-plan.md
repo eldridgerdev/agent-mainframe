@@ -133,8 +133,9 @@ persisted as a **draft** in SQLite as they're given (decided
 and re-entering the interview for that feature offers to resume or
 discard it. Accepting the plan finalizes the draft into the
 transcript; drafts for deleted features are cleaned up with the
-feature. (Draft persistence lands with Epic 5's table; Epics 1–4
-hold the in-progress interview in memory only.)
+feature. Because the feature-creation trigger runs before the feature
+exists, its draft is keyed by project + branch until the accept re-files
+the transcript under the real feature id.
 
 ### Question model
 
@@ -479,10 +480,35 @@ interview with prior answers pre-filled, get an updated
       rows (covered by a test) — so cleanup is explicit via
       `delete_for_feature`, wired into the feature-delete path with the
       next item
-- [ ] Draft persistence: save answers as given; on interview entry
+- [x] Draft persistence: save answers as given; on interview entry
       with an existing draft, offer resume/discard; clean up drafts
-      when their feature is deleted
-- [ ] Save final transcript on accept (both triggers)
+      when their feature is deleted — the draft is saved after every
+      action that records something (advance, skip, back, finish-early,
+      a finished AI round, a synthesized plan, a plan edit) and skipped
+      until the brief exists, since an interview with no brief has
+      nothing to resume into. A feature-creation interview predates the
+      feature's uuid, so its draft is keyed
+      `pending:<project>/<branch>` (`plan_interview::pending_interview_key`)
+      — the identity the user re-enters when they come back to create the
+      same feature. `PlanInterviewPhase::ResumePrompt` is the first screen
+      when a draft exists: `r` resumes, `d` discards (deleting the row),
+      `Esc` keeps it and falls through to the normal abort choice. Resume
+      matches answers by **question id**, not position, because config can
+      change the bank between runs; stored AI questions absent from the
+      current bank are appended and `ai_rounds_completed` restored, so
+      paid rounds are never re-earned; a draft that already holds a
+      generated plan reopens at the review gate instead of synthesizing
+      again. Persistence is silent on failure throughout — the interview
+      runs entirely from memory without a DB (covered by a test). Visual
+      proof: `docs/screenshots/plan-mode-draft-resume/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-resume.txt`
+- [x] Save final transcript on accept (both triggers) — landed with the
+      draft lifecycle rather than after it: a draft still offered for
+      resume after a successful accept is a bug in the item above, and
+      consuming it via `finalize_draft` is the same work as deleting it.
+      `finalize_draft` now takes both keys and re-files the transcript
+      under the feature id the accept just created, which is where the
+      re-run pre-fill will look for it
 - [ ] Command-picker entry + dashboard keybinding for the selected
       feature; no-pending-launch variant of the mode
 - [ ] Re-run flow: pre-fill prior answers, per-question keep/change

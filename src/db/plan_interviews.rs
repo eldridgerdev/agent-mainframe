@@ -202,21 +202,34 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
     Ok(())
 }
 
-/// Promote a feature's draft to its accepted transcript, attaching `plan` as
-/// the plan that was accepted. Returns `false` when there is no draft to
-/// promote, leaving any existing final transcript untouched.
+/// Promote the draft filed under `draft_feature_id` to the accepted transcript
+/// of `final_feature_id`, attaching `plan` as the plan that was accepted.
+/// Returns `false` when there is no draft to promote, leaving any existing
+/// final transcript untouched.
+///
+/// The two keys differ for the feature-creation trigger: the draft was filed
+/// under [`crate::plan_interview::pending_interview_key`] before the feature
+/// existed, and the transcript belongs to the feature the accept just created,
+/// which is where a later re-run looks for it. Pass the same id twice for an
+/// on-demand interview on a feature that already exists.
 ///
 /// Runs as one transaction: an interrupted accept must not be able to drop the
 /// draft without having written the transcript that replaces it.
-pub fn finalize_draft(conn: &Connection, feature_id: &str, plan: &str) -> Result<bool> {
-    let Some(mut draft) = load(conn, feature_id, PlanInterviewStage::Draft)? else {
+pub fn finalize_draft(
+    conn: &Connection,
+    draft_feature_id: &str,
+    final_feature_id: &str,
+    plan: &str,
+) -> Result<bool> {
+    let Some(mut draft) = load(conn, draft_feature_id, PlanInterviewStage::Draft)? else {
         return Ok(false);
     };
+    draft.feature_id = final_feature_id.to_string();
     draft.stage = PlanInterviewStage::Final;
     draft.plan = Some(plan.to_string());
 
     conn.execute_batch("BEGIN IMMEDIATE;")?;
-    match do_finalize_draft(conn, feature_id, &draft) {
+    match do_finalize_draft(conn, draft_feature_id, &draft) {
         Ok(()) => {
             conn.execute_batch("COMMIT;")?;
             Ok(true)
@@ -230,11 +243,11 @@ pub fn finalize_draft(conn: &Connection, feature_id: &str, plan: &str) -> Result
 
 fn do_finalize_draft(
     conn: &Connection,
-    feature_id: &str,
+    draft_feature_id: &str,
     finalized: &PlanInterviewRecord,
 ) -> Result<()> {
     save(conn, finalized)?;
-    delete(conn, feature_id, PlanInterviewStage::Draft)
+    delete(conn, draft_feature_id, PlanInterviewStage::Draft)
 }
 
 /// Delete one stage of a feature's interview — the "discard draft" action.
@@ -378,7 +391,7 @@ mod tests {
         db.save_plan_interview(&draft("feat-1")).unwrap();
 
         assert!(
-            db.finalize_plan_interview_draft("feat-1", "# Plan: guided-plans\n")
+            db.finalize_plan_interview_draft("feat-1", "feat-1", "# Plan: guided-plans\n")
                 .unwrap()
         );
 
@@ -398,7 +411,7 @@ mod tests {
 
         // An accept with nothing staged must not blank the plan already stored.
         assert!(
-            !db.finalize_plan_interview_draft("feat-1", "# Replacement\n")
+            !db.finalize_plan_interview_draft("feat-1", "feat-1", "# Replacement\n")
                 .unwrap()
         );
         assert_eq!(

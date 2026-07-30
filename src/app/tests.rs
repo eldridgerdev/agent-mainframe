@@ -2760,6 +2760,21 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
 /// Common setup for the `poll_plan_interview_ai_bg` tests below: a feature
 /// launch deferred into a plan interview, exactly like the abort test above.
 fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir) {
+    plan_interview_app(None)
+}
+
+/// `app_with_deferred_plan_interview` plus a real SQLite database, so the
+/// draft-persistence path writes and reads actual rows. The extra `TempDir`
+/// holds the database file and must outlive the app.
+fn app_with_deferred_plan_interview_and_db() -> (App, tempfile::NamedTempFile, TempDir, TempDir) {
+    let db_dir = TempDir::new().unwrap();
+    let (app, store_file, repo) = plan_interview_app(Some(&db_dir.path().join("amf.db")));
+    (app, store_file, repo, db_dir)
+}
+
+fn plan_interview_app(
+    db_path: Option<&std::path::Path>,
+) -> (App, tempfile::NamedTempFile, TempDir) {
     let repo = TempDir::new().unwrap();
     let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
     // Permissive rather than strict-sequence expectations: these tests care
@@ -2777,6 +2792,9 @@ fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir)
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     let store_file = NamedTempFile::new().unwrap();
     app.store_path = store_file.path().to_path_buf();
+    if let Some(db_path) = db_path {
+        app.db = Some(crate::db::AmfDb::open(db_path).unwrap());
+    }
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".into(),
         branch: "planned-feature".into(),
@@ -3696,6 +3714,232 @@ fn poll_plan_interview_ai_bg_treats_a_dropped_worker_as_round_exhaustion() {
         app.mode,
         AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Review
     ));
+}
+
+/// The key under which a feature-creation interview's draft is filed, before
+/// the feature (and its id) exists.
+const PENDING_INTERVIEW_KEY: &str = "pending:my-project/planned-feature";
+
+/// Walk the brief and the first question, so there is something worth resuming.
+fn answer_two_plan_interview_steps(app: &mut App) {
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Persist my answers.".into());
+    }
+    crate::handlers::handle_plan_interview_key(app, ke(KeyCode::Enter)).unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Only the TUI.".into());
+    }
+    crate::handlers::handle_plan_interview_key(app, ke(KeyCode::Enter)).unwrap();
+}
+
+#[test]
+fn plan_interview_answers_are_saved_as_a_resumable_draft() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    answer_two_plan_interview_steps(&mut app);
+
+    let draft = app
+        .db
+        .as_ref()
+        .unwrap()
+        .plan_interview_draft(PENDING_INTERVIEW_KEY)
+        .unwrap()
+        .expect("answers must be saved as they are given");
+    assert_eq!(draft.brief, "Persist my answers.");
+    assert_eq!(draft.feature_name, "planned-feature");
+    assert_eq!(draft.answer_for("scope"), Some("Only the TUI."));
+    assert!(draft.plan.is_none());
+}
+
+/// The point of the draft: abandoning the interview and coming back to create
+/// the same feature must not cost the user their answers.
+#[test]
+fn re_entering_an_abandoned_plan_interview_offers_to_resume_it() {
+    let (mut app, _store_file, repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    answer_two_plan_interview_steps(&mut app);
+
+    // Abandon: abort, then cancel the feature entirely.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+
+    app.finish_feature_launch(PreparedFeatureLaunch {
+        project_name: "my-project".into(),
+        branch: "planned-feature".into(),
+        workdir: repo.path().join(".worktrees/planned-feature"),
+        is_worktree: true,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: true,
+        agent: AgentKind::Claude,
+        create_terminal: false,
+        session_name: "Claude 1".into(),
+        enable_chrome: false,
+        remote_control: false,
+        steering_enabled: false,
+        hook_succeeded: None,
+        startup_prompt: None,
+    })
+    .unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::ResumePrompt);
+            assert_eq!(state.interview_key, PENDING_INTERVIEW_KEY);
+            // Nothing is restored until the user chooses to resume.
+            assert!(state.brief.is_empty());
+        }
+        _ => panic!("expected the resume prompt for the saved draft"),
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+            assert_eq!(state.brief, "Persist my answers.");
+            assert_eq!(state.answers[0].as_deref(), Some("Only the TUI."));
+            // Resumed at the first question still unanswered.
+            assert_eq!(state.question_index, 1);
+        }
+        _ => panic!("resuming must restore the saved interview"),
+    }
+}
+
+#[test]
+fn discarding_the_offered_draft_deletes_the_saved_row() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    answer_two_plan_interview_steps(&mut app);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        let draft = app
+            .db
+            .as_ref()
+            .unwrap()
+            .plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .unwrap();
+        state.offer_resume(draft);
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .is_none(),
+        "discarding must remove the stored draft, not just hide it"
+    );
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+            assert!(state.brief.is_empty());
+        }
+        _ => panic!("discarding must start the interview over"),
+    }
+}
+
+/// On accept the transcript moves off the pending key and onto the feature the
+/// launch just created — that id is where a later re-run looks for it.
+#[test]
+fn accepting_a_plan_files_the_transcript_under_the_created_feature_id() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    force_plan_interview_raw_fallback(&mut app);
+    answer_two_plan_interview_steps(&mut app);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis("# Plan: planned-feature\n".into());
+    }
+
+    app.complete_plan_interview().unwrap();
+
+    let db = app.db.as_ref().unwrap();
+    assert!(
+        db.plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .is_none(),
+        "the accepted draft must not be offered for resume again"
+    );
+    let feature_id = app.store.projects[0]
+        .features
+        .iter()
+        .find(|feature| feature.name == "planned-feature")
+        .map(|feature| feature.id.clone())
+        .expect("accept launches the feature");
+    let transcript = db
+        .plan_interview_final(&feature_id)
+        .unwrap()
+        .expect("accept must save the transcript under the feature's id");
+    assert_eq!(
+        transcript.plan.as_deref(),
+        Some("# Plan: planned-feature\n")
+    );
+    assert_eq!(transcript.answer_for("scope"), Some("Only the TUI."));
+}
+
+/// `plan_interviews.feature_id` has no foreign key, so deletion is explicit.
+/// Both keys a feature's interviews can live under have to be cleared.
+#[test]
+fn deleting_a_feature_drops_its_stored_interviews() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    force_plan_interview_raw_fallback(&mut app);
+    answer_two_plan_interview_steps(&mut app);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis("# Plan: planned-feature\n".into());
+    }
+    app.complete_plan_interview().unwrap();
+
+    let feature_id = app.store.projects[0]
+        .features
+        .iter()
+        .find(|feature| feature.name == "planned-feature")
+        .map(|feature| feature.id.clone())
+        .unwrap();
+    // A second, abandoned interview for the same feature name still sits on the
+    // pending key; deletion has to reach that too.
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&crate::db::plan_interviews::PlanInterviewRecord {
+            feature_id: PENDING_INTERVIEW_KEY.into(),
+            feature_name: "planned-feature".into(),
+            brief: "Abandoned second pass.".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    app.delete_plan_interviews_for_deleted_feature(
+        "my-project",
+        "planned-feature",
+        &Some(feature_id.clone()),
+    );
+
+    let db = app.db.as_ref().unwrap();
+    assert!(db.plan_interview_final(&feature_id).unwrap().is_none());
+    assert!(db.plan_interview_draft(&feature_id).unwrap().is_none());
+    assert!(
+        db.plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// Persistence is a convenience layered over an in-memory flow; without a
+/// database the interview still has to work end to end.
+#[test]
+fn plan_interview_runs_without_a_database() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    assert!(app.db.is_none());
+
+    answer_two_plan_interview_steps(&mut app);
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.brief, "Persist my answers.");
+            assert_eq!(state.answers[0].as_deref(), Some("Only the TUI."));
+        }
+        _ => panic!("expected the interview to advance normally without a DB"),
+    }
 }
 
 #[test]

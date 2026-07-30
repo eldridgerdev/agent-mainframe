@@ -321,9 +321,10 @@ impl AmfDb {
     }
 }
 
-/// Plan-interview drafts and accepted transcripts. Driven by the rest of
-/// Epic 5 (see `docs/backlog/plan-mode-interview-plan.md`), so unused until
-/// then.
+/// Plan-interview drafts and accepted transcripts. The re-run pre-fill that
+/// reads accepted transcripts is still ahead (see
+/// `docs/backlog/plan-mode-interview-plan.md`, Epic 5), so part of this is
+/// written but not yet read.
 #[allow(dead_code)]
 impl AmfDb {
     /// The feature's in-progress interview, if it has one to resume.
@@ -356,10 +357,17 @@ impl AmfDb {
         plan_interviews::save(&self.conn, record)
     }
 
-    /// Promote the feature's draft to its accepted transcript. `false` when
-    /// there was no draft to promote.
-    pub fn finalize_plan_interview_draft(&self, feature_id: &str, plan: &str) -> Result<bool> {
-        plan_interviews::finalize_draft(&self.conn, feature_id, plan)
+    /// Promote the draft filed under `draft_feature_id` to the accepted
+    /// transcript of `final_feature_id`. `false` when there was no draft to
+    /// promote. The keys differ only for a feature-creation interview, whose
+    /// draft predates the feature id it is finalized under.
+    pub fn finalize_plan_interview_draft(
+        &self,
+        draft_feature_id: &str,
+        final_feature_id: &str,
+        plan: &str,
+    ) -> Result<bool> {
+        plan_interviews::finalize_draft(&self.conn, draft_feature_id, final_feature_id, plan)
     }
 
     /// Discard the feature's in-progress interview, keeping any accepted

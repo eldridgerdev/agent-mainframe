@@ -586,6 +586,20 @@ impl PlanQuestion {
     }
 }
 
+/// The key a stored interview is filed under while the feature it plans does
+/// not exist yet.
+///
+/// The feature-creation trigger runs the interview *before* the feature (and
+/// its random uuid) exists, so a draft saved mid-wizard has no feature id to
+/// key on. Project name plus branch is the identity the user re-enters when
+/// they come back to create the same feature, which is exactly when the draft
+/// should be offered again. On accept the transcript is re-filed under the real
+/// feature id, so this key only ever names an interview whose feature has not
+/// been created.
+pub fn pending_interview_key(project_name: &str, branch: &str) -> String {
+    format!("pending:{project_name}/{branch}")
+}
+
 /// Return the curated questions asked after the required feature brief.
 ///
 /// The order is part of the interview UX: it moves from product scope toward

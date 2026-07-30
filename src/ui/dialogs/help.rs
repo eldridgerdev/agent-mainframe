@@ -100,6 +100,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
         ("Ctrl+B", "Return to the previous question"),
         ("Ctrl+S", "Skip an optional question"),
+        ("Ctrl+R", "Restore the previous interview's answer (re-run)"),
         ("Ctrl+F", "Synthesize now with answers so far (uses tokens)"),
         (
             "Esc",

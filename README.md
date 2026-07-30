@@ -321,6 +321,13 @@ invalid synthesis falls back to the raw interview plan. Every completed flow
 stops at a rendered review gate; AMF does not write the plan or launch the
 feature until you explicitly accept it.
 
+Press `P` on a feature (or run the `plan-interview` command) to run the
+interview again later. A re-run starts from the answers behind the plan you
+last accepted: each question arrives pre-filled, `Enter` keeps that answer,
+typing changes it, and `Ctrl+R` restores it if you change your mind. The
+previous run's AI follow-up questions are asked again with their answers, but
+adaptive rounds are not: a re-run gets its own opt-in and its own round budget.
+
 | Key | Action |
 | --- | --- |
 | `Enter` | Save the current answer or selection; at the AI prompt, finish without AI |
@@ -329,6 +336,7 @@ feature until you explicitly accept it.
 | `j` / `k` / `↑` / `↓` | Navigate select-option answers |
 | `Ctrl+B` | Return to the previous question |
 | `Ctrl+S` | Skip an optional question or decline AI follow-ups |
+| `Ctrl+R` | On a re-run, restore the previous interview's answer to this question |
 | `Ctrl+F` | Synthesize now with the answers so far (uses agent tokens, but skips remaining adaptive rounds) |
 | `Esc` | Cancel, then choose whether to launch without a plan or cancel the feature |
 

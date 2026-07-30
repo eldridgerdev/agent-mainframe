@@ -3675,6 +3675,19 @@ pub enum PlanInterviewAdvanceError {
     AnswerRequired,
 }
 
+/// How the step on screen compares with the same step's answer in the feature's
+/// last accepted interview. Only meaningful on a re-run, which pre-fills those
+/// answers so keeping one is the default and changing it is deliberate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorAnswerState {
+    /// Still the previously accepted answer, verbatim.
+    Kept,
+    /// Edited this run; the previous answer is still restorable.
+    Changed,
+    /// Emptied this run, which records as a skip unless it is restored.
+    Cleared,
+}
+
 /// In-memory state for one plan-mode discovery interview.
 ///
 /// `pending_launch` is optional so the same state can also support on-demand
@@ -3774,6 +3787,16 @@ pub struct PlanInterviewState {
     /// resume or discard it. Taken by [`Self::resume_from_draft`]; dropped by
     /// [`Self::discard_draft`].
     pub resume_draft: Option<PlanInterviewRecord>,
+    /// The brief from the feature's last accepted interview, pre-filled as this
+    /// run's starting point. `None` unless this is a re-run of a feature that
+    /// has an accepted transcript.
+    pub prior_brief: Option<String>,
+    /// Answers from that transcript, keyed by question id — the stable slug
+    /// that survives a config change to the question bank. Kept after
+    /// pre-filling so each question can say whether its answer is still the
+    /// previous one ([`Self::prior_answer_state`]) and
+    /// [`Self::restore_prior_answer`] can put it back.
+    pub prior_answers: HashMap<String, String>,
 }
 
 impl PlanInterviewState {
@@ -3861,6 +3884,8 @@ impl PlanInterviewState {
             plan_revision: 0,
             critique_plan_revision: None,
             resume_draft: None,
+            prior_brief: None,
+            prior_answers: HashMap::new(),
         }
     }
 
@@ -3899,32 +3924,7 @@ impl PlanInterviewState {
         };
 
         self.brief = draft.brief.clone();
-        self.answers = self
-            .questions
-            .iter()
-            .map(|question| draft.answer_for(&question.id).map(str::to_string))
-            .collect();
-
-        let known: HashSet<&str> = self.questions.iter().map(|q| q.id.as_str()).collect();
-        let carried: Vec<(PlanQuestion, Option<String>)> = draft
-            .questions
-            .iter()
-            .enumerate()
-            .filter(|(_, question)| {
-                matches!(question.source, QuestionSource::Ai { .. })
-                    && !known.contains(question.id.as_str())
-            })
-            .map(|(index, question)| {
-                (
-                    question.clone(),
-                    draft.answers.get(index).cloned().flatten(),
-                )
-            })
-            .collect();
-        for (question, answer) in carried {
-            self.questions.push(question);
-            self.answers.push(answer);
-        }
+        self.adopt_recorded_answers(&draft);
 
         self.ai_rounds_completed = draft.ai_rounds_completed;
         // Rounds only run after an explicit opt-in, so a draft that spent one
@@ -3959,24 +3959,182 @@ impl PlanInterviewState {
         true
     }
 
-    /// Drop the held draft and start the interview from a blank brief. The
-    /// caller deletes the stored row.
+    /// Fill this interview's answers from a stored record, matching by question
+    /// **id** rather than position: the built-in bank and the project's
+    /// `plan_questions` config may both have changed since the record was
+    /// written, so anything the current bank no longer asks is dropped rather
+    /// than mapped onto the wrong question. The record's AI-generated questions
+    /// are appended instead of dropped — those rounds were paid for and the
+    /// current bank cannot contain them.
+    fn adopt_recorded_answers(&mut self, record: &PlanInterviewRecord) {
+        self.answers = self
+            .questions
+            .iter()
+            .map(|question| record.answer_for(&question.id).map(str::to_string))
+            .collect();
+
+        let known: HashSet<&str> = self.questions.iter().map(|q| q.id.as_str()).collect();
+        let carried: Vec<(PlanQuestion, Option<String>)> = record
+            .questions
+            .iter()
+            .enumerate()
+            .filter(|(_, question)| {
+                matches!(question.source, QuestionSource::Ai { .. })
+                    && !known.contains(question.id.as_str())
+            })
+            .map(|(index, question)| {
+                (
+                    question.clone(),
+                    record.answers.get(index).cloned().flatten(),
+                )
+            })
+            .collect();
+        for (question, answer) in carried {
+            self.questions.push(question);
+            self.answers.push(answer);
+        }
+    }
+
+    /// Adopt the feature's last accepted interview as this run's starting point,
+    /// so a re-run asks the same questions with the previous answers already in
+    /// place: `Enter` keeps one, typing changes it, and
+    /// [`Self::restore_prior_answer`] puts a changed one back.
     ///
-    /// Clears the collected brief and answers rather than only the held record:
-    /// "discard and start over" has to mean the interview begins empty, whatever
-    /// the state held when the draft was offered.
+    /// Returns whether anything was pre-filled, so the caller can say so rather
+    /// than announcing a re-run that restored nothing.
+    ///
+    /// Spent AI rounds are deliberately *not* carried over: this is a new
+    /// interview, so it gets its own consent step and its own round budget. The
+    /// previous run's AI questions are still asked again (with their answers),
+    /// since what the user told the interviewer about this feature is exactly
+    /// the context the re-run should start from.
+    pub fn apply_previous_transcript(&mut self, record: &PlanInterviewRecord) -> bool {
+        self.adopt_recorded_answers(record);
+        self.prior_brief = (!record.brief.trim().is_empty()).then(|| record.brief.clone());
+        // Built after adopting, so carried AI questions are covered too.
+        self.prior_answers = self
+            .questions
+            .iter()
+            .filter_map(|question| {
+                record
+                    .answer_for(&question.id)
+                    .map(|answer| (question.id.clone(), answer.to_string()))
+            })
+            .collect();
+
+        self.brief = self.prior_brief.clone().unwrap_or_default();
+        self.editor = TextEditor::new(self.brief.clone());
+        self.prior_brief.is_some() || !self.prior_answers.is_empty()
+    }
+
+    /// Whether a previously accepted interview was pre-filled into this run.
+    pub fn has_prior_answers(&self) -> bool {
+        self.prior_brief.is_some() || !self.prior_answers.is_empty()
+    }
+
+    /// Drop the held draft and start the interview over. The caller deletes the
+    /// stored row.
+    ///
+    /// Resets the collected brief and answers rather than only the held record:
+    /// "discard and start over" has to mean the interview begins from its
+    /// baseline, whatever the state held when the draft was offered. On a re-run
+    /// that baseline is the previously accepted transcript, not a blank
+    /// interview — discarding a stale draft must not also throw away the
+    /// accepted answers it was revising.
     pub fn discard_draft(&mut self) -> bool {
         if self.phase != PlanInterviewPhase::ResumePrompt {
             return false;
         }
         self.resume_draft = None;
-        self.brief = String::new();
-        self.answers = vec![None; self.questions.len()];
+        self.brief = self.prior_brief.clone().unwrap_or_default();
+        let baseline = self
+            .questions
+            .iter()
+            .map(|question| self.prior_answers.get(&question.id).cloned())
+            .collect();
+        self.answers = baseline;
         self.question_index = 0;
         self.selected_option = 0;
         self.phase = PlanInterviewPhase::Brief;
-        self.editor = TextEditor::new(String::new());
+        self.editor = TextEditor::new(self.brief.clone());
         true
+    }
+
+    /// How the step on screen compares with the previously accepted answer for
+    /// it, or `None` when there is no previous answer to compare against.
+    pub fn prior_answer_state(&self) -> Option<PriorAnswerState> {
+        let (prior, current) = match self.phase {
+            PlanInterviewPhase::Brief => (self.prior_brief.as_deref()?, self.editor.text()),
+            PlanInterviewPhase::StaticQuestions => {
+                let question = self.questions.get(self.question_index)?;
+                let prior = self.prior_answers.get(&question.id)?.as_str();
+                match &question.kind {
+                    PlanQuestionKind::FreeText => (prior, self.editor.text()),
+                    PlanQuestionKind::Select(options) => (
+                        prior,
+                        options
+                            .get(self.selected_option)
+                            .map(String::as_str)
+                            .unwrap_or_default(),
+                    ),
+                }
+            }
+            _ => return None,
+        };
+
+        Some(if current.trim() == prior.trim() {
+            PriorAnswerState::Kept
+        } else if current.trim().is_empty() {
+            PriorAnswerState::Cleared
+        } else {
+            PriorAnswerState::Changed
+        })
+    }
+
+    /// Put the previously accepted answer for the current step back, undoing an
+    /// edit made this run. Returns false when there is nothing stored for this
+    /// step, so the caller can say so rather than appearing to do nothing.
+    pub fn restore_prior_answer(&mut self) -> bool {
+        match self.phase {
+            PlanInterviewPhase::Brief => {
+                let Some(brief) = self.prior_brief.clone() else {
+                    return false;
+                };
+                self.editor = TextEditor::new(brief);
+                true
+            }
+            PlanInterviewPhase::StaticQuestions => {
+                let Some((id, kind)) = self
+                    .questions
+                    .get(self.question_index)
+                    .map(|question| (question.id.clone(), question.kind.clone()))
+                else {
+                    return false;
+                };
+                let Some(prior) = self.prior_answers.get(&id).cloned() else {
+                    return false;
+                };
+                match &kind {
+                    PlanQuestionKind::FreeText => {
+                        self.editor = TextEditor::new(prior);
+                        true
+                    }
+                    // A stored answer that is no longer one of the options —
+                    // the config was edited between runs — has nothing to
+                    // select, so there is nothing to restore.
+                    PlanQuestionKind::Select(options) => {
+                        match options.iter().position(|option| *option == prior) {
+                            Some(index) => {
+                                self.selected_option = index;
+                                true
+                            }
+                            None => false,
+                        }
+                    }
+                }
+            }
+            _ => false,
+        }
     }
 
     /// Snapshot the interview as a draft record for persistence.

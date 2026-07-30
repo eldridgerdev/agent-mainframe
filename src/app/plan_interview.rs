@@ -72,11 +72,26 @@ impl App {
             workdir,
             agent,
         );
+
+        // A re-run starts from the plan the user already accepted: prior answers
+        // are pre-filled so keeping one is `Enter` and only what changed needs
+        // typing. Applied before the draft prompt so discarding a stale draft
+        // falls back to the accepted answers rather than to a blank interview.
+        let mut notice = None;
+        if let Some(transcript) = self.load_plan_interview_transcript(&feature_id)
+            && state.apply_previous_transcript(&transcript)
+        {
+            notice = Some("Previous answers pre-filled: Enter keeps one, Ctrl+R restores a change");
+        }
         if let Some(draft) = self.load_plan_interview_draft(&feature_id) {
             state.offer_resume(draft);
+            // The draft prompt has its own explanation on screen; a pre-fill
+            // notice here would describe a state the user has not reached yet.
+            notice = None;
         }
+
         self.mode = AppMode::PlanInterview(state);
-        self.message = None;
+        self.message = notice.map(Into::into);
     }
 
     /// The saved draft for `interview_key`, or `None` when there is nothing to
@@ -92,6 +107,27 @@ impl App {
                 self.log_warn(
                     "plan_interview",
                     format!("ignoring unreadable saved draft for {interview_key}: {e}"),
+                );
+                None
+            }
+        }
+    }
+
+    /// The accepted transcript for `interview_key`, or `None` when this feature
+    /// has never had a plan accepted.
+    ///
+    /// Unreadable rows are treated as "no transcript" for the same reason as
+    /// drafts: a re-run must still be possible, just without the pre-fill.
+    fn load_plan_interview_transcript(
+        &mut self,
+        interview_key: &str,
+    ) -> Option<PlanInterviewRecord> {
+        match self.db.as_ref()?.plan_interview_final(interview_key) {
+            Ok(transcript) => transcript,
+            Err(e) => {
+                self.log_warn(
+                    "plan_interview",
+                    format!("ignoring unreadable saved transcript for {interview_key}: {e}"),
                 );
                 None
             }
@@ -140,7 +176,8 @@ impl App {
         self.continue_plan_interview_after_done()
     }
 
-    /// Discard the offered draft and start over from a blank brief.
+    /// Discard the offered draft and start the interview over from its baseline
+    /// — a blank brief, or the accepted transcript's answers on a re-run.
     pub(crate) fn discard_plan_interview_draft(&mut self) {
         let discarded = match &mut self.mode {
             AppMode::PlanInterview(state) => {

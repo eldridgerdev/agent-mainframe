@@ -531,7 +531,29 @@ interview with prior answers pre-filled, get an updated
       call, so the accept path is covered by
       `accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir`
       instead
-- [ ] Re-run flow: pre-fill prior answers, per-question keep/change
+- [x] Re-run flow: pre-fill prior answers, per-question keep/change — entering
+      an on-demand interview loads the feature's accepted transcript
+      (`plan_interview_final`) and adopts it as the run's **baseline**: the brief
+      lands in the editor and every answer is matched back by question **id**
+      (config can change the bank between runs), with the previous run's AI
+      questions carried in with their answers since the current bank cannot
+      contain them. Spent AI rounds are deliberately *not* carried — a re-run is
+      a new interview and gets its own consent and its own budget. Keep/change is
+      in-place rather than a per-question card: `Enter` keeps the pre-filled
+      answer, typing changes it, and `Ctrl+R` restores the accepted one, with a
+      note under the question naming which of the three states it is in
+      (kept / changed / cleared). The note carries the `Ctrl+R` hint because the
+      footer's hint row already wraps to both its lines at ordinary widths.
+      Emptying a pre-filled answer records as a skip, which is how a re-run drops
+      an answer that no longer applies. A draft and an accepted transcript can
+      both exist for one feature: the draft prompt still comes first and its
+      answers win when resumed, but discarding it now falls back to the accepted
+      answers instead of blanking the interview. Visual proof:
+      `docs/screenshots/plan-mode-rerun/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-rerun.txt` — a re-run needs
+      an accepted transcript to read, so the capture inserts that row into the
+      scratch DB directly rather than paying for a real synthesis pass (snippet in
+      that directory's README)
 - [ ] Live-session handoff: offer to send kickoff prompt when the
       feature's agent session is running
 

@@ -10,7 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **Custom-session Nerd Font icons can now be chosen visually in the config
+  wizard.** The chooser previews useful session icons and still accepts custom
+  glyphs. Existing bundled names such as `nf-md-server` now render as icons,
+  so no config migration is required.
 
 ## [v0.33.0] - 2026-07-28
 

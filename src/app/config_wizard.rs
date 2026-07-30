@@ -36,6 +36,7 @@ impl App {
             editing_index: None,
             field_values: Vec::new(),
             field_editor: None,
+            icon_picker: None,
             field_toggles: Vec::new(),
             agent_toggles: vec![true; AgentKind::ALL.len()],
             agent_toggles_dirty: false,
@@ -84,6 +85,7 @@ impl App {
             state.editing_index = None;
             state.field_values.clear();
             state.field_editor = None;
+            state.icon_picker = None;
             state.field_toggles.clear();
             state.field_focus = 0;
             state.input_mode = false;
@@ -103,6 +105,7 @@ impl App {
             state.field_focus = 0;
             state.input_mode = false;
             state.field_editor = None;
+            state.icon_picker = None;
             state.preview_scroll = 0;
             state.capturing_key = false;
             state.error = None;
@@ -214,7 +217,10 @@ impl App {
                         window_name: option_string(state.field_values.get(3)),
                         working_dir: option_pathbuf(state.field_values.get(4)),
                         icon: option_string(state.field_values.get(5)),
-                        icon_nerd: option_string(state.field_values.get(6)),
+                        icon_nerd: option_string(state.field_values.get(6)).map(|icon| {
+                            crate::custom_session_icons::resolve_custom_session_icon(&icon)
+                                .to_string()
+                        }),
                         on_stop: option_string(state.field_values.get(7)),
                         autolaunch: bool_to_option(*state.field_toggles.first().unwrap_or(&false)),
                         pre_check: option_string(state.field_values.get(8)),
@@ -651,6 +657,7 @@ mod tests {
             editing_index: None,
             field_values: Vec::new(),
             field_editor: None,
+            icon_picker: None,
             field_toggles: Vec::new(),
             agent_toggles,
             agent_toggles_dirty,

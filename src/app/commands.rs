@@ -45,6 +45,21 @@ impl App {
         } else {
             Vec::new()
         };
+        // Only offered with a feature in hand: the interview plans one
+        // feature's workdir, so there is nothing to run it against otherwise.
+        if matches!(
+            self.selection,
+            Selection::Feature(_, _) | Selection::Session(_, _, _)
+        ) {
+            commands.push(CommandEntry {
+                name: "plan-interview".to_string(),
+                source: "AMF".to_string(),
+                path: None,
+                action: CommandAction::Local {
+                    command: LocalCommand::PlanInterview,
+                },
+            });
+        }
         commands.extend(local_debug_commands());
 
         let mut global_cmds = Vec::new();

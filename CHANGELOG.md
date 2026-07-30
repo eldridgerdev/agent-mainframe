@@ -26,6 +26,12 @@ are tagged.
 - **Accepting a plan keeps the interview behind it.** The questions and answers
   are stored with the feature, which is what an upcoming release will use to
   pre-fill a re-run. Deleting a feature removes its stored interviews.
+- **You can now plan a feature you already created.** Press `P` on a feature, or
+  pick `plan-interview` from the command picker, to run the same interview
+  without going through the creation wizard. Accepting rewrites that feature's
+  own plan, turns plan mode on for it, and points its agent at the plan —
+  previously the interview only ran while creating a feature. Leaving the
+  interview is non-destructive: the feature keeps whatever plan it had.
 
 ### Migration
 

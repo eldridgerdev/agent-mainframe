@@ -3693,6 +3693,10 @@ pub struct PlanInterviewState {
     pub answers: Vec<Option<String>>,
     pub editor: TextEditor,
     pub selected_option: usize,
+    /// Where the accepted plan is written (`<workdir>/.claude/plan.md`). Held
+    /// separately from `pending_launch` because an on-demand interview has an
+    /// existing feature's workdir and no launch at all.
+    pub workdir: PathBuf,
     pub pending_launch: Option<PreparedFeatureLaunch>,
     pub abort_confirmation: bool,
     /// The feature's configured agent, preferred as the AI-adaptive
@@ -3785,6 +3789,23 @@ impl PlanInterviewState {
         Self::new(feature_name, interview_key, questions, Some(pending_launch))
     }
 
+    /// An on-demand interview for a feature that already exists: no launch to
+    /// defer, and the plan is written into the workdir the feature is already
+    /// checked out in. Keyed by the feature's id, which is where an accepted
+    /// transcript is filed, so a re-run finds the previous one.
+    pub fn for_feature(
+        feature_name: String,
+        feature_id: String,
+        questions: Vec<PlanQuestion>,
+        workdir: PathBuf,
+        agent: AgentKind,
+    ) -> Self {
+        let mut state = Self::new(feature_name, feature_id, questions, None);
+        state.workdir = workdir;
+        state.preferred_harness = agent;
+        state
+    }
+
     pub fn new(
         feature_name: String,
         interview_key: String,
@@ -3796,6 +3817,10 @@ impl PlanInterviewState {
             .as_ref()
             .map(|prepared| prepared.agent.clone())
             .unwrap_or_default();
+        let workdir = pending_launch
+            .as_ref()
+            .map(|prepared| prepared.workdir.clone())
+            .unwrap_or_default();
         Self {
             feature_name,
             interview_key,
@@ -3806,6 +3831,7 @@ impl PlanInterviewState {
             answers: vec![None; answer_count],
             editor: TextEditor::new(String::new()),
             selected_option: 0,
+            workdir,
             pending_launch,
             abort_confirmation: false,
             preferred_harness,
@@ -3835,6 +3861,18 @@ impl PlanInterviewState {
             plan_revision: 0,
             critique_plan_revision: None,
             resume_draft: None,
+        }
+    }
+
+    /// The directory headless interview calls run in and gather repo context
+    /// from. Falls back to the process's cwd only when the interview was built
+    /// without a workdir, which outside tests means neither a launch nor a
+    /// feature was available to take one from.
+    pub fn context_workdir(&self) -> PathBuf {
+        if self.workdir.as_os_str().is_empty() {
+            std::env::current_dir().unwrap_or_default()
+        } else {
+            self.workdir.clone()
         }
     }
 

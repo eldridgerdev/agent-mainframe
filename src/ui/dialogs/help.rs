@@ -35,6 +35,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("L", "Open prompt library"),
         ("G", "Open PR Triage (experimental)"),
         ("W", "Open AI Review for this feature (experimental)"),
+        ("P", "Run a plan interview for this feature"),
         ("T", "Theme picker"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
@@ -100,7 +101,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("Ctrl+B", "Return to the previous question"),
         ("Ctrl+S", "Skip an optional question"),
         ("Ctrl+F", "Synthesize now with answers so far (uses tokens)"),
-        ("Esc", "Cancel (launch without plan or feature)"),
+        (
+            "Esc",
+            "Cancel (launch without plan, or leave plan unchanged)",
+        ),
     ];
 
     for (key, desc) in &plan_interview_keybinds {
@@ -134,7 +138,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("r", "Regenerate the plan (uses tokens)"),
         (
             "Enter",
-            "Accept plan, launch feature, and seed the kickoff prompt",
+            "Accept plan (on creation: launch feature and seed the kickoff prompt)",
         ),
         ("Ctrl+S", "Save edit and return to preview"),
         ("Esc", "Discard edit or confirm abort"),

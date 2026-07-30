@@ -76,6 +76,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Link a companion PR-triage feature back to its PR and source feature",
             MIGRATION_015,
         ),
+        (
+            "Persist plan-interview drafts and accepted transcripts per feature",
+            MIGRATION_016,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -298,6 +302,41 @@ ALTER TABLE pr_comment_reply_drafts
 /// small minority of features ever have one.
 const MIGRATION_015: &str = "
 ALTER TABLE features ADD COLUMN triage_source TEXT;
+";
+
+/// A feature keeps at most one in-progress interview draft and one accepted
+/// transcript, so the key is `(feature_id, stage)` rather than `feature_id`
+/// alone: re-running the interview on a feature that already has an accepted
+/// plan must be able to save progress without destroying the plan it is
+/// revising.
+///
+/// `feature_id` is a plain TEXT column with NO foreign key, for the same reason
+/// as `todo_lists` (see MIGRATION_011): `store::save` full-replaces `features`
+/// on every save, which would cascade-wipe these rows. Cleanup on feature
+/// deletion is handled explicitly in `db/plan_interviews.rs`.
+///
+/// `questions` and `answers` are JSON arrays rather than a child table. They
+/// are only ever read and written whole, one interview at a time, and the
+/// question shape (`PlanQuestion`, including config-authored select options and
+/// the AI round each generated question came from) already has a serde
+/// representation worth reusing.
+const MIGRATION_016: &str = "
+CREATE TABLE IF NOT EXISTS plan_interviews (
+    feature_id          TEXT NOT NULL,
+    stage               TEXT NOT NULL,
+    feature_name        TEXT NOT NULL,
+    brief               TEXT NOT NULL,
+    questions           TEXT NOT NULL,
+    answers             TEXT NOT NULL,
+    plan                TEXT,
+    ai_rounds_completed INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    PRIMARY KEY (feature_id, stage)
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_interviews_updated
+    ON plan_interviews(updated_at);
 ";
 
 const MIGRATION_001: &str = "

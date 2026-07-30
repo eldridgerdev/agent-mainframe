@@ -133,8 +133,9 @@ persisted as a **draft** in SQLite as they're given (decided
 and re-entering the interview for that feature offers to resume or
 discard it. Accepting the plan finalizes the draft into the
 transcript; drafts for deleted features are cleaned up with the
-feature. (Draft persistence lands with Epic 5's table; Epics 1–4
-hold the in-progress interview in memory only.)
+feature. Because the feature-creation trigger runs before the feature
+exists, its draft is keyed by project + branch until the accept re-files
+the transcript under the real feature id.
 
 ### Question model
 
@@ -433,13 +434,26 @@ seeded kickoff composer), or abort.
       dropped whenever the plan changes. `Esc` during the review returns
       to the plan rather than opening the interview's abort confirmation,
       so a generated plan can't be lost to a stray keypress
-- [ ] Accept path: write `.claude/plan.md`, augment the instruction
+- [x] Accept path: write `.claude/plan.md`, augment the instruction
       block ("plan is user-approved"), run deferred launch, seed
-      composer kickoff prompt via `open_compose_seeded`
+      composer kickoff prompt via `open_compose_seeded` — the launch's
+      `ensure_feature_running` already injects the approved-plan block,
+      so accept adds the seeding step and lands the user in the new
+      session's composer with an editable, unsubmitted kickoff prompt.
+      Best-effort by design: it runs after the feature is created and
+      started, so a startup-steering prompt or a feature with no
+      tmux-backed agent session skips the seed rather than failing the
+      accept
 - [x] Replace Epic 1's raw-Q&A plan-file write with synthesized doc
       (raw Q&A kept as fallback when synthesis fails)
-- [ ] Omit skipped and unanswered questions from both synthesis input
+- [x] Omit skipped and unanswered questions from both synthesis input
       and the raw-Q&A fallback plan so they do not add irrelevant context
+      — blank answers count as skips, and an interview with nothing
+      answered degrades to the brief alone (no empty `## Q&A`). The
+      interviewer and critique prompts deliberately still receive the
+      full asked-set with `answer: null`: the interviewer must not
+      re-ask what the user passed over, and the reviewer judges the plan
+      against everything the interview covered
 
 ### Epic 5 — On-demand interviews + persistence
 
@@ -447,13 +461,54 @@ Demo: press the keybinding on an existing feature, re-run the
 interview with prior answers pre-filled, get an updated
 `.claude/plan.md`.
 
-- [ ] Migration + `src/db/plan_interviews.rs`: interview store keyed
+- [x] Migration + `src/db/plan_interviews.rs`: interview store keyed
       by feature id (questions, answers, source, plan, timestamps,
-      draft-vs-final state)
-- [ ] Draft persistence: save answers as given; on interview entry
+      draft-vs-final state) — `MIGRATION_016` keys on
+      `(feature_id, stage)` rather than `feature_id` alone so a re-run
+      can save a draft without destroying the accepted transcript it is
+      revising; `finalize_draft` promotes one to the other in a single
+      transaction. `questions`/`answers` are JSON columns (read and
+      written whole, and `PlanQuestion` already serializes), padded to
+      equal length on both save and load so every reader gets an aligned
+      pair; `answer_for(id)` is the id-keyed lookup the re-run pre-fill
+      needs when config has changed the bank between runs.
+      `ai_rounds_completed` is stored rather than derived from the
+      question list: a round that returned nothing usable still counted
+      against the cap, and resuming a draft must not hand back paid
+      rounds. Like `todo_lists`, `feature_id` carries no FK —
+      `store::save` full-replaces `features` and would cascade-wipe the
+      rows (covered by a test) — so cleanup is explicit via
+      `delete_for_feature`, wired into the feature-delete path with the
+      next item
+- [x] Draft persistence: save answers as given; on interview entry
       with an existing draft, offer resume/discard; clean up drafts
-      when their feature is deleted
-- [ ] Save final transcript on accept (both triggers)
+      when their feature is deleted — the draft is saved after every
+      action that records something (advance, skip, back, finish-early,
+      a finished AI round, a synthesized plan, a plan edit) and skipped
+      until the brief exists, since an interview with no brief has
+      nothing to resume into. A feature-creation interview predates the
+      feature's uuid, so its draft is keyed
+      `pending:<project>/<branch>` (`plan_interview::pending_interview_key`)
+      — the identity the user re-enters when they come back to create the
+      same feature. `PlanInterviewPhase::ResumePrompt` is the first screen
+      when a draft exists: `r` resumes, `d` discards (deleting the row),
+      `Esc` keeps it and falls through to the normal abort choice. Resume
+      matches answers by **question id**, not position, because config can
+      change the bank between runs; stored AI questions absent from the
+      current bank are appended and `ai_rounds_completed` restored, so
+      paid rounds are never re-earned; a draft that already holds a
+      generated plan reopens at the review gate instead of synthesizing
+      again. Persistence is silent on failure throughout — the interview
+      runs entirely from memory without a DB (covered by a test). Visual
+      proof: `docs/screenshots/plan-mode-draft-resume/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-resume.txt`
+- [x] Save final transcript on accept (both triggers) — landed with the
+      draft lifecycle rather than after it: a draft still offered for
+      resume after a successful accept is a bug in the item above, and
+      consuming it via `finalize_draft` is the same work as deleting it.
+      `finalize_draft` now takes both keys and re-files the transcript
+      under the feature id the accept just created, which is where the
+      re-run pre-fill will look for it
 - [ ] Command-picker entry + dashboard keybinding for the selected
       feature; no-pending-launch variant of the mode
 - [ ] Re-run flow: pre-fill prior answers, per-question keep/change

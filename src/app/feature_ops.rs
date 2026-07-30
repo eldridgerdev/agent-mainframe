@@ -1304,6 +1304,7 @@ impl App {
         {
             let _ = db.delete_feature_statuses(feature_id);
         }
+        self.delete_plan_interviews_for_deleted_feature(&project_name, &feature_name, &feature_id);
         self.store.remove_feature(&project_name, &feature_name);
         self.save()?;
 
@@ -1435,6 +1436,23 @@ impl App {
                     );
                 } else {
                     self.clear_sidebar_state_for_session(&deletion.tmux_session);
+                    // Resolved before the removal below, since that is the only
+                    // place the feature's id still exists.
+                    let feature_id =
+                        self.store
+                            .find_project(&deletion.project_name)
+                            .and_then(|project| {
+                                project
+                                    .features
+                                    .iter()
+                                    .find(|feature| feature.name == deletion.feature_name)
+                                    .map(|feature| feature.id.clone())
+                            });
+                    self.delete_plan_interviews_for_deleted_feature(
+                        &deletion.project_name,
+                        &deletion.feature_name,
+                        &feature_id,
+                    );
                     self.store
                         .remove_feature(&deletion.project_name, &deletion.feature_name);
                     let _ = self.save();

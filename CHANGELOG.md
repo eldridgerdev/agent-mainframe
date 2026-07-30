@@ -10,7 +10,28 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Leaving a plan interview no longer loses your answers.** Answers are saved
+  as you give them, so aborting the interview, cancelling the feature, or
+  closing AMF entirely keeps them. Starting the interview again for the same
+  feature offers to resume the saved draft or discard it and start over, and
+  tells you when it was saved, how much was answered, and whether a plan had
+  already been generated — nothing is restored until you choose.
+- **Resuming picks up where you stopped.** You land on the first question still
+  unanswered rather than walking forward through answers you already gave.
+  Adaptive AI rounds you already paid for are kept, and a draft that already
+  had a generated plan reopens at the review gate instead of generating a
+  second one.
+- **Accepting a plan keeps the interview behind it.** The questions and answers
+  are stored with the feature, which is what an upcoming release will use to
+  pre-fill a re-run. Deleting a feature removes its stored interviews.
+
+### Migration
+
+No migration is required. Plan interviews still work without a database, and
+existing features are unaffected — the first interview you run after upgrading
+starts saving its answers.
 
 ## [v0.33.0] - 2026-07-28
 

@@ -93,6 +93,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     )));
 
     let plan_interview_keybinds: Vec<(&str, &str)> = vec![
+        ("r / d", "Resume or discard a saved draft (on entry)"),
         ("Enter", "Save answer and continue"),
         ("Alt+Enter", "Insert a newline (free-text answers)"),
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
@@ -131,7 +132,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Agent review of the plan, or re-open one already held (uses tokens for a new review)",
         ),
         ("r", "Regenerate the plan (uses tokens)"),
-        ("Enter", "Accept plan and launch feature"),
+        (
+            "Enter",
+            "Accept plan, launch feature, and seed the kickoff prompt",
+        ),
         ("Ctrl+S", "Save edit and return to preview"),
         ("Esc", "Discard edit or confirm abort"),
     ];

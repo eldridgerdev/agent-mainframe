@@ -1,0 +1,79 @@
+# plan-interview-on-demand: proves the Epic 5 on-demand trigger.
+#
+# Runs the plan interview against a feature that ALREADY EXISTS, rather
+# than deferring a feature launch the way the creation wizard does.
+# Shows both triggers ('P' on the dashboard, and the `plan-interview`
+# command-picker entry) and the no-pending-launch abort, whose confirm
+# offers only "leave the plan unchanged" -- there is no feature creation
+# to cancel, so 'n' is not offered and is inert.
+#
+# Requires --seed with a create-project payload and --seed-feature with
+# a create-feature payload for the same project (plan_mode false, so the
+# feature starts with no plan at all).
+#
+# Deliberately aborts before accepting: accepting runs a real headless
+# synthesis call against the feature's harness, which costs tokens and
+# would make the capture slow and non-deterministic.
+
+shot:dashboard-seeded
+
+# Move the selection down onto the feature row. The interview plans one
+# feature's workdir, so the trigger needs a feature (or session) selected.
+key:j
+wait:300
+shot:feature-selected
+
+# ---- Trigger 1: 'P' on the dashboard ----
+
+# 'P' opens the interview for the selected feature. No wizard, no
+# deferred launch -- the title names the existing feature.
+key:P
+wait:600
+shot:interview-opens-for-existing-feature
+
+text:Tighten the sidebar plan preview so it truncates on word boundaries.
+wait:300
+shot:interview-brief
+
+# Enter saves the brief and shows the first question, exactly as the
+# creation-triggered interview does -- same state machine, no launch.
+key:Enter
+wait:500
+shot:interview-first-question
+
+text:Word-boundary truncation and a fade on the final line. Scrollback is out of scope.
+wait:300
+key:Enter
+wait:500
+shot:interview-second-question
+
+# ---- The no-pending-launch abort ----
+
+# THE FRAME: the confirm offers only "leave the plan unchanged".
+# The creation-triggered interview offers "y launch without a plan /
+# n cancel feature creation" here instead.
+key:Escape
+wait:400
+shot:abort-confirm-no-launch
+
+# 'n' cancels feature creation, which this interview never started --
+# it must be inert rather than exiting.
+key:n
+wait:400
+shot:abort-confirm-ignores-n
+
+# 'y' leaves. Non-destructive: the feature keeps whatever plan it had
+# (here: none), and no [plan] badge appears.
+key:y
+wait:600
+shot:dashboard-unchanged-after-abort
+
+# ---- Trigger 2: the command-picker entry ----
+
+# Ctrl+Space then 'a' opens the command picker focused on AMF's own
+# local commands, which is where the new entry lands.
+key:C-Space
+wait:300
+key:a
+wait:600
+shot:command-picker-plan-interview

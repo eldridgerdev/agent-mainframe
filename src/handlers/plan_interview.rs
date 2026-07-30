@@ -9,10 +9,15 @@ use crate::plan_interview::PlanQuestionKind;
 pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let confirming_abort =
         matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation);
+    // Only a feature-creation interview has a launch to cancel; for an
+    // on-demand one `n` is not offered, so it must not fall through to a
+    // handler that would exit the interview anyway.
+    let has_pending_launch =
+        matches!(&app.mode, AppMode::PlanInterview(state) if state.pending_launch.is_some());
     if confirming_abort {
         match key.code {
             KeyCode::Char('y') => app.launch_plan_interview_without_plan()?,
-            KeyCode::Char('n') => app.cancel_plan_interview_feature()?,
+            KeyCode::Char('n') if has_pending_launch => app.cancel_plan_interview_feature()?,
             KeyCode::Esc => {
                 if let AppMode::PlanInterview(state) = &mut app.mode {
                     state.abort_confirmation = false;

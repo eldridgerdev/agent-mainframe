@@ -45,6 +45,40 @@ impl App {
         self.message = None;
     }
 
+    /// Run the interview on demand against the currently selected feature.
+    ///
+    /// Unlike the feature-creation trigger there is no launch to defer: the
+    /// feature already exists, so accepting simply rewrites its plan file. The
+    /// interview is keyed by the feature's id, so a saved draft or an earlier
+    /// accepted transcript for this feature is picked up on entry.
+    pub(crate) fn start_plan_interview_for_selected_feature(&mut self) {
+        let Some((project, feature)) = self.selected_feature() else {
+            self.message = Some("Select a feature to plan".into());
+            return;
+        };
+        let (repo, feature_name, feature_id, workdir, agent) = (
+            project.repo.clone(),
+            feature.name.clone(),
+            feature.id.clone(),
+            feature.workdir.clone(),
+            feature.agent.clone(),
+        );
+
+        let questions = self.extension_for_repo(&repo).plan_interview_questions();
+        let mut state = PlanInterviewState::for_feature(
+            feature_name,
+            feature_id.clone(),
+            questions,
+            workdir,
+            agent,
+        );
+        if let Some(draft) = self.load_plan_interview_draft(&feature_id) {
+            state.offer_resume(draft);
+        }
+        self.mode = AppMode::PlanInterview(state);
+        self.message = None;
+    }
+
     /// The saved draft for `interview_key`, or `None` when there is nothing to
     /// resume.
     ///
@@ -191,11 +225,7 @@ impl App {
                 state.brief.clone(),
                 state.questions.clone(),
                 state.answers.clone(),
-                state
-                    .pending_launch
-                    .as_ref()
-                    .map(|prepared| prepared.workdir.clone())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                state.context_workdir(),
             ),
             _ => return Ok(()),
         };
@@ -272,11 +302,7 @@ impl App {
                 state.brief.clone(),
                 state.questions.clone(),
                 state.answers.clone(),
-                state
-                    .pending_launch
-                    .as_ref()
-                    .map(|prepared| prepared.workdir.clone())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                state.context_workdir(),
                 // Read, not taken: a revision that cannot run must leave the
                 // feedback staged rather than spend it on a pass that never
                 // happens.
@@ -416,11 +442,7 @@ impl App {
                     state.brief.clone(),
                     state.questions.clone(),
                     state.answers.clone(),
-                    state
-                        .pending_launch
-                        .as_ref()
-                        .map(|prepared| prepared.workdir.clone())
-                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                    state.context_workdir(),
                     plan,
                 )
             }
@@ -802,23 +824,18 @@ impl App {
     /// Accept the reviewed plan and execute the launch it has been holding.
     pub(crate) fn complete_plan_interview(&mut self) -> Result<()> {
         let (workdir, plan, interview_key) = match &self.mode {
-            AppMode::PlanInterview(state) => {
-                let Some(prepared) = state.pending_launch.as_ref() else {
-                    return Ok(());
-                };
-                (
-                    prepared.workdir.clone(),
-                    state.synthesized_plan.clone().unwrap_or_else(|| {
-                        render_static_plan(
-                            &state.feature_name,
-                            &state.brief,
-                            &state.questions,
-                            &state.answers,
-                        )
-                    }),
-                    state.interview_key.clone(),
-                )
-            }
+            AppMode::PlanInterview(state) => (
+                state.workdir.clone(),
+                state.synthesized_plan.clone().unwrap_or_else(|| {
+                    render_static_plan(
+                        &state.feature_name,
+                        &state.brief,
+                        &state.questions,
+                        &state.answers,
+                    )
+                }),
+                state.interview_key.clone(),
+            ),
             _ => return Ok(()),
         };
 
@@ -851,9 +868,58 @@ impl App {
             self.seed_plan_kickoff_prompt(&project_name, &branch);
             Ok(())
         } else {
+            // On-demand: the feature already exists and is possibly already
+            // running, so accepting rewrites its plan rather than launching
+            // anything. `interview_key` is the feature's own id here, so the
+            // transcript is already filed where a re-run will look for it.
+            self.apply_on_demand_plan(&interview_key, &workdir);
             self.finalize_plan_interview_transcript(&interview_key, "", "", &plan);
-            self.message = Some("Plan interview complete".into());
+            self.message = Some(format!(
+                "Plan written to {}",
+                workdir.join(".claude").join(PLAN_FILE_NAME).display()
+            ));
             Ok(())
+        }
+    }
+
+    /// Make an on-demand plan effective for the feature it was written for.
+    ///
+    /// Writing `.claude/plan.md` is not enough on its own: unless the harness's
+    /// instruction file points at it, the agent is never told the plan exists.
+    /// Running the interview is also taken as turning plan mode on, so a later
+    /// restart keeps injecting the block instead of silently dropping it.
+    ///
+    /// Best-effort: the plan file is already on disk by this point, so a store
+    /// that will not save must not fail the accept.
+    fn apply_on_demand_plan(&mut self, feature_id: &str, workdir: &Path) {
+        let Some((pi, fi)) = self
+            .store
+            .projects
+            .iter()
+            .enumerate()
+            .find_map(|(pi, project)| {
+                project
+                    .features
+                    .iter()
+                    .position(|feature| feature.id == feature_id)
+                    .map(|fi| (pi, fi))
+            })
+        else {
+            return;
+        };
+
+        let feature = &mut self.store.projects[pi].features[fi];
+        let agent = feature.agent.clone();
+        let already_on = feature.plan_mode;
+        feature.plan_mode = true;
+
+        crate::app::setup::ensure_plan_mode_instructions(workdir, &agent, true);
+
+        if !already_on && let Err(e) = self.save() {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to record plan mode for '{feature_id}': {e}"),
+            );
         }
     }
 

@@ -509,8 +509,28 @@ interview with prior answers pre-filled, get an updated
       `finalize_draft` now takes both keys and re-files the transcript
       under the feature id the accept just created, which is where the
       re-run pre-fill will look for it
-- [ ] Command-picker entry + dashboard keybinding for the selected
-      feature; no-pending-launch variant of the mode
+- [x] Command-picker entry + dashboard keybinding for the selected
+      feature; no-pending-launch variant of the mode — `P` on the
+      dashboard and a `plan-interview` command-picker entry (offered only
+      with a feature or session selected, since the interview plans one
+      workdir) both open
+      `PlanInterviewState::for_feature`, keyed by the feature's **id** so
+      the accepted transcript lands where the re-run pre-fill will look
+      for it. The workdir moved out of `pending_launch` onto the state
+      itself (`context_workdir()` backs the three headless call sites,
+      which previously fell back to the process cwd), so accept writes the
+      plan into the feature's own workdir rather than bailing out. Accept
+      also calls `ensure_plan_mode_instructions` and sets
+      `feature.plan_mode`: writing `.claude/plan.md` alone leaves the agent
+      never told the plan exists, and a restart would stop injecting the
+      block. Abort is non-destructive — there is no launch to cancel, so
+      the confirm offers only "leave the plan unchanged" and `n` is inert.
+      Visual proof: `docs/screenshots/plan-mode-on-demand/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-on-demand.txt`. The
+      capture stops short of accepting — that runs a real headless synthesis
+      call, so the accept path is covered by
+      `accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir`
+      instead
 - [ ] Re-run flow: pre-fill prior answers, per-question keep/change
 - [ ] Live-session handoff: offer to send kickoff prompt when the
       feature's agent session is running

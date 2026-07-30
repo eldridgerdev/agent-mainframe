@@ -2757,6 +2757,109 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
     assert_eq!(app.store.projects[0].features.len(), 1);
 }
 
+/// An app sitting on the selected feature with no interview running — the
+/// starting point for the on-demand trigger, which plans a feature that
+/// already exists rather than deferring a launch.
+fn app_on_selected_feature() -> (App, tempfile::NamedTempFile, TempDir) {
+    let repo = TempDir::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+    (app, store_file, repo)
+}
+
+#[test]
+fn on_demand_plan_interview_plans_the_selected_feature_without_a_launch() {
+    let (mut app, _store_file, repo) = app_on_selected_feature();
+
+    crate::handlers::handle_normal_key(&mut app, ke(KeyCode::Char('P'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.feature_name, "my-feat");
+            // Keyed by the feature's id, so the accepted transcript is filed
+            // where a later re-run on this feature will look for it.
+            assert_eq!(state.interview_key, "feat-1");
+            assert_eq!(state.workdir, repo.path());
+            assert!(state.pending_launch.is_none());
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+}
+
+#[test]
+fn accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir() {
+    let (mut app, _store_file, repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+    force_plan_interview_raw_fallback(&mut app);
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.brief = "Tighten the sidebar".into();
+        state.synthesis_requested = true;
+        state.phase = PlanInterviewPhase::Done;
+    } else {
+        panic!("expected plan interview mode");
+    }
+    app.continue_plan_interview_after_done().unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    let plan = std::fs::read_to_string(repo.path().join(".claude/plan.md")).unwrap();
+    assert!(plan.contains("Tighten the sidebar"));
+    // Writing the file is not enough on its own: without the instruction block
+    // the agent is never told the plan exists, and without the flag a restart
+    // would stop injecting it.
+    assert!(app.store.projects[0].features[0].plan_mode);
+    let instructions = std::fs::read_to_string(repo.path().join("CLAUDE.local.md")).unwrap();
+    assert!(instructions.contains(".claude/plan.md"));
+}
+
+#[test]
+fn aborting_an_on_demand_interview_has_no_feature_to_cancel() {
+    let (mut app, _store_file, repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
+
+    // `n` cancels feature creation, which an on-demand interview never started;
+    // the dialog does not offer it, so it must not exit the interview either.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+    // Leaving is non-destructive: the feature keeps whatever plan it had.
+    assert!(!repo.path().join(".claude/plan.md").exists());
+    assert!(!app.store.projects[0].features[0].plan_mode);
+    assert_eq!(app.store.projects[0].features.len(), 1);
+}
+
+#[test]
+fn command_picker_offers_the_plan_interview_only_with_a_feature_in_hand() {
+    let (mut app, _store_file, _repo) = app_on_selected_feature();
+
+    app.open_command_picker(None);
+    let offered_on_feature = matches!(&app.mode, AppMode::CommandPicker(state)
+        if state.commands.iter().any(|entry| entry.name == "plan-interview"));
+    assert!(offered_on_feature);
+
+    // A project row has no workdir to plan against.
+    app.mode = AppMode::Normal;
+    app.selection = Selection::Project(0);
+    app.open_command_picker(None);
+    let offered_on_project = matches!(&app.mode, AppMode::CommandPicker(state)
+        if state.commands.iter().any(|entry| entry.name == "plan-interview"));
+    assert!(!offered_on_project);
+}
+
 /// Common setup for the `poll_plan_interview_ai_bg` tests below: a feature
 /// launch deferred into a plan interview, exactly like the abort test above.
 fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir) {

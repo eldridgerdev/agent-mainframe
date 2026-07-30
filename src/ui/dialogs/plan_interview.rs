@@ -57,6 +57,25 @@ pub fn draw_plan_interview_dialog(
     frame.render_widget(block, area);
 
     if state.abort_confirmation {
+        // An on-demand interview has no launch riding on it, so the only
+        // choices are to leave the feature as it is or keep answering.
+        let choices = if state.pending_launch.is_some() {
+            vec![
+                hint("y", theme),
+                Span::raw(" launch without a plan  "),
+                hint("n", theme),
+                Span::raw(" cancel feature creation  "),
+                hint("Esc", theme),
+                Span::raw(" resume interview"),
+            ]
+        } else {
+            vec![
+                hint("y", theme),
+                Span::raw(" leave the plan unchanged  "),
+                hint("Esc", theme),
+                Span::raw(" resume interview"),
+            ]
+        };
         let confirm = Paragraph::new(vec![
             Line::from(Span::styled(
                 "Leave this interview?",
@@ -65,14 +84,7 @@ pub fn draw_plan_interview_dialog(
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(vec![
-                hint("y", theme),
-                Span::raw(" launch without a plan  "),
-                hint("n", theme),
-                Span::raw(" cancel feature creation  "),
-                hint("Esc", theme),
-                Span::raw(" resume interview"),
-            ]),
+            Line::from(choices),
         ])
         .block(
             Block::default()
@@ -519,11 +531,7 @@ fn draw_plan_review(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(area);
-    let source_path = state
-        .pending_launch
-        .as_ref()
-        .map(|prepared| prepared.workdir.join(".claude/plan.md"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".claude/plan.md"));
+    let source_path = state.workdir.join(".claude/plan.md");
     let content = state.synthesized_plan.as_deref().unwrap_or_default();
     super::markdown::draw_markdown_document(
         frame,

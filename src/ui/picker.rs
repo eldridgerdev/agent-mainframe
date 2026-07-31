@@ -12,6 +12,7 @@ use crate::app::{
     CommandPickerState, MarkdownFilePickerState, OpencodeSessionPickerState, PendingInput,
     SessionPickerState, SessionSwitcherState, SyntaxLanguagePickerState, SyntaxOperationAction,
 };
+use crate::custom_session_icons::resolve_custom_session_icon;
 use crate::project::SessionKind;
 use crate::theme::Theme;
 
@@ -897,6 +898,7 @@ pub fn draw_session_switcher(
                         entry
                             .icon_nerd
                             .as_deref()
+                            .map(resolve_custom_session_icon)
                             .or(entry.icon.as_deref())
                             .unwrap_or("$")
                     } else {
@@ -1613,6 +1615,7 @@ pub fn draw_session_picker(
             let raw_icon = if nerd_font {
                 cfg.icon_nerd
                     .as_deref()
+                    .map(resolve_custom_session_icon)
                     .or(cfg.icon.as_deref())
                     .unwrap_or("$")
             } else {

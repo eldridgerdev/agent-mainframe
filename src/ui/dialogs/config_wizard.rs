@@ -3,11 +3,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::app::{
     ConfigCategory, ConfigScope, ConfigWizardState, ConfigWizardStep, DiffViewerLayout,
+};
+use crate::custom_session_icons::{
+    CUSTOM_SESSION_ICONS, custom_session_icon_index, resolve_custom_session_icon,
 };
 use crate::project::{AgentKind, VibeMode};
 use crate::theme::Theme;
@@ -200,6 +203,9 @@ fn draw_edit_item(frame: &mut Frame, state: &mut ConfigWizardState, theme: &Them
     if state.field_editor.is_some() {
         draw_field_editor(frame, state, theme);
     }
+    if state.icon_picker.is_some() {
+        draw_icon_picker(frame, state, theme);
+    }
 }
 
 fn draw_confirm_save(frame: &mut Frame, state: &ConfigWizardState, theme: &Theme) {
@@ -297,6 +303,83 @@ fn draw_field_editor(frame: &mut Frame, state: &mut ConfigWizardState, theme: &T
             .wrap(Wrap { trim: false })
             .scroll((editor_state.scroll_offset.min(u16::MAX as usize) as u16, 0)),
         area,
+    );
+}
+
+fn draw_icon_picker(frame: &mut Frame, state: &ConfigWizardState, theme: &Theme) {
+    let Some(picker) = state.icon_picker else {
+        return;
+    };
+    let area = centered_rect(54, 64, frame.area());
+
+    draw_modal(
+        frame,
+        area,
+        " Choose Nerd Font Icon ",
+        theme,
+        |frame, inner| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(1),
+                    Constraint::Length(2),
+                    Constraint::Length(1),
+                ])
+                .split(inner);
+
+            let items = CUSTOM_SESSION_ICONS.iter().map(|icon| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{}  ", icon.glyph),
+                        Style::default().fg(theme.primary.to_color()),
+                    ),
+                    Span::styled(
+                        format!("{:<12}", icon.label),
+                        Style::default().fg(theme.text.to_color()),
+                    ),
+                    Span::styled(
+                        icon.nerd_font_name,
+                        Style::default().fg(theme.text_muted.to_color()),
+                    ),
+                ]))
+            });
+            let list = List::new(items).highlight_symbol("> ").highlight_style(
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            );
+            let mut list_state = ListState::default().with_selected(Some(
+                picker
+                    .selected
+                    .min(CUSTOM_SESSION_ICONS.len().saturating_sub(1)),
+            ));
+            frame.render_stateful_widget(list, chunks[0], &mut list_state);
+
+            let current = state
+                .field_values
+                .get(6)
+                .map(String::as_str)
+                .unwrap_or_default();
+            let detail = if current.is_empty() {
+                "No icon selected yet.".to_string()
+            } else if custom_session_icon_index(current).is_some() {
+                format!("Current: {}", resolve_custom_session_icon(current))
+            } else {
+                format!("Current custom glyph: {current}")
+            };
+            frame.render_widget(
+                Paragraph::new(detail)
+                    .style(Style::default().fg(theme.text_muted.to_color()))
+                    .wrap(Wrap { trim: false }),
+                chunks[1],
+            );
+            render_hints(
+                frame,
+                chunks[2],
+                "Enter choose  e custom glyph  Backspace clear  Esc cancel",
+                theme,
+            );
+        },
     );
 }
 
@@ -619,8 +702,8 @@ fn custom_session_field_help(field_focus: usize) -> (&'static str, &'static str,
         ),
         6 => (
             "Nerd icon",
-            "Optional nerd-font glyph used when nerd fonts are enabled.",
-            "Example: nf-md-server",
+            "Press Enter to choose a preset, then press `e` to paste a custom glyph.",
+            "Copy glyphs from https://www.nerdfonts.com/cheat-sheet",
         ),
         7 => (
             "On stop",
@@ -804,17 +887,34 @@ fn edit_lines(state: &ConfigWizardState, theme: &Theme) -> Vec<Line<'static>> {
             ];
             let mut lines = Vec::new();
             for (index, label) in labels.iter().enumerate() {
-                lines.push(text_field_line(
-                    label,
-                    state
-                        .field_values
-                        .get(index)
-                        .map(String::as_str)
-                        .unwrap_or(""),
-                    state.field_focus == index,
-                    state.input_mode && state.field_focus == index,
-                    theme,
-                ));
+                let value = state
+                    .field_values
+                    .get(index)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                if index == 6 {
+                    let display_value = custom_session_icon_index(value)
+                        .map(|icon_index| {
+                            let icon = CUSTOM_SESSION_ICONS[icon_index];
+                            format!("{}  {}", icon.glyph, icon.label)
+                        })
+                        .unwrap_or_else(|| value.to_string());
+                    lines.push(text_field_line(
+                        label,
+                        &display_value,
+                        state.field_focus == index,
+                        false,
+                        theme,
+                    ));
+                } else {
+                    lines.push(text_field_line(
+                        label,
+                        value,
+                        state.field_focus == index,
+                        state.input_mode && state.field_focus == index,
+                        theme,
+                    ));
+                }
             }
             lines.push(toggle_field_line(
                 "Autolaunch",

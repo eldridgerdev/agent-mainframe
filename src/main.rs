@@ -3,6 +3,7 @@ mod automation;
 mod claude;
 mod codex;
 mod codex_config;
+mod custom_session_icons;
 mod db;
 mod debug;
 mod diff;

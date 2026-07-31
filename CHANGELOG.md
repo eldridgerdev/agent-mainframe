@@ -33,6 +33,13 @@ are tagged.
   previously the interview only ran while creating a feature. Leaving the
   interview is non-destructive: the feature keeps whatever plan it had.
 
+### Fixed
+
+- **Custom-session Nerd Font icons can now be chosen visually in the config
+  wizard.** The chooser previews useful session icons and still accepts custom
+  glyphs. Existing bundled names such as `nf-md-server` now render as icons,
+  so no config migration is required.
+
 ### Migration
 
 No migration is required. Plan interviews still work without a database, and

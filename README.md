@@ -733,7 +733,7 @@ Nvim when creating sessions.
 | `description` | string? | Secondary text shown in the session picker. |
 | `command` | string? | Shell command to run when the session starts. |
 | `icon` | string? | ASCII icon shown for the custom session. |
-| `icon_nerd` | string? | Nerd Font icon shown when `nerd_font` is enabled. |
+| `icon_nerd` | string? | Nerd Font glyph shown when `nerd_font` is enabled. The config wizard includes a visual chooser; bundled names such as `nf-md-server` are also accepted. |
 | `on_stop` | string? | Shell command to run when the session is stopped or removed. Runs via `sh -c` in the feature's workdir with `AMF_SESSION_ID` and `AMF_STATUS_DIR` set. Fire-and-forget (non-blocking). |
 | `autolaunch` | bool? | Start this session automatically when a feature starts. |
 | `pre_check` | string? | Command to run before launch; non-zero exit blocks session startup and shows the command output. |

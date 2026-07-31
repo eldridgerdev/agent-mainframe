@@ -3048,6 +3048,7 @@ pub struct ConfigWizardState {
     pub editing_index: Option<usize>,
     pub field_values: Vec<String>,
     pub field_editor: Option<ConfigWizardFieldEditor>,
+    pub icon_picker: Option<ConfigWizardIconPicker>,
     pub field_toggles: Vec<bool>,
     pub agent_toggles: Vec<bool>,
     pub agent_toggles_dirty: bool,
@@ -3060,6 +3061,11 @@ pub struct ConfigWizardState {
     pub project_repo: Option<PathBuf>,
     pub project_name: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConfigWizardIconPicker {
+    pub selected: usize,
 }
 
 pub struct ConfigWizardFieldEditor {

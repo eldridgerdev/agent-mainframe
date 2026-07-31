@@ -14,6 +14,36 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~OSC 8 hyperlinks do not open through AMF's managed tmux server on macOS~~ (Fixed)
+
+- **Status:** Fixed (2026-07-31)
+- **Reported:** 2026-07-30
+- **Relates to:** tmux control clients (`src/tmux.rs`)
+- **Root cause:** AMF launches its embedded tmux control clients with
+  `TERM=xterm-256color`, but its dedicated tmux server did not add the
+  `hyperlinks` terminal feature for that terminal type. Tmux therefore did not
+  know that the client could render OSC 8 hyperlinks.
+- **Fix:** Configure AMF's managed tmux server with
+  `xterm*:hyperlinks` before creating or attaching control clients. New
+  sessions receive the setting at creation, while saved sessions receive it
+  when reopened after upgrading. External tmux servers remain unchanged, and
+  older tmux versions that reject the optional feature continue without
+  blocking session startup.
+
+### Repro
+
+1. On macOS, start AMF with its default dedicated tmux socket.
+2. Open an agent session that emits an OSC 8 hyperlink.
+3. Attempt to open the rendered link in a terminal that supports hyperlinks.
+
+### Expected
+
+The terminal recognizes the hyperlink and opens its target normally.
+
+### Actual
+
+The link target is unavailable because tmux does not emit the OSC 8 hyperlink.
+
 ## ~~Stopped agent sessions open an empty shell after tmux disappears~~ (Fixed)
 
 - **Status:** Fixed (2026-07-28)

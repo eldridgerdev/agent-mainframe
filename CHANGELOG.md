@@ -10,7 +10,16 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **OSC 8 hyperlinks now work through AMF's managed tmux server on macOS.**
+  Terminals that support hyperlinks can open links from agent sessions normally,
+  including saved sessions reopened after upgrading.
+
+### Migration
+
+- No migration is required. Existing saved sessions pick up the fix when they
+  are reopened.
 
 ## [v0.33.0] - 2026-07-28
 

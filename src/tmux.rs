@@ -360,6 +360,9 @@ impl TmuxRuntime {
 }
 
 impl TmuxManager {
+    const CONTROL_CLIENT_TERMINAL_FEATURES_OPTION: &'static str = "terminal-features[99]";
+    const CONTROL_CLIENT_TERMINAL_FEATURES: &'static str = "xterm*:hyperlinks";
+
     pub fn configure_control_mode(enabled: bool) {
         TMUX_CONTROL_MODE_ENABLED.store(enabled, AtomicOrdering::Relaxed);
     }
@@ -659,6 +662,32 @@ impl TmuxManager {
             "Failed to configure tmux session default terminal",
             "tmux set-option failed",
         )
+    }
+
+    fn configure_control_client_terminal_features() {
+        if !Self::runtime().manages_private_socket {
+            return;
+        }
+
+        if let Err(err) = Self::run(
+            &[
+                "set-option",
+                "-g",
+                Self::CONTROL_CLIENT_TERMINAL_FEATURES_OPTION,
+                Self::CONTROL_CLIENT_TERMINAL_FEATURES,
+            ],
+            "Failed to configure tmux control-client terminal features",
+            "tmux set-option failed",
+        ) {
+            // Hyperlinks are an enhancement, so an older tmux without
+            // terminal-features support must not prevent sessions from
+            // starting or being viewed.
+            log_to_file(
+                LogLevel::Warn,
+                "tmux",
+                &format!("Could not enable OSC 8 hyperlinks for tmux control clients: {err}"),
+            );
+        }
     }
 
     fn output(args: &[&str], context: &str) -> Result<Output> {
@@ -1050,6 +1079,7 @@ impl TmuxManager {
 
     #[cfg(unix)]
     fn spawn_input_client_control_pty(session: &str) -> Result<PersistentTmuxInputClient> {
+        Self::configure_control_client_terminal_features();
         Self::ensure_stale_control_clients_detached(session);
         let (master, slave) = Self::open_pty(120, 40)?;
         let reader = master
@@ -1152,6 +1182,7 @@ impl TmuxManager {
         cols: u16,
         rows: u16,
     ) -> Result<SpawnedTmuxControlClient> {
+        Self::configure_control_client_terminal_features();
         Self::ensure_stale_control_clients_detached(session);
         let (master, slave) = Self::open_pty(cols, rows)?;
         let reader = master
@@ -1455,6 +1486,7 @@ impl TmuxManager {
         )?;
 
         Self::set_session_default_terminal_if_needed(session)?;
+        Self::configure_control_client_terminal_features();
 
         // Set status bar hint
         Self::run(
@@ -2320,6 +2352,26 @@ mod tests {
             TmuxInputTransportMode::Direct
         );
         TmuxManager::configure_control_mode(true);
+    }
+
+    #[test]
+    fn forced_control_client_terminal_is_declared_hyperlink_capable() {
+        let mut command = std::process::Command::new("tmux");
+        TmuxManager::apply_control_client_term_env(&mut command);
+
+        let term = command
+            .get_envs()
+            .find_map(|(key, value)| (key == "TERM").then_some(value.unwrap()))
+            .unwrap();
+        assert_eq!(term, "xterm-256color");
+        assert_eq!(
+            TmuxManager::CONTROL_CLIENT_TERMINAL_FEATURES,
+            "xterm*:hyperlinks"
+        );
+        assert_eq!(
+            TmuxManager::CONTROL_CLIENT_TERMINAL_FEATURES_OPTION,
+            "terminal-features[99]"
+        );
     }
 
     #[test]

@@ -50,12 +50,16 @@ are tagged.
   wizard.** The chooser previews useful session icons and still accepts custom
   glyphs. Existing bundled names such as `nf-md-server` now render as icons,
   so no config migration is required.
+- **OSC 8 hyperlinks now work through AMF's managed tmux server on macOS.**
+  Terminals that support hyperlinks can open links from agent sessions normally,
+  including saved sessions reopened after upgrading.
 
 ### Migration
 
 No migration is required. Plan interviews still work without a database, and
 existing features are unaffected — the first interview you run after upgrading
-starts saving its answers.
+starts saving its answers. Existing saved sessions pick up the hyperlink fix
+when they are reopened.
 
 ## [v0.33.0] - 2026-07-28
 

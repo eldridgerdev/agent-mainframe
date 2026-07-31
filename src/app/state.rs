@@ -3966,11 +3966,22 @@ impl PlanInterviewState {
     /// than mapped onto the wrong question. The record's AI-generated questions
     /// are appended instead of dropped — those rounds were paid for and the
     /// current bank cannot contain them.
+    ///
+    /// Matching by id is not enough on its own for a select question: config can
+    /// rewrite the same id's options, leaving a stored answer that names a choice
+    /// the question no longer offers. Such an answer is dropped rather than
+    /// pre-filled, because it is unselectable in the UI and would otherwise reach
+    /// the AI rounds and synthesis attached to the current question text.
     fn adopt_recorded_answers(&mut self, record: &PlanInterviewRecord) {
         self.answers = self
             .questions
             .iter()
-            .map(|question| record.answer_for(&question.id).map(str::to_string))
+            .map(|question| {
+                record
+                    .answer_for(&question.id)
+                    .filter(|answer| question.accepts_answer(answer))
+                    .map(str::to_string)
+            })
             .collect();
 
         let known: HashSet<&str> = self.questions.iter().map(|q| q.id.as_str()).collect();
@@ -4011,14 +4022,17 @@ impl PlanInterviewState {
     pub fn apply_previous_transcript(&mut self, record: &PlanInterviewRecord) -> bool {
         self.adopt_recorded_answers(record);
         self.prior_brief = (!record.brief.trim().is_empty()).then(|| record.brief.clone());
-        // Built after adopting, so carried AI questions are covered too.
+        // Read back off the adopted answers rather than the record, so carried AI
+        // questions are covered and answers the current bank rejected are not
+        // remembered as the baseline: the keep/change note would call an untouched
+        // question "changed", and `Ctrl+R` would offer to restore a value that
+        // cannot be selected.
         self.prior_answers = self
             .questions
             .iter()
-            .filter_map(|question| {
-                record
-                    .answer_for(&question.id)
-                    .map(|answer| (question.id.clone(), answer.to_string()))
+            .zip(self.answers.iter())
+            .filter_map(|(question, answer)| {
+                answer.clone().map(|answer| (question.id.clone(), answer))
             })
             .collect();
 
@@ -4119,9 +4133,10 @@ impl PlanInterviewState {
                         self.editor = TextEditor::new(prior);
                         true
                     }
-                    // A stored answer that is no longer one of the options —
-                    // the config was edited between runs — has nothing to
-                    // select, so there is nothing to restore.
+                    // Adoption keeps only answers the question still offers, so
+                    // this normally finds one. The lookup stays defensive: an
+                    // answer with nothing to select is reported as "nothing
+                    // restored" rather than moving the highlight to option 0.
                     PlanQuestionKind::Select(options) => {
                         match options.iter().position(|option| *option == prior) {
                             Some(index) => {
@@ -5066,6 +5081,99 @@ mod tests {
         assert_eq!(state.selected_option, 1);
         state.select_next_option();
         assert_eq!(state.selected_option, 0);
+    }
+
+    /// A record whose select answer names an option the question no longer
+    /// offers — the config was edited between runs.
+    fn record_with_retired_select_answer() -> crate::db::plan_interviews::PlanInterviewRecord {
+        crate::db::plan_interviews::PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            feature_name: "feature".into(),
+            brief: "Tighten the sidebar.".into(),
+            questions: vec![PlanQuestion {
+                id: "surface".into(),
+                text: "Where should this appear?".into(),
+                kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Overlay".into()]),
+                source: crate::plan_interview::QuestionSource::Template,
+                optional: true,
+            }],
+            answers: vec![Some("Overlay".into())],
+            ..Default::default()
+        }
+    }
+
+    /// The current bank asks the same question id with rewritten options.
+    fn state_with_rewritten_select_options() -> PlanInterviewState {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: true,
+        };
+        PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None)
+    }
+
+    /// Matching by id alone would pre-fill an answer that is not one of the
+    /// current options: unselectable in the UI, but still handed to the AI rounds
+    /// and synthesis as this question's answer if the user never visits it.
+    #[test]
+    fn a_re_run_drops_a_select_answer_the_options_no_longer_offer() {
+        let mut state = state_with_rewritten_select_options();
+
+        assert!(state.apply_previous_transcript(&record_with_retired_select_answer()));
+
+        assert_eq!(state.answers[0], None);
+        assert!(!state.prior_answers.contains_key("surface"));
+        // The brief still pre-fills, so the re-run is not blanked wholesale.
+        assert_eq!(state.brief, "Tighten the sidebar.");
+
+        // Nothing was pre-filled for this question, so it reports neither kept
+        // nor changed, and there is nothing for Ctrl+R to put back.
+        state.phase = PlanInterviewPhase::StaticQuestions;
+        state.load_current_answer();
+        assert_eq!(state.prior_answer_state(), None);
+        assert!(!state.restore_prior_answer());
+
+        // Finishing without ever visiting the question — the path that would
+        // otherwise carry the stale answer straight into synthesis.
+        state.phase = PlanInterviewPhase::Brief;
+        state.editor = TextEditor::new(state.brief.clone());
+        state.finish_early().unwrap();
+        assert_eq!(state.phase, PlanInterviewPhase::Done);
+        assert!(state.answers.iter().all(Option::is_none));
+    }
+
+    /// Same guard on the resume path: a draft is matched back by id too.
+    #[test]
+    fn resuming_a_draft_drops_a_select_answer_the_options_no_longer_offer() {
+        let mut state = state_with_rewritten_select_options();
+        state.offer_resume(record_with_retired_select_answer());
+
+        assert!(state.resume_from_draft());
+
+        assert_eq!(state.answers[0], None);
+        // The question is unanswered again, so the resume lands on it.
+        assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+        assert_eq!(state.question_index, 0);
+        assert_eq!(state.selected_option, 0);
+    }
+
+    /// A select answer the rewritten options still contain is pre-filled, and on
+    /// a different index than it had before.
+    #[test]
+    fn a_re_run_keeps_a_select_answer_the_options_still_offer() {
+        let mut state = state_with_rewritten_select_options();
+        let mut record = record_with_retired_select_answer();
+        record.answers = vec![Some("Session".into())];
+
+        assert!(state.apply_previous_transcript(&record));
+
+        assert_eq!(state.answers[0].as_deref(), Some("Session"));
+        state.phase = PlanInterviewPhase::StaticQuestions;
+        state.load_current_answer();
+        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
     }
 
     /// A draft saved for a feature-creation interview is keyed by project and

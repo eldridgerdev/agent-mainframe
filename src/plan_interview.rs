@@ -575,6 +575,20 @@ pub struct PlanQuestion {
 }
 
 impl PlanQuestion {
+    /// Whether `answer` is something this question can still hold.
+    ///
+    /// Free text always is. A select answer has to be one of the options as
+    /// currently configured: a stored answer is matched back by question id, and
+    /// a project's `plan_questions` config can rewrite a question's options
+    /// between runs, so the value behind an id may name a choice this question no
+    /// longer offers.
+    pub fn accepts_answer(&self, answer: &str) -> bool {
+        match &self.kind {
+            PlanQuestionKind::FreeText => true,
+            PlanQuestionKind::Select(options) => options.iter().any(|option| option == answer),
+        }
+    }
+
     fn builtin(id: &str, text: &str) -> Self {
         Self {
             id: id.to_string(),

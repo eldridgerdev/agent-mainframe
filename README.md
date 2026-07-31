@@ -313,31 +313,41 @@ Create-project and batch-feature templates, examples, and the JSON response form
 
 When plan mode is enabled during feature creation, AMF collects a required
 feature brief followed by optional built-in discovery questions before the
-agent launches. After those questions, AMF offers optional AI-adaptive
-follow-ups and clearly warns that they use agent tokens. No headless AI call
-runs unless you explicitly opt in. An opted-in flow synthesizes the collected
-interview into a structured implementation plan before launch; unavailable or
-invalid synthesis falls back to the raw interview plan. Every completed flow
-stops at a rendered review gate; AMF does not write the plan or launch the
-feature until you explicitly accept it.
+agent launches. After those questions, AMF offers two distinct AI actions:
+
+- **Ask AI follow-up questions (`a`)** generates another round of questions
+  tailored to the answers and repository. You answer those questions before
+  AMF drafts the plan.
+- **Draft the plan now (`Ctrl+F`)** stops the interview immediately, skips
+  every remaining built-in and AI follow-up question, and drafts the plan from
+  the answers already collected.
+
+Both actions use agent tokens. Pressing `Enter` or `Ctrl+S` at the optional AI
+prompt uses no agent tokens and opens a raw interview plan for review instead.
+An unavailable or invalid AI draft also falls back to that raw plan. Every
+completed flow stops at a rendered review gate; AMF does not write the plan or
+launch the feature until you explicitly accept it.
 
 Press `P` on a feature (or run the `plan-interview` command) to run the
 interview again later. A re-run starts from the answers behind the plan you
 last accepted: each question arrives pre-filled, `Enter` keeps that answer,
-typing changes it, and `Ctrl+R` restores it if you change your mind. The
+typing changes it, and `Ctrl+R` restores it if you change your mind. A
+multiple-choice answer is pre-filled only while it is still one of the
+question's options, so editing `plan_questions` between runs drops the stale
+choice instead of carrying it into the new plan. The
 previous run's AI follow-up questions are asked again with their answers, but
 adaptive rounds are not: a re-run gets its own opt-in and its own round budget.
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Save the current answer or selection; at the AI prompt, finish without AI |
-| `a` | At the optional AI prompt, opt in to adaptive follow-ups that use agent tokens |
+| `Enter` | Save the current answer or selection; at the optional AI prompt, skip AI and review the raw interview plan |
+| `a` | At the optional AI prompt, use AI to generate more interview questions; answer them before AMF drafts the plan |
 | `Alt+Enter` | Insert a newline in a free-text answer |
 | `j` / `k` / `↑` / `↓` | Navigate select-option answers |
 | `Ctrl+B` | Return to the previous question |
-| `Ctrl+S` | Skip an optional question or decline AI follow-ups |
+| `Ctrl+S` | Skip an optional question; at the optional AI prompt, skip AI and review the raw interview plan |
 | `Ctrl+R` | On a re-run, restore the previous interview's answer to this question |
-| `Ctrl+F` | Synthesize now with the answers so far (uses agent tokens, but skips remaining adaptive rounds) |
+| `Ctrl+F` | Stop asking questions and use AI to draft the plan now from the answers already collected |
 | `Esc` | Cancel, then choose whether to launch without a plan or cancel the feature |
 
 At the plan review gate:

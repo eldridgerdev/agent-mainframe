@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Selection, VisibleItem};
+use crate::custom_session_icons::resolve_custom_session_icon;
 use crate::project::{ProjectStatus, SessionKind, VibeMode};
 use crate::theme::Theme;
 use crate::token_tracking::{
@@ -519,7 +520,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             let raw = cfg
                                 .and_then(|c| {
                                     if app.config.nerd_font {
-                                        c.icon_nerd.as_deref().or(c.icon.as_deref())
+                                        c.icon_nerd
+                                            .as_deref()
+                                            .map(resolve_custom_session_icon)
+                                            .or(c.icon.as_deref())
                                     } else {
                                         c.icon.as_deref()
                                     }

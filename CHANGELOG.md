@@ -10,16 +10,56 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Leaving a plan interview no longer loses your answers.** Answers are saved
+  as you give them, so aborting the interview, cancelling the feature, or
+  closing AMF entirely keeps them. Starting the interview again for the same
+  feature offers to resume the saved draft or discard it and start over, and
+  tells you when it was saved, how much was answered, and whether a plan had
+  already been generated — nothing is restored until you choose.
+- **Resuming picks up where you stopped.** You land on the first question still
+  unanswered rather than walking forward through answers you already gave.
+  Adaptive AI rounds you already paid for are kept, and a draft that already
+  had a generated plan reopens at the review gate instead of generating a
+  second one.
+- **Accepting a plan keeps the interview behind it.** The questions and answers
+  are stored with the feature and used to pre-fill a re-run. Deleting a feature
+  removes its stored interviews.
+- **Re-planning a feature starts from the plan you already accepted.** Running
+  the interview again on a feature fills in the brief and every answer from the
+  last plan you accepted for it: `Enter` keeps an answer, typing changes it, and
+  `Ctrl+R` restores it if you change your mind. Each question says whether its
+  answer is still the previous one, has been changed, or has been cleared —
+  clearing one drops it from the new plan. If you edited a multiple-choice
+  question's options in `plan_questions` since then, its old answer is left out
+  rather than pre-filled as a choice that no longer exists. Follow-up questions
+  an AI round asked last time are asked again with their answers, but adaptive
+  rounds are not reused: a re-run asks for its own opt-in before spending any
+  tokens.
+- **You can now plan a feature you already created.** Press `P` on a feature, or
+  pick `plan-interview` from the command picker, to run the same interview
+  without going through the creation wizard. Accepting rewrites that feature's
+  own plan, turns plan mode on for it, and points its agent at the plan —
+  previously the interview only ran while creating a feature. Leaving the
+  interview is non-destructive: the feature keeps whatever plan it had.
+
 ### Fixed
 
+- **Custom-session Nerd Font icons can now be chosen visually in the config
+  wizard.** The chooser previews useful session icons and still accepts custom
+  glyphs. Existing bundled names such as `nf-md-server` now render as icons,
+  so no config migration is required.
 - **OSC 8 hyperlinks now work through AMF's managed tmux server on macOS.**
   Terminals that support hyperlinks can open links from agent sessions normally,
   including saved sessions reopened after upgrading.
 
 ### Migration
 
-- No migration is required. Existing saved sessions pick up the fix when they
-  are reopened.
+No migration is required. Plan interviews still work without a database, and
+existing features are unaffected — the first interview you run after upgrading
+starts saving its answers. Existing saved sessions pick up the hyperlink fix
+when they are reopened.
 
 ## [v0.33.0] - 2026-07-28
 

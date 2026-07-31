@@ -277,6 +277,7 @@ pub enum LocalCommand {
     OpenDebugLog,
     RefreshNotifications,
     CheckPendingDiffReview,
+    PlanInterview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

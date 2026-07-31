@@ -133,8 +133,9 @@ persisted as a **draft** in SQLite as they're given (decided
 and re-entering the interview for that feature offers to resume or
 discard it. Accepting the plan finalizes the draft into the
 transcript; drafts for deleted features are cleaned up with the
-feature. (Draft persistence lands with Epic 5's table; Epics 1–4
-hold the in-progress interview in memory only.)
+feature. Because the feature-creation trigger runs before the feature
+exists, its draft is keyed by project + branch until the accept re-files
+the transcript under the real feature id.
 
 ### Question model
 
@@ -433,13 +434,26 @@ seeded kickoff composer), or abort.
       dropped whenever the plan changes. `Esc` during the review returns
       to the plan rather than opening the interview's abort confirmation,
       so a generated plan can't be lost to a stray keypress
-- [ ] Accept path: write `.claude/plan.md`, augment the instruction
+- [x] Accept path: write `.claude/plan.md`, augment the instruction
       block ("plan is user-approved"), run deferred launch, seed
-      composer kickoff prompt via `open_compose_seeded`
+      composer kickoff prompt via `open_compose_seeded` — the launch's
+      `ensure_feature_running` already injects the approved-plan block,
+      so accept adds the seeding step and lands the user in the new
+      session's composer with an editable, unsubmitted kickoff prompt.
+      Best-effort by design: it runs after the feature is created and
+      started, so a startup-steering prompt or a feature with no
+      tmux-backed agent session skips the seed rather than failing the
+      accept
 - [x] Replace Epic 1's raw-Q&A plan-file write with synthesized doc
       (raw Q&A kept as fallback when synthesis fails)
-- [ ] Omit skipped and unanswered questions from both synthesis input
+- [x] Omit skipped and unanswered questions from both synthesis input
       and the raw-Q&A fallback plan so they do not add irrelevant context
+      — blank answers count as skips, and an interview with nothing
+      answered degrades to the brief alone (no empty `## Q&A`). The
+      interviewer and critique prompts deliberately still receive the
+      full asked-set with `answer: null`: the interviewer must not
+      re-ask what the user passed over, and the reviewer judges the plan
+      against everything the interview covered
 
 ### Epic 5 — On-demand interviews + persistence
 
@@ -447,16 +461,99 @@ Demo: press the keybinding on an existing feature, re-run the
 interview with prior answers pre-filled, get an updated
 `.claude/plan.md`.
 
-- [ ] Migration + `src/db/plan_interviews.rs`: interview store keyed
+- [x] Migration + `src/db/plan_interviews.rs`: interview store keyed
       by feature id (questions, answers, source, plan, timestamps,
-      draft-vs-final state)
-- [ ] Draft persistence: save answers as given; on interview entry
+      draft-vs-final state) — `MIGRATION_016` keys on
+      `(feature_id, stage)` rather than `feature_id` alone so a re-run
+      can save a draft without destroying the accepted transcript it is
+      revising; `finalize_draft` promotes one to the other in a single
+      transaction. `questions`/`answers` are JSON columns (read and
+      written whole, and `PlanQuestion` already serializes), padded to
+      equal length on both save and load so every reader gets an aligned
+      pair; `answer_for(id)` is the id-keyed lookup the re-run pre-fill
+      needs when config has changed the bank between runs.
+      `ai_rounds_completed` is stored rather than derived from the
+      question list: a round that returned nothing usable still counted
+      against the cap, and resuming a draft must not hand back paid
+      rounds. Like `todo_lists`, `feature_id` carries no FK —
+      `store::save` full-replaces `features` and would cascade-wipe the
+      rows (covered by a test) — so cleanup is explicit via
+      `delete_for_feature`, wired into the feature-delete path with the
+      next item
+- [x] Draft persistence: save answers as given; on interview entry
       with an existing draft, offer resume/discard; clean up drafts
-      when their feature is deleted
-- [ ] Save final transcript on accept (both triggers)
-- [ ] Command-picker entry + dashboard keybinding for the selected
-      feature; no-pending-launch variant of the mode
-- [ ] Re-run flow: pre-fill prior answers, per-question keep/change
+      when their feature is deleted — the draft is saved after every
+      action that records something (advance, skip, back, finish-early,
+      a finished AI round, a synthesized plan, a plan edit) and skipped
+      until the brief exists, since an interview with no brief has
+      nothing to resume into. A feature-creation interview predates the
+      feature's uuid, so its draft is keyed
+      `pending:<project>/<branch>` (`plan_interview::pending_interview_key`)
+      — the identity the user re-enters when they come back to create the
+      same feature. `PlanInterviewPhase::ResumePrompt` is the first screen
+      when a draft exists: `r` resumes, `d` discards (deleting the row),
+      `Esc` keeps it and falls through to the normal abort choice. Resume
+      matches answers by **question id**, not position, because config can
+      change the bank between runs; stored AI questions absent from the
+      current bank are appended and `ai_rounds_completed` restored, so
+      paid rounds are never re-earned; a draft that already holds a
+      generated plan reopens at the review gate instead of synthesizing
+      again. Persistence is silent on failure throughout — the interview
+      runs entirely from memory without a DB (covered by a test). Visual
+      proof: `docs/screenshots/plan-mode-draft-resume/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-resume.txt`
+- [x] Save final transcript on accept (both triggers) — landed with the
+      draft lifecycle rather than after it: a draft still offered for
+      resume after a successful accept is a bug in the item above, and
+      consuming it via `finalize_draft` is the same work as deleting it.
+      `finalize_draft` now takes both keys and re-files the transcript
+      under the feature id the accept just created, which is where the
+      re-run pre-fill will look for it
+- [x] Command-picker entry + dashboard keybinding for the selected
+      feature; no-pending-launch variant of the mode — `P` on the
+      dashboard and a `plan-interview` command-picker entry (offered only
+      with a feature or session selected, since the interview plans one
+      workdir) both open
+      `PlanInterviewState::for_feature`, keyed by the feature's **id** so
+      the accepted transcript lands where the re-run pre-fill will look
+      for it. The workdir moved out of `pending_launch` onto the state
+      itself (`context_workdir()` backs the three headless call sites,
+      which previously fell back to the process cwd), so accept writes the
+      plan into the feature's own workdir rather than bailing out. Accept
+      also calls `ensure_plan_mode_instructions` and sets
+      `feature.plan_mode`: writing `.claude/plan.md` alone leaves the agent
+      never told the plan exists, and a restart would stop injecting the
+      block. Abort is non-destructive — there is no launch to cancel, so
+      the confirm offers only "leave the plan unchanged" and `n` is inert.
+      Visual proof: `docs/screenshots/plan-mode-on-demand/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-on-demand.txt`. The
+      capture stops short of accepting — that runs a real headless synthesis
+      call, so the accept path is covered by
+      `accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir`
+      instead
+- [x] Re-run flow: pre-fill prior answers, per-question keep/change — entering
+      an on-demand interview loads the feature's accepted transcript
+      (`plan_interview_final`) and adopts it as the run's **baseline**: the brief
+      lands in the editor and every answer is matched back by question **id**
+      (config can change the bank between runs), with the previous run's AI
+      questions carried in with their answers since the current bank cannot
+      contain them. Spent AI rounds are deliberately *not* carried — a re-run is
+      a new interview and gets its own consent and its own budget. Keep/change is
+      in-place rather than a per-question card: `Enter` keeps the pre-filled
+      answer, typing changes it, and `Ctrl+R` restores the accepted one, with a
+      note under the question naming which of the three states it is in
+      (kept / changed / cleared). The note carries the `Ctrl+R` hint because the
+      footer's hint row already wraps to both its lines at ordinary widths.
+      Emptying a pre-filled answer records as a skip, which is how a re-run drops
+      an answer that no longer applies. A draft and an accepted transcript can
+      both exist for one feature: the draft prompt still comes first and its
+      answers win when resumed, but discarding it now falls back to the accepted
+      answers instead of blanking the interview. Visual proof:
+      `docs/screenshots/plan-mode-rerun/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-rerun.txt` — a re-run needs
+      an accepted transcript to read, so the capture inserts that row into the
+      scratch DB directly rather than paying for a real synthesis pass (snippet in
+      that directory's README)
 - [ ] Live-session handoff: offer to send kickoff prompt when the
       feature's agent session is running
 

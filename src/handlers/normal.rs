@@ -289,6 +289,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('W') => {
             app.open_ai_review();
         }
+        KeyCode::Char('P') => {
+            app.start_plan_interview_for_selected_feature();
+        }
         KeyCode::Char('f') if crate::app::DASHBOARD_SESSION_FILTER_ENABLED => {
             app.session_filter = app.session_filter.next();
             app.push_toast_info(format!("Filter: {}", app.session_filter.display_name()));

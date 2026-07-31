@@ -33,6 +33,9 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
         AppMode::PlanInterview(state) => state.phase,
         _ => return Ok(()),
     };
+    if phase == PlanInterviewPhase::KickoffHandoff {
+        return handle_plan_kickoff_handoff_key(app, key);
+    }
     if phase == PlanInterviewPhase::ResumePrompt {
         return handle_plan_resume_key(app, key);
     }
@@ -204,6 +207,24 @@ fn handle_plan_resume_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 state.abort_confirmation = true;
             }
             app.message = None;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The offer to hand an accepted on-demand plan to the feature's already
+/// running agent session.
+///
+/// Every key here is safe: the plan is written and the instruction block points
+/// at it before this prompt appears, so declining only means the running session
+/// is not interrupted. `Esc` therefore declines rather than opening the abort
+/// confirmation — there is no longer anything to abort.
+fn handle_plan_kickoff_handoff_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Enter => app.send_plan_kickoff_to_live_session()?,
+        KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
+            app.dismiss_plan_kickoff_handoff()
         }
         _ => {}
     }

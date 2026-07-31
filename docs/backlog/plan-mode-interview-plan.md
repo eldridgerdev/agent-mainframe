@@ -111,11 +111,15 @@ On-demand command on a feature ─┴─> PlanInterview mode
              built-in bank + project question templates
              (free-text or select-options; skippable; back-nav)
     Phase 2  Optional AI adaptive rounds (capped, e.g. 2 rounds × ≤5
-             questions): an explicit token-use prompt defaults to no
-             headless work; after opt-in, the feature's agent harness gets
-             brief + answers + repo context, returns follow-up
-             questions as JSON; loading overlay while it runs;
-             failure falls back to "no follow-ups"
+             questions): an explicit token-use prompt offers three
+             deliberately distinct outcomes:
+             a       ask AI to generate more interview questions,
+                     then answer them before plan drafting
+             Ctrl+F  stop asking questions and use AI to draft the
+                     plan now from answers already collected
+             Enter   make no AI call and review the raw interview plan
+             The feature's agent harness receives the brief + answers
+             + repo context; failure falls back to "no follow-ups"
     Phase 3  Synthesis: a headless harness run turns the full Q&A into a
              structured plan (Goal / Decisions / Architecture / UI /
              Tasks / Risks); loading overlay
@@ -125,10 +129,12 @@ On-demand command on a feature ─┴─> PlanInterview mode
               launch/seed session
 ```
 
-Every phase supports `Esc`-out with confirmation, and a dedicated
-"synthesize now" key ends the questioning early from any phase and
-jumps straight to synthesis with the answers so far. Answers are
-persisted as a **draft** in SQLite as they're given (decided
+Every phase supports `Esc`-out with confirmation. “Ask AI follow-ups”
+and “draft the plan now” are not synonyms: the first creates more
+questions for the user to answer, while the second ends questioning
+and generates the plan immediately from the answers already saved.
+Interview answers are persisted as a **draft** in SQLite as they're
+given (decided
 2026-07-13): abandoning the mode or restarting AMF keeps the draft,
 and re-entering the interview for that feature offers to resume or
 discard it. Accepting the plan finalizes the draft into the
@@ -554,11 +560,38 @@ interview with prior answers pre-filled, get an updated
       an accepted transcript to read, so the capture inserts that row into the
       scratch DB directly rather than paying for a real synthesis pass (snippet in
       that directory's README)
-- [ ] Live-session handoff: offer to send kickoff prompt when the
-      feature's agent session is running
+- [x] Live-session handoff: offer to send kickoff prompt when the
+      feature's agent session is running — an accepted **on-demand** plan lands
+      `PlanInterviewPhase::KickoffHandoff` when the feature has a live
+      agent-harness session, offering to open it with the composer seeded
+      (`y`) or leave it running (`n`/`Esc`). The offer comes strictly *after*
+      the accept has fully landed — plan file, instruction block, `plan_mode`,
+      transcript — so declining costs nothing and the only thing on offer is
+      interrupting a session that may be mid-task; the seed is editable and
+      unsubmitted like every other compose seed. "Live" means both halves,
+      feature not `Stopped` **and** `session_exists`: status is only reconciled
+      every few seconds, so a session killed outside AMF still reads as running
+      and would otherwise be offered a prompt into nothing. The target is held
+      by session **id**, not index, because the accept saves the store before
+      the prompt is answered. The feature-creation trigger is unchanged — it
+      seeds the session it just launched without asking, since there is no
+      running work to interrupt. Visual proof:
+      `docs/screenshots/plan-mode-live-handoff/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-live-handoff.txt` —
+      reaching a handoff needs a real accept, so the scenario seeds a
+      draft that already holds a plan
+      (`scripts/dev/screenshot/seed_plan_draft.py`) and resumes it straight to
+      the review gate rather than paying for a synthesis pass
 
 ### Epic 6 — Polish
 
+- [ ] Replace the ambiguous AI-consent labels everywhere they appear
+      (dialog, status footer, help, and screenshots): `a` should say
+      "ask AI follow-ups" because it generates more questions;
+      `Ctrl+F` should say "draft plan now" because it skips every
+      remaining question and generates the plan from answers already
+      collected. Keep the no-token `Enter` action explicit as
+      "review raw plan."
 - [ ] Re-evaluate the built-in question bank after dogfooding:
       identify which questions consistently add useful planning
       context, then remove or combine low-value prompts so the

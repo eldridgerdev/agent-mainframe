@@ -2821,6 +2821,132 @@ fn accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir() {
     assert!(instructions.contains(".claude/plan.md"));
 }
 
+/// `app_on_selected_feature`, but the feature's agent session is live — the
+/// case the accepted plan has somewhere to hand off to. Permissive tmux
+/// expectations: these tests care about the handoff decision, not the call
+/// sequence entering an already-running session makes.
+fn app_on_running_selected_feature() -> (App, tempfile::NamedTempFile, TempDir) {
+    let repo = TempDir::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active);
+    store.projects[0].features[0]
+        .sessions
+        .push(make_session("Claude 1", None));
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+    (app, store_file, repo)
+}
+
+/// Drive an on-demand interview to an accepted raw-fallback plan, which is the
+/// point the live-session handoff is decided.
+fn accept_on_demand_plan_for_test(app: &mut App, brief: &str) {
+    app.start_plan_interview_for_selected_feature();
+    force_plan_interview_raw_fallback(app);
+
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    state.brief = brief.into();
+    state.synthesis_requested = true;
+    state.phase = PlanInterviewPhase::Done;
+
+    app.continue_plan_interview_after_done().unwrap();
+    crate::handlers::handle_plan_interview_key(app, ke(KeyCode::Enter)).unwrap();
+}
+
+/// A running agent read its instruction file once, at startup, so a plan
+/// written underneath it goes unnoticed until something says so.
+#[test]
+fn accepting_an_on_demand_plan_offers_the_kickoff_to_a_running_session() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::KickoffHandoff);
+            let target = state.kickoff_handoff.as_ref().unwrap();
+            assert_eq!(target.session_label, "Claude 1");
+            assert_eq!(target.session_id, "session-Claude 1");
+            assert_eq!(target.plan_path, repo.path().join(".claude/plan.md"));
+        }
+        _ => panic!("expected the handoff prompt"),
+    }
+    // The offer comes after the accept has fully landed, so declining it can
+    // never cost the plan.
+    assert!(
+        std::fs::read_to_string(repo.path().join(".claude/plan.md"))
+            .unwrap()
+            .contains("Tighten the sidebar")
+    );
+    assert!(app.store.projects[0].features[0].plan_mode);
+}
+
+#[test]
+fn declining_the_kickoff_handoff_leaves_the_running_session_alone() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+    );
+}
+
+#[test]
+fn accepting_the_kickoff_handoff_seeds_the_running_sessions_composer() {
+    let (mut app, _store_file, _repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+
+    // Seeded, never submitted: the session may be mid-task, so when the prompt
+    // lands stays the user's call.
+    match &app.mode {
+        AppMode::Compose(state) => {
+            let seed = state.editor.text();
+            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("decisions are settled"));
+            assert_eq!(state.view.feature_name, "my-feat");
+        }
+        _ => panic!("expected the live session's composer to be seeded"),
+    }
+}
+
+/// The handoff is only offered against a session tmux still has. AMF's status
+/// is reconciled every few seconds, so a session killed outside AMF still reads
+/// as running until the next sync — trusting the flag alone would offer to type
+/// into nothing.
+#[test]
+fn a_feature_marked_active_without_a_tmux_session_gets_no_handoff_offer() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| false);
+    app.tmux = Box::new(tmux);
+
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+    );
+}
+
 #[test]
 fn aborting_an_on_demand_interview_has_no_feature_to_cancel() {
     let (mut app, _store_file, repo) = app_on_selected_feature();

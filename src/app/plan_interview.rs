@@ -9,7 +9,8 @@ use anyhow::{Context, Result};
 
 use super::pr_review::estimate_tokens;
 use super::{
-    App, AppMode, PlanInterviewPhase, PlanInterviewState, PreparedFeatureLaunch, Selection,
+    App, AppMode, PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget, PreparedFeatureLaunch,
+    Selection,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
@@ -891,9 +892,9 @@ impl App {
             AppMode::PlanInterview(state) => state.pending_launch.take(),
             _ => return Ok(()),
         };
-        self.mode = AppMode::Normal;
 
         if let Some(prepared) = pending {
+            self.mode = AppMode::Normal;
             let project_name = prepared.project_name.clone();
             let branch = prepared.branch.clone();
             // The launch injects the plan-mode instruction block into the
@@ -911,12 +912,127 @@ impl App {
             // transcript is already filed where a re-run will look for it.
             self.apply_on_demand_plan(&interview_key, &workdir);
             self.finalize_plan_interview_transcript(&interview_key, "", "", &plan);
-            self.message = Some(format!(
-                "Plan written to {}",
-                workdir.join(".claude").join(PLAN_FILE_NAME).display()
-            ));
+
+            let plan_path = workdir.join(".claude").join(PLAN_FILE_NAME);
+            // A running agent has no reason to re-read its instruction file, so
+            // a plan written underneath it goes unnoticed until something says
+            // so. Offer the handoff rather than sending it: the session may be
+            // mid-task, and typing into it is the user's call.
+            match self.live_agent_session_for_feature(&interview_key) {
+                Some((session_id, session_label)) => {
+                    if let AppMode::PlanInterview(state) = &mut self.mode {
+                        state.offer_kickoff_handoff(PlanKickoffTarget {
+                            session_id,
+                            session_label,
+                            plan_path,
+                        });
+                    }
+                    self.message = None;
+                }
+                None => {
+                    self.mode = AppMode::Normal;
+                    self.message = Some(format!("Plan written to {}", plan_path.display()));
+                }
+            }
             Ok(())
         }
+    }
+
+    /// Locate a live agent session for the feature an on-demand plan was just
+    /// accepted for, so the kickoff prompt has somewhere to go.
+    ///
+    /// "Live" means both halves: the feature is not stopped *and* tmux still has
+    /// the session. Either alone is stale — AMF's status is only reconciled
+    /// every few seconds, and a session killed outside AMF still reads as
+    /// running until the next sync.
+    ///
+    /// Returns the session's id and display label.
+    fn live_agent_session_for_feature(&self, feature_id: &str) -> Option<(String, String)> {
+        let feature = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| project.features.iter())
+            .find(|feature| feature.id == feature_id)?;
+
+        if feature.status == crate::project::ProjectStatus::Stopped
+            || !self.tmux.session_exists(&feature.tmux_session)
+        {
+            return None;
+        }
+
+        let session = feature
+            .sessions
+            .iter()
+            .find(|session| session.kind.is_agent_harness() && session.kind.is_tmux_backed())?;
+        Some((session.id.clone(), session.label.clone()))
+    }
+
+    /// Hand the accepted plan to the live session: open it and seed its composer
+    /// with the same kickoff prompt a freshly launched session gets.
+    ///
+    /// The prompt is left editable and unsubmitted, like every other compose
+    /// seed — the session may be mid-task, and the user decides when it lands.
+    pub(crate) fn send_plan_kickoff_to_live_session(&mut self) -> Result<()> {
+        let Some(target) = (match &mut self.mode {
+            AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::KickoffHandoff => {
+                state.kickoff_handoff.take()
+            }
+            _ => None,
+        }) else {
+            return Ok(());
+        };
+        self.mode = AppMode::Normal;
+
+        // Resolved by id rather than reusing indices from the offer: the accept
+        // saved the store in between, and seeding the wrong session's composer
+        // would be worse than skipping the handoff.
+        let Some((pi, fi, si)) = self.store.projects.iter().enumerate().find_map(|(pi, project)| {
+            project.features.iter().enumerate().find_map(|(fi, feature)| {
+                feature
+                    .sessions
+                    .iter()
+                    .position(|session| session.id == target.session_id)
+                    .map(|si| (pi, fi, si))
+            })
+        }) else {
+            self.message = Some(format!(
+                "Plan written to {}; its session is gone",
+                target.plan_path.display()
+            ));
+            return Ok(());
+        };
+
+        self.selection = Selection::Session(pi, fi, si);
+        if let Err(e) = self.enter_view_without_auto_compose() {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to open the live session for the plan kickoff prompt: {e}"),
+            );
+            self.message = Some(format!("Plan written to {}", target.plan_path.display()));
+            return Ok(());
+        }
+        if let Err(e) = self.open_compose_seeded(PLAN_KICKOFF_PROMPT.to_string()) {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to seed the plan kickoff prompt: {e}"),
+            );
+        }
+        Ok(())
+    }
+
+    /// Decline the handoff: the plan is already written and the instruction
+    /// block already points at it, so nothing is lost by leaving the running
+    /// session alone.
+    pub(crate) fn dismiss_plan_kickoff_handoff(&mut self) {
+        let path = match &mut self.mode {
+            AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::KickoffHandoff => {
+                state.kickoff_handoff.take().map(|target| target.plan_path)
+            }
+            _ => return,
+        };
+        self.mode = AppMode::Normal;
+        self.message = path.map(|path| format!("Plan written to {}", path.display()));
     }
 
     /// Make an on-demand plan effective for the feature it was written for.

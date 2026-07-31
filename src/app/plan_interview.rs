@@ -11,10 +11,21 @@ use super::pr_review::estimate_tokens;
 use super::{
     App, AppMode, PlanInterviewPhase, PlanInterviewState, PreparedFeatureLaunch, Selection,
 };
+use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
 use crate::plan_interview::{self, PlanQuestion};
 
 const PLAN_FILE_NAME: &str = "plan.md";
+
+/// Composer seed offered after an accepted interview. Deliberately short and
+/// editable: the plan itself carries the detail, and the instruction block
+/// already told the agent to treat its decisions as settled.
+const PLAN_KICKOFF_PROMPT: &str = "\
+Read `.claude/plan.md`. It is the plan I approved for this feature — its \
+decisions are settled unless I say otherwise.
+
+Start with the first unchecked task, and keep the task checkboxes current as \
+you go.";
 
 impl App {
     pub(crate) fn start_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
@@ -26,9 +37,128 @@ impl App {
                     .plan_interview_questions()
             })
             .unwrap_or_else(crate::plan_interview::builtin_questions);
-        self.mode = AppMode::PlanInterview(PlanInterviewState::for_feature_creation(
-            prepared, questions,
-        ));
+        let mut state = PlanInterviewState::for_feature_creation(prepared, questions);
+        if let Some(draft) = self.load_plan_interview_draft(&state.interview_key) {
+            state.offer_resume(draft);
+        }
+        self.mode = AppMode::PlanInterview(state);
+        self.message = None;
+    }
+
+    /// Run the interview on demand against the currently selected feature.
+    ///
+    /// Unlike the feature-creation trigger there is no launch to defer: the
+    /// feature already exists, so accepting simply rewrites its plan file. The
+    /// interview is keyed by the feature's id, so a saved draft or an earlier
+    /// accepted transcript for this feature is picked up on entry.
+    pub(crate) fn start_plan_interview_for_selected_feature(&mut self) {
+        let Some((project, feature)) = self.selected_feature() else {
+            self.message = Some("Select a feature to plan".into());
+            return;
+        };
+        let (repo, feature_name, feature_id, workdir, agent) = (
+            project.repo.clone(),
+            feature.name.clone(),
+            feature.id.clone(),
+            feature.workdir.clone(),
+            feature.agent.clone(),
+        );
+
+        let questions = self.extension_for_repo(&repo).plan_interview_questions();
+        let mut state = PlanInterviewState::for_feature(
+            feature_name,
+            feature_id.clone(),
+            questions,
+            workdir,
+            agent,
+        );
+        if let Some(draft) = self.load_plan_interview_draft(&feature_id) {
+            state.offer_resume(draft);
+        }
+        self.mode = AppMode::PlanInterview(state);
+        self.message = None;
+    }
+
+    /// The saved draft for `interview_key`, or `None` when there is nothing to
+    /// resume.
+    ///
+    /// An unreadable row is treated as "no draft" so a corrupt or
+    /// older-format record cannot block the interview; the reason lands in the
+    /// debug log rather than in the user's way.
+    fn load_plan_interview_draft(&mut self, interview_key: &str) -> Option<PlanInterviewRecord> {
+        match self.db.as_ref()?.plan_interview_draft(interview_key) {
+            Ok(draft) => draft,
+            Err(e) => {
+                self.log_warn(
+                    "plan_interview",
+                    format!("ignoring unreadable saved draft for {interview_key}: {e}"),
+                );
+                None
+            }
+        }
+    }
+
+    /// Save the interview as it stands so abandoning the mode — or losing the
+    /// process — does not cost the user their answers.
+    ///
+    /// Called after every action that records an answer. Deliberately silent on
+    /// failure: persistence is a convenience layered under a flow that works
+    /// entirely from memory, and a DB error must not interrupt the interview.
+    /// Nothing is saved before the brief is entered, since an interview with no
+    /// brief has nothing worth resuming into.
+    pub(crate) fn persist_plan_interview_draft(&mut self) {
+        let record = match &self.mode {
+            AppMode::PlanInterview(state) if !state.brief.trim().is_empty() => {
+                state.to_draft_record()
+            }
+            _ => return,
+        };
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        if let Err(e) = db.save_plan_interview(&record) {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to save plan interview draft: {e}"),
+            );
+        }
+    }
+
+    /// Resume the offered draft, restoring answers and any plan already
+    /// generated for it.
+    pub(crate) fn resume_plan_interview_draft(&mut self) -> Result<()> {
+        let resumed = match &mut self.mode {
+            AppMode::PlanInterview(state) => state.resume_from_draft(),
+            _ => false,
+        };
+        if !resumed {
+            return Ok(());
+        }
+        self.message = None;
+        // Resuming can land directly on `Done` when the draft answered
+        // everything and had already opted into adaptive rounds.
+        self.continue_plan_interview_after_done()
+    }
+
+    /// Discard the offered draft and start over from a blank brief.
+    pub(crate) fn discard_plan_interview_draft(&mut self) {
+        let discarded = match &mut self.mode {
+            AppMode::PlanInterview(state) => {
+                state.discard_draft().then(|| state.interview_key.clone())
+            }
+            _ => None,
+        };
+        let Some(interview_key) = discarded else {
+            return;
+        };
+        if let Some(db) = self.db.as_ref()
+            && let Err(e) = db.delete_plan_interview_draft(&interview_key)
+        {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to discard saved plan interview draft: {e}"),
+            );
+        }
         self.message = None;
     }
 
@@ -95,11 +225,7 @@ impl App {
                 state.brief.clone(),
                 state.questions.clone(),
                 state.answers.clone(),
-                state
-                    .pending_launch
-                    .as_ref()
-                    .map(|prepared| prepared.workdir.clone())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                state.context_workdir(),
             ),
             _ => return Ok(()),
         };
@@ -176,11 +302,7 @@ impl App {
                 state.brief.clone(),
                 state.questions.clone(),
                 state.answers.clone(),
-                state
-                    .pending_launch
-                    .as_ref()
-                    .map(|prepared| prepared.workdir.clone())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                state.context_workdir(),
                 // Read, not taken: a revision that cannot run must leave the
                 // feedback staged rather than spend it on a pass that never
                 // happens.
@@ -320,11 +442,7 @@ impl App {
                     state.brief.clone(),
                     state.questions.clone(),
                     state.answers.clone(),
-                    state
-                        .pending_launch
-                        .as_ref()
-                        .map(|prepared| prepared.workdir.clone())
-                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                    state.context_workdir(),
                     plan,
                 )
             }
@@ -584,6 +702,9 @@ impl App {
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.apply_ai_round(round, new_questions);
         }
+        // A spent round is recorded even when it produced nothing usable, so the
+        // draft has to capture it: resuming must not hand back a paid round.
+        self.persist_plan_interview_draft();
 
         let reached_done = matches!(
             &self.mode,
@@ -693,34 +814,41 @@ impl App {
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.apply_synthesis(plan);
         }
+        // The plan at the review gate was paid for. Persisting it means an
+        // abandoned review resumes straight back to it instead of synthesizing
+        // again.
+        self.persist_plan_interview_draft();
         self.message = None;
     }
 
     /// Accept the reviewed plan and execute the launch it has been holding.
     pub(crate) fn complete_plan_interview(&mut self) -> Result<()> {
-        let (workdir, plan) = match &self.mode {
-            AppMode::PlanInterview(state) => {
-                let Some(prepared) = state.pending_launch.as_ref() else {
-                    return Ok(());
-                };
-                (
-                    prepared.workdir.clone(),
-                    state.synthesized_plan.clone().unwrap_or_else(|| {
-                        render_static_plan(
-                            &state.feature_name,
-                            &state.brief,
-                            &state.questions,
-                            &state.answers,
-                        )
-                    }),
-                )
-            }
+        let (workdir, plan, interview_key) = match &self.mode {
+            AppMode::PlanInterview(state) => (
+                state.workdir.clone(),
+                state.synthesized_plan.clone().unwrap_or_else(|| {
+                    render_static_plan(
+                        &state.feature_name,
+                        &state.brief,
+                        &state.questions,
+                        &state.answers,
+                    )
+                }),
+                state.interview_key.clone(),
+            ),
             _ => return Ok(()),
         };
 
         // Keep the interview open if either write fails so the user can retry
         // or abort without losing the answers they just entered.
         write_plan_file(&workdir, &plan)?;
+
+        // The draft has to exist for the accept to finalize it, and it only
+        // exists if something was saved during the interview. Save the accepted
+        // state first so a plan reached without a persisted draft — a DB that
+        // appeared mid-interview, or a flow that skipped straight to synthesis —
+        // still leaves a transcript behind.
+        self.persist_plan_interview_draft();
 
         let pending = match &mut self.mode {
             AppMode::PlanInterview(state) => state.pending_launch.take(),
@@ -729,10 +857,211 @@ impl App {
         self.mode = AppMode::Normal;
 
         if let Some(prepared) = pending {
-            self.finish_feature_launch_without_interview(prepared)
-        } else {
-            self.message = Some("Plan interview complete".into());
+            let project_name = prepared.project_name.clone();
+            let branch = prepared.branch.clone();
+            // The launch injects the plan-mode instruction block into the
+            // harness's instruction file (via `ensure_feature_running`), so the
+            // agent already knows the plan is user-approved before it reads the
+            // kickoff prompt.
+            self.finish_feature_launch_without_interview(prepared)?;
+            self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
+            self.seed_plan_kickoff_prompt(&project_name, &branch);
             Ok(())
+        } else {
+            // On-demand: the feature already exists and is possibly already
+            // running, so accepting rewrites its plan rather than launching
+            // anything. `interview_key` is the feature's own id here, so the
+            // transcript is already filed where a re-run will look for it.
+            self.apply_on_demand_plan(&interview_key, &workdir);
+            self.finalize_plan_interview_transcript(&interview_key, "", "", &plan);
+            self.message = Some(format!(
+                "Plan written to {}",
+                workdir.join(".claude").join(PLAN_FILE_NAME).display()
+            ));
+            Ok(())
+        }
+    }
+
+    /// Make an on-demand plan effective for the feature it was written for.
+    ///
+    /// Writing `.claude/plan.md` is not enough on its own: unless the harness's
+    /// instruction file points at it, the agent is never told the plan exists.
+    /// Running the interview is also taken as turning plan mode on, so a later
+    /// restart keeps injecting the block instead of silently dropping it.
+    ///
+    /// Best-effort: the plan file is already on disk by this point, so a store
+    /// that will not save must not fail the accept.
+    fn apply_on_demand_plan(&mut self, feature_id: &str, workdir: &Path) {
+        let Some((pi, fi)) = self
+            .store
+            .projects
+            .iter()
+            .enumerate()
+            .find_map(|(pi, project)| {
+                project
+                    .features
+                    .iter()
+                    .position(|feature| feature.id == feature_id)
+                    .map(|fi| (pi, fi))
+            })
+        else {
+            return;
+        };
+
+        let feature = &mut self.store.projects[pi].features[fi];
+        let agent = feature.agent.clone();
+        let already_on = feature.plan_mode;
+        feature.plan_mode = true;
+
+        crate::app::setup::ensure_plan_mode_instructions(workdir, &agent, true);
+
+        if !already_on && let Err(e) = self.save() {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to record plan mode for '{feature_id}': {e}"),
+            );
+        }
+    }
+
+    /// Promote the accepted interview's draft into the feature's transcript.
+    ///
+    /// A feature-creation interview saved its draft under a pending key, because
+    /// the feature had no id yet; the transcript is re-filed under the id the
+    /// launch just created so a later re-run on that feature finds it. Called
+    /// after the launch for exactly that reason.
+    ///
+    /// Best-effort: the plan file is already written and the session already
+    /// running by this point, so nothing here is allowed to fail the accept.
+    fn finalize_plan_interview_transcript(
+        &mut self,
+        interview_key: &str,
+        project_name: &str,
+        branch: &str,
+        plan: &str,
+    ) {
+        let feature_id = self
+            .store
+            .find_project(project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == branch)
+            })
+            .map(|feature| feature.id.clone())
+            // No feature to re-file under (an on-demand interview, or a launch
+            // that did not produce one) leaves the transcript on its own key.
+            .unwrap_or_else(|| interview_key.to_string());
+
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        match db.finalize_plan_interview_draft(interview_key, &feature_id, plan) {
+            Ok(true) => {}
+            Ok(false) => self.log_debug(
+                "plan_interview",
+                format!("no saved draft to finalize for {interview_key}"),
+            ),
+            Err(e) => self.log_warn(
+                "plan_interview",
+                format!("failed to save the accepted plan interview transcript: {e}"),
+            ),
+        }
+    }
+
+    /// Open the freshly launched agent session with its composer seeded with a
+    /// kickoff prompt pointing at the accepted plan.
+    ///
+    /// Best-effort by design: this runs *after* the feature is created and
+    /// started, so nothing here is allowed to fail the accept. If the launch
+    /// took the user somewhere else (the startup steering prompt) or the
+    /// feature has no tmux-backed agent session, the plan file and instruction
+    /// block are already in place and the seed is simply skipped.
+    fn seed_plan_kickoff_prompt(&mut self, project_name: &str, branch: &str) {
+        if !matches!(self.mode, AppMode::Normal) {
+            return;
+        }
+
+        let Some((pi, fi, si)) = self
+            .store
+            .projects
+            .iter()
+            .position(|project| project.name == project_name)
+            .and_then(|pi| {
+                let fi = self.store.projects[pi]
+                    .features
+                    .iter()
+                    .position(|feature| feature.name == branch)?;
+                let si = self.store.projects[pi].features[fi]
+                    .sessions
+                    .iter()
+                    .position(|session| {
+                        session.kind.is_agent_harness() && session.kind.is_tmux_backed()
+                    })?;
+                Some((pi, fi, si))
+            })
+        else {
+            return;
+        };
+
+        self.selection = Selection::Session(pi, fi, si);
+        if let Err(e) = self.enter_view_without_auto_compose() {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to open the new session for the plan kickoff prompt: {e}"),
+            );
+            return;
+        }
+        if let Err(e) = self.open_compose_seeded(PLAN_KICKOFF_PROMPT.to_string()) {
+            self.log_warn(
+                "plan_interview",
+                format!("failed to seed the plan kickoff prompt: {e}"),
+            );
+        }
+    }
+
+    /// Drop a deleted feature's stored interviews.
+    ///
+    /// `plan_interviews.feature_id` carries no foreign key (the store's
+    /// full-replace save would cascade-wipe the rows), so deletion is explicit.
+    /// Two keys are cleared: the feature's id, holding anything saved once the
+    /// feature existed, and the pending key from
+    /// [`crate::plan_interview::pending_interview_key`], which still holds a
+    /// draft if the feature was created after its interview was abandoned.
+    ///
+    /// Best-effort: the feature is going away regardless, and a leftover row is
+    /// inert — it is only ever read by an interview for this same feature.
+    pub(crate) fn delete_plan_interviews_for_deleted_feature(
+        &mut self,
+        project_name: &str,
+        feature_name: &str,
+        feature_id: &Option<String>,
+    ) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let mut keys = vec![plan_interview::pending_interview_key(
+            project_name,
+            feature_name,
+        )];
+        keys.extend(feature_id.clone());
+
+        let failures: Vec<String> = keys
+            .iter()
+            .filter_map(|key| {
+                db.delete_plan_interviews_for_feature(key)
+                    .err()
+                    .map(|e| format!("{key}: {e}"))
+            })
+            .collect();
+        if !failures.is_empty() {
+            self.log_warn(
+                "plan_interview",
+                format!(
+                    "failed to delete stored interviews for '{feature_name}': {}",
+                    failures.join("; ")
+                ),
+            );
         }
     }
 
@@ -810,22 +1139,42 @@ fn truncate_for_log(response: &str) -> String {
     }
 }
 
+/// Deterministic plan used whenever synthesis is unavailable or fails.
+///
+/// Skipped and blank answers are omitted rather than listed as "_Skipped._":
+/// this file is what the implementing agent reads, and a wall of unanswered
+/// prompts is context it has to spend attention discarding. An interview where
+/// nothing was answered degrades to the brief alone, which is still the whole
+/// of what the user said.
 fn render_static_plan(
     feature_name: &str,
     brief: &str,
     questions: &[PlanQuestion],
     answers: &[Option<String>],
 ) -> String {
-    let mut plan = format!("# Plan: {feature_name}\n\n## Feature brief\n\n{brief}\n\n## Q&A\n");
+    let mut plan = format!("# Plan: {feature_name}\n\n## Feature brief\n\n{brief}\n");
 
-    for (index, question) in questions.iter().enumerate() {
+    let answered = questions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, question)| {
+            answers
+                .get(index)
+                .and_then(|answer| answer.as_deref())
+                .filter(|answer| !answer.trim().is_empty())
+                .map(|answer| (question, answer))
+        });
+
+    let mut wrote_heading = false;
+    for (question, answer) in answered {
+        if !wrote_heading {
+            plan.push_str("\n## Q&A\n");
+            wrote_heading = true;
+        }
         plan.push_str("\n### ");
         plan.push_str(&question.text);
         plan.push_str("\n\n");
-        match answers.get(index).and_then(|answer| answer.as_deref()) {
-            Some(answer) => plan.push_str(answer),
-            None => plan.push_str("_Skipped._"),
-        }
+        plan.push_str(answer);
         plan.push('\n');
     }
 
@@ -870,36 +1219,56 @@ mod tests {
     use crate::markdown::{preferred_plan_markdown_path, read_plan_preview};
     use crate::plan_interview::{PlanQuestionKind, QuestionSource};
 
+    fn free_text_question(id: &str, text: &str) -> PlanQuestion {
+        PlanQuestion {
+            id: id.into(),
+            text: text.into(),
+            kind: PlanQuestionKind::FreeText,
+            source: QuestionSource::Builtin,
+            optional: true,
+        }
+    }
+
     #[test]
-    fn static_plan_preserves_brief_answers_and_skipped_questions() {
+    fn static_plan_keeps_brief_and_answers_but_omits_unanswered_questions() {
         let questions = vec![
-            PlanQuestion {
-                id: "scope".into(),
-                text: "What is in scope?".into(),
-                kind: PlanQuestionKind::FreeText,
-                source: QuestionSource::Builtin,
-                optional: true,
-            },
-            PlanQuestion {
-                id: "risks".into(),
-                text: "What are the risks?".into(),
-                kind: PlanQuestionKind::FreeText,
-                source: QuestionSource::Builtin,
-                optional: true,
-            },
+            free_text_question("scope", "What is in scope?"),
+            free_text_question("risks", "What are the risks?"),
+            free_text_question("ui", "What is the UI surface?"),
         ];
 
         let plan = render_static_plan(
             "guided-plans",
             "Collect a brief\nbefore launch.",
             &questions,
-            &[Some("Native TUI only.\nNo AI yet.".into()), None],
+            &[
+                Some("Native TUI only.\nNo AI yet.".into()),
+                None,
+                // Blank answers are skips too — a config-authored select option
+                // can be an empty string.
+                Some("   ".into()),
+            ],
         );
 
         assert!(plan.starts_with("# Plan: guided-plans\n\n## Feature brief"));
         assert!(plan.contains("Collect a brief\nbefore launch."));
         assert!(plan.contains("### What is in scope?\n\nNative TUI only.\nNo AI yet."));
-        assert!(plan.contains("### What are the risks?\n\n_Skipped._"));
+        assert!(!plan.contains("What are the risks?"));
+        assert!(!plan.contains("What is the UI surface?"));
+        assert!(!plan.contains("_Skipped._"));
+    }
+
+    #[test]
+    fn static_plan_without_any_answers_is_brief_only() {
+        let questions = vec![free_text_question("scope", "What is in scope?")];
+
+        let plan = render_static_plan("guided-plans", "Ship it.", &questions, &[None]);
+
+        assert_eq!(
+            plan,
+            "# Plan: guided-plans\n\n## Feature brief\n\nShip it.\n"
+        );
+        assert!(!plan.contains("## Q&A"));
     }
 
     #[test]

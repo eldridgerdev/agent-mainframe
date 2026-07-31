@@ -57,6 +57,25 @@ pub fn draw_plan_interview_dialog(
     frame.render_widget(block, area);
 
     if state.abort_confirmation {
+        // An on-demand interview has no launch riding on it, so the only
+        // choices are to leave the feature as it is or keep answering.
+        let choices = if state.pending_launch.is_some() {
+            vec![
+                hint("y", theme),
+                Span::raw(" launch without a plan  "),
+                hint("n", theme),
+                Span::raw(" cancel feature creation  "),
+                hint("Esc", theme),
+                Span::raw(" resume interview"),
+            ]
+        } else {
+            vec![
+                hint("y", theme),
+                Span::raw(" leave the plan unchanged  "),
+                hint("Esc", theme),
+                Span::raw(" resume interview"),
+            ]
+        };
         let confirm = Paragraph::new(vec![
             Line::from(Span::styled(
                 "Leave this interview?",
@@ -65,14 +84,7 @@ pub fn draw_plan_interview_dialog(
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(vec![
-                hint("y", theme),
-                Span::raw(" launch without a plan  "),
-                hint("n", theme),
-                Span::raw(" cancel feature creation  "),
-                hint("Esc", theme),
-                Span::raw(" resume interview"),
-            ]),
+            Line::from(choices),
         ])
         .block(
             Block::default()
@@ -133,6 +145,7 @@ pub fn draw_plan_interview_dialog(
             }
             None => {}
         },
+        PlanInterviewPhase::ResumePrompt => draw_resume_prompt(frame, chunks[2], state, theme),
         PlanInterviewPhase::AiConsent => {
             frame.render_widget(
                 Paragraph::new(vec![
@@ -193,6 +206,15 @@ pub fn draw_plan_interview_dialog(
             message.to_string(),
             Style::default().fg(color),
         ))
+    } else if state.phase == PlanInterviewPhase::ResumePrompt {
+        Line::from(vec![
+            hint("r", theme),
+            Span::raw(" resume saved answers  "),
+            hint("d", theme),
+            Span::raw(" discard and start over  "),
+            hint("Esc", theme),
+            Span::raw(" cancel (keeps the draft)"),
+        ])
     } else if state.phase == PlanInterviewPhase::AiConsent {
         Line::from(vec![
             hint("a", theme),
@@ -235,6 +257,7 @@ pub fn draw_plan_interview_dialog(
 fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'static> {
     let total = state.questions.len() + 1;
     let (position, stage) = match state.phase {
+        PlanInterviewPhase::ResumePrompt => (1, "Saved draft".to_string()),
         PlanInterviewPhase::Brief => (1, "Feature brief".to_string()),
         PlanInterviewPhase::StaticQuestions => {
             let source = state
@@ -274,6 +297,7 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
 
 fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'static> {
     let (text, optional) = match state.phase {
+        PlanInterviewPhase::ResumePrompt => ("Resume the saved interview?".to_string(), false),
         PlanInterviewPhase::Brief => ("Describe the feature".to_string(), false),
         PlanInterviewPhase::StaticQuestions => state
             .current_question()
@@ -303,6 +327,84 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         Span::styled(suffix, Style::default().fg(theme.text_muted.to_color())),
     ]))
     .wrap(Wrap { trim: false })
+}
+
+/// The resume-or-discard choice for a saved draft.
+///
+/// Summarizes what resuming would actually restore — how much was answered,
+/// whether adaptive rounds were already spent, whether a plan was already
+/// generated — so the choice is not made blind. `updated_at` is the DB's own
+/// timestamp, which is what makes "is this draft still relevant?" answerable.
+fn draw_resume_prompt(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    theme: &Theme,
+) {
+    let Some(draft) = state.resume_draft.as_ref() else {
+        return;
+    };
+
+    let answered = draft
+        .answers
+        .iter()
+        .filter(|answer| !answer.as_deref().unwrap_or_default().trim().is_empty())
+        .count();
+    let brief_preview: String = draft
+        .brief
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(160)
+        .collect();
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!(
+                "An unfinished interview for '{}' was saved.",
+                draft.feature_name
+            ),
+            Style::default()
+                .fg(theme.text.to_color())
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Last saved: {}", draft.updated_at),
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+        Line::from(Span::styled(
+            format!("{answered} of {} questions answered", draft.questions.len()),
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ];
+    if draft.ai_rounds_completed > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} AI round(s) already spent — resuming does not pay for them again",
+                draft.ai_rounds_completed
+            ),
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+    }
+    if draft.plan.is_some() {
+        lines.push(Line::from(Span::styled(
+            "A generated plan was saved — resuming reopens it at the review gate",
+            Style::default().fg(theme.success.to_color()),
+        )));
+    }
+    if !brief_preview.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            brief_preview,
+            Style::default()
+                .fg(theme.secondary.to_color())
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 /// Loading frame shown while an AI-adaptive round runs off the UI thread
@@ -429,11 +531,7 @@ fn draw_plan_review(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(area);
-    let source_path = state
-        .pending_launch
-        .as_ref()
-        .map(|prepared| prepared.workdir.join(".claude/plan.md"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".claude/plan.md"));
+    let source_path = state.workdir.join(".claude/plan.md");
     let content = state.synthesized_plan.as_deref().unwrap_or_default();
     super::markdown::draw_markdown_document(
         frame,

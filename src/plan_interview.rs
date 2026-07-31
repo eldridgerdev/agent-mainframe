@@ -128,13 +128,25 @@ pub fn gather_repository_context(workdir: &Path) -> RepositoryContext {
     }
 }
 
-/// One question paired with the answer it collected, as sent to every
-/// harness-facing prompt in this module.
+/// One question paired with the answer it collected, including questions the
+/// user skipped (`answer: null`). Used where the *asked set* is the signal:
+/// the interviewer must not re-ask what was deliberately passed over, and the
+/// reviewer judges the plan against everything the interview covered.
 #[derive(Serialize)]
 struct InterviewAnswer<'a> {
     id: &'a str,
     question: &'a str,
     answer: Option<&'a str>,
+}
+
+/// One answered question. Synthesis writes down what was decided, so a
+/// question with no answer is pure token cost there — and worse, an invitation
+/// to invent a decision nobody made.
+#[derive(Serialize)]
+struct AnsweredQuestion<'a> {
+    id: &'a str,
+    question: &'a str,
+    answer: &'a str,
 }
 
 fn interview_answers<'a>(
@@ -148,6 +160,30 @@ fn interview_answers<'a>(
             id: &question.id,
             question: &question.text,
             answer: answers.get(index).and_then(|answer| answer.as_deref()),
+        })
+        .collect()
+}
+
+/// The interview restricted to questions that collected a non-blank answer.
+/// Blank answers are treated as skips: config-authored select options can be
+/// empty strings, and a free-text answer that is only whitespace says nothing.
+fn answered_questions<'a>(
+    questions: &'a [PlanQuestion],
+    answers: &'a [Option<String>],
+) -> Vec<AnsweredQuestion<'a>> {
+    questions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, question)| {
+            let answer = answers
+                .get(index)
+                .and_then(|answer| answer.as_deref())
+                .filter(|answer| !answer.trim().is_empty())?;
+            Some(AnsweredQuestion {
+                id: &question.id,
+                question: &question.text,
+                answer,
+            })
         })
         .collect()
 }
@@ -208,7 +244,7 @@ pub fn build_synthesis_prompt(
         prompt_version: u32,
         feature_name: &'a str,
         feature_brief: &'a str,
-        interview_answers: Vec<InterviewAnswer<'a>>,
+        interview_answers: Vec<AnsweredQuestion<'a>>,
         repository_context: &'a RepositoryContext,
         #[serde(skip_serializing_if = "Option::is_none")]
         reviewer_feedback: Option<&'a str>,
@@ -218,7 +254,10 @@ pub fn build_synthesis_prompt(
         prompt_version: SYNTHESIS_PROMPT_VERSION,
         feature_name,
         feature_brief: brief,
-        interview_answers: interview_answers(questions, answers),
+        // Skipped questions are omitted entirely rather than sent as nulls:
+        // the plan should reflect what the user decided, not carry a list of
+        // prompts they declined.
+        interview_answers: answered_questions(questions, answers),
         repository_context: context,
         reviewer_feedback,
     };
@@ -547,6 +586,20 @@ impl PlanQuestion {
     }
 }
 
+/// The key a stored interview is filed under while the feature it plans does
+/// not exist yet.
+///
+/// The feature-creation trigger runs the interview *before* the feature (and
+/// its random uuid) exists, so a draft saved mid-wizard has no feature id to
+/// key on. Project name plus branch is the identity the user re-enters when
+/// they come back to create the same feature, which is exactly when the draft
+/// should be offered again. On accept the transcript is re-filed under the real
+/// feature id, so this key only ever names an interview whose feature has not
+/// been created.
+pub fn pending_interview_key(project_name: &str, branch: &str) -> String {
+    format!("pending:{project_name}/{branch}")
+}
+
 /// Return the curated questions asked after the required feature brief.
 ///
 /// The order is part of the interview UX: it moves from product scope toward
@@ -741,6 +794,13 @@ mod tests {
                 source: QuestionSource::Builtin,
                 optional: true,
             },
+            PlanQuestion {
+                id: "ui".into(),
+                text: "What is the UI surface?".into(),
+                kind: PlanQuestionKind::FreeText,
+                source: QuestionSource::Builtin,
+                optional: true,
+            },
         ];
         let context = RepositoryContext {
             top_level_entries: vec!["src/".into()],
@@ -752,7 +812,7 @@ mod tests {
             "guided-plans",
             "Create an approved implementation plan.",
             &questions,
-            &[Some("Native TUI".into()), None],
+            &[Some("Native TUI".into()), None, Some("  ".into())],
             &context,
             None,
         );
@@ -762,11 +822,52 @@ mod tests {
         assert!(prompt.contains("\"prompt_version\": 1"));
         assert!(prompt.contains("\"feature_name\": \"guided-plans\""));
         assert!(prompt.contains("\"answer\": \"Native TUI\""));
-        assert!(prompt.contains("\"answer\": null"));
         assert!(prompt.contains("\"readme_head\": \"An AMF project\""));
+        // Skipped and blank-answer questions carry no decision, so they are
+        // omitted entirely rather than sent as nulls the model has to reason
+        // about.
+        assert!(!prompt.contains("\"answer\": null"));
+        assert!(!prompt.contains("What is still unknown?"));
+        assert!(!prompt.contains("What is the UI surface?"));
         // A first pass must not hint at feedback that does not exist.
         assert!(!prompt.contains("reviewer_feedback"));
         assert!(!prompt.contains("This request is a revision"));
+    }
+
+    /// The interviewer and reviewer both need the *asked* set, not just the
+    /// answered one: the interviewer must not re-ask what the user deliberately
+    /// passed over, and the reviewer judges the plan against everything the
+    /// interview covered. Only synthesis filters.
+    #[test]
+    fn interviewer_and_critique_prompts_still_see_skipped_questions() {
+        let questions = vec![PlanQuestion {
+            id: "unknown".into(),
+            text: "What is still unknown?".into(),
+            kind: PlanQuestionKind::FreeText,
+            source: QuestionSource::Builtin,
+            optional: true,
+        }];
+        let context = RepositoryContext {
+            top_level_entries: Vec::new(),
+            readme_head: None,
+            claude_md: None,
+        };
+
+        let interviewer =
+            build_interviewer_prompt("guided-plans", "Brief.", &questions, &[None], &context, 1);
+        assert!(interviewer.contains("What is still unknown?"));
+        assert!(interviewer.contains("\"answer\": null"));
+
+        let critique = build_critique_prompt(
+            "guided-plans",
+            "# Plan: guided-plans\n",
+            "Brief.",
+            &questions,
+            &[None],
+            &context,
+        );
+        assert!(critique.contains("What is still unknown?"));
+        assert!(critique.contains("\"answer\": null"));
     }
 
     #[test]

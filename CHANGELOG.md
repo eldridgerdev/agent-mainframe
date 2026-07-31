@@ -10,12 +10,41 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Leaving a plan interview no longer loses your answers.** Answers are saved
+  as you give them, so aborting the interview, cancelling the feature, or
+  closing AMF entirely keeps them. Starting the interview again for the same
+  feature offers to resume the saved draft or discard it and start over, and
+  tells you when it was saved, how much was answered, and whether a plan had
+  already been generated — nothing is restored until you choose.
+- **Resuming picks up where you stopped.** You land on the first question still
+  unanswered rather than walking forward through answers you already gave.
+  Adaptive AI rounds you already paid for are kept, and a draft that already
+  had a generated plan reopens at the review gate instead of generating a
+  second one.
+- **Accepting a plan keeps the interview behind it.** The questions and answers
+  are stored with the feature, which is what an upcoming release will use to
+  pre-fill a re-run. Deleting a feature removes its stored interviews.
+- **You can now plan a feature you already created.** Press `P` on a feature, or
+  pick `plan-interview` from the command picker, to run the same interview
+  without going through the creation wizard. Accepting rewrites that feature's
+  own plan, turns plan mode on for it, and points its agent at the plan —
+  previously the interview only ran while creating a feature. Leaving the
+  interview is non-destructive: the feature keeps whatever plan it had.
+
 ### Fixed
 
 - **Custom-session Nerd Font icons can now be chosen visually in the config
   wizard.** The chooser previews useful session icons and still accepts custom
   glyphs. Existing bundled names such as `nf-md-server` now render as icons,
   so no config migration is required.
+
+### Migration
+
+No migration is required. Plan interviews still work without a database, and
+existing features are unaffected — the first interview you run after upgrading
+starts saving its answers.
 
 ## [v0.33.0] - 2026-07-28
 

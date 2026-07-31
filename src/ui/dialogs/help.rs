@@ -35,6 +35,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("L", "Open prompt library"),
         ("G", "Open PR Triage (experimental)"),
         ("W", "Open AI Review for this feature (experimental)"),
+        ("P", "Run a plan interview for this feature"),
         ("T", "Theme picker"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
@@ -93,13 +94,17 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     )));
 
     let plan_interview_keybinds: Vec<(&str, &str)> = vec![
+        ("r / d", "Resume or discard a saved draft (on entry)"),
         ("Enter", "Save answer and continue"),
         ("Alt+Enter", "Insert a newline (free-text answers)"),
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
         ("Ctrl+B", "Return to the previous question"),
         ("Ctrl+S", "Skip an optional question"),
         ("Ctrl+F", "Synthesize now with answers so far (uses tokens)"),
-        ("Esc", "Cancel (launch without plan or feature)"),
+        (
+            "Esc",
+            "Cancel (launch without plan, or leave plan unchanged)",
+        ),
     ];
 
     for (key, desc) in &plan_interview_keybinds {
@@ -131,7 +136,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Agent review of the plan, or re-open one already held (uses tokens for a new review)",
         ),
         ("r", "Regenerate the plan (uses tokens)"),
-        ("Enter", "Accept plan and launch feature"),
+        (
+            "Enter",
+            "Accept plan (on creation: launch feature and seed the kickoff prompt)",
+        ),
         ("Ctrl+S", "Save edit and return to preview"),
         ("Esc", "Discard edit or confirm abort"),
     ];

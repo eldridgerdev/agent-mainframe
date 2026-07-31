@@ -664,18 +664,30 @@ impl TmuxManager {
         )
     }
 
+    /// tmux argv that declares control-client terminals hyperlink-capable, or
+    /// `None` when AMF does not own the tmux server (an external server keeps
+    /// whatever the user configured).
+    fn control_client_terminal_features_args(manages_private_socket: bool) -> Option<Vec<String>> {
+        manages_private_socket.then(|| {
+            vec![
+                "set-option".to_string(),
+                "-g".to_string(),
+                Self::CONTROL_CLIENT_TERMINAL_FEATURES_OPTION.to_string(),
+                Self::CONTROL_CLIENT_TERMINAL_FEATURES.to_string(),
+            ]
+        })
+    }
+
     fn configure_control_client_terminal_features() {
-        if !Self::runtime().manages_private_socket {
+        let Some(args) =
+            Self::control_client_terminal_features_args(Self::runtime().manages_private_socket)
+        else {
             return;
-        }
+        };
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
 
         if let Err(err) = Self::run(
-            &[
-                "set-option",
-                "-g",
-                Self::CONTROL_CLIENT_TERMINAL_FEATURES_OPTION,
-                Self::CONTROL_CLIENT_TERMINAL_FEATURES,
-            ],
+            &args,
             "Failed to configure tmux control-client terminal features",
             "tmux set-option failed",
         ) {
@@ -2354,24 +2366,91 @@ mod tests {
         TmuxManager::configure_control_mode(true);
     }
 
-    #[test]
-    fn forced_control_client_terminal_is_declared_hyperlink_capable() {
+    /// Minimal stand-in for tmux's `fnmatch`-style terminal-features matching,
+    /// enough to check that a pattern such as `xterm*` covers a given `TERM`.
+    fn terminal_feature_pattern_matches(pattern: &str, term: &str) -> bool {
+        let mut segments = pattern.split('*');
+        let first = segments.next().unwrap_or_default();
+        let Some(mut rest) = term.strip_prefix(first) else {
+            return false;
+        };
+
+        let mut saw_wildcard = false;
+        for segment in segments {
+            saw_wildcard = true;
+            if segment.is_empty() {
+                continue;
+            }
+            let Some(index) = rest.find(segment) else {
+                return false;
+            };
+            rest = &rest[index + segment.len()..];
+        }
+
+        // A trailing `*` absorbs whatever is left; without one the whole
+        // terminal name had to be consumed.
+        saw_wildcard || rest.is_empty()
+    }
+
+    fn forced_control_client_term() -> String {
         let mut command = std::process::Command::new("tmux");
         TmuxManager::apply_control_client_term_env(&mut command);
-
-        let term = command
+        command
             .get_envs()
             .find_map(|(key, value)| (key == "TERM").then_some(value.unwrap()))
-            .unwrap();
-        assert_eq!(term, "xterm-256color");
+            .expect("control clients must force a TERM")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn managed_socket_declares_hyperlinks_for_control_clients() {
+        let args = TmuxManager::control_client_terminal_features_args(true)
+            .expect("managed socket must configure terminal features");
+
         assert_eq!(
-            TmuxManager::CONTROL_CLIENT_TERMINAL_FEATURES,
-            "xterm*:hyperlinks"
+            args,
+            vec![
+                "set-option",
+                "-g",
+                "terminal-features[99]",
+                "xterm*:hyperlinks",
+            ]
         );
-        assert_eq!(
-            TmuxManager::CONTROL_CLIENT_TERMINAL_FEATURES_OPTION,
-            "terminal-features[99]"
+    }
+
+    #[test]
+    fn external_tmux_server_terminal_features_are_left_alone() {
+        assert!(TmuxManager::control_client_terminal_features_args(false).is_none());
+    }
+
+    #[test]
+    fn declared_hyperlink_feature_covers_the_forced_control_client_term() {
+        let term = forced_control_client_term();
+        let spec = TmuxManager::CONTROL_CLIENT_TERMINAL_FEATURES;
+        let (pattern, features) = spec
+            .split_once(':')
+            .expect("terminal-features value is `pattern:feature[:feature...]`");
+
+        assert!(
+            terminal_feature_pattern_matches(pattern, &term),
+            "pattern `{pattern}` does not match control-client TERM `{term}`"
         );
+        assert!(
+            features.split(':').any(|feature| feature == "hyperlinks"),
+            "spec `{spec}` does not declare the hyperlinks feature"
+        );
+    }
+
+    #[test]
+    fn terminal_feature_pattern_matcher_rejects_unrelated_terminals() {
+        assert!(terminal_feature_pattern_matches("xterm*", "xterm-256color"));
+        assert!(terminal_feature_pattern_matches("xterm*", "xterm"));
+        assert!(!terminal_feature_pattern_matches(
+            "xterm*",
+            "screen-256color"
+        ));
+        assert!(!terminal_feature_pattern_matches("xterm", "xterm-256color"));
     }
 
     #[test]

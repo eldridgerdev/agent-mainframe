@@ -702,8 +702,8 @@ fn custom_session_field_help(field_focus: usize) -> (&'static str, &'static str,
         ),
         6 => (
             "Nerd icon",
-            "Choose a Nerd Font glyph visually. The selected glyph is saved directly.",
-            "Press Enter to open the icon chooser.",
+            "Press Enter to choose a preset, then press `e` to paste a custom glyph.",
+            "Copy glyphs from https://www.nerdfonts.com/cheat-sheet",
         ),
         7 => (
             "On stop",

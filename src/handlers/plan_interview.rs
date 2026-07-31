@@ -139,6 +139,20 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.continue_plan_interview_after_done()?;
             }
         }
+        // Re-run only: put back the answer the previous interview accepted for
+        // this question. The pre-fill makes keeping an answer the default, so
+        // this is what makes changing one's mind about a change cheap.
+        KeyCode::Char('r') if control => {
+            let restored = match &mut app.mode {
+                AppMode::PlanInterview(state) => state.restore_prior_answer(),
+                _ => false,
+            };
+            app.message = if restored {
+                None
+            } else {
+                Some("No previous answer to restore for this question".into())
+            };
+        }
         KeyCode::Char('f') if control => {
             let result = match &mut app.mode {
                 AppMode::PlanInterview(state) => state.finish_early(),

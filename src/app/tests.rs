@@ -4027,6 +4027,299 @@ fn deleting_a_feature_drops_its_stored_interviews() {
     );
 }
 
+/// `app_on_selected_feature` plus a real SQLite database, so the re-run path
+/// reads an actual stored transcript. The extra `TempDir` holds the database
+/// file and must outlive the app.
+fn app_on_selected_feature_with_db() -> (App, tempfile::NamedTempFile, TempDir, TempDir) {
+    let db_dir = TempDir::new().unwrap();
+    let (mut app, store_file, repo) = app_on_selected_feature();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    (app, store_file, repo, db_dir)
+}
+
+/// The transcript a previously accepted plan leaves behind for `feat-1`: one
+/// built-in question the current bank still asks, and one AI follow-up it
+/// cannot contain.
+fn save_accepted_transcript(app: &App) {
+    use crate::db::plan_interviews::{PlanInterviewRecord, PlanInterviewStage};
+    use crate::plan_interview::{PlanQuestionKind, QuestionSource};
+
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            stage: PlanInterviewStage::Final,
+            feature_name: "my-feat".into(),
+            brief: "Tighten the sidebar.".into(),
+            questions: vec![
+                crate::plan_interview::PlanQuestion {
+                    id: "scope".into(),
+                    text: "What is in scope?".into(),
+                    kind: PlanQuestionKind::FreeText,
+                    source: QuestionSource::Builtin,
+                    optional: true,
+                },
+                crate::plan_interview::PlanQuestion {
+                    id: "cache-invalidation".into(),
+                    text: "When is the preview invalidated?".into(),
+                    kind: PlanQuestionKind::FreeText,
+                    source: QuestionSource::Ai { round: 1 },
+                    optional: true,
+                },
+            ],
+            answers: vec![Some("Sidebar only.".into()), Some("On every save.".into())],
+            plan: Some("# Plan: my-feat\n".into()),
+            ai_rounds_completed: 1,
+            ..Default::default()
+        })
+        .unwrap();
+}
+
+/// The point of the re-run: planning a feature again starts from the answers
+/// behind the plan already accepted for it, not from a blank interview.
+#[test]
+fn re_running_the_interview_pre_fills_the_accepted_answers() {
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+
+    app.start_plan_interview_for_selected_feature();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+            assert_eq!(state.brief, "Tighten the sidebar.");
+            // The brief is in the editor too, so Enter keeps it.
+            assert_eq!(state.editor.text(), "Tighten the sidebar.");
+            let scope = state
+                .questions
+                .iter()
+                .position(|question| question.id == "scope")
+                .expect("the built-in bank still asks about scope");
+            assert_eq!(state.answers[scope].as_deref(), Some("Sidebar only."));
+            // The previous run's AI question is not in the current bank, so it is
+            // carried onto the end with the answer it collected.
+            let ai = state
+                .questions
+                .iter()
+                .position(|question| question.id == "cache-invalidation")
+                .expect("a paid-for AI question must not be dropped on a re-run");
+            assert_eq!(state.answers[ai].as_deref(), Some("On every save."));
+            // Adaptive rounds are not carried: the re-run gets its own opt-in
+            // and its own budget.
+            assert_eq!(state.ai_rounds_completed, 0);
+            assert!(!state.ai_followups_opted_in);
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("pre-filled")
+    );
+}
+
+/// Per-question keep/change: Enter keeps the pre-filled answer, typing changes
+/// it, and Ctrl+R puts the previous one back.
+#[test]
+fn a_re_run_keeps_changes_or_restores_each_answer() {
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.start_plan_interview_for_selected_feature();
+
+    // Brief: pre-filled and reported as kept, and Enter carries it forward.
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    // First question is "scope", pre-filled from the transcript.
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+            assert_eq!(state.questions[state.question_index].id, "scope");
+            assert_eq!(state.editor.text(), "Sidebar only.");
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+        }
+        _ => panic!("expected the first question"),
+    }
+
+    // Typing is a change, and the previous answer stays restorable.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('!'))).unwrap();
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.editor.text(), "Sidebar only.!");
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Changed));
+        }
+        _ => panic!("expected the first question"),
+    }
+
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.editor.text(), "Sidebar only.");
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+        }
+        _ => panic!("expected the first question"),
+    }
+    assert!(app.message.is_none());
+
+    // Enter records the kept answer and moves on.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.answers[0].as_deref(), Some("Sidebar only."));
+            assert_eq!(state.question_index, 1);
+            // The next built-in question was never answered before, so there is
+            // nothing to keep and nothing to restore.
+            assert_eq!(state.prior_answer_state(), None);
+        }
+        _ => panic!("expected the second question"),
+    }
+
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("No previous answer")
+    );
+}
+
+/// Clearing a pre-filled answer skips the question, which is how a re-run drops
+/// an answer that no longer applies.
+#[test]
+fn clearing_a_pre_filled_answer_records_it_as_skipped() {
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.start_plan_interview_for_selected_feature();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new(String::new());
+        assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Cleared));
+    } else {
+        panic!("expected the first question");
+    }
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => assert_eq!(state.answers[0], None),
+        _ => panic!("expected the second question"),
+    }
+}
+
+/// A stale draft and an accepted transcript can both exist for one feature.
+/// Discarding the draft must not also throw away the accepted answers it was
+/// revising.
+#[test]
+fn discarding_a_draft_on_a_re_run_falls_back_to_the_accepted_answers() {
+    use crate::db::plan_interviews::PlanInterviewRecord;
+
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            feature_name: "my-feat".into(),
+            brief: "Abandoned second pass.".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    app.start_plan_interview_for_selected_feature();
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::ResumePrompt)
+    );
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+            assert_eq!(state.brief, "Tighten the sidebar.");
+            assert_eq!(state.answers[0].as_deref(), Some("Sidebar only."));
+        }
+        _ => panic!("discarding must fall back to the accepted transcript"),
+    }
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .plan_interview_draft("feat-1")
+            .unwrap()
+            .is_none()
+    );
+    // The transcript is not the draft: discarding must leave it alone.
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .plan_interview_final("feat-1")
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// Resuming a draft on a re-run takes the draft's answers, which are newer than
+/// the accepted transcript's.
+#[test]
+fn resuming_a_draft_on_a_re_run_wins_over_the_accepted_answers() {
+    use crate::db::plan_interviews::PlanInterviewRecord;
+    use crate::plan_interview::{PlanQuestionKind, QuestionSource};
+
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            feature_name: "my-feat".into(),
+            brief: "Second pass.".into(),
+            questions: vec![crate::plan_interview::PlanQuestion {
+                id: "scope".into(),
+                text: "What is in scope?".into(),
+                kind: PlanQuestionKind::FreeText,
+                source: QuestionSource::Builtin,
+                optional: true,
+            }],
+            answers: vec![Some("Sidebar and header.".into())],
+            ..Default::default()
+        })
+        .unwrap();
+
+    app.start_plan_interview_for_selected_feature();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.brief, "Second pass.");
+            assert_eq!(state.answers[0].as_deref(), Some("Sidebar and header."));
+            // The accepted answer is still what Ctrl+R restores.
+            assert_eq!(
+                state.prior_answers.get("scope").map(String::as_str),
+                Some("Sidebar only.")
+            );
+        }
+        _ => panic!("expected the resumed draft"),
+    }
+}
+
 /// Persistence is a convenience layered over an in-memory flow; without a
 /// database the interview still has to work end to end.
 #[test]

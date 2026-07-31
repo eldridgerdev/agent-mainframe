@@ -24,8 +24,19 @@ are tagged.
   had a generated plan reopens at the review gate instead of generating a
   second one.
 - **Accepting a plan keeps the interview behind it.** The questions and answers
-  are stored with the feature, which is what an upcoming release will use to
-  pre-fill a re-run. Deleting a feature removes its stored interviews.
+  are stored with the feature and used to pre-fill a re-run. Deleting a feature
+  removes its stored interviews.
+- **Re-planning a feature starts from the plan you already accepted.** Running
+  the interview again on a feature fills in the brief and every answer from the
+  last plan you accepted for it: `Enter` keeps an answer, typing changes it, and
+  `Ctrl+R` restores it if you change your mind. Each question says whether its
+  answer is still the previous one, has been changed, or has been cleared —
+  clearing one drops it from the new plan. If you edited a multiple-choice
+  question's options in `plan_questions` since then, its old answer is left out
+  rather than pre-filled as a choice that no longer exists. Follow-up questions
+  an AI round asked last time are asked again with their answers, but adaptive
+  rounds are not reused: a re-run asks for its own opt-in before spending any
+  tokens.
 - **You can now plan a feature you already created.** Press `P` on a feature, or
   pick `plan-interview` from the command picker, to run the same interview
   without going through the creation wizard. Accepting rewrites that feature's

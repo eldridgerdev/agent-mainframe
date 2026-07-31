@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::app::{PlanInterviewPhase, PlanInterviewState};
+use crate::app::{PlanInterviewPhase, PlanInterviewState, PriorAnswerState};
 use crate::plan_interview::{PlanQuestionKind, QuestionSource};
 use crate::theme::Theme;
 
@@ -295,6 +295,37 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
     ]))
 }
 
+/// The re-run note under the question: which of the three states the step's
+/// answer is in relative to the previously accepted interview, and how to put
+/// it back. Absent unless a prior transcript was pre-filled, and deliberately
+/// here rather than in the footer — the footer's hint row is already full at
+/// ordinary dialog widths.
+fn prior_answer_note(state: &PlanInterviewState, theme: &Theme) -> Option<Line<'static>> {
+    let is_brief = state.phase == PlanInterviewPhase::Brief;
+    let (text, color) = match state.prior_answer_state()? {
+        PriorAnswerState::Kept if is_brief => (
+            "Previous brief pre-filled — Enter keeps it",
+            theme.secondary.to_color(),
+        ),
+        PriorAnswerState::Kept => (
+            "Previous answer pre-filled — Enter keeps it",
+            theme.secondary.to_color(),
+        ),
+        PriorAnswerState::Changed => (
+            "Changed from the previous interview — Ctrl+R restores it",
+            theme.warning.to_color(),
+        ),
+        PriorAnswerState::Cleared => (
+            "Previous answer cleared — Ctrl+R restores it",
+            theme.warning.to_color(),
+        ),
+    };
+    Some(Line::from(Span::styled(
+        text,
+        Style::default().fg(color).add_modifier(Modifier::ITALIC),
+    )))
+}
+
 fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'static> {
     let (text, optional) = match state.phase {
         PlanInterviewPhase::ResumePrompt => ("Resume the saved interview?".to_string(), false),
@@ -317,7 +348,7 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         PlanInterviewPhase::Done => ("Interview complete".to_string(), false),
     };
     let suffix = if optional { " (optional)" } else { "" };
-    Paragraph::new(Line::from(vec![
+    let mut lines = vec![Line::from(vec![
         Span::styled(
             text,
             Style::default()
@@ -325,8 +356,9 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(suffix, Style::default().fg(theme.text_muted.to_color())),
-    ]))
-    .wrap(Wrap { trim: false })
+    ])];
+    lines.extend(prior_answer_note(state, theme));
+    Paragraph::new(lines).wrap(Wrap { trim: false })
 }
 
 /// The resume-or-discard choice for a saved draft.
@@ -392,6 +424,15 @@ fn draw_resume_prompt(
         lines.push(Line::from(Span::styled(
             "A generated plan was saved — resuming reopens it at the review gate",
             Style::default().fg(theme.success.to_color()),
+        )));
+    }
+    if state.has_prior_answers() {
+        // Discarding a stale draft on a re-run is not "start from nothing": the
+        // answers behind the plan already accepted for this feature remain the
+        // baseline, so say so before the choice is made.
+        lines.push(Line::from(Span::styled(
+            "Discarding starts from the answers of this feature's accepted plan",
+            Style::default().fg(theme.text_muted.to_color()),
         )));
     }
     if !brief_preview.is_empty() {

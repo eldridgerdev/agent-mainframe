@@ -1100,6 +1100,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if matches!(app.mode, AppMode::Viewing(_)) {
+        // `message` is shared by dashboard status bars and dialog validation,
+        // but pane view should not leave AMF-owned text painted over the
+        // harness. Promote any such feedback to a timed toast before drawing.
+        app.promote_message_to_toast();
+    }
+
     if let AppMode::Viewing(view) = &app.mode {
         let area = frame.area();
         draw_view_pane(frame, app, view, app.leader_active, true);
@@ -1142,25 +1149,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 badge_spans.push(span);
             }
             draw_badge_row(frame, area, badge_spans);
-        }
-        // Show transient message (e.g. "Copied N chars") on the bottom line
-        if let Some(ref msg) = app.message {
-            let msg_area = Rect::new(
-                area.x,
-                area.y + area.height.saturating_sub(1),
-                area.width,
-                1,
-            );
-            let color = if msg.starts_with("Error:") {
-                app.theme.danger.to_color()
-            } else {
-                app.theme.success.to_color()
-            };
-            let paragraph = ratatui::widgets::Paragraph::new(ratatui::text::Span::styled(
-                format!(" {}", msg),
-                ratatui::style::Style::default().fg(color),
-            ));
-            frame.render_widget(paragraph, msg_area);
         }
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
@@ -1800,6 +1788,56 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(!second_rendered.contains("toast should disappear"));
+    }
+
+    #[test]
+    fn viewing_mode_promotes_status_message_to_toast() {
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                prompt_templates: Vec::new(),
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = crate::app::AppMode::Viewing(ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "claude".into(),
+            "Claude".into(),
+            SessionKind::Claude,
+            VibeMode::default(),
+            false,
+        ));
+        app.message = Some("Transient pane feedback".into());
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw pane view");
+
+        assert!(app.message.is_none());
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Transient pane feedback")
+        );
+        let bottom_row = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .last()
+            .unwrap()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!bottom_row.contains("Transient pane feedback"));
     }
 
     fn codex_feature_session(session_id: &str) -> FeatureSession {

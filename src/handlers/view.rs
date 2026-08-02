@@ -1192,7 +1192,11 @@ mod tests {
         handle_view_key(&mut app, key(KeyCode::Char('R')), 24).unwrap();
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
-        assert_eq!(app.message.as_deref(), Some("Repainted agent pane"));
+        assert!(app.message.is_none());
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Repainted agent pane")
+        );
     }
 
     #[test]

@@ -355,7 +355,7 @@ picks the plan up with no display-layer changes.
 - [x] Question dialog UI: multi-line free-text (TextEditor) and
       select-options rendering, progress header, skip/back keys,
       "finish early" key (writes answers-so-far; becomes
-      "synthesize now" once Epic 4 lands)
+      "draft plan now" once Epic 4 lands)
 - [x] Feature-creation integration: defer `PreparedFeatureLaunch`
       until interview completes; abort path (launch-anyway vs cancel)
 - [x] Write brief + answers into the workdir's `.claude/plan.md`
@@ -585,13 +585,16 @@ interview with prior answers pre-filled, get an updated
 
 ### Epic 6 — Polish
 
-- [ ] Replace the ambiguous AI-consent labels everywhere they appear
+- [x] Replace the ambiguous AI-consent labels everywhere they appear
       (dialog, status footer, help, and screenshots): `a` should say
       "ask AI follow-ups" because it generates more questions;
       `Ctrl+F` should say "draft plan now" because it skips every
       remaining question and generates the plan from answers already
       collected. Keep the no-token `Enter` action explicit as
-      "review raw plan."
+      "review raw plan." The consent dialog now spells out the behavioral
+      and token-cost difference between all three actions, and the compact
+      footers use those same labels. The two adaptive-interview screenshots
+      were regenerated from the updated UI.
 - [ ] Re-evaluate the built-in question bank after dogfooding:
       identify which questions consistently add useful planning
       context, then remove or combine low-value prompts so the
@@ -621,7 +624,7 @@ recorded inline in the design sections above):
   gitignore only if AMF created the file (see handoff section).
 - **Headless flags** → pinned against installed CLIs (see AI
   plumbing); re-verify at implementation.
-- **Question budget UX** → yes: dedicated "synthesize now" /
+- **Question budget UX** → yes: dedicated "draft plan now" /
   "finish early" key from any phase (Epic 1).
 - **Non-worktree feature collisions** → fine by design (one workdir =
   one plan file); unit test added to Epic 1.

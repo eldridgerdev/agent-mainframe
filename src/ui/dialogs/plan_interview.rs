@@ -151,22 +151,26 @@ pub fn draw_plan_interview_dialog(
             frame.render_widget(
                 Paragraph::new(vec![
                     Line::from(Span::styled(
-                        "Adaptive follow-up questions are optional.",
+                        "Choose how to finish the interview.",
                         Style::default()
                             .fg(theme.text.to_color())
                             .add_modifier(Modifier::BOLD),
                     )),
                     Line::from(""),
                     Line::from(
-                        "AMF will send your brief, answers, and bounded repository context to an available agent harness.",
+                        "a  Ask AI follow-ups: generate more questions before drafting the plan (uses tokens).",
                     ),
-                    Line::from(""),
+                    Line::from(
+                        "Ctrl+F  Draft plan now: skip remaining questions and synthesize from saved answers (uses tokens).",
+                    ),
                     Line::from(Span::styled(
-                        format!(
-                            "No agent tokens are used unless you opt in. Opting in may run up to {} AI rounds.",
-                            crate::plan_interview::MAX_AI_ROUNDS
-                        ),
+                        "Enter  Review raw plan: make no AI call.",
                         Style::default().fg(theme.warning.to_color()),
+                    )),
+                    Line::from(""),
+                    Line::from(format!(
+                        "AI follow-ups may run up to {} rounds using your brief, answers, and bounded repository context.",
+                        crate::plan_interview::MAX_AI_ROUNDS
                     )),
                 ])
                 .wrap(Wrap { trim: false }),
@@ -219,11 +223,11 @@ pub fn draw_plan_interview_dialog(
     } else if state.phase == PlanInterviewPhase::AiConsent {
         Line::from(vec![
             hint("a", theme),
-            Span::raw(" generate (uses tokens)  "),
+            Span::raw(" ask AI follow-ups  "),
             hint("Enter", theme),
-            Span::raw(" finish without AI  "),
+            Span::raw(" review raw plan  "),
             hint("Ctrl+F", theme),
-            Span::raw(" synthesize now  "),
+            Span::raw(" draft plan now  "),
             hint("Ctrl+B", theme),
             Span::raw(" back  "),
             hint("Esc", theme),
@@ -254,7 +258,7 @@ pub fn draw_plan_interview_dialog(
             hint("Ctrl+S", theme),
             Span::raw(" skip  "),
             hint("Ctrl+F", theme),
-            Span::raw(" synthesize now (uses tokens)  "),
+            Span::raw(" draft plan now (uses tokens)  "),
             hint("Esc", theme),
             Span::raw(" cancel"),
         ])
@@ -343,9 +347,7 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             .current_question()
             .map(|question| (question.text.clone(), question.optional))
             .unwrap_or_default(),
-        PlanInterviewPhase::AiConsent => {
-            ("Generate adaptive follow-up questions?".to_string(), false)
-        }
+        PlanInterviewPhase::AiConsent => ("Choose the next plan step".to_string(), false),
         PlanInterviewPhase::AiLoading => ("Generating follow-up questions".to_string(), false),
         PlanInterviewPhase::SynthesisLoading => {
             ("Synthesizing implementation plan".to_string(), false)
@@ -861,4 +863,45 @@ fn draw_options(
 
 fn hint(key: &'static str, theme: &Theme) -> Span<'static> {
     Span::styled(key, Style::default().fg(theme.warning.to_color()))
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+
+    #[test]
+    fn ai_consent_distinguishes_all_three_actions() {
+        let mut state = PlanInterviewState::new(
+            "clear-consent-labels".to_string(),
+            "interview-key".to_string(),
+            Vec::new(),
+            None,
+        );
+        state.phase = PlanInterviewPhase::AiConsent;
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let throbber = throbber_widgets_tui::ThrobberState::default();
+        terminal
+            .draw(|frame| {
+                draw_plan_interview_dialog(frame, &mut state, None, &Theme::default(), &throbber)
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Ask AI follow-ups"));
+        assert!(rendered.contains("Draft plan now"));
+        assert!(rendered.contains("Review raw plan"));
+        assert!(rendered.contains("make no AI call"));
+        assert!(!rendered.contains("finish without AI"));
+        assert!(!rendered.contains("synthesize now"));
+    }
 }

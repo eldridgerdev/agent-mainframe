@@ -50,6 +50,13 @@ are tagged.
   prompt pointing at the new plan — seeded in the composer, not sent, so you
   decide when it lands. Declining costs nothing: the plan is written either way.
 
+### Changed
+
+- **The optional AI step now says exactly what each choice does.** Press `a` to
+  ask AI follow-up questions, `Ctrl+F` to draft the plan immediately from saved
+  answers, or `Enter` to review a raw plan without spending agent tokens. The
+  dialog and key hints clearly identify which choices use tokens.
+
 ### Fixed
 
 - **Custom-session Nerd Font icons can now be chosen visually in the config

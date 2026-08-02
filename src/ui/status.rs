@@ -804,6 +804,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("n", key_style()),
                 Span::raw(" leave session running"),
             ]),
+            crate::app::PlanInterviewPhase::AiConsent => Line::from(vec![
+                Span::styled(" a", key_style()),
+                Span::raw(" ask AI follow-ups  "),
+                Span::styled("Enter", key_style()),
+                Span::raw(" review raw plan  "),
+                Span::styled("Ctrl+F", key_style()),
+                Span::raw(" draft plan now  "),
+                Span::styled("Esc", key_style()),
+                Span::raw(" cancel"),
+            ]),
             _ => Line::from(vec![
                 Span::styled(" Enter", key_style()),
                 Span::raw(" next  "),
@@ -814,7 +824,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("Ctrl+S", key_style()),
                 Span::raw(" skip  "),
                 Span::styled("Ctrl+F", key_style()),
-                Span::raw(" synthesize now  "),
+                Span::raw(" draft plan now  "),
                 Span::styled("Esc", key_style()),
                 Span::raw(" cancel"),
             ]),
@@ -1047,4 +1057,60 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     };
     let right = Paragraph::new(Line::from(right_spans));
     frame.render_widget(right, right_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::app::{PlanInterviewPhase, PlanInterviewState};
+    use crate::project::ProjectStore;
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+    #[test]
+    fn ai_consent_status_names_each_distinct_action() {
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                prompt_templates: Vec::new(),
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut interview = PlanInterviewState::new(
+            "clear-consent-labels".to_string(),
+            "interview-key".to_string(),
+            Vec::new(),
+            None,
+        );
+        interview.phase = PlanInterviewPhase::AiConsent;
+        app.mode = AppMode::PlanInterview(interview);
+
+        let backend = TestBackend::new(140, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, &app, area);
+            })
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("ask AI follow-ups"));
+        assert!(rendered.contains("review raw plan"));
+        assert!(rendered.contains("draft plan now"));
+    }
 }

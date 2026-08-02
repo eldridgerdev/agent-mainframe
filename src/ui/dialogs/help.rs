@@ -106,6 +106,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Esc",
             "Cancel (launch without plan, or leave plan unchanged)",
         ),
+        (
+            "y / n",
+            "Open a still-running session with the kickoff prompt seeded but unsent, or leave it alone",
+        ),
     ];
 
     for (key, desc) in &plan_interview_keybinds {

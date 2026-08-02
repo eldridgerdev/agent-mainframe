@@ -798,6 +798,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("Esc", key_style()),
                 Span::raw(" discard edits"),
             ]),
+            crate::app::PlanInterviewPhase::KickoffHandoff => Line::from(vec![
+                Span::styled(" y", key_style()),
+                Span::raw(" open session, seed prompt (unsent)  "),
+                Span::styled("n", key_style()),
+                Span::raw(" leave session running"),
+            ]),
             _ => Line::from(vec![
                 Span::styled(" Enter", key_style()),
                 Span::raw(" next  "),

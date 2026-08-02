@@ -361,6 +361,16 @@ At the plan review gate:
 | `Ctrl+S` | Save a raw-markdown edit and return to the rendered preview |
 | `Esc` | Discard a raw-markdown edit, or open abort confirmation from the preview |
 
+If you accept a re-run's plan while the feature's agent session is still
+running, AMF offers to hand the plan to it. An agent reads its instruction file
+once, at startup, so a session that was already running would otherwise never
+learn the plan changed:
+
+| Key | Action |
+| --- | --- |
+| `y` | Open the running session with a kickoff prompt pointing at the new plan (seeded in the composer, not sent) |
+| `n` / `Esc` | Leave the running session alone; the plan is already written either way |
+
 ### Viewing Mode (Embedded tmux)
 
 All keys are forwarded to the tmux session except:

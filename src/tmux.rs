@@ -1467,6 +1467,33 @@ impl TmuxManager {
             .unwrap_or(false)
     }
 
+    /// List the window names of a tmux session.
+    ///
+    /// Empty when the session is gone or tmux cannot be reached, so callers get
+    /// the same answer for "no such session" as for "no such window".
+    pub fn list_windows(session: &str) -> Vec<String> {
+        Self::command()
+            .args(["list-windows", "-t", session, "-F", "#{window_name}"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether a specific window is still present in a tmux session.
+    ///
+    /// A live session is not a live window: any other window — the terminal, a
+    /// dev server — keeps the session alive after one process exits.
+    pub fn window_exists(session: &str, window: &str) -> bool {
+        Self::list_windows(session).iter().any(|w| w == window)
+    }
+
     /// Create a new tmux session with a Claude Code window and a terminal window
     /// Create a new tmux session with a single named first
     /// window.
@@ -2047,6 +2074,10 @@ impl TmuxOps for TmuxManager {
 
     fn session_exists(&self, session: &str) -> bool {
         TmuxManager::session_exists(session)
+    }
+
+    fn window_exists(&self, session: &str, window: &str) -> bool {
+        TmuxManager::window_exists(session, window)
     }
 
     fn list_sessions(&self) -> Result<Vec<String>> {

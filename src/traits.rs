@@ -13,6 +13,7 @@ use crate::project::AgentKind;
 pub trait TmuxOps: Send + Sync {
     fn check_harness_available(&self, kind: &AgentKind) -> Result<()>;
     fn session_exists(&self, session: &str) -> bool;
+    fn window_exists(&self, session: &str, window: &str) -> bool;
     fn list_sessions(&self) -> Result<Vec<String>>;
     fn create_session_with_window(
         &self,

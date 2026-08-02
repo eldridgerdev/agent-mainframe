@@ -3670,6 +3670,11 @@ pub enum PlanInterviewPhase {
     /// An agent's advisory review of the draft plan is on screen. The plan
     /// itself is untouched unless the user asks for a revision from here.
     Critique,
+    /// An on-demand plan was accepted for a feature whose agent session is
+    /// already running, and the user is choosing whether to hand the kickoff
+    /// prompt to that live session. The plan is already written by this point,
+    /// so both answers are safe — only the handoff is in question.
+    KickoffHandoff,
     /// Transient question-flow completion used while app-level code decides
     /// whether to run another adaptive round, synthesize, or use the fallback.
     Done,
@@ -3679,6 +3684,21 @@ pub enum PlanInterviewPhase {
 pub enum PlanInterviewAdvanceError {
     BriefRequired,
     AnswerRequired,
+}
+
+/// The live agent session an accepted on-demand plan can be handed off to.
+///
+/// Identified by session **id** rather than by index: the accept saves the
+/// store before the prompt is answered, and resolving the id again at send time
+/// means a store that moved underneath cannot seed the wrong session's composer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanKickoffTarget {
+    pub session_id: String,
+    /// The session's display label, so the prompt can name what it will type into.
+    pub session_label: String,
+    /// Where the plan was just written, shown alongside the offer and reused as
+    /// the confirmation message when the handoff is declined.
+    pub plan_path: PathBuf,
 }
 
 /// How the step on screen compares with the same step's answer in the feature's
@@ -3803,6 +3823,10 @@ pub struct PlanInterviewState {
     /// previous one ([`Self::prior_answer_state`]) and
     /// [`Self::restore_prior_answer`] can put it back.
     pub prior_answers: HashMap<String, String>,
+    /// The live session an accepted on-demand plan is being offered to. Only
+    /// set in [`PlanInterviewPhase::KickoffHandoff`], which is only reached
+    /// after the plan file is already on disk.
+    pub kickoff_handoff: Option<PlanKickoffTarget>,
 }
 
 impl PlanInterviewState {
@@ -3892,7 +3916,19 @@ impl PlanInterviewState {
             resume_draft: None,
             prior_brief: None,
             prior_answers: HashMap::new(),
+            kickoff_handoff: None,
         }
+    }
+
+    /// Ask whether the accepted plan should be handed to the feature's already
+    /// running agent session.
+    ///
+    /// Only reached from an accepted on-demand interview: a feature-creation
+    /// interview seeds the session it just launched without asking, and an
+    /// on-demand accept with no live session has nothing to hand off to.
+    pub fn offer_kickoff_handoff(&mut self, target: PlanKickoffTarget) {
+        self.kickoff_handoff = Some(target);
+        self.phase = PlanInterviewPhase::KickoffHandoff;
     }
 
     /// The directory headless interview calls run in and gather repo context
@@ -4471,7 +4507,8 @@ impl PlanInterviewState {
                 self.phase = PlanInterviewPhase::Done;
             }
             // The resume choice has its own dedicated keys; Enter must not fall
-            // through to a question flow whose answers are not loaded yet.
+            // through to a question flow whose answers are not loaded yet. The
+            // handoff prompt is past acceptance entirely.
             PlanInterviewPhase::ResumePrompt
             | PlanInterviewPhase::AiLoading
             | PlanInterviewPhase::SynthesisLoading
@@ -4479,6 +4516,7 @@ impl PlanInterviewState {
             | PlanInterviewPhase::Editing
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
+            | PlanInterviewPhase::KickoffHandoff
             | PlanInterviewPhase::Done => {}
         }
         Ok(())
@@ -4543,15 +4581,17 @@ impl PlanInterviewState {
             }
             // Loading is a transient App-driven state; there is nothing to
             // navigate back to until it resolves. The review-gate phases have
-            // their own dedicated navigation, and the resume choice is the
-            // first screen of the interview.
+            // their own dedicated navigation, the resume choice is the first
+            // screen of the interview, and the handoff prompt comes after an
+            // accept that already wrote the plan.
             PlanInterviewPhase::ResumePrompt
             | PlanInterviewPhase::AiLoading
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
             | PlanInterviewPhase::CritiqueLoading
-            | PlanInterviewPhase::Critique => false,
+            | PlanInterviewPhase::Critique
+            | PlanInterviewPhase::KickoffHandoff => false,
         }
     }
 
@@ -4569,7 +4609,8 @@ impl PlanInterviewState {
             PlanInterviewPhase::AiConsent => {}
             // Do not overlap paid calls or mutate a retryable completed
             // synthesis. The UI does not advertise this action while loading,
-            // nor at the resume choice, which has no brief to synthesize yet.
+            // nor at the resume choice, which has no brief to synthesize yet,
+            // nor at the handoff prompt, whose plan is already accepted.
             PlanInterviewPhase::ResumePrompt
             | PlanInterviewPhase::AiLoading
             | PlanInterviewPhase::SynthesisLoading
@@ -4577,6 +4618,7 @@ impl PlanInterviewState {
             | PlanInterviewPhase::Editing
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
+            | PlanInterviewPhase::KickoffHandoff
             | PlanInterviewPhase::Done => return Ok(()),
         }
         self.ai_round_started_at = None;

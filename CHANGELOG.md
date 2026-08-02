@@ -43,6 +43,12 @@ are tagged.
   own plan, turns plan mode on for it, and points its agent at the plan —
   previously the interview only ran while creating a feature. Leaving the
   interview is non-destructive: the feature keeps whatever plan it had.
+- **A running session can now be told about a plan you just accepted.** An
+  agent reads its instruction file once, at startup, so re-planning a feature
+  whose session was already running used to leave that session working from the
+  old plan. Accepting now offers to open the running session with a kickoff
+  prompt pointing at the new plan — seeded in the composer, not sent, so you
+  decide when it lands. Declining costs nothing: the plan is written either way.
 
 ### Fixed
 

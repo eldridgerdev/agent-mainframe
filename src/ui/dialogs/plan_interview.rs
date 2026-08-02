@@ -146,6 +146,7 @@ pub fn draw_plan_interview_dialog(
             None => {}
         },
         PlanInterviewPhase::ResumePrompt => draw_resume_prompt(frame, chunks[2], state, theme),
+        PlanInterviewPhase::KickoffHandoff => draw_kickoff_handoff(frame, chunks[2], state, theme),
         PlanInterviewPhase::AiConsent => {
             frame.render_widget(
                 Paragraph::new(vec![
@@ -228,6 +229,13 @@ pub fn draw_plan_interview_dialog(
             hint("Esc", theme),
             Span::raw(" cancel"),
         ])
+    } else if state.phase == PlanInterviewPhase::KickoffHandoff {
+        Line::from(vec![
+            hint("y", theme),
+            Span::raw(" open the session, kickoff prompt seeded but unsent  "),
+            hint("n", theme),
+            Span::raw(" leave it running"),
+        ])
     } else if state.phase == PlanInterviewPhase::CritiqueLoading {
         Line::from(vec![hint("Esc", theme), Span::raw(" back to plan")])
     } else if matches!(
@@ -282,6 +290,7 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         }
         PlanInterviewPhase::Review => (total, "Plan review".to_string()),
         PlanInterviewPhase::Editing => (total, "Edit plan".to_string()),
+        PlanInterviewPhase::KickoffHandoff => (total, "Plan accepted".to_string()),
         PlanInterviewPhase::Done => (total, "Complete".to_string()),
     };
     Paragraph::new(Line::from(vec![
@@ -345,6 +354,10 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         PlanInterviewPhase::Critique => ("Agent review of the plan".to_string(), false),
         PlanInterviewPhase::Review => ("Review implementation plan".to_string(), false),
         PlanInterviewPhase::Editing => ("Edit raw markdown".to_string(), false),
+        PlanInterviewPhase::KickoffHandoff => (
+            "Tell the running session about the plan?".to_string(),
+            false,
+        ),
         PlanInterviewPhase::Done => ("Interview complete".to_string(), false),
     };
     let suffix = if optional { " (optional)" } else { "" };
@@ -444,6 +457,50 @@ fn draw_resume_prompt(
                 .add_modifier(Modifier::ITALIC),
         )));
     }
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// The handoff offer shown after an on-demand plan is accepted for a feature
+/// whose agent session is already running.
+///
+/// States plainly that the plan is already written, because that is what makes
+/// declining a real option rather than a mistake: the only thing on offer is
+/// interrupting a session that may be mid-task.
+fn draw_kickoff_handoff(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    theme: &Theme,
+) {
+    let Some(target) = state.kickoff_handoff.as_ref() else {
+        return;
+    };
+
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Plan written to {}", target.plan_path.display()),
+            Style::default().fg(theme.success.to_color()),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("'{}' is still running.", target.session_label),
+            Style::default()
+                .fg(theme.text.to_color())
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "It will not notice the new plan on its own — an agent reads its \
+             instruction file once, at startup.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Opening it seeds the composer with a kickoff prompt pointing at the \
+             plan. Nothing is sent until you press Enter there.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ];
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }

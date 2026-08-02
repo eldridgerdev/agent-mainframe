@@ -781,54 +781,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("q/Esc", key_style()),
             Span::raw(" skip"),
         ]),
-        AppMode::PlanInterview(state) => match state.phase {
-            crate::app::PlanInterviewPhase::Review => Line::from(vec![
-                Span::styled(" e", key_style()),
-                Span::raw(" edit  "),
-                Span::styled("r", key_style()),
-                Span::raw(" regenerate  "),
-                Span::styled("Enter", key_style()),
-                Span::raw(" accept  "),
-                Span::styled("Esc", key_style()),
-                Span::raw(" abort"),
-            ]),
-            crate::app::PlanInterviewPhase::Editing => Line::from(vec![
-                Span::styled(" Ctrl+S", key_style()),
-                Span::raw(" save + preview  "),
-                Span::styled("Esc", key_style()),
-                Span::raw(" discard edits"),
-            ]),
-            crate::app::PlanInterviewPhase::KickoffHandoff => Line::from(vec![
-                Span::styled(" y", key_style()),
-                Span::raw(" open session, seed prompt (unsent)  "),
-                Span::styled("n", key_style()),
-                Span::raw(" leave session running"),
-            ]),
-            crate::app::PlanInterviewPhase::AiConsent => Line::from(vec![
-                Span::styled(" a", key_style()),
-                Span::raw(" ask AI follow-ups  "),
-                Span::styled("Enter", key_style()),
-                Span::raw(" review raw plan  "),
-                Span::styled("Ctrl+F", key_style()),
-                Span::raw(" draft plan now  "),
-                Span::styled("Esc", key_style()),
-                Span::raw(" cancel"),
-            ]),
-            _ => Line::from(vec![
-                Span::styled(" Enter", key_style()),
-                Span::raw(" next  "),
-                Span::styled("Alt+Enter", key_style()),
-                Span::raw(" newline  "),
-                Span::styled("Ctrl+B", key_style()),
-                Span::raw(" back  "),
-                Span::styled("Ctrl+S", key_style()),
-                Span::raw(" skip  "),
-                Span::styled("Ctrl+F", key_style()),
-                Span::raw(" draft plan now  "),
-                Span::styled("Esc", key_style()),
-                Span::raw(" cancel"),
-            ]),
-        },
+        // The plan interview is a full-viewport modal: `draw_plan_interview_dialog`
+        // runs after this bar and clears the whole frame, so nothing written
+        // here reaches the screen. Its per-phase hints — including which
+        // actions spend tokens — live in the dialog's own footer, which is the
+        // only copy a user ever sees. This line exists to keep the match
+        // exhaustive, not to duplicate them.
+        AppMode::PlanInterview(_) => Line::from(vec![
+            Span::styled(" Esc", key_style()),
+            Span::raw(" cancel plan interview"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {
@@ -1057,60 +1019,4 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     };
     let right = Paragraph::new(Line::from(right_spans));
     frame.render_widget(right, right_area);
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use ratatui::{Terminal, backend::TestBackend};
-
-    use super::*;
-    use crate::app::{PlanInterviewPhase, PlanInterviewState};
-    use crate::project::ProjectStore;
-    use crate::traits::{MockTmuxOps, MockWorktreeOps};
-
-    #[test]
-    fn ai_consent_status_names_each_distinct_action() {
-        let mut app = App::new_for_test(
-            ProjectStore {
-                version: 5,
-                projects: vec![],
-                session_bookmarks: vec![],
-                available_harnesses: vec![],
-                prompt_templates: Vec::new(),
-                extra: HashMap::new(),
-            },
-            Box::new(MockTmuxOps::new()),
-            Box::new(MockWorktreeOps::new()),
-        );
-        let mut interview = PlanInterviewState::new(
-            "clear-consent-labels".to_string(),
-            "interview-key".to_string(),
-            Vec::new(),
-            None,
-        );
-        interview.phase = PlanInterviewPhase::AiConsent;
-        app.mode = AppMode::PlanInterview(interview);
-
-        let backend = TestBackend::new(140, 4);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                draw(frame, &app, area);
-            })
-            .unwrap();
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-
-        assert!(rendered.contains("ask AI follow-ups"));
-        assert!(rendered.contains("review raw plan"));
-        assert!(rendered.contains("draft plan now"));
-    }
 }

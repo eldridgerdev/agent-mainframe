@@ -55,7 +55,9 @@ are tagged.
 - **The optional AI step now says exactly what each choice does.** Press `a` to
   ask AI follow-up questions, `Ctrl+F` to draft the plan immediately from saved
   answers, or `Enter` to review a raw plan without spending agent tokens. The
-  dialog and key hints clearly identify which choices use tokens.
+  dialog and key hints clearly identify which choices use tokens. The step fits
+  an 80x24 terminal, and a smaller one gets shorter wording rather than a
+  disclosure cut off mid-sentence.
 
 ### Fixed
 

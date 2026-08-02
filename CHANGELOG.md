@@ -52,6 +52,9 @@ are tagged.
 
 ### Fixed
 
+- **AMF feedback no longer sticks to the bottom-left of an agent pane.**
+  Repaint confirmations and any other transient AMF status messages now appear
+  as timed toasts, then clear automatically without covering harness output.
 - **Custom-session Nerd Font icons can now be chosen visually in the config
   wizard.** The chooser previews useful session icons and still accepts custom
   glyphs. Existing bundled names such as `nf-md-server` now render as icons,

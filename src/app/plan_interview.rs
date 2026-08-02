@@ -982,10 +982,9 @@ impl App {
 
         let session = selected_id
             .and_then(|id| {
-                feature
-                    .sessions
-                    .iter()
-                    .find(|session| session.id == id && self.session_is_live_agent(feature, session))
+                feature.sessions.iter().find(|session| {
+                    session.id == id && self.session_is_live_agent(feature, session)
+                })
             })
             .or_else(|| {
                 feature
@@ -1029,15 +1028,25 @@ impl App {
         // Resolved by id rather than reusing indices from the offer: the accept
         // saved the store in between, and seeding the wrong session's composer
         // would be worse than skipping the handoff.
-        let Some((pi, fi, si)) = self.store.projects.iter().enumerate().find_map(|(pi, project)| {
-            project.features.iter().enumerate().find_map(|(fi, feature)| {
-                feature
-                    .sessions
-                    .iter()
-                    .position(|session| session.id == target.session_id)
-                    .map(|si| (pi, fi, si))
-            })
-        }) else {
+        let Some((pi, fi, si)) =
+            self.store
+                .projects
+                .iter()
+                .enumerate()
+                .find_map(|(pi, project)| {
+                    project
+                        .features
+                        .iter()
+                        .enumerate()
+                        .find_map(|(fi, feature)| {
+                            feature
+                                .sessions
+                                .iter()
+                                .position(|session| session.id == target.session_id)
+                                .map(|si| (pi, fi, si))
+                        })
+                })
+        else {
             self.message = Some(format!(
                 "Plan written to {}; its session is gone",
                 target.plan_path.display()

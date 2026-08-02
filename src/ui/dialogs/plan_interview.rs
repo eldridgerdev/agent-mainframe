@@ -146,9 +146,7 @@ pub fn draw_plan_interview_dialog(
             None => {}
         },
         PlanInterviewPhase::ResumePrompt => draw_resume_prompt(frame, chunks[2], state, theme),
-        PlanInterviewPhase::KickoffHandoff => {
-            draw_kickoff_handoff(frame, chunks[2], state, theme)
-        }
+        PlanInterviewPhase::KickoffHandoff => draw_kickoff_handoff(frame, chunks[2], state, theme),
         PlanInterviewPhase::AiConsent => {
             frame.render_widget(
                 Paragraph::new(vec![
@@ -356,9 +354,10 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         PlanInterviewPhase::Critique => ("Agent review of the plan".to_string(), false),
         PlanInterviewPhase::Review => ("Review implementation plan".to_string(), false),
         PlanInterviewPhase::Editing => ("Edit raw markdown".to_string(), false),
-        PlanInterviewPhase::KickoffHandoff => {
-            ("Tell the running session about the plan?".to_string(), false)
-        }
+        PlanInterviewPhase::KickoffHandoff => (
+            "Tell the running session about the plan?".to_string(),
+            false,
+        ),
         PlanInterviewPhase::Done => ("Interview complete".to_string(), false),
     };
     let suffix = if optional { " (optional)" } else { "" };

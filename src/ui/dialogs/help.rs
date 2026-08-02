@@ -95,13 +95,20 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     let plan_interview_keybinds: Vec<(&str, &str)> = vec![
         ("r / d", "Resume or discard a saved draft (on entry)"),
-        ("Enter", "Save answer and continue"),
+        (
+            "Enter",
+            "Save answer and continue; at the AI prompt, review raw plan (no tokens)",
+        ),
         ("Alt+Enter", "Insert a newline (free-text answers)"),
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
         ("Ctrl+B", "Return to the previous question"),
         ("Ctrl+S", "Skip an optional question"),
         ("Ctrl+R", "Restore the previous interview's answer (re-run)"),
-        ("Ctrl+F", "Synthesize now with answers so far (uses tokens)"),
+        (
+            "a",
+            "Ask AI follow-ups at the optional AI prompt (uses tokens)",
+        ),
+        ("Ctrl+F", "Draft plan now from saved answers (uses tokens)"),
         (
             "Esc",
             "Cancel (launch without plan, or leave plan unchanged)",

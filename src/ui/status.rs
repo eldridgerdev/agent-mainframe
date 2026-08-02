@@ -781,44 +781,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("q/Esc", key_style()),
             Span::raw(" skip"),
         ]),
-        AppMode::PlanInterview(state) => match state.phase {
-            crate::app::PlanInterviewPhase::Review => Line::from(vec![
-                Span::styled(" e", key_style()),
-                Span::raw(" edit  "),
-                Span::styled("r", key_style()),
-                Span::raw(" regenerate  "),
-                Span::styled("Enter", key_style()),
-                Span::raw(" accept  "),
-                Span::styled("Esc", key_style()),
-                Span::raw(" abort"),
-            ]),
-            crate::app::PlanInterviewPhase::Editing => Line::from(vec![
-                Span::styled(" Ctrl+S", key_style()),
-                Span::raw(" save + preview  "),
-                Span::styled("Esc", key_style()),
-                Span::raw(" discard edits"),
-            ]),
-            crate::app::PlanInterviewPhase::KickoffHandoff => Line::from(vec![
-                Span::styled(" y", key_style()),
-                Span::raw(" open session, seed prompt (unsent)  "),
-                Span::styled("n", key_style()),
-                Span::raw(" leave session running"),
-            ]),
-            _ => Line::from(vec![
-                Span::styled(" Enter", key_style()),
-                Span::raw(" next  "),
-                Span::styled("Alt+Enter", key_style()),
-                Span::raw(" newline  "),
-                Span::styled("Ctrl+B", key_style()),
-                Span::raw(" back  "),
-                Span::styled("Ctrl+S", key_style()),
-                Span::raw(" skip  "),
-                Span::styled("Ctrl+F", key_style()),
-                Span::raw(" synthesize now  "),
-                Span::styled("Esc", key_style()),
-                Span::raw(" cancel"),
-            ]),
-        },
+        // The plan interview is a full-viewport modal: `draw_plan_interview_dialog`
+        // runs after this bar and clears the whole frame, so nothing written
+        // here reaches the screen. Its per-phase hints — including which
+        // actions spend tokens — live in the dialog's own footer, which is the
+        // only copy a user ever sees. This line exists to keep the match
+        // exhaustive, not to duplicate them.
+        AppMode::PlanInterview(_) => Line::from(vec![
+            Span::styled(" Esc", key_style()),
+            Span::raw(" cancel plan interview"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {

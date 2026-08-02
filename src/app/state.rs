@@ -3759,7 +3759,7 @@ pub struct PlanInterviewState {
     /// Set when the user finishes early or declines the token-use prompt so
     /// the `Done` transition skips any remaining AI rounds.
     pub skip_ai_rounds: bool,
-    /// Set by the explicit "synthesize now" action. This permits the final
+    /// Set by the explicit "draft plan now" action. This permits the final
     /// headless pass without opting into adaptive rounds while preserving the
     /// consent screen's guarantee that ordinary completion spends no tokens.
     pub synthesis_requested: bool,

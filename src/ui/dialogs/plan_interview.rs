@@ -31,6 +31,12 @@ pub fn draw_plan_interview_dialog(
     );
     let area = if review_gate {
         centered_rect(86, 86, frame.area())
+    } else if state.phase == PlanInterviewPhase::AiConsent {
+        // The consent step carries more copy than any question step — three
+        // labelled actions plus the disclosure — and it is the one screen where
+        // truncating the text would hide what a keypress costs. Give it the
+        // extra rows so the full wording still fits an 80x24 terminal.
+        centered_rect(80, 88, frame.area())
     } else {
         centered_rect(80, 72, frame.area())
     };
@@ -111,13 +117,20 @@ pub fn draw_plan_interview_dialog(
         return;
     }
 
+    // The hint row is built before the layout so its wrapped height is known:
+    // the consent step's hints name a token cost per action and need three rows
+    // at ordinary dialog widths, where two would silently cut the last hints off.
+    let footer = footer_line(state, message, theme);
+    let footer_height =
+        wrapped_height(std::slice::from_ref(&footer), inner.width).clamp(1, 3) as u16;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(footer_height),
         ])
         .split(inner);
 
@@ -147,32 +160,7 @@ pub fn draw_plan_interview_dialog(
         },
         PlanInterviewPhase::ResumePrompt => draw_resume_prompt(frame, chunks[2], state, theme),
         PlanInterviewPhase::KickoffHandoff => draw_kickoff_handoff(frame, chunks[2], state, theme),
-        PlanInterviewPhase::AiConsent => {
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from(Span::styled(
-                        "Adaptive follow-up questions are optional.",
-                        Style::default()
-                            .fg(theme.text.to_color())
-                            .add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(""),
-                    Line::from(
-                        "AMF will send your brief, answers, and bounded repository context to an available agent harness.",
-                    ),
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        format!(
-                            "No agent tokens are used unless you opt in. Opting in may run up to {} AI rounds.",
-                            crate::plan_interview::MAX_AI_ROUNDS
-                        ),
-                        Style::default().fg(theme.warning.to_color()),
-                    )),
-                ])
-                .wrap(Wrap { trim: false }),
-                chunks[2],
-            );
-        }
+        PlanInterviewPhase::AiConsent => draw_ai_consent(frame, chunks[2], theme),
         PlanInterviewPhase::AiLoading => {
             draw_ai_loading(frame, chunks[2], state, theme, throbber_state)
         }
@@ -197,7 +185,17 @@ pub fn draw_plan_interview_dialog(
         }
     }
 
-    let footer = if let Some(message) = message {
+    frame.render_widget(Paragraph::new(footer).wrap(Wrap { trim: false }), chunks[3]);
+}
+
+/// The dialog's hint row: the interview's message when there is one, otherwise
+/// the keys available in the current phase.
+///
+/// Every action that spends agent tokens says so here, not only in the body
+/// copy — the hint row is what stays on screen once the body has been read, and
+/// consent has to be legible from it alone.
+fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme) -> Line<'static> {
+    if let Some(message) = message {
         let color = if message.starts_with("Error:") {
             theme.danger.to_color()
         } else {
@@ -217,13 +215,16 @@ pub fn draw_plan_interview_dialog(
             Span::raw(" cancel (keeps the draft)"),
         ])
     } else if state.phase == PlanInterviewPhase::AiConsent {
+        // The three plan-finishing actions come first so that a terminal too
+        // narrow to show every hint drops `back`/`cancel` rather than a token
+        // label.
         Line::from(vec![
             hint("a", theme),
-            Span::raw(" generate (uses tokens)  "),
-            hint("Enter", theme),
-            Span::raw(" finish without AI  "),
+            Span::raw(" ask AI follow-ups (uses tokens)  "),
             hint("Ctrl+F", theme),
-            Span::raw(" synthesize now  "),
+            Span::raw(" draft plan now (uses tokens)  "),
+            hint("Enter", theme),
+            Span::raw(" review raw plan (no tokens)  "),
             hint("Ctrl+B", theme),
             Span::raw(" back  "),
             hint("Esc", theme),
@@ -254,12 +255,98 @@ pub fn draw_plan_interview_dialog(
             hint("Ctrl+S", theme),
             Span::raw(" skip  "),
             hint("Ctrl+F", theme),
-            Span::raw(" synthesize now (uses tokens)  "),
+            Span::raw(" draft plan now (uses tokens)  "),
             hint("Esc", theme),
             Span::raw(" cancel"),
         ])
+    }
+}
+
+/// The explicit-consent step, where each action is labelled with what it costs.
+///
+/// Prefers the full wording, but falls back to a compact variant when the body
+/// is too short to hold it: a truncated consent screen could hide the `Enter`
+/// (no-token) choice or a token label, which is exactly the information the
+/// step exists to convey. Both variants name all three actions and their cost.
+fn draw_ai_consent(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
+    let warning = Style::default().fg(theme.warning.to_color());
+    let full = vec![
+        Line::from(
+            "a  Ask AI follow-ups: generate more questions before drafting the plan (uses tokens).",
+        ),
+        Line::from(
+            "Ctrl+F  Draft plan now: skip remaining questions and synthesize from saved answers (uses tokens).",
+        ),
+        Line::from(Span::styled(
+            "Enter  Review raw plan: make no AI call, spend no tokens.",
+            warning,
+        )),
+        Line::from(""),
+        Line::from(format!(
+            "AI follow-ups may run up to {} rounds using your brief, answers, and bounded repository context.",
+            crate::plan_interview::MAX_AI_ROUNDS
+        )),
+    ];
+
+    let lines = if wrapped_height(&full, area.width) <= area.height as usize {
+        full
+    } else {
+        vec![
+            Line::from("a  Ask AI follow-ups (uses tokens)"),
+            Line::from("Ctrl+F  Draft plan now (uses tokens)"),
+            Line::from(Span::styled("Enter  Review raw plan (no tokens)", warning)),
+            Line::from(format!(
+                "Up to {} AI rounds over your brief and repo context.",
+                crate::plan_interview::MAX_AI_ROUNDS
+            )),
+        ]
     };
-    frame.render_widget(Paragraph::new(footer).wrap(Wrap { trim: false }), chunks[3]);
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// Rows these lines will occupy once `Wrap { trim: false }` has broken them at
+/// `width`, so copy can be measured against its area before it is rendered.
+///
+/// Greedy word wrap with a hard break for words longer than the width, matching
+/// ratatui's wrapping closely enough to decide between two variants of a block.
+fn wrapped_height(lines: &[Line<'_>], width: u16) -> usize {
+    let width = width.max(1) as usize;
+    lines
+        .iter()
+        .map(|line| {
+            let text = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            wrapped_rows(&text, width)
+        })
+        .sum()
+}
+
+fn wrapped_rows(text: &str, width: usize) -> usize {
+    use unicode_width::UnicodeWidthStr;
+
+    let mut rows = 1usize;
+    let mut used = 0usize;
+    for word in text.split_whitespace() {
+        let word_width = UnicodeWidthStr::width(word);
+        if used == 0 {
+            used = word_width;
+        } else if used + 1 + word_width <= width {
+            used += 1 + word_width;
+        } else {
+            rows += 1;
+            used = word_width;
+        }
+        // A word wider than the line is broken across as many rows as it needs.
+        while used > width {
+            rows += 1;
+            used -= width;
+        }
+    }
+    rows
 }
 
 fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'static> {
@@ -343,9 +430,9 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             .current_question()
             .map(|question| (question.text.clone(), question.optional))
             .unwrap_or_default(),
-        PlanInterviewPhase::AiConsent => {
-            ("Generate adaptive follow-up questions?".to_string(), false)
-        }
+        // Carries the heading the consent body used to repeat, so the body can
+        // spend its rows on the three actions and their token costs.
+        PlanInterviewPhase::AiConsent => ("Choose how to finish the interview".to_string(), false),
         PlanInterviewPhase::AiLoading => ("Generating follow-up questions".to_string(), false),
         PlanInterviewPhase::SynthesisLoading => {
             ("Synthesizing implementation plan".to_string(), false)
@@ -861,4 +948,148 @@ fn draw_options(
 
 fn hint(key: &'static str, theme: &Theme) -> Span<'static> {
     Span::styled(key, Style::default().fg(theme.warning.to_color()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::app::{App, AppMode};
+    use crate::project::ProjectStore;
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+    /// Renders the consent step the way a user meets it — through the whole
+    /// dashboard, at a real terminal size — and returns what is on screen.
+    ///
+    /// Deliberately not an isolated call to the dialog: the interview draws a
+    /// full-viewport modal over the status bar, so only the integrated frame
+    /// says what the user can actually read.
+    fn render_consent_screen(width: u16, height: u16) -> String {
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                prompt_templates: Vec::new(),
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut interview = PlanInterviewState::new(
+            "clear-consent-labels".to_string(),
+            "interview-key".to_string(),
+            Vec::new(),
+            None,
+        );
+        interview.phase = PlanInterviewPhase::AiConsent;
+        app.mode = AppMode::PlanInterview(interview);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+
+        // Rows are joined, their borders dropped, and their padding collapsed,
+        // so a phrase matches whether or not it wrapped — wrapping is fine,
+        // disappearing off the bottom of a pane is not.
+        let buffer = terminal.backend().buffer().clone();
+        let rows = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        rows.chars()
+            .map(|ch| {
+                if "│┌┐└┘─".contains(ch) {
+                    ' '
+                } else {
+                    ch
+                }
+            })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn ai_consent_distinguishes_all_three_actions() {
+        let rendered = render_consent_screen(120, 40);
+
+        assert!(rendered.contains("Ask AI follow-ups"));
+        assert!(rendered.contains("Draft plan now"));
+        assert!(rendered.contains("Review raw plan"));
+        assert!(rendered.contains("make no AI call"));
+        assert!(!rendered.contains("finish without AI"));
+        assert!(!rendered.contains("synthesize now"));
+    }
+
+    #[test]
+    fn ai_consent_fits_a_standard_terminal() {
+        // 80x24 is the size the body copy used to overflow, truncating the
+        // final disclosure and the token labels below it.
+        let rendered = render_consent_screen(80, 24);
+
+        assert!(rendered.contains("Ask AI follow-ups"));
+        assert!(rendered.contains("Draft plan now"));
+        assert!(rendered.contains("Review raw plan"));
+        assert!(rendered.contains("spend no tokens"));
+        assert!(rendered.contains("bounded repository context"));
+    }
+
+    #[test]
+    fn ai_consent_hints_name_the_token_cost_of_every_action() {
+        // The hint row is the compact restatement of the consent choice, so it
+        // has to carry the cost of each action on its own.
+        for (width, height) in [(120u16, 40u16), (80, 24), (64, 20)] {
+            let rendered = render_consent_screen(width, height);
+            assert!(
+                rendered.contains("ask AI follow-ups (uses tokens)"),
+                "`a` unlabelled at {width}x{height}: {rendered}"
+            );
+            assert!(
+                rendered.contains("draft plan now (uses tokens)"),
+                "`Ctrl+F` unlabelled at {width}x{height}: {rendered}"
+            );
+            assert!(
+                rendered.contains("review raw plan (no tokens)"),
+                "`Enter` unlabelled at {width}x{height}: {rendered}"
+            );
+            // The hint row is sized to its own wrapped height, so the last
+            // hints are not pushed off the bottom of it either.
+            assert!(
+                rendered.contains("Ctrl+B back Esc cancel"),
+                "hints truncated at {width}x{height}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn ai_consent_body_stays_complete_when_it_must_shrink() {
+        // A short terminal gets the compact body rather than a cut-off one:
+        // every action and its cost still has to be on screen.
+        let rendered = render_consent_screen(80, 16);
+
+        assert!(rendered.contains("Ask AI follow-ups (uses tokens)"));
+        assert!(rendered.contains("Draft plan now (uses tokens)"));
+        assert!(rendered.contains("Review raw plan (no tokens)"));
+    }
+
+    #[test]
+    fn wrapped_rows_counts_word_wrap_and_hard_breaks() {
+        assert_eq!(wrapped_rows("", 10), 1);
+        assert_eq!(wrapped_rows("one two", 10), 1);
+        assert_eq!(wrapped_rows("one two three", 10), 2);
+        // A word longer than the line is broken, not counted as one row.
+        assert_eq!(wrapped_rows("aaaaaaaaaaaaaaaaaaaaa", 10), 3);
+    }
 }

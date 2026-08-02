@@ -64,7 +64,7 @@ doc always says exactly what remains.
 ## Index
 
 - [Plan Mode: guided feature discovery](plan-mode-interview-plan.md) —
-  _Ready._ Grow plan mode from a boolean + PLAN.md skeleton into a
+  _In progress._ Grow plan mode from a boolean + PLAN.md skeleton into a
   native TUI interview: feature brief, built-in + per-project question
   banks, AI-adaptive follow-up rounds (headless run of the feature's
   own agent harness, with fallback), then an

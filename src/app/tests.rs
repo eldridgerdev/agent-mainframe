@@ -2834,6 +2834,7 @@ fn app_on_running_selected_feature() -> (App, tempfile::NamedTempFile, TempDir) 
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| true);
     tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
     tmux.expect_create_window().returning(|_, _, _| Ok(()));
     tmux.expect_select_window().returning(|_, _| Ok(()));
@@ -2945,6 +2946,78 @@ fn a_feature_marked_active_without_a_tmux_session_gets_no_handoff_offer() {
             .unwrap()
             .contains(&repo.path().join(".claude/plan.md").display().to_string())
     );
+}
+
+/// A live tmux session is not a live agent: the terminal window alone keeps the
+/// session up after the harness exits, so the session-level check passes while
+/// there is nothing left to hand the plan to.
+#[test]
+fn a_feature_whose_agent_window_exited_gets_no_handoff_offer() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| false);
+    app.tmux = Box::new(tmux);
+
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+    );
+}
+
+/// With several harnesses configured, declaration order is the wrong tiebreak:
+/// the first one may be long dead while a later one is doing the work.
+#[test]
+fn the_handoff_targets_the_harness_that_is_actually_running() {
+    let (mut app, _store_file, _repo) = app_on_running_selected_feature();
+    app.store.projects[0].features[0]
+        .sessions
+        .push(make_session("Claude 2", None));
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists()
+        .returning(|_, window| window == "Claude 2");
+    tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+    app.tmux = Box::new(tmux);
+
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            let target = state.kickoff_handoff.as_ref().unwrap();
+            assert_eq!(target.session_label, "Claude 2");
+        }
+        _ => panic!("expected the handoff prompt"),
+    }
+}
+
+/// The offer sits on screen for as long as the user takes to answer it, and the
+/// harness can exit in that window. Entering it then would recreate the session
+/// — a far bigger action than the one being offered.
+#[test]
+fn a_harness_that_exits_while_the_offer_is_up_is_not_reopened() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| false);
+    app.tmux = Box::new(tmux);
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    let message = app.message.as_deref().unwrap();
+    assert!(message.contains(&repo.path().join(".claude/plan.md").display().to_string()));
+    assert!(message.contains("no longer running"));
 }
 
 #[test]

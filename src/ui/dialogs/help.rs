@@ -108,7 +108,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ),
         (
             "y / n",
-            "Send the accepted plan to a still-running session, or not",
+            "Open a still-running session with the kickoff prompt seeded but unsent, or leave it alone",
         ),
     ];
 

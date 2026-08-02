@@ -800,7 +800,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             ]),
             crate::app::PlanInterviewPhase::KickoffHandoff => Line::from(vec![
                 Span::styled(" y", key_style()),
-                Span::raw(" send kickoff prompt  "),
+                Span::raw(" open session, seed prompt (unsent)  "),
                 Span::styled("n", key_style()),
                 Span::raw(" leave session running"),
             ]),

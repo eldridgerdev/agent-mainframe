@@ -234,7 +234,7 @@ pub fn draw_plan_interview_dialog(
     } else if state.phase == PlanInterviewPhase::KickoffHandoff {
         Line::from(vec![
             hint("y", theme),
-            Span::raw(" open the session with a kickoff prompt  "),
+            Span::raw(" open the session, kickoff prompt seeded but unsent  "),
             hint("n", theme),
             Span::raw(" leave it running"),
         ])

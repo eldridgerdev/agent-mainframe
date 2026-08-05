@@ -1,0 +1,124 @@
+# plan-interview-resume: proves the Epic 5 draft-persistence flow.
+#
+# Answers part of a plan-mode interview, abandons it, then re-creates the
+# same feature -- which must now open on PlanInterviewPhase::ResumePrompt
+# offering the saved draft, and restore the answers on `r`.
+#
+# Requires --seed with a create-project payload pointing at a real repo.
+# The interview defers the feature launch, and every run below aborts
+# before accepting, so no feature is ever created and no agent starts.
+
+shot:dashboard-seeded
+
+# ---- Pass 1: answer two steps, then abandon ----
+
+# 'n' opens the create-feature wizard on the Source step.
+key:n
+wait:300
+shot:wizard-source
+
+# Enter picks "new branch" -> Branch step.
+key:Enter
+wait:200
+text:guided-plans
+wait:200
+shot:wizard-branch
+
+# Enter -> Worktree step (first feature defaults to "no", using the repo dir).
+key:Enter
+wait:200
+
+# Enter -> Mode step. Tab x3 moves focus to the Plan Mode toggle, 'j' turns
+# it on -- this is what routes creation into the interview.
+key:Enter
+wait:200
+key:Tab
+key:Tab
+key:Tab
+wait:200
+key:j
+wait:200
+shot:wizard-plan-mode-on
+
+# Enter walks the remaining toggles, then advances to the Session Name step.
+key:Enter
+key:Enter
+key:Enter
+key:Enter
+wait:300
+shot:wizard-session-name
+
+# Enter submits: the launch is deferred and the interview opens on the brief.
+key:Enter
+wait:600
+text:Persist a plan interview draft so an abandoned interview is never lost.
+wait:300
+shot:interview-brief
+
+# Enter saves the brief and shows the first question. The draft is written
+# to SQLite at this point.
+key:Enter
+wait:400
+text:Draft persistence, resume/discard on entry, and cleanup on feature delete. Re-run pre-fill is out of scope.
+wait:300
+shot:interview-first-answer
+
+# Enter records that answer and moves to question 2.
+key:Enter
+wait:400
+shot:interview-second-question
+
+# Esc asks how to abandon; 'n' cancels the feature entirely. The draft stays.
+key:Escape
+wait:300
+shot:interview-abort-confirm
+key:n
+wait:500
+shot:dashboard-after-abandon
+
+# ---- Pass 2: create the same feature again ----
+
+key:n
+wait:300
+key:Enter
+wait:200
+text:guided-plans
+wait:200
+key:Enter
+wait:200
+key:Enter
+wait:200
+key:Tab
+key:Tab
+key:Tab
+wait:200
+key:j
+wait:200
+key:Enter
+key:Enter
+key:Enter
+key:Enter
+wait:300
+key:Enter
+wait:800
+
+# THE FRAME: the saved draft is offered instead of a blank brief.
+shot:resume-prompt
+
+# 'r' resumes -- brief and answer restored, landing on the first question
+# still unanswered rather than back at the start.
+key:r
+wait:500
+shot:resumed-at-first-unanswered
+
+# Ctrl+B steps back to show the restored answer, not an empty editor.
+key:C-b
+wait:400
+shot:resumed-answer-restored
+
+# Leave without accepting: nothing is created, the draft is kept.
+key:Escape
+wait:300
+key:n
+wait:500
+shot:dashboard-final

@@ -655,6 +655,32 @@ impl App {
     }
 
     pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
+        self.ensure_feature_running_with_launch_override(pi, fi, None, None)
+    }
+
+    pub(crate) fn ensure_feature_running_for_recovery(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        session_id: String,
+        resume_id: Option<String>,
+        created_session: &mut bool,
+    ) -> Result<()> {
+        self.ensure_feature_running_with_launch_override(
+            pi,
+            fi,
+            Some((session_id, resume_id)),
+            Some(created_session),
+        )
+    }
+
+    fn ensure_feature_running_with_launch_override(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        launch_override: Option<(String, Option<String>)>,
+        created_session: Option<&mut bool>,
+    ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
         let viewport = self.view_pane_viewport();
         let (agent, mode) = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
@@ -695,6 +721,11 @@ impl App {
             &feature.sessions[0].tmux_window,
             &feature.workdir,
         )?;
+        if let Some(created_session) = created_session {
+            *created_session = true;
+        }
+        // Running again: a later disappearance is no longer an expected stop.
+        self.user_stopped_features.remove(&feature.id);
         self.tmux
             .set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
 
@@ -738,7 +769,16 @@ impl App {
         let unlimited_agent_autostart = max_agent_autostart_sessions == 0;
         let mut launched_agent_sessions = 0usize;
         for session in &feature.sessions {
+            let is_launch_target = launch_override
+                .as_ref()
+                .is_some_and(|(session_id, _)| session_id == &session.id);
+            let target_resume_id = launch_override
+                .as_ref()
+                .filter(|(session_id, _)| session_id == &session.id)
+                .and_then(|(_, resume_id)| resume_id.clone());
+
             if session.kind.is_agent_harness()
+                && !is_launch_target
                 && !unlimited_agent_autostart
                 && launched_agent_sessions >= max_agent_autostart_sessions
             {
@@ -759,21 +799,35 @@ impl App {
             match session.kind {
                 SessionKind::Claude => {
                     launched_agent_sessions += 1;
+                    let resume_id = if is_launch_target {
+                        target_resume_id
+                    } else {
+                        session.claude_session_id.clone()
+                    };
                     self.tmux.launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
                         &session.id,
-                        session.claude_session_id.clone(),
+                        resume_id,
                         extra_args.clone(),
                     )?;
                 }
                 SessionKind::Opencode => {
                     launched_agent_sessions += 1;
-                    self.tmux.launch_opencode(
-                        &feature.tmux_session,
-                        &session.tmux_window,
-                        &session.id,
-                    )?;
+                    if is_launch_target {
+                        self.tmux.launch_opencode_with_session(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            &session.id,
+                            target_resume_id,
+                        )?;
+                    } else {
+                        self.tmux.launch_opencode(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            &session.id,
+                        )?;
+                    }
                 }
                 SessionKind::Codex => {
                     launched_agent_sessions += 1;
@@ -806,7 +860,7 @@ impl App {
                         &feature.tmux_session,
                         &session.tmux_window,
                         &session.id,
-                        None,
+                        target_resume_id,
                         codex_args,
                     )?;
                 }
@@ -1050,6 +1104,11 @@ impl App {
         };
         feature.status = ProjectStatus::Stopped;
         let name = feature.name.clone();
+        let feature_id = feature.id.clone();
+        // Remember that this stop was deliberate so reopening a saved agent
+        // pane restarts and resumes in one keypress instead of asking whether
+        // the session was lost.
+        self.user_stopped_features.insert(feature_id);
         self.clear_sidebar_state_for_session(&tmux_session);
         self.save()?;
         self.message = Some(format!("Stopped '{}'", name));
@@ -1245,6 +1304,7 @@ impl App {
         {
             let _ = db.delete_feature_statuses(feature_id);
         }
+        self.delete_plan_interviews_for_deleted_feature(&project_name, &feature_name, &feature_id);
         self.store.remove_feature(&project_name, &feature_name);
         self.save()?;
 
@@ -1376,6 +1436,23 @@ impl App {
                     );
                 } else {
                     self.clear_sidebar_state_for_session(&deletion.tmux_session);
+                    // Resolved before the removal below, since that is the only
+                    // place the feature's id still exists.
+                    let feature_id =
+                        self.store
+                            .find_project(&deletion.project_name)
+                            .and_then(|project| {
+                                project
+                                    .features
+                                    .iter()
+                                    .find(|feature| feature.name == deletion.feature_name)
+                                    .map(|feature| feature.id.clone())
+                            });
+                    self.delete_plan_interviews_for_deleted_feature(
+                        &deletion.project_name,
+                        &deletion.feature_name,
+                        &feature_id,
+                    );
                     self.store
                         .remove_feature(&deletion.project_name, &deletion.feature_name);
                     let _ = self.save();

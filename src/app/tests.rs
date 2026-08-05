@@ -1031,6 +1031,500 @@ fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
     }
 }
 
+fn store_with_stopped_agent_session(kind: SessionKind, resume_id: Option<&str>) -> ProjectStore {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    let session = store.projects[0].features[0].add_session_named(kind.clone(), "Agent".into());
+    match kind {
+        SessionKind::Claude => {
+            session.claude_session_id = resume_id.map(str::to_string);
+        }
+        SessionKind::Codex => {
+            if let Some(id) = resume_id {
+                session.set_token_usage_source_exact(TokenUsageSource {
+                    provider: TokenUsageProvider::Codex,
+                    id: id.to_string(),
+                });
+            }
+        }
+        SessionKind::Opencode => {
+            if let Some(id) = resume_id {
+                session.set_token_usage_source_exact(TokenUsageSource {
+                    provider: TokenUsageProvider::Opencode,
+                    id: id.to_string(),
+                });
+            }
+        }
+        _ => {}
+    }
+    store
+}
+
+fn dialog_choices(app: &App) -> Vec<StoppedSessionChoice> {
+    match &app.mode {
+        AppMode::StoppedSessionDialog(state) => state.choices.clone(),
+        _ => panic!("expected the stopped-session dialog"),
+    }
+}
+
+#[test]
+fn enter_on_stopped_agent_session_opens_recovery_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+
+    assert_eq!(
+        dialog_choices(&app),
+        vec![
+            StoppedSessionChoice::Resume,
+            StoppedSessionChoice::Clear,
+            StoppedSessionChoice::PickSession,
+            StoppedSessionChoice::Cancel,
+        ]
+    );
+    assert!(matches!(
+        app.mode,
+        AppMode::StoppedSessionDialog(StoppedSessionDialogState { selected: 0, .. })
+    ));
+}
+
+#[test]
+fn uppercase_s_keeps_the_saved_transcript_picker_for_a_stopped_feature() {
+    let store = store_with_stopped_agent_session(SessionKind::Codex, Some("codex-resume"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    assert!(
+        !matches!(app.mode, AppMode::StoppedSessionDialog(_)),
+        "`S` must stay on the transcript picker so older sessions on disk \
+         remain reachable from a stopped feature"
+    );
+}
+
+#[test]
+fn stopped_session_without_resume_metadata_starts_directly() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, None);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(
+        !app.open_stopped_session_dialog().unwrap(),
+        "with no saved ID both choices start the same clear session, so the \
+         dialog has nothing to ask"
+    );
+}
+
+#[test]
+fn stopped_session_with_blank_resume_id_starts_directly() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("   "));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(!app.open_stopped_session_dialog().unwrap());
+}
+
+#[test]
+fn pi_session_has_no_recovery_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Pi, Some("ignored"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+
+    assert!(
+        !app.open_stopped_session_dialog().unwrap(),
+        "Pi cannot resume, so it must keep its plain start path rather than \
+         showing a dialog with nothing to resume"
+    );
+}
+
+#[test]
+fn feature_stopped_from_the_dashboard_restarts_without_the_dialog() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+    app.user_stopped_features.insert("feat-1".to_string());
+
+    assert!(
+        !app.open_stopped_session_dialog().unwrap(),
+        "a deliberate `x` stop should restart and resume in one keypress"
+    );
+}
+
+#[test]
+fn ctrl_c_cancels_the_recovery_dialog_instead_of_clearing_the_saved_id() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("keep-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    assert!(app.open_stopped_session_dialog().unwrap());
+
+    crate::handlers::handle_stopped_session_dialog_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].claude_session_id,
+        Some("keep-me".to_string()),
+        "Ctrl+C must not discard the saved resume ID"
+    );
+}
+
+#[test]
+fn pick_session_choice_leaves_the_dialog_for_the_transcript_picker() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("claude-resume"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    // No launch is expected: the picker owns starting the feature.
+    tmux.expect_create_session_with_window().times(0);
+    tmux.expect_launch_claude().times(0);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    assert!(app.open_stopped_session_dialog().unwrap());
+
+    crate::handlers::handle_stopped_session_dialog_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    // The picker itself may find no transcripts in a test environment; what
+    // matters is that the dialog handed off instead of launching a harness.
+    assert!(matches!(
+        app.mode,
+        AppMode::Normal | AppMode::ClaudeSessionPicker(_)
+    ));
+}
+
+#[test]
+fn running_agent_session_still_opens_directly() {
+    let mut store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    store.projects[0].features[0].status = ProjectStatus::Idle;
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).return_const(true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+
+    assert!(
+        matches!(app.mode, AppMode::Viewing(_) | AppMode::Compose(_)),
+        "running sessions should keep the existing open behavior"
+    );
+}
+
+#[test]
+fn uppercase_s_for_running_agent_keeps_existing_resume_picker_behavior() {
+    let mut store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    store.projects[0].features[0].status = ProjectStatus::Idle;
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    assert!(!matches!(app.mode, AppMode::StoppedSessionDialog(_)));
+}
+
+#[test]
+fn stopped_session_dialog_cancel_returns_to_dashboard() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+        project_id: "proj-1".into(),
+        feature_id: "feat-1".into(),
+        session_id: app.store.projects[0].features[0].sessions[0].id.clone(),
+        selected: 0,
+        choices: vec![
+            StoppedSessionChoice::Resume,
+            StoppedSessionChoice::Clear,
+            StoppedSessionChoice::Cancel,
+        ],
+        harness_label: "Claude".into(),
+    });
+
+    crate::handlers::handle_stopped_session_dialog_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn stopped_terminal_session_keeps_existing_start_and_open_behavior() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].add_session_named(SessionKind::Terminal, "Shell".into());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+
+    assert!(matches!(
+        app.mode,
+        AppMode::Viewing(ViewState {
+            session_kind: SessionKind::Terminal,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn recovery_resumes_saved_codex_session_and_opens_its_pane() {
+    let store = store_with_stopped_agent_session(SessionKind::Codex, Some("codex-resume"));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_for_exists = calls.clone();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .times(4)
+        .returning(move |_| calls_for_exists.fetch_add(1, Ordering::SeqCst) == 3);
+    tmux.expect_check_harness_available()
+        .withf(|kind| *kind == AgentKind::Codex)
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_run_shell_command()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_codex()
+        .withf(|_, window, _, resume_id, _| {
+            window == "codex" && resume_id.as_deref() == Some("codex-resume")
+        })
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(
+        app.mode,
+        AppMode::Viewing(ViewState {
+            session_kind: SessionKind::Codex,
+            ..
+        })
+    ));
+    assert_eq!(app.message.as_deref(), Some("Resumed Codex session"));
+}
+
+#[test]
+fn clear_recovery_launches_without_resume_and_clears_saved_metadata() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("old-session"));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_for_exists = calls.clone();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .times(4)
+        .returning(move |_| calls_for_exists.fetch_add(1, Ordering::SeqCst) == 3);
+    tmux.expect_check_harness_available()
+        .withf(|kind| *kind == AgentKind::Claude)
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|_, window, _, resume_id, _| window == "claude" && resume_id.is_none())
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Clear);
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(session.claude_session_id, None);
+    assert_eq!(session.token_usage_source, None);
+    assert_eq!(app.message.as_deref(), Some("Started clear Claude session"));
+}
+
+#[test]
+fn recovery_rejects_stale_session_selection_safely() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let session_id = app.store.projects[0].features[0].sessions[0].id.clone();
+    app.mode = AppMode::StoppedSessionDialog(StoppedSessionDialogState {
+        project_id: "proj-1".into(),
+        feature_id: "feat-1".into(),
+        session_id,
+        selected: 0,
+        choices: vec![
+            StoppedSessionChoice::Resume,
+            StoppedSessionChoice::Clear,
+            StoppedSessionChoice::Cancel,
+        ],
+        harness_label: "Claude".into(),
+    });
+    app.store.projects[0].features[0].sessions.clear();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("no longer exists"))
+    );
+}
+
+#[test]
+fn recovery_surfaces_missing_harness_without_creating_tmux() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).return_const(false);
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Err(anyhow::anyhow!("claude CLI not found")));
+    tmux.expect_create_session_with_window().times(0);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("claude CLI not found"))
+    );
+}
+
+#[test]
+fn recovery_launch_failure_removes_partial_tmux_session() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(3).return_const(false);
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .times(1)
+        .returning(|_, _, _, _, _| Err(anyhow::anyhow!("launch failed")));
+    tmux.expect_kill_session().times(1).returning(|_| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Stopped
+    );
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("launch failed"))
+    );
+}
+
+#[test]
+fn recovery_tmux_creation_failure_does_not_kill_an_unowned_session() {
+    let store = store_with_stopped_agent_session(SessionKind::Claude, Some("resume-me"));
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(3).return_const(false);
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Ok(()));
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Err(anyhow::anyhow!("tmux create failed")));
+    tmux.expect_kill_session().times(0);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.open_stopped_session_dialog().unwrap();
+
+    app.confirm_stopped_session_choice(StoppedSessionChoice::Resume);
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains("tmux create failed"))
+    );
+}
+
 #[test]
 fn redraw_signature_changes_when_view_selection_moves() {
     let mut app = App::new_for_test(
@@ -1709,6 +2203,7 @@ fn visible_animation_is_enabled_for_pr_review_running_screens() {
         _ => unreachable!(),
     };
     app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        scope: crate::app::review_memory::MemoryScope::Project,
         origin,
         depth: crate::app::pr_review::BootstrapDepth::default(),
         stage: crate::app::pr_review::BootstrapStage::FetchingComments,
@@ -2262,9 +2757,326 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
     assert_eq!(app.store.projects[0].features.len(), 1);
 }
 
+/// An app sitting on the selected feature with no interview running — the
+/// starting point for the on-demand trigger, which plans a feature that
+/// already exists rather than deferring a launch.
+fn app_on_selected_feature() -> (App, tempfile::NamedTempFile, TempDir) {
+    let repo = TempDir::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+    (app, store_file, repo)
+}
+
+#[test]
+fn on_demand_plan_interview_plans_the_selected_feature_without_a_launch() {
+    let (mut app, _store_file, repo) = app_on_selected_feature();
+
+    crate::handlers::handle_normal_key(&mut app, ke(KeyCode::Char('P'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.feature_name, "my-feat");
+            // Keyed by the feature's id, so the accepted transcript is filed
+            // where a later re-run on this feature will look for it.
+            assert_eq!(state.interview_key, "feat-1");
+            assert_eq!(state.workdir, repo.path());
+            assert!(state.pending_launch.is_none());
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+}
+
+#[test]
+fn accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir() {
+    let (mut app, _store_file, repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+    force_plan_interview_raw_fallback(&mut app);
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.brief = "Tighten the sidebar".into();
+        state.synthesis_requested = true;
+        state.phase = PlanInterviewPhase::Done;
+    } else {
+        panic!("expected plan interview mode");
+    }
+    app.continue_plan_interview_after_done().unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    let plan = std::fs::read_to_string(repo.path().join(".claude/plan.md")).unwrap();
+    assert!(plan.contains("Tighten the sidebar"));
+    // Writing the file is not enough on its own: without the instruction block
+    // the agent is never told the plan exists, and without the flag a restart
+    // would stop injecting it.
+    assert!(app.store.projects[0].features[0].plan_mode);
+    let instructions = std::fs::read_to_string(repo.path().join("CLAUDE.local.md")).unwrap();
+    assert!(instructions.contains(".claude/plan.md"));
+}
+
+/// `app_on_selected_feature`, but the feature's agent session is live — the
+/// case the accepted plan has somewhere to hand off to. Permissive tmux
+/// expectations: these tests care about the handoff decision, not the call
+/// sequence entering an already-running session makes.
+fn app_on_running_selected_feature() -> (App, tempfile::NamedTempFile, TempDir) {
+    let repo = TempDir::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active);
+    store.projects[0].features[0]
+        .sessions
+        .push(make_session("Claude 1", None));
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| true);
+    tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+    (app, store_file, repo)
+}
+
+/// Drive an on-demand interview to an accepted raw-fallback plan, which is the
+/// point the live-session handoff is decided.
+fn accept_on_demand_plan_for_test(app: &mut App, brief: &str) {
+    app.start_plan_interview_for_selected_feature();
+    force_plan_interview_raw_fallback(app);
+
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    state.brief = brief.into();
+    state.synthesis_requested = true;
+    state.phase = PlanInterviewPhase::Done;
+
+    app.continue_plan_interview_after_done().unwrap();
+    crate::handlers::handle_plan_interview_key(app, ke(KeyCode::Enter)).unwrap();
+}
+
+/// A running agent read its instruction file once, at startup, so a plan
+/// written underneath it goes unnoticed until something says so.
+#[test]
+fn accepting_an_on_demand_plan_offers_the_kickoff_to_a_running_session() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::KickoffHandoff);
+            let target = state.kickoff_handoff.as_ref().unwrap();
+            assert_eq!(target.session_label, "Claude 1");
+            assert_eq!(target.session_id, "session-Claude 1");
+            assert_eq!(target.plan_path, repo.path().join(".claude/plan.md"));
+        }
+        _ => panic!("expected the handoff prompt"),
+    }
+    // The offer comes after the accept has fully landed, so declining it can
+    // never cost the plan.
+    assert!(
+        std::fs::read_to_string(repo.path().join(".claude/plan.md"))
+            .unwrap()
+            .contains("Tighten the sidebar")
+    );
+    assert!(app.store.projects[0].features[0].plan_mode);
+}
+
+#[test]
+fn declining_the_kickoff_handoff_leaves_the_running_session_alone() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+    );
+}
+
+#[test]
+fn accepting_the_kickoff_handoff_seeds_the_running_sessions_composer() {
+    let (mut app, _store_file, _repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+
+    // Seeded, never submitted: the session may be mid-task, so when the prompt
+    // lands stays the user's call.
+    match &app.mode {
+        AppMode::Compose(state) => {
+            let seed = state.editor.text();
+            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("decisions are settled"));
+            assert_eq!(state.view.feature_name, "my-feat");
+        }
+        _ => panic!("expected the live session's composer to be seeded"),
+    }
+}
+
+/// The handoff is only offered against a session tmux still has. AMF's status
+/// is reconciled every few seconds, so a session killed outside AMF still reads
+/// as running until the next sync — trusting the flag alone would offer to type
+/// into nothing.
+#[test]
+fn a_feature_marked_active_without_a_tmux_session_gets_no_handoff_offer() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| false);
+    app.tmux = Box::new(tmux);
+
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+    );
+}
+
+/// A live tmux session is not a live agent: the terminal window alone keeps the
+/// session up after the harness exits, so the session-level check passes while
+/// there is nothing left to hand the plan to.
+#[test]
+fn a_feature_whose_agent_window_exited_gets_no_handoff_offer() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| false);
+    app.tmux = Box::new(tmux);
+
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+    );
+}
+
+/// With several harnesses configured, declaration order is the wrong tiebreak:
+/// the first one may be long dead while a later one is doing the work.
+#[test]
+fn the_handoff_targets_the_harness_that_is_actually_running() {
+    let (mut app, _store_file, _repo) = app_on_running_selected_feature();
+    app.store.projects[0].features[0]
+        .sessions
+        .push(make_session("Claude 2", None));
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists()
+        .returning(|_, window| window == "Claude 2");
+    tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+    app.tmux = Box::new(tmux);
+
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            let target = state.kickoff_handoff.as_ref().unwrap();
+            assert_eq!(target.session_label, "Claude 2");
+        }
+        _ => panic!("expected the handoff prompt"),
+    }
+}
+
+/// The offer sits on screen for as long as the user takes to answer it, and the
+/// harness can exit in that window. Entering it then would recreate the session
+/// — a far bigger action than the one being offered.
+#[test]
+fn a_harness_that_exits_while_the_offer_is_up_is_not_reopened() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| false);
+    app.tmux = Box::new(tmux);
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    let message = app.message.as_deref().unwrap();
+    assert!(message.contains(&repo.path().join(".claude/plan.md").display().to_string()));
+    assert!(message.contains("no longer running"));
+}
+
+#[test]
+fn aborting_an_on_demand_interview_has_no_feature_to_cancel() {
+    let (mut app, _store_file, repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
+
+    // `n` cancels feature creation, which an on-demand interview never started;
+    // the dialog does not offer it, so it must not exit the interview either.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+    // Leaving is non-destructive: the feature keeps whatever plan it had.
+    assert!(!repo.path().join(".claude/plan.md").exists());
+    assert!(!app.store.projects[0].features[0].plan_mode);
+    assert_eq!(app.store.projects[0].features.len(), 1);
+}
+
+#[test]
+fn command_picker_offers_the_plan_interview_only_with_a_feature_in_hand() {
+    let (mut app, _store_file, _repo) = app_on_selected_feature();
+
+    app.open_command_picker(None);
+    let offered_on_feature = matches!(&app.mode, AppMode::CommandPicker(state)
+        if state.commands.iter().any(|entry| entry.name == "plan-interview"));
+    assert!(offered_on_feature);
+
+    // A project row has no workdir to plan against.
+    app.mode = AppMode::Normal;
+    app.selection = Selection::Project(0);
+    app.open_command_picker(None);
+    let offered_on_project = matches!(&app.mode, AppMode::CommandPicker(state)
+        if state.commands.iter().any(|entry| entry.name == "plan-interview"));
+    assert!(!offered_on_project);
+}
+
 /// Common setup for the `poll_plan_interview_ai_bg` tests below: a feature
 /// launch deferred into a plan interview, exactly like the abort test above.
 fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir) {
+    plan_interview_app(None)
+}
+
+/// `app_with_deferred_plan_interview` plus a real SQLite database, so the
+/// draft-persistence path writes and reads actual rows. The extra `TempDir`
+/// holds the database file and must outlive the app.
+fn app_with_deferred_plan_interview_and_db() -> (App, tempfile::NamedTempFile, TempDir, TempDir) {
+    let db_dir = TempDir::new().unwrap();
+    let (app, store_file, repo) = plan_interview_app(Some(&db_dir.path().join("amf.db")));
+    (app, store_file, repo, db_dir)
+}
+
+fn plan_interview_app(
+    db_path: Option<&std::path::Path>,
+) -> (App, tempfile::NamedTempFile, TempDir) {
     let repo = TempDir::new().unwrap();
     let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
     // Permissive rather than strict-sequence expectations: these tests care
@@ -2282,6 +3094,9 @@ fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir)
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     let store_file = NamedTempFile::new().unwrap();
     app.store_path = store_file.path().to_path_buf();
+    if let Some(db_path) = db_path {
+        app.db = Some(crate::db::AmfDb::open(db_path).unwrap());
+    }
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".into(),
         branch: "planned-feature".into(),
@@ -2324,6 +3139,394 @@ fn synthesized_plan_response() -> String {
      ## Tasks\n- [ ] Implement the feature\n- [ ] Verify it\n\n\
      ## Risks / open questions\n- None identified.\n"
         .to_string()
+}
+
+fn plan_critique_response() -> String {
+    "# Plan review: planned-feature\n\n\
+     ## Summary\nReady with caveats.\n\n\
+     ## Gaps\n- No rollback story.\n\n\
+     ## Risks\n- None identified.\n\n\
+     ## Contradictions\n- None identified.\n\n\
+     ## Unclear decisions\n- None identified.\n\n\
+     ## Missing acceptance criteria\n- None identified.\n"
+        .to_string()
+}
+
+/// Drop straight into an in-flight agent review, as
+/// `start_plan_interview_critique` would leave it, without spawning a real
+/// headless call.
+fn begin_plan_critique_for_test(app: &mut App) -> std::sync::mpsc::Sender<anyhow::Result<String>> {
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    assert!(state.begin_critique(500));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_critique_bg = Some(rx);
+    tx
+}
+
+/// Drop straight into an in-flight directed revision without launching a real
+/// harness. The production path builds the same state immediately before it
+/// spawns the read-only worker.
+fn begin_directed_plan_revision_for_test(
+    app: &mut App,
+) -> std::sync::mpsc::Sender<anyhow::Result<String>> {
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    assert!(state.begin_directed_feedback());
+    state.editor = crate::editor::TextEditor::new(
+        "Inspect the router and add the concrete files to Tasks.".into(),
+    );
+    assert!(state.begin_directed_feedback_loading(650));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_directed_feedback_bg = Some(rx);
+    tx
+}
+
+#[test]
+fn directed_plan_feedback_replaces_the_draft_then_returns_to_review() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_directed_plan_revision_for_test(&mut app);
+    let revised = original.replace("Implement the feature", "Update src/handlers/router.rs");
+    tx.send(Ok(revised.clone())).unwrap();
+
+    assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(app.plan_interview_directed_feedback_bg.is_none());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Plan revised from your feedback; review the changes")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(revised.as_str())
+    ));
+}
+
+#[test]
+fn unusable_directed_feedback_preserves_the_instruction_and_plan_for_retry() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_directed_plan_revision_for_test(&mut app);
+    tx.send(Ok("I inspected the repository and have suggestions.".into()))
+        .unwrap();
+
+    assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::DirectedFeedback
+                && state.editor.text().contains("Inspect the router")
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Directed revision returned no usable plan; your instruction is preserved")
+    );
+}
+
+#[test]
+fn dismissing_directed_feedback_discards_its_late_revision() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_directed_plan_revision_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review
+    ));
+
+    let revised = original.replace("Implement the feature", "Update src/handlers/router.rs");
+    tx.send(Ok(revised)).unwrap();
+    assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
+}
+
+#[test]
+fn agent_review_is_advisory_and_leaves_the_plan_untouched() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+
+    assert!(app.poll_plan_interview_critique_bg());
+    assert!(app.plan_interview_critique_bg.is_none());
+    let expected_plan = synthesized_plan_response();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Critique
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+                // The whole point of the action: the reviewed plan is the
+                // plan the user still has.
+                && state.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+    ));
+
+    // Leaving the review returns to that same plan.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && !state.abort_confirmation
+                && state.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+    ));
+}
+
+#[test]
+fn unusable_agent_review_returns_to_the_plan_with_a_notice() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok("I cannot help with that.".to_string())).unwrap();
+
+    assert!(app.poll_plan_interview_critique_bg());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Plan review returned no usable analysis")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.critique.is_none()
+                && state.synthesized_plan.as_deref()
+                    == Some(synthesized_plan_response().as_str())
+    ));
+}
+
+#[test]
+fn a_failed_agent_review_call_is_reported_separately_from_bad_output() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Err(anyhow::anyhow!("claude exited with status 1")))
+        .unwrap();
+
+    assert!(app.poll_plan_interview_critique_bg());
+    // A call that never ran and a call that answered off-contract need
+    // different fixes, so they must not share one catch-all message.
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Plan review failed; the plan is unchanged")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review && state.critique.is_none()
+    ));
+}
+
+#[test]
+fn dismissing_an_in_flight_agent_review_keeps_its_late_result_without_reopening_it() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    // Esc during the review must return to the plan, not open the
+    // abort-the-whole-interview confirmation that would risk the plan.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review && !state.abort_confirmation
+    ));
+
+    tx.send(Ok(plan_critique_response())).unwrap();
+    app.poll_plan_interview_critique_bg();
+
+    // The call was already paid for: the result is kept where `a` can reach it,
+    // but the user is not yanked back into a screen they just dismissed.
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+    ));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Critique
+    ));
+}
+
+#[test]
+fn a_dismissed_agent_review_reopens_instead_of_paying_for_a_second_call() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+    // No harness: any path that actually spends tokens would bail out here
+    // with a notice instead of re-opening what is already in hand.
+    force_plan_interview_raw_fallback(&mut app);
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+    assert!(app.poll_plan_interview_critique_bg());
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert_eq!(app.message, None);
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Critique
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+    ));
+}
+
+#[test]
+fn a_stale_agent_review_result_is_dropped_rather_than_kept_against_a_new_plan() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    // The plan moves on while the dismissed review is still running.
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis("# Plan: replaced\n\n## Goal\nSomething else.\n".into());
+    }
+
+    tx.send(Ok(plan_critique_response())).unwrap();
+    app.poll_plan_interview_critique_bg();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            // The findings describe a draft the user no longer has.
+            if state.critique.is_none()
+                && state.synthesized_plan.as_deref()
+                    == Some("# Plan: replaced\n\n## Goal\nSomething else.\n")
+    ));
+}
+
+#[test]
+fn a_second_agent_review_is_not_started_while_the_first_is_still_running() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let _tx = begin_plan_critique_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    // Dismissing leaves the worker running; `a` must not spend a second time
+    // for the analysis already on its way.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert_eq!(app.message.as_deref(), Some("Plan review still running"));
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review
+    ));
+}
+
+#[test]
+fn a_revision_that_cannot_run_keeps_the_feedback_and_the_plan() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+    force_plan_interview_raw_fallback(&mut app);
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+    assert!(app.poll_plan_interview_critique_bg());
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+
+    // No harness here, so the revision never runs. Consuming the feedback
+    // anyway would throw away the review the user asked to act on, leaving
+    // "revise with this" with nothing behind it.
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No headless-capable harness available; the plan and its review are unchanged")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.revision_critique.as_deref()
+                    == Some(plan_critique_response().as_str())
+                && state.critique.as_deref() == Some(plan_critique_response().as_str())
+                && state.synthesized_plan.as_deref()
+                    == Some(synthesized_plan_response().as_str())
+    ));
+
+    // And the review itself is still one keypress away.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Critique
+    ));
+}
+
+#[test]
+fn editing_the_plan_drops_a_review_of_the_superseded_draft() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+    }
+
+    let tx = begin_plan_critique_for_test(&mut app);
+    tx.send(Ok(plan_critique_response())).unwrap();
+    assert!(app.poll_plan_interview_critique_bg());
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('e'))).unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("# Plan: edited".into());
+    }
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some("# Plan: edited\n")
+                // The findings described the draft the user just replaced.
+                && state.critique.is_none()
+    ));
 }
 
 #[test]
@@ -2390,7 +3593,6 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
 
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
-    assert!(matches!(app.mode, AppMode::Normal));
     assert_eq!(
         std::fs::read_to_string(workdir.join(".claude/plan.md")).unwrap(),
         synthesized_plan_response()
@@ -2401,17 +3603,34 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
             .iter()
             .any(|f| f.name == "planned-feature" && !f.pending_worktree_script)
     );
+    // Accepting lands in the launched session's composer with an editable
+    // kickoff prompt — seeded, never submitted.
+    match &app.mode {
+        AppMode::Compose(state) => {
+            let seed = state.editor.text();
+            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("decisions are settled"));
+            assert_eq!(state.view.feature_name, "planned-feature");
+        }
+        _ => panic!("expected the composer to be seeded"),
+    }
 }
 
 #[test]
 fn poll_plan_interview_synthesis_bg_uses_raw_fallback_for_incomplete_markdown() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
-    let workdir = match &mut app.mode {
+    let (workdir, first_question) = match &mut app.mode {
         AppMode::PlanInterview(state) => {
             state.brief = "Fallback brief".into();
+            // One answered question and the rest skipped: the fallback must
+            // carry the answer and drop every question the user passed over.
+            state.answers[0] = Some("Answered this one".into());
             state.begin_synthesis(300);
-            state.pending_launch.as_ref().unwrap().workdir.clone()
+            (
+                state.pending_launch.as_ref().unwrap().workdir.clone(),
+                state.questions[0].text.clone(),
+            )
         }
         _ => panic!("expected plan interview mode"),
     };
@@ -2429,6 +3648,8 @@ fn poll_plan_interview_synthesis_bg_uses_raw_fallback_for_incomplete_markdown() 
     };
     assert!(plan.contains("## Feature brief\n\nFallback brief"));
     assert!(plan.contains("## Q&A"));
+    assert!(plan.contains(&format!("### {first_question}\n\nAnswered this one")));
+    assert!(!plan.contains("_Skipped._"));
     assert!(!workdir.join(".claude/plan.md").exists());
     assert!(
         app.debug_log
@@ -2892,6 +4113,525 @@ fn poll_plan_interview_ai_bg_treats_a_dropped_worker_as_round_exhaustion() {
         app.mode,
         AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Review
     ));
+}
+
+/// The key under which a feature-creation interview's draft is filed, before
+/// the feature (and its id) exists.
+const PENDING_INTERVIEW_KEY: &str = "pending:my-project/planned-feature";
+
+/// Walk the brief and the first question, so there is something worth resuming.
+fn answer_two_plan_interview_steps(app: &mut App) {
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Persist my answers.".into());
+    }
+    crate::handlers::handle_plan_interview_key(app, ke(KeyCode::Enter)).unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Only the TUI.".into());
+    }
+    crate::handlers::handle_plan_interview_key(app, ke(KeyCode::Enter)).unwrap();
+}
+
+#[test]
+fn plan_interview_answers_are_saved_as_a_resumable_draft() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    answer_two_plan_interview_steps(&mut app);
+
+    let draft = app
+        .db
+        .as_ref()
+        .unwrap()
+        .plan_interview_draft(PENDING_INTERVIEW_KEY)
+        .unwrap()
+        .expect("answers must be saved as they are given");
+    assert_eq!(draft.brief, "Persist my answers.");
+    assert_eq!(draft.feature_name, "planned-feature");
+    assert_eq!(draft.answer_for("scope"), Some("Only the TUI."));
+    assert!(draft.plan.is_none());
+}
+
+/// The point of the draft: abandoning the interview and coming back to create
+/// the same feature must not cost the user their answers.
+#[test]
+fn re_entering_an_abandoned_plan_interview_offers_to_resume_it() {
+    let (mut app, _store_file, repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    answer_two_plan_interview_steps(&mut app);
+
+    // Abandon: abort, then cancel the feature entirely.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+
+    app.finish_feature_launch(PreparedFeatureLaunch {
+        project_name: "my-project".into(),
+        branch: "planned-feature".into(),
+        workdir: repo.path().join(".worktrees/planned-feature"),
+        is_worktree: true,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: true,
+        agent: AgentKind::Claude,
+        create_terminal: false,
+        session_name: "Claude 1".into(),
+        enable_chrome: false,
+        remote_control: false,
+        steering_enabled: false,
+        hook_succeeded: None,
+        startup_prompt: None,
+    })
+    .unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::ResumePrompt);
+            assert_eq!(state.interview_key, PENDING_INTERVIEW_KEY);
+            // Nothing is restored until the user chooses to resume.
+            assert!(state.brief.is_empty());
+        }
+        _ => panic!("expected the resume prompt for the saved draft"),
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+            assert_eq!(state.brief, "Persist my answers.");
+            assert_eq!(state.answers[0].as_deref(), Some("Only the TUI."));
+            // Resumed at the first question still unanswered.
+            assert_eq!(state.question_index, 1);
+        }
+        _ => panic!("resuming must restore the saved interview"),
+    }
+}
+
+#[test]
+fn discarding_the_offered_draft_deletes_the_saved_row() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    answer_two_plan_interview_steps(&mut app);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        let draft = app
+            .db
+            .as_ref()
+            .unwrap()
+            .plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .unwrap();
+        state.offer_resume(draft);
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .is_none(),
+        "discarding must remove the stored draft, not just hide it"
+    );
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+            assert!(state.brief.is_empty());
+        }
+        _ => panic!("discarding must start the interview over"),
+    }
+}
+
+/// On accept the transcript moves off the pending key and onto the feature the
+/// launch just created — that id is where a later re-run looks for it.
+#[test]
+fn accepting_a_plan_files_the_transcript_under_the_created_feature_id() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    force_plan_interview_raw_fallback(&mut app);
+    answer_two_plan_interview_steps(&mut app);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis("# Plan: planned-feature\n".into());
+    }
+
+    app.complete_plan_interview().unwrap();
+
+    let db = app.db.as_ref().unwrap();
+    assert!(
+        db.plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .is_none(),
+        "the accepted draft must not be offered for resume again"
+    );
+    let feature_id = app.store.projects[0]
+        .features
+        .iter()
+        .find(|feature| feature.name == "planned-feature")
+        .map(|feature| feature.id.clone())
+        .expect("accept launches the feature");
+    let transcript = db
+        .plan_interview_final(&feature_id)
+        .unwrap()
+        .expect("accept must save the transcript under the feature's id");
+    assert_eq!(
+        transcript.plan.as_deref(),
+        Some("# Plan: planned-feature\n")
+    );
+    assert_eq!(transcript.answer_for("scope"), Some("Only the TUI."));
+}
+
+/// `plan_interviews.feature_id` has no foreign key, so deletion is explicit.
+/// Both keys a feature's interviews can live under have to be cleared.
+#[test]
+fn deleting_a_feature_drops_its_stored_interviews() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    force_plan_interview_raw_fallback(&mut app);
+    answer_two_plan_interview_steps(&mut app);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis("# Plan: planned-feature\n".into());
+    }
+    app.complete_plan_interview().unwrap();
+
+    let feature_id = app.store.projects[0]
+        .features
+        .iter()
+        .find(|feature| feature.name == "planned-feature")
+        .map(|feature| feature.id.clone())
+        .unwrap();
+    // A second, abandoned interview for the same feature name still sits on the
+    // pending key; deletion has to reach that too.
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&crate::db::plan_interviews::PlanInterviewRecord {
+            feature_id: PENDING_INTERVIEW_KEY.into(),
+            feature_name: "planned-feature".into(),
+            brief: "Abandoned second pass.".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    app.delete_plan_interviews_for_deleted_feature(
+        "my-project",
+        "planned-feature",
+        &Some(feature_id.clone()),
+    );
+
+    let db = app.db.as_ref().unwrap();
+    assert!(db.plan_interview_final(&feature_id).unwrap().is_none());
+    assert!(db.plan_interview_draft(&feature_id).unwrap().is_none());
+    assert!(
+        db.plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// `app_on_selected_feature` plus a real SQLite database, so the re-run path
+/// reads an actual stored transcript. The extra `TempDir` holds the database
+/// file and must outlive the app.
+fn app_on_selected_feature_with_db() -> (App, tempfile::NamedTempFile, TempDir, TempDir) {
+    let db_dir = TempDir::new().unwrap();
+    let (mut app, store_file, repo) = app_on_selected_feature();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    (app, store_file, repo, db_dir)
+}
+
+/// The transcript a previously accepted plan leaves behind for `feat-1`: one
+/// built-in question the current bank still asks, and one AI follow-up it
+/// cannot contain.
+fn save_accepted_transcript(app: &App) {
+    use crate::db::plan_interviews::{PlanInterviewRecord, PlanInterviewStage};
+    use crate::plan_interview::{PlanQuestionKind, QuestionSource};
+
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            stage: PlanInterviewStage::Final,
+            feature_name: "my-feat".into(),
+            brief: "Tighten the sidebar.".into(),
+            questions: vec![
+                crate::plan_interview::PlanQuestion {
+                    id: "scope".into(),
+                    text: "What is in scope?".into(),
+                    kind: PlanQuestionKind::FreeText,
+                    source: QuestionSource::Builtin,
+                    optional: true,
+                },
+                crate::plan_interview::PlanQuestion {
+                    id: "cache-invalidation".into(),
+                    text: "When is the preview invalidated?".into(),
+                    kind: PlanQuestionKind::FreeText,
+                    source: QuestionSource::Ai { round: 1 },
+                    optional: true,
+                },
+            ],
+            answers: vec![Some("Sidebar only.".into()), Some("On every save.".into())],
+            plan: Some("# Plan: my-feat\n".into()),
+            ai_rounds_completed: 1,
+            ..Default::default()
+        })
+        .unwrap();
+}
+
+/// The point of the re-run: planning a feature again starts from the answers
+/// behind the plan already accepted for it, not from a blank interview.
+#[test]
+fn re_running_the_interview_pre_fills_the_accepted_answers() {
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+
+    app.start_plan_interview_for_selected_feature();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+            assert_eq!(state.brief, "Tighten the sidebar.");
+            // The brief is in the editor too, so Enter keeps it.
+            assert_eq!(state.editor.text(), "Tighten the sidebar.");
+            let scope = state
+                .questions
+                .iter()
+                .position(|question| question.id == "scope")
+                .expect("the built-in bank still asks about scope");
+            assert_eq!(state.answers[scope].as_deref(), Some("Sidebar only."));
+            // The previous run's AI question is not in the current bank, so it is
+            // carried onto the end with the answer it collected.
+            let ai = state
+                .questions
+                .iter()
+                .position(|question| question.id == "cache-invalidation")
+                .expect("a paid-for AI question must not be dropped on a re-run");
+            assert_eq!(state.answers[ai].as_deref(), Some("On every save."));
+            // Adaptive rounds are not carried: the re-run gets its own opt-in
+            // and its own budget.
+            assert_eq!(state.ai_rounds_completed, 0);
+            assert!(!state.ai_followups_opted_in);
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("pre-filled")
+    );
+}
+
+/// Per-question keep/change: Enter keeps the pre-filled answer, typing changes
+/// it, and Ctrl+R puts the previous one back.
+#[test]
+fn a_re_run_keeps_changes_or_restores_each_answer() {
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.start_plan_interview_for_selected_feature();
+
+    // Brief: pre-filled and reported as kept, and Enter carries it forward.
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    // First question is "scope", pre-filled from the transcript.
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+            assert_eq!(state.questions[state.question_index].id, "scope");
+            assert_eq!(state.editor.text(), "Sidebar only.");
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+        }
+        _ => panic!("expected the first question"),
+    }
+
+    // Typing is a change, and the previous answer stays restorable.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('!'))).unwrap();
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.editor.text(), "Sidebar only.!");
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Changed));
+        }
+        _ => panic!("expected the first question"),
+    }
+
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.editor.text(), "Sidebar only.");
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+        }
+        _ => panic!("expected the first question"),
+    }
+    assert!(app.message.is_none());
+
+    // Enter records the kept answer and moves on.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.answers[0].as_deref(), Some("Sidebar only."));
+            assert_eq!(state.question_index, 1);
+            // The next built-in question was never answered before, so there is
+            // nothing to keep and nothing to restore.
+            assert_eq!(state.prior_answer_state(), None);
+        }
+        _ => panic!("expected the second question"),
+    }
+
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("No previous answer")
+    );
+}
+
+/// Clearing a pre-filled answer skips the question, which is how a re-run drops
+/// an answer that no longer applies.
+#[test]
+fn clearing_a_pre_filled_answer_records_it_as_skipped() {
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.start_plan_interview_for_selected_feature();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new(String::new());
+        assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Cleared));
+    } else {
+        panic!("expected the first question");
+    }
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => assert_eq!(state.answers[0], None),
+        _ => panic!("expected the second question"),
+    }
+}
+
+/// A stale draft and an accepted transcript can both exist for one feature.
+/// Discarding the draft must not also throw away the accepted answers it was
+/// revising.
+#[test]
+fn discarding_a_draft_on_a_re_run_falls_back_to_the_accepted_answers() {
+    use crate::db::plan_interviews::PlanInterviewRecord;
+
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            feature_name: "my-feat".into(),
+            brief: "Abandoned second pass.".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    app.start_plan_interview_for_selected_feature();
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::ResumePrompt)
+    );
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+            assert_eq!(state.brief, "Tighten the sidebar.");
+            assert_eq!(state.answers[0].as_deref(), Some("Sidebar only."));
+        }
+        _ => panic!("discarding must fall back to the accepted transcript"),
+    }
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .plan_interview_draft("feat-1")
+            .unwrap()
+            .is_none()
+    );
+    // The transcript is not the draft: discarding must leave it alone.
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .plan_interview_final("feat-1")
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// Resuming a draft on a re-run takes the draft's answers, which are newer than
+/// the accepted transcript's.
+#[test]
+fn resuming_a_draft_on_a_re_run_wins_over_the_accepted_answers() {
+    use crate::db::plan_interviews::PlanInterviewRecord;
+    use crate::plan_interview::{PlanQuestionKind, QuestionSource};
+
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            feature_name: "my-feat".into(),
+            brief: "Second pass.".into(),
+            questions: vec![crate::plan_interview::PlanQuestion {
+                id: "scope".into(),
+                text: "What is in scope?".into(),
+                kind: PlanQuestionKind::FreeText,
+                source: QuestionSource::Builtin,
+                optional: true,
+            }],
+            answers: vec![Some("Sidebar and header.".into())],
+            ..Default::default()
+        })
+        .unwrap();
+
+    app.start_plan_interview_for_selected_feature();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.brief, "Second pass.");
+            assert_eq!(state.answers[0].as_deref(), Some("Sidebar and header."));
+            // The accepted answer is still what Ctrl+R restores.
+            assert_eq!(
+                state.prior_answers.get("scope").map(String::as_str),
+                Some("Sidebar only.")
+            );
+        }
+        _ => panic!("expected the resumed draft"),
+    }
+}
+
+/// Persistence is a convenience layered over an in-memory flow; without a
+/// database the interview still has to work end to end.
+#[test]
+fn plan_interview_runs_without_a_database() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    assert!(app.db.is_none());
+
+    answer_two_plan_interview_steps(&mut app);
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.brief, "Persist my answers.");
+            assert_eq!(state.answers[0].as_deref(), Some("Only the TUI."));
+        }
+        _ => panic!("expected the interview to advance normally without a DB"),
+    }
 }
 
 #[test]
@@ -5740,6 +7480,18 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
         !workdir.path().join(".codex").join("config.toml").exists(),
         "repo-root codex feature should not write unsupported project-local config"
     );
+    let screenshot_skill = workdir
+        .path()
+        .join(".agents/skills/amf-screenshot/SKILL.md");
+    let screenshot_skill = std::fs::read_to_string(screenshot_skill)
+        .expect("Codex features should get the AMF screenshot skill");
+    assert!(
+        screenshot_skill.contains("name: amf-screenshot")
+            && screenshot_skill.contains("scripts/dev/screenshot/amf-capture.sh")
+            && !screenshot_skill.contains("allowed-tools:")
+            && !screenshot_skill.contains("Artifact tool"),
+        "Codex should get its native screenshot workflow, got: {screenshot_skill}"
+    );
 
     let second = TempDir::new().unwrap();
     call_ensure_hooks_for(&second, VibeMode::Vibe, AgentKind::Codex, true);
@@ -5844,6 +7596,13 @@ fn cleanup_codex_hooks_removes_helper_script() {
     assert!(
         !codex_dir.join("config.toml").exists(),
         "cleanup should not leave behind unsupported project-local config"
+    );
+    assert!(
+        !workdir
+            .path()
+            .join(".agents/skills/amf-screenshot")
+            .exists(),
+        "cleanup should remove the managed Codex screenshot skill"
     );
 }
 
@@ -10109,6 +11868,35 @@ fn review_memory_bootstrap_pick_opens_defaulting_to_fifty() {
 }
 
 #[test]
+fn review_memory_bootstrap_pick_defaults_to_project_scope_and_toggles() {
+    use crate::app::review_memory::MemoryScope;
+
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    app.open_review_memory_bootstrap_pick();
+
+    let scope = |app: &App| match &app.mode {
+        AppMode::PrPicker(state) => state.bootstrap_pick.as_ref().unwrap().scope,
+        _ => panic!("expected PrPicker"),
+    };
+    assert_eq!(
+        scope(&app),
+        MemoryScope::Project,
+        "a bootstrap learns from this repo's history, so it defaults to this repo's doc"
+    );
+
+    app.review_memory_bootstrap_toggle_scope();
+    assert_eq!(scope(&app), MemoryScope::Global);
+    app.review_memory_bootstrap_toggle_scope();
+    assert_eq!(scope(&app), MemoryScope::Project);
+}
+
+#[test]
 fn review_memory_bootstrap_pick_move_wraps() {
     let store = store_with_feature(ProjectStatus::Active);
     let mut app = App::new_for_test(
@@ -10173,6 +11961,7 @@ fn poll_review_memory_bootstrap_bg_surfaces_result_and_returns_to_picker() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.review_memory_bootstrap_bg = Some(rx);
     app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        scope: crate::app::review_memory::MemoryScope::Project,
         origin,
         depth: crate::app::pr_review::BootstrapDepth::default(),
         stage: crate::app::pr_review::BootstrapStage::FetchingComments,
@@ -10232,6 +12021,7 @@ fn poll_review_memory_bootstrap_bg_error_still_returns_to_picker() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.review_memory_bootstrap_bg = Some(rx);
     app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        scope: crate::app::review_memory::MemoryScope::Project,
         origin,
         depth: crate::app::pr_review::BootstrapDepth::default(),
         stage: crate::app::pr_review::BootstrapStage::FetchingComments,
@@ -10275,6 +12065,7 @@ fn cancel_review_memory_bootstrap_returns_to_picker_without_dropping_the_bg_resu
     let (tx, rx) = std::sync::mpsc::channel();
     app.review_memory_bootstrap_bg = Some(rx);
     app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        scope: crate::app::review_memory::MemoryScope::Project,
         origin,
         depth: crate::app::pr_review::BootstrapDepth::default(),
         stage: crate::app::pr_review::BootstrapStage::FetchingComments,
@@ -12925,6 +14716,112 @@ fn pr_review_append_memory_honors_project_review_memory_path_override() {
     let overridden_path = repo.join(".amf").join("team-review-memory.md");
     let contents = std::fs::read_to_string(&overridden_path).unwrap();
     assert!(contents.contains("- comment 1 (src/file1.rs:1)"));
+}
+
+#[test]
+fn pr_review_memory_add_defaults_to_project_scope_and_toggles() {
+    use crate::app::review_memory::MemoryScope;
+
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+
+    let scope = |app: &App| match &app.mode {
+        AppMode::PrReview(state) => state.memory_add.as_ref().unwrap().scope,
+        _ => panic!("expected PrReview"),
+    };
+    assert_eq!(
+        scope(&app),
+        MemoryScope::Project,
+        "a finding from this PR is about this repo until the user says otherwise"
+    );
+
+    app.pr_review_toggle_memory_scope();
+    assert_eq!(scope(&app), MemoryScope::Global);
+    app.pr_review_toggle_memory_scope();
+    assert_eq!(scope(&app), MemoryScope::Project);
+}
+
+#[test]
+fn pr_review_append_memory_global_scope_writes_the_cross_project_doc() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let global_doc = tmp.path().join("global").join("review-memory.md");
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    // An absolute override keeps the test off the developer's real
+    // `~/.config/amf/review-memory.md`.
+    app.config.global_review_memory_path = Some(global_doc.display().to_string());
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_memory_add();
+    app.pr_review_toggle_memory_scope();
+    app.pr_review_append_memory().unwrap();
+
+    assert_eq!(app.pr_review_memory_add_view(), None, "dialog closes");
+    let contents = std::fs::read_to_string(&global_doc).unwrap();
+    assert!(
+        contents.starts_with("# Review memory (cross-project)"),
+        "a freshly created global doc gets the cross-project header, got: {contents}"
+    );
+    assert!(contents.contains("- comment 1 (src/file1.rs:1)"));
+    assert!(
+        !repo.join(".amf").join("review-memory.md").exists(),
+        "the project doc should be untouched when the global scope is picked"
+    );
+}
+
+#[test]
+fn review_memory_paths_resolves_project_override_and_global_together() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(repo.join(".amf")).unwrap();
+    std::fs::write(
+        repo.join(".amf").join("config.json"),
+        r#"{"review_memory_path": ".amf/team-review-memory.md"}"#,
+    )
+    .unwrap();
+    let global_doc = tmp.path().join("global-lessons.md");
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.global_review_memory_path = Some(global_doc.display().to_string());
+
+    let paths = app.review_memory_paths(&repo);
+    assert_eq!(
+        paths.project,
+        repo.join(".amf").join("team-review-memory.md")
+    );
+    assert_eq!(paths.global, global_doc);
 }
 
 #[test]

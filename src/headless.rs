@@ -44,6 +44,12 @@ struct HeadlessCommand {
 /// re-loosened by repo-controlled config.
 const OPENCODE_RESTRICTED_PERMISSION: &str = r#"{"*":"deny"}"#;
 
+/// Read-only tool policy for user-directed plan revisions. The wildcard keeps
+/// every unlisted tool (including edit, bash, web, and subagents) denied while
+/// the four repository-inspection tools are explicitly enabled.
+const OPENCODE_READ_ONLY_PERMISSION: &str =
+    r#"{"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow"}"#;
+
 /// Long flags `command_for(Codex)` relies on. Older Codex releases reject
 /// some of these with an argument-parse error, so headless availability must
 /// probe `codex exec --help` for each — `codex --version` succeeding is not
@@ -154,6 +160,21 @@ impl HeadlessRunner {
         restricted: bool,
     ) -> Result<String> {
         let spec = command_for(harness, restricted);
+        run_command(harness, &spec, workdir, prompt, model)
+    }
+
+    /// Run a repository-aware pass with tools constrained to read-only access.
+    /// This is intentionally separate from `run(..., restricted: true)`: most
+    /// interview work receives all context in its prompt and needs no tools,
+    /// while directed plan feedback may explicitly ask the agent to locate or
+    /// verify code before revising the draft.
+    pub fn run_read_only(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> Result<String> {
+        let spec = read_only_command_for(harness)?;
         run_command(harness, &spec, workdir, prompt, model)
     }
 
@@ -924,6 +945,42 @@ fn command_for(harness: &AgentKind, restricted: bool) -> HeadlessCommand {
     }
 }
 
+/// Commands used when the model must investigate a repository without being
+/// able to alter it. Pi remains excluded until its headless permission model is
+/// verified; plan interviews already fall back to another harness for Pi.
+fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
+    match harness {
+        AgentKind::Claude => Ok(HeadlessCommand {
+            binary: crate::claude::ClaudeLauncher::resolve_binary(),
+            args: vec![
+                "-p",
+                "--output-format",
+                "text",
+                "--safe-mode",
+                "--tools",
+                "Read,Glob,Grep",
+                "--permission-mode",
+                "dontAsk",
+                "--no-session-persistence",
+            ],
+            trailing: vec![],
+            envs: vec![],
+        }),
+        // Codex's ordinary headless command is already an ephemeral read-only
+        // sandbox, so the same command is the investigation contract.
+        AgentKind::Codex => Ok(command_for(harness, false)),
+        AgentKind::Opencode => Ok(HeadlessCommand {
+            binary: "opencode".into(),
+            args: vec!["run", "--pure"],
+            trailing: vec![],
+            envs: vec![("OPENCODE_PERMISSION", OPENCODE_READ_ONLY_PERMISSION)],
+        }),
+        AgentKind::Pi => anyhow::bail!(
+            "Pi read-only headless tools are not verified; choose claude, codex, or opencode"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,6 +1051,35 @@ mod tests {
             command_for(&AgentKind::Codex, true),
             command_for(&AgentKind::Codex, false)
         );
+    }
+
+    #[test]
+    fn read_only_commands_allow_inspection_without_edit_or_shell_tools() {
+        let claude = read_only_command_for(&AgentKind::Claude).unwrap();
+        assert!(claude.args.contains(&"--safe-mode"));
+        let tools_idx = claude
+            .args
+            .iter()
+            .position(|arg| *arg == "--tools")
+            .unwrap();
+        assert_eq!(claude.args[tools_idx + 1], "Read,Glob,Grep");
+        assert!(claude.args.contains(&"dontAsk"));
+
+        let codex = read_only_command_for(&AgentKind::Codex).unwrap();
+        let sandbox_idx = codex
+            .args
+            .iter()
+            .position(|arg| *arg == "--sandbox")
+            .unwrap();
+        assert_eq!(codex.args[sandbox_idx + 1], "read-only");
+
+        let opencode = read_only_command_for(&AgentKind::Opencode).unwrap();
+        assert!(opencode.args.contains(&"--pure"));
+        assert_eq!(
+            opencode.envs,
+            [("OPENCODE_PERMISSION", OPENCODE_READ_ONLY_PERMISSION)]
+        );
+        assert!(read_only_command_for(&AgentKind::Pi).is_err());
     }
 
     #[test]

@@ -278,6 +278,7 @@ pub enum LocalCommand {
     OpenDebugLog,
     RefreshNotifications,
     CheckPendingDiffReview,
+    PlanInterview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -437,6 +438,15 @@ pub struct AppConfig {
     /// [`review_memory::DEFAULT_REVIEW_MEMORY_PATH`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_memory_path: Option<String>,
+    /// Path to the **cross-project** review-findings memory doc, read by the
+    /// AI reviewer in addition to each repo's own doc and writable from the
+    /// `M` / bootstrap flows' "global" scope. Relative values resolve against
+    /// the AMF config dir; absolute ones are used as-is. Defaults to
+    /// [`review_memory::DEFAULT_GLOBAL_REVIEW_MEMORY_FILE`] there (i.e.
+    /// `~/.config/amf/review-memory.md`) when unset. Global-only by nature —
+    /// unlike [`Self::review_memory_path`] there is no per-project override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_review_memory_path: Option<String>,
     /// Name of an existing Claude Code skill/command (without the leading `/`,
     /// e.g. `"review"`) to lead the AI PR-review prompt (`A` in the PR-review
     /// pane, Epic E of `pr-comment-review-plan.md`) with, so its review
@@ -553,6 +563,7 @@ impl Default for AppConfig {
             final_review_submit_prompt: true,
             final_review_post_to_pr: false,
             review_memory_path: None,
+            global_review_memory_path: None,
             ai_review_skill: None,
             review_model: None,
             review_models: std::collections::BTreeMap::new(),
@@ -671,6 +682,13 @@ pub struct App {
     pub last_view_activity_at: Option<Instant>,
     pub view_input_batch: Option<ViewInputBatch>,
     pub pending_inputs: Vec<PendingInput>,
+    /// Feature IDs stopped from the dashboard (`x`) during this run. Their
+    /// missing tmux session is expected, so opening a saved agent pane
+    /// restarts and resumes directly instead of asking (see
+    /// `open_stopped_session_dialog`). In-memory only: after an AMF restart a
+    /// missing session is indistinguishable from a crash, which is exactly the
+    /// case the recovery dialog is for.
+    pub user_stopped_features: std::collections::HashSet<String>,
     /// Tmux "session:window" targets where compose interception is
     /// disabled and keys pass straight through to Claude Code.
     pub compose_direct_targets: std::collections::HashSet<String>,
@@ -714,6 +732,14 @@ pub struct App {
     /// from adaptive rounds so late results can only be applied to the
     /// matching loading phase.
     pub plan_interview_synthesis_bg: Option<Receiver<Result<String>>>,
+    /// Receiver for the optional agent review of a draft plan. Separate again
+    /// so a late review can never be mistaken for a synthesis result and
+    /// overwrite the plan it was only meant to comment on.
+    pub plan_interview_critique_bg: Option<Receiver<Result<String>>>,
+    /// Receiver for a user-directed plan revision. This pass is separate from
+    /// synthesis and critique because it may inspect the feature workdir with
+    /// read-only tools and is only valid for its dedicated loading phase.
+    pub plan_interview_directed_feedback_bg: Option<Receiver<Result<String>>>,
     /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
@@ -2086,6 +2112,7 @@ impl App {
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            user_stopped_features: std::collections::HashSet::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
             compose_clipboard_paste: None,
@@ -2115,6 +2142,8 @@ impl App {
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
+            plan_interview_critique_bg: None,
+            plan_interview_directed_feedback_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
@@ -2298,6 +2327,7 @@ impl App {
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            user_stopped_features: std::collections::HashSet::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
             compose_clipboard_paste: None,
@@ -2327,6 +2357,8 @@ impl App {
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
+            plan_interview_critique_bg: None,
+            plan_interview_directed_feedback_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
@@ -2885,6 +2917,22 @@ impl App {
         self.extension_for_repo(repo)
             .review_memory_path
             .or_else(|| self.config.review_memory_path.clone())
+    }
+
+    /// Both review-memory doc paths for `repo`: its own committed doc (via
+    /// [`Self::configured_review_memory_path`]) and the user's cross-project
+    /// one. Every review-memory flow resolves through this, so a scope toggle
+    /// is just a lookup rather than a second round of config plumbing.
+    pub(crate) fn review_memory_paths(&self, repo: &Path) -> review_memory::ReviewMemoryPaths {
+        review_memory::ReviewMemoryPaths {
+            project: review_memory::review_memory_path(
+                repo,
+                self.configured_review_memory_path(repo).as_deref(),
+            ),
+            global: review_memory::global_review_memory_path(
+                self.config.global_review_memory_path.as_deref(),
+            ),
+        }
     }
 
     pub(crate) fn allowed_agents_for_project_path(&self, path: &Path) -> Vec<AgentKind> {

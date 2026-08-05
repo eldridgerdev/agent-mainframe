@@ -1011,6 +1011,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             AppMode::PrReview(state) => app.ai_review_running_for_workdir(&state.workdir),
             _ => false,
         };
+        // Same pattern: resolved off `app` before the `&mut app.mode` borrow —
+        // but only while the "add to memory" dialog is actually open, since
+        // `repo_for_project_path` shells out to git and this runs every frame.
+        let memory_paths = match &app.mode {
+            AppMode::PrReview(state) if state.memory_add.is_some() => {
+                let repo = app.repo_for_project_path(&state.workdir);
+                Some(app.review_memory_paths(&repo))
+            }
+            _ => None,
+        };
         if let AppMode::PrReview(state) = &mut app.mode {
             super::dialogs::draw_pr_review(
                 frame,
@@ -1024,6 +1034,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 dedicated_session_working,
                 ai_review_running,
                 triage_feature_summary.as_deref(),
+                memory_paths.as_ref(),
             );
         }
         super::draw_toasts(frame, &app.toasts, &app.theme);
@@ -1045,11 +1056,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let AppMode::PrPicker(state) = &app.mode {
         let repo = app.repo_for_project_path(&state.workdir);
-        let memory_path = crate::app::review_memory::review_memory_path(
-            &repo,
-            app.configured_review_memory_path(&repo).as_deref(),
-        );
-        super::dialogs::draw_pr_picker(frame, state, &app.theme, &memory_path);
+        let memory_paths = app.review_memory_paths(&repo);
+        super::dialogs::draw_pr_picker(frame, state, &app.theme, &memory_paths);
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
@@ -1090,6 +1098,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_todos_view(frame, state, &app.theme, app.config.nerd_font);
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
+    }
+
+    if matches!(app.mode, AppMode::Viewing(_)) {
+        // `message` is shared by dashboard status bars and dialog validation,
+        // but pane view should not leave AMF-owned text painted over the
+        // harness. Promote any such feedback to a timed toast before drawing.
+        app.promote_message_to_toast();
     }
 
     if let AppMode::Viewing(view) = &app.mode {
@@ -1134,25 +1149,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 badge_spans.push(span);
             }
             draw_badge_row(frame, area, badge_spans);
-        }
-        // Show transient message (e.g. "Copied N chars") on the bottom line
-        if let Some(ref msg) = app.message {
-            let msg_area = Rect::new(
-                area.x,
-                area.y + area.height.saturating_sub(1),
-                area.width,
-                1,
-            );
-            let color = if msg.starts_with("Error:") {
-                app.theme.danger.to_color()
-            } else {
-                app.theme.success.to_color()
-            };
-            let paragraph = ratatui::widgets::Paragraph::new(ratatui::text::Span::styled(
-                format!(" {}", msg),
-                ratatui::style::Style::default().fg(color),
-            ));
-            frame.render_widget(paragraph, msg_area);
         }
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
@@ -1533,6 +1529,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_codex_session_confirm(frame, &app.theme);
     }
 
+    if let AppMode::StoppedSessionDialog(state) = &app.mode {
+        super::dialogs::draw_stopped_session_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::SessionPicker(state) = &app.mode {
         super::picker::draw_session_picker(frame, state, app.config.nerd_font, &app.theme);
     }
@@ -1788,6 +1788,56 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(!second_rendered.contains("toast should disappear"));
+    }
+
+    #[test]
+    fn viewing_mode_promotes_status_message_to_toast() {
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                prompt_templates: Vec::new(),
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = crate::app::AppMode::Viewing(ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "claude".into(),
+            "Claude".into(),
+            SessionKind::Claude,
+            VibeMode::default(),
+            false,
+        ));
+        app.message = Some("Transient pane feedback".into());
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw pane view");
+
+        assert!(app.message.is_none());
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Transient pane feedback")
+        );
+        let bottom_row = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .last()
+            .unwrap()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!bottom_row.contains("Transient pane feedback"));
     }
 
     fn codex_feature_session(session_id: &str) -> FeatureSession {

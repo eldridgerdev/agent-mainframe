@@ -1,6 +1,8 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+use crate::project::AgentKind;
+
 /// Abstraction over tmux operations, enabling mocking in tests.
 ///
 /// Methods mirror the corresponding `TmuxManager` statics. Using owned
@@ -9,7 +11,9 @@ use std::path::{Path, PathBuf};
 /// mock implementations without lifetime annotation complications.
 #[cfg_attr(test, mockall::automock)]
 pub trait TmuxOps: Send + Sync {
+    fn check_harness_available(&self, kind: &AgentKind) -> Result<()>;
     fn session_exists(&self, session: &str) -> bool;
+    fn window_exists(&self, session: &str, window: &str) -> bool;
     fn list_sessions(&self) -> Result<Vec<String>>;
     fn create_session_with_window(
         &self,

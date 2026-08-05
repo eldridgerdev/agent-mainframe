@@ -1,0 +1,4 @@
+interface:
+  display_name: "AMF Screenshot"
+  short_description: "Capture visual proof of AMF TUI changes"
+  default_prompt: "Use $amf-screenshot to capture screenshots proving this AMF UI behavior works."

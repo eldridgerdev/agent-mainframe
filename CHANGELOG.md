@@ -21,7 +21,9 @@ are tagged.
   `context:file`. The level is remembered per file, so moving between files
   keeps each one where you left it, and a refresh or base-ref change re-applies
   it instead of silently collapsing your view. Comments, the line cursor and any
-  range selection stay on exactly the lines they were on. Files that have
+  range selection stay on exactly the lines they were on: narrowing the context
+  refuses outright while it would hide part of a range you have selected, and
+  tells you where the cursor went if its own line is no longer shown. Files that have
   nothing more to show — added, deleted, binary — say so rather than doing
   nothing. Line comments left on newly revealed context are still written to the
   feedback file and sent to the fixing agent, but are not posted inline to a PR,
@@ -132,30 +134,156 @@ are tagged.
   to `.claude/review-notes-archive.md` after each agent turn. Review
   surfaces merge both files, while agents only re-read the small live file.
   No migration is required; AMF archives existing notes automatically.
+- **Codex can now capture visual proof of AMF UI changes.** Codex features
+  receive an `amf-screenshot` skill that drives the same isolated screenshot
+  harness as Claude, verifies captured frames, and returns viewable PNG or GIF
+  files without touching the user's real AMF database or tmux sessions.
+- **Leaving a plan interview no longer loses your answers.** Answers are saved
+  as you give them, so aborting the interview, cancelling the feature, or
+  closing AMF entirely keeps them. Starting the interview again for the same
+  feature offers to resume the saved draft or discard it and start over, and
+  tells you when it was saved, how much was answered, and whether a plan had
+  already been generated — nothing is restored until you choose.
+- **Resuming picks up where you stopped.** You land on the first question still
+  unanswered rather than walking forward through answers you already gave.
+  Adaptive AI rounds you already paid for are kept, and a draft that already
+  had a generated plan reopens at the review gate instead of generating a
+  second one.
+- **Accepting a plan keeps the interview behind it.** The questions and answers
+  are stored with the feature and used to pre-fill a re-run. Deleting a feature
+  removes its stored interviews.
+- **Re-planning a feature starts from the plan you already accepted.** Running
+  the interview again on a feature fills in the brief and every answer from the
+  last plan you accepted for it: `Enter` keeps an answer, typing changes it, and
+  `Ctrl+R` restores it if you change your mind. Each question says whether its
+  answer is still the previous one, has been changed, or has been cleared —
+  clearing one drops it from the new plan. If you edited a multiple-choice
+  question's options in `plan_questions` since then, its old answer is left out
+  rather than pre-filled as a choice that no longer exists. Follow-up questions
+  an AI round asked last time are asked again with their answers, but adaptive
+  rounds are not reused: a re-run asks for its own opt-in before spending any
+  tokens.
+- **You can now plan a feature you already created.** Press `P` on a feature, or
+  pick `plan-interview` from the command picker, to run the same interview
+  without going through the creation wizard. Accepting rewrites that feature's
+  own plan, turns plan mode on for it, and points its agent at the plan —
+  previously the interview only ran while creating a feature. Leaving the
+  interview is non-destructive: the feature keeps whatever plan it had.
+- **A running session can now be told about a plan you just accepted.** An
+  agent reads its instruction file once, at startup, so re-planning a feature
+  whose session was already running used to leave that session working from the
+  old plan. Accepting now offers to open the running session with a kickoff
+  prompt pointing at the new plan — seeded in the composer, not sent, so you
+  decide when it lands. Declining costs nothing: the plan is written either way.
+- **Plan drafts now accept direct feedback before approval.** Press `f` at the
+  review gate to tell the planning agent exactly what to change. The agent can
+  inspect the feature repository read-only when the request needs concrete
+  code locations, then returns a revised draft for you to review before
+  accepting it. Failed revisions keep both the current plan and your
+  instruction so you can retry without retyping it.
 
 ### Changed
 
-- **Final Review's Developer Notes panel is half its former height.** It now
-  takes about a fifth of the column beside the diff rather than about two
-  fifths, leaving considerably more room for the change you are actually
-  reading. `e` still expands notes to full height when you want the whole
-  note.
+- **The optional AI step now says exactly what each choice does.** Press `a` to
+  ask AI follow-up questions, `Ctrl+F` to draft the plan immediately from saved
+  answers, or `Enter` to review a raw plan without spending agent tokens. The
+  dialog and key hints clearly identify which choices use tokens. The step fits
+  an 80x24 terminal, and a smaller one gets shorter wording rather than a
+  disclosure cut off mid-sentence.
+- **The default plan interview is shorter.** Five built-in questions now cover
+  the same discovery areas that previously took seven by combining user and UI
+  workflow prompts, and data and integration prompts. Project questions that
+  override either retired question ID remain available as configured prompts.
 
 ### Fixed
 
-- **AI Review's model picker can now go back to harness selection.** Pressing
-  `Esc` or `q` from the model list returns to the harness picker with the
-  current harness highlighted, so a mistaken harness choice can be corrected
-  without leaving AI Review. Changing the harness rebuilds its model choices
-  instead of carrying over an incompatible selection. Repeatedly switching
-  harnesses and backing out no longer resurrects a model choice that isn't
-  valid for the newly chosen harness. No migration is required.
-- **PR Triage no longer lets AMF's “fixed in” replies crowd out new
-  feedback.** Follow-up replies posted through PR Triage now stay with their
-  original comment instead of reappearing as actionable rows after refresh;
-  orphaned follow-ups remain available as muted context. Standalone findings,
-  including AI Review findings posted by AMF, remain actionable. No migration
-  is required.
+- **AMF feedback no longer sticks to the bottom-left of an agent pane.**
+  Repaint confirmations and any other transient AMF status messages now appear
+  as timed toasts, then clear automatically without covering harness output.
+- **Custom-session Nerd Font icons can now be chosen visually in the config
+  wizard.** The chooser previews useful session icons and still accepts custom
+  glyphs. Existing bundled names such as `nf-md-server` now render as icons,
+  so no config migration is required.
+- **OSC 8 hyperlinks now work through AMF's managed tmux server on macOS.**
+  Terminals that support hyperlinks can open links from agent sessions normally,
+  including saved sessions reopened after upgrading.
+
+### Migration
+
+No migration is required. Plan interviews still work without a database, and
+existing features are unaffected — the first interview you run after upgrading
+starts saving its answers. Existing saved sessions pick up the hyperlink fix
+when they are reopened, and Codex features receive the screenshot skill when
+their local agent setup next runs.
+
+## [v0.33.0] - 2026-07-28
+
+### Added
+
+- **Plan-mode interviews now stop at a review gate before launching.** Review
+  the rendered plan, edit its source, regenerate it, or abort. AMF writes the
+  plan and starts the feature only after you explicitly accept it.
+- **Plan interviews can ask optional AI-generated follow-up questions.** After
+  the configured questions, you can spend agent tokens on up to two adaptive
+  rounds tailored to the brief and your answers. Declining or finishing early
+  uses no adaptive-interview tokens.
+- **Plans can receive an optional agent review before acceptance.** Press
+  `a` at the review gate to check the draft for gaps, risks, contradictions,
+  and missing acceptance criteria. The review never edits the plan directly;
+  press `r` to generate a revision from its feedback. Completed reviews are
+  retained if you leave and return.
+- **Diff file lists are now collapsible directory trees.** Final Review and
+  the plain diff viewer group files by folder. Use `z` or `Enter` to fold
+  one directory, `Z` to fold all, and `h`/`l` to move through the tree.
+  Folded directories summarize hidden files and outstanding review work.
+- **Review memory now has a cross-project layer.** AI Review reads both the
+  repository memory and a personal memory file at
+  `~/.config/amf/review-memory.md`. Use `g` when adding or bootstrapping
+  memory to choose the global destination; project memory remains the
+  default.
+- **PR Triage fixes can run in a dedicated companion feature.** Choose
+  `New feature…` as the fix target to create an isolated worktree with its
+  own harness, mode, or preset. AMF reuses that companion for the PR and
+  clearly identifies where fixes are running. Press `I` to review and land
+  its commits by pushing to the PR branch or cherry-picking into the source
+  worktree.
+- **The dashboard shows active AI Review generation.** The relevant feature's
+  PR badge includes `AI review` while generation is running and clears when
+  it finishes, fails, or is cancelled.
+- **Final Review includes a review-round history browser.** Press `H` to
+  inspect earlier verdicts, checks, comments, suggestions, and agent replies,
+  then return directly to the editable current review.
+- **Review actions can use different models.** The new `review_models`
+  setting supports per-action overrides for walkthroughs, co-review,
+  changeset overviews, explanations, PR review, and review memory. Unset
+  actions continue to use `review_model`.
+- **Review Mode keeps note reads bounded without losing history.** The live
+  notes file retains the latest note for each of the 50 most recently
+  documented files; older and superseded notes move to an archive that review
+  surfaces still read.
+
+### Changed
+
+- **Final Review leaves more room for the diff.** The Developer Notes panel is
+  now about half its previous height. Press `e` to expand it when needed.
+
+### Fixed
+
+- **Agent sessions can recover after their tmux process disappears.** Opening
+  a saved Claude, Codex, or OpenCode session whose tmux session was lost now
+  offers to resume it, start clean, choose another saved session, or cancel.
+- **AI Review's model picker can return to harness selection.** Press
+  `Esc` or `q` to correct the harness without leaving AI Review; model
+  choices are rebuilt for the newly selected harness.
+- **AMF-authored follow-up replies no longer crowd out new PR feedback.**
+  Replies stay attached to their original comment after refresh, while
+  standalone findings remain actionable.
+
+### Migration
+
+- No migration is required. AMF adds the PR companion-feature database field
+  and archives older Review Mode notes automatically. Existing
+  `review_model` settings continue to work unchanged.
 
 ## [v0.32.0] - 2026-07-24
 

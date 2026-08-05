@@ -145,6 +145,10 @@ A and B are the two independent P0 tracks; everything else layers on top.
       invoke only when the user asks for proof a feature works; author a
       scenario for the just-built feature; run the driver; return PNG paths
       to the user; build a GIF only on request.
+- [x] Codex features receive a native `.agents/skills/amf-screenshot/SKILL.md`
+      from `skills/codex/amf-screenshot/`. It uses the same isolated capture,
+      scenario, rendering, and verification workflow, then returns direct
+      image previews and local file links in place of Claude's Artifact tool.
 - [x] Document isolation guarantees + fixed geometry in the skill.
 - [x] **Follow-up, from real use.** Returning raw PNG/GIF paths wasn't a
       usable deliverable — many terminal environments don't render images
@@ -169,8 +173,9 @@ A and B are the two independent P0 tracks; everything else layers on top.
    /tmp/amf-shots/test` → numbered PNGs produced; confirm real
    `~/.config/amf/amf.db` and any live `amf` session untouched.
 3. Re-run with `--gif` → animated GIF produced without ffmpeg.
-4. Skill dry-run: from a session, ask the agent to "prove the dashboard
-   loads"; confirm it invokes the skill, runs the driver, returns PNGs.
+4. Skill dry-run from both Claude and Codex sessions: ask the agent to "prove
+   the dashboard loads"; confirm it invokes the skill, runs the driver, and
+   returns viewable PNGs.
 
 ## Open questions
 

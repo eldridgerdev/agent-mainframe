@@ -2,9 +2,10 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{
-    App, AppMode, ConfigCategory, ConfigScope, ConfigWizardFieldEditor, ConfigWizardState,
-    ConfigWizardStep, agent_toggles_to_allowed,
+    App, AppMode, ConfigCategory, ConfigScope, ConfigWizardFieldEditor, ConfigWizardIconPicker,
+    ConfigWizardState, ConfigWizardStep, agent_toggles_to_allowed,
 };
+use crate::custom_session_icons::{CUSTOM_SESSION_ICONS, custom_session_icon_index};
 use crate::editor::TextEditor;
 use crate::project::AgentKind;
 
@@ -306,6 +307,9 @@ fn handle_agents_list(app: &mut App, key: KeyCode) {
 }
 
 fn handle_edit_item(app: &mut App, key: KeyEvent) {
+    if handle_active_icon_picker(app, key) {
+        return;
+    }
     if handle_active_field_editor(app, key) {
         return;
     }
@@ -325,6 +329,7 @@ fn handle_edit_item(app: &mut App, key: KeyEvent) {
                 state.input_mode = false;
                 state.capturing_key = false;
                 state.field_editor = None;
+                state.icon_picker = None;
                 state.error = None;
                 state.step = ConfigWizardStep::ItemList;
                 state.field_values.clear();
@@ -338,6 +343,7 @@ fn handle_edit_item(app: &mut App, key: KeyEvent) {
                 state.input_mode = false;
                 state.capturing_key = false;
                 state.field_editor = None;
+                state.icon_picker = None;
                 state.field_focus = (state.field_focus + 1) % edit_focus_count(&category);
             });
         }
@@ -347,6 +353,7 @@ fn handle_edit_item(app: &mut App, key: KeyEvent) {
                 state.input_mode = false;
                 state.capturing_key = false;
                 state.field_editor = None;
+                state.icon_picker = None;
                 let count = edit_focus_count(&category);
                 state.field_focus = if state.field_focus == 0 {
                     count - 1
@@ -406,13 +413,65 @@ fn handle_edit_item(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('i') => {
             with_state(app, |state| {
-                if field_accepts_text_input(state) {
+                if is_nerd_icon_field(state) {
+                    open_icon_picker(state);
+                } else if field_accepts_text_input(state) {
                     open_field_editor(state);
                 }
             });
         }
         _ => {}
     }
+}
+
+fn handle_active_icon_picker(app: &mut App, key: KeyEvent) -> bool {
+    let has_picker = matches!(
+        &app.mode,
+        AppMode::ConfigWizard(state) if state.icon_picker.is_some()
+    );
+    if !has_picker {
+        return false;
+    }
+
+    with_state(app, |state| match key.code {
+        KeyCode::Esc => {
+            state.icon_picker = None;
+            state.error = None;
+        }
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Right | KeyCode::Char('l') => {
+            if let Some(picker) = &mut state.icon_picker {
+                picker.selected = wrap_index(picker.selected, CUSTOM_SESSION_ICONS.len(), 1);
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::Left | KeyCode::Char('h') => {
+            if let Some(picker) = &mut state.icon_picker {
+                picker.selected = wrap_index(picker.selected, CUSTOM_SESSION_ICONS.len(), -1);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(selected) = state.icon_picker.map(|picker| picker.selected)
+                && let Some(icon) = CUSTOM_SESSION_ICONS.get(selected)
+                && let Some(value) = state.field_values.get_mut(6)
+            {
+                *value = icon.glyph.to_string();
+            }
+            state.icon_picker = None;
+            state.error = None;
+        }
+        KeyCode::Backspace | KeyCode::Delete => {
+            if let Some(value) = state.field_values.get_mut(6) {
+                value.clear();
+            }
+            state.icon_picker = None;
+            state.error = None;
+        }
+        KeyCode::Char('e') => {
+            state.icon_picker = None;
+            open_field_editor(state);
+        }
+        _ => {}
+    });
+    true
 }
 
 fn handle_keybinding_key_capture(app: &mut App, key: KeyEvent) -> bool {
@@ -628,11 +687,31 @@ fn save_button_focus(category: &ConfigCategory) -> usize {
 }
 
 fn activate_current_field(state: &mut ConfigWizardState) -> bool {
+    if is_nerd_icon_field(state) {
+        open_icon_picker(state);
+        return true;
+    }
     if handle_edit_space(state) {
         return true;
     }
 
     cycle_enum_field(state, 1)
+}
+
+fn is_nerd_icon_field(state: &ConfigWizardState) -> bool {
+    state.category == ConfigCategory::CustomSessions && state.field_focus == 6
+}
+
+fn open_icon_picker(state: &mut ConfigWizardState) {
+    let selected = state
+        .field_values
+        .get(6)
+        .and_then(|value| custom_session_icon_index(value))
+        .unwrap_or(0);
+    state.icon_picker = Some(ConfigWizardIconPicker { selected });
+    state.input_mode = false;
+    state.field_editor = None;
+    state.error = None;
 }
 
 fn field_accepts_text_input(state: &ConfigWizardState) -> bool {
@@ -857,6 +936,7 @@ mod tests {
             editing_index: None,
             field_values,
             field_editor: None,
+            icon_picker: None,
             field_toggles: Vec::new(),
             agent_toggles: Vec::new(),
             agent_toggles_dirty: false,
@@ -901,6 +981,74 @@ mod tests {
         assert!(!state.input_mode);
         assert!(state.field_editor.is_none());
         assert_eq!(state.field_values[2], "cargo run --release -- --dry-run");
+    }
+
+    #[test]
+    fn nerd_icon_field_opens_picker_at_the_existing_named_icon() {
+        let mut state = test_state(
+            ConfigCategory::CustomSessions,
+            6,
+            vec![
+                "API".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                "A".into(),
+                "nf-md-database".into(),
+                String::new(),
+                String::new(),
+            ],
+        );
+
+        assert!(activate_current_field(&mut state));
+
+        let selected = state.icon_picker.expect("icon picker").selected;
+        assert_eq!(CUSTOM_SESSION_ICONS[selected].label, "Database");
+    }
+
+    #[test]
+    fn icon_picker_stores_the_selected_glyph() {
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                prompt_templates: Vec::new(),
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = test_state(
+            ConfigCategory::CustomSessions,
+            6,
+            vec![
+                "API".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                "A".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
+        );
+        state.icon_picker = Some(ConfigWizardIconPicker { selected: 1 });
+        app.mode = AppMode::ConfigWizard(state);
+
+        assert!(handle_active_icon_picker(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        ));
+
+        let AppMode::ConfigWizard(state) = app.mode else {
+            panic!("expected config wizard mode");
+        };
+        assert_eq!(state.field_values[6], CUSTOM_SESSION_ICONS[1].glyph);
+        assert!(state.icon_picker.is_none());
     }
 
     #[test]

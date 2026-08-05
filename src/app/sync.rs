@@ -581,6 +581,22 @@ impl App {
         for tmux_session in stopped_sessions {
             self.clear_sidebar_state_for_session(&tmux_session);
         }
+
+        // A feature that came back up through any path (picker restart, another
+        // AMF window) is no longer "stopped on purpose", so a future missing
+        // session should reach the recovery dialog again.
+        if !self.user_stopped_features.is_empty() {
+            let live_feature_ids: HashSet<String> = self
+                .store
+                .projects
+                .iter()
+                .flat_map(|project| project.features.iter())
+                .filter(|feature| live_sessions.contains(feature.tmux_session.as_str()))
+                .map(|feature| feature.id.clone())
+                .collect();
+            self.user_stopped_features
+                .retain(|id| !live_feature_ids.contains(id));
+        }
     }
 
     #[allow(dead_code)] // exercised only by unit tests

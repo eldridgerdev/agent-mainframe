@@ -14,6 +14,68 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~OSC 8 hyperlinks do not open through AMF's managed tmux server on macOS~~ (Fixed)
+
+- **Status:** Fixed (2026-07-31)
+- **Reported:** 2026-07-30
+- **Relates to:** tmux control clients (`src/tmux.rs`)
+- **Root cause:** AMF launches its embedded tmux control clients with
+  `TERM=xterm-256color`, but its dedicated tmux server did not add the
+  `hyperlinks` terminal feature for that terminal type. Tmux therefore did not
+  know that the client could render OSC 8 hyperlinks.
+- **Fix:** Configure AMF's managed tmux server with
+  `xterm*:hyperlinks` before creating or attaching control clients. New
+  sessions receive the setting at creation, while saved sessions receive it
+  when reopened after upgrading. External tmux servers remain unchanged, and
+  older tmux versions that reject the optional feature continue without
+  blocking session startup.
+
+### Repro
+
+1. On macOS, start AMF with its default dedicated tmux socket.
+2. Open an agent session that emits an OSC 8 hyperlink.
+3. Attempt to open the rendered link in a terminal that supports hyperlinks.
+
+### Expected
+
+The terminal recognizes the hyperlink and opens its target normally.
+
+### Actual
+
+The link target is unavailable because tmux does not emit the OSC 8 hyperlink.
+
+## ~~Stopped agent sessions open an empty shell after tmux disappears~~ (Fixed)
+
+- **Status:** Fixed (2026-07-28)
+- **Reported:** 2026-07-28
+- **Relates to:** dashboard session opening and resume handling
+- **Root cause:** `Enter` recreated a stopped feature through the ordinary
+  bulk-start path, which could leave the selected saved agent window at a
+  shell prompt when the agent-autostart limit skipped it.
+- **Fix:** `Enter` on a saved agent pane whose tmux session has vanished opens
+  a recovery dialog (resume / clear start / pick a different saved session /
+  cancel). Recovery recreates the saved tmux layout, always launches the
+  selected agent pane regardless of the autostart limit, passes the persisted
+  harness ID only for resume, and reports setup or launch failures in AMF.
+  The dialog is deliberately narrow — it needs a persisted resume ID and a
+  stop AMF did not perform itself — so ordinary restarts keep their one
+  keypress, and `S` keeps its saved-transcript picker.
+
+### Repro
+
+1. Start a feature with a Claude, Codex, or Opencode session.
+2. Stop its tmux session externally, or restart the computer.
+3. Relaunch AMF, select the saved agent session, and press `Enter`.
+
+### Expected
+
+AMF offers to resume the previous harness session or start a clear one, then
+opens the selected agent pane.
+
+### Actual
+
+The selected pane could open as an empty shell.
+
 ## PR Triage fix agents sometimes target the wrong lines
 
 - **Status:** Backlog

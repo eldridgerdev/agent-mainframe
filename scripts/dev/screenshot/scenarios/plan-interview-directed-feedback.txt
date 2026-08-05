@@ -1,0 +1,28 @@
+# plan-interview-directed-feedback: proves the Epic 6 free-form revision UI.
+#
+# Requires --seed with a create-project payload and --seed-feature with a
+# create-feature payload for the same project. A draft plan is inserted into
+# the scratch database so the capture reaches the review gate without spending
+# tokens on synthesis. The scenario stops in the instruction editor and makes
+# no directed-revision call.
+
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db"
+wait:500
+
+# Select the seeded feature, open its on-demand interview, and resume the
+# already-synthesized draft straight into the review gate.
+key:j
+wait:400
+key:P
+wait:900
+key:r
+wait:900
+shot:review-gate-with-direct-feedback
+
+# `f` opens the new multi-line instruction editor. Typing is enough to prove
+# the input surface and token disclosure; Ctrl+S is deliberately not pressed.
+key:f
+wait:500
+text:Inspect review-gate code; add exact Rust files and focused tests.
+wait:500
+shot:directed-feedback-editor

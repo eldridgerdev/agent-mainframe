@@ -1,0 +1,87 @@
+# plan-interview-live-handoff: proves the Epic 5 live-session handoff.
+#
+# Accepting an on-demand plan for a feature whose agent session is ALREADY
+# RUNNING offers to hand the plan to that session. An agent reads its
+# instruction file once, at startup, so a session that was already running
+# would otherwise never learn the plan changed.
+#
+# Requires --seed with a create-project payload and --seed-feature with a
+# create-feature payload for the same project. The seeded feature launches
+# a real claude session, which is exactly what the handoff needs: a live
+# session to hand off to.
+#
+# Reaching the handoff means ACCEPTING a plan, which normally runs a real
+# headless synthesis call (tokens, non-deterministic output, slow). The
+# capture sidesteps that the way the re-run capture does: a `draft`-stage
+# row that already carries a generated plan is written straight into the
+# scratch database, and resuming such a draft reopens at the review gate
+# instead of synthesizing again. Enter there accepts a plan that cost
+# nothing.
+#
+# Two passes, because the accept consumes the draft it resumed: the first
+# declines the handoff, the second takes it. Both re-insert the draft.
+
+shot:dashboard-seeded
+
+# ---- Pass 1: the offer, and declining it ----
+
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db"
+wait:500
+
+# Move the selection onto the feature row -- the interview plans one
+# feature's workdir.
+key:j
+wait:400
+
+# 'P' opens the interview and finds the seeded draft.
+key:P
+wait:900
+shot:resume-prompt
+
+# 'r' resumes it. The draft already holds a plan, so it reopens straight
+# at the review gate rather than paying for synthesis again.
+key:r
+wait:900
+shot:review-gate
+
+# Enter accepts: the plan is written, the instruction block is injected,
+# and plan mode is turned on for the feature.
+#
+# THE FRAME: because the feature's claude session is still running, AMF
+# offers to hand the plan to it rather than leaving it unannounced. The
+# offer states the plan is already written, which is what makes declining
+# a real option rather than a mistake.
+key:Enter
+wait:1200
+shot:live-session-handoff-offer
+
+# 'n' declines. The running session is left alone; the plan is on disk
+# either way, and the status line says where.
+key:n
+wait:800
+shot:handoff-declined
+
+# ---- Pass 2: taking the offer ----
+
+# The accept consumed the draft, so seed another one to reach the review
+# gate a second time without a headless call.
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db"
+wait:500
+
+key:P
+wait:900
+key:r
+wait:900
+key:Enter
+wait:1200
+shot:handoff-offer-again
+
+# 'y' opens the running session with the kickoff prompt seeded into its
+# composer.
+#
+# THE FRAME: seeded, NOT sent. The session may be mid-task, so when the
+# prompt lands stays the user's call -- the same contract every other
+# compose seed in AMF has.
+key:y
+wait:2000
+shot:kickoff-seeded-in-live-session

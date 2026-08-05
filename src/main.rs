@@ -3,6 +3,7 @@ mod automation;
 mod claude;
 mod codex;
 mod codex_config;
+mod custom_session_icons;
 mod db;
 mod debug;
 mod diff;
@@ -845,6 +846,16 @@ fn run_loop<B: Backend>(
         }
 
         if app.plan_interview_synthesis_bg.is_some() && app.poll_plan_interview_synthesis_bg() {
+            force_redraw = true;
+        }
+
+        if app.plan_interview_critique_bg.is_some() && app.poll_plan_interview_critique_bg() {
+            force_redraw = true;
+        }
+
+        if app.plan_interview_directed_feedback_bg.is_some()
+            && app.poll_plan_interview_directed_feedback_bg()
+        {
             force_redraw = true;
         }
 

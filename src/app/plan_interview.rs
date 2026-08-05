@@ -543,6 +543,175 @@ impl App {
         Ok(())
     }
 
+    /// Run a free-form review-gate instruction through the planning agent.
+    /// Unlike synthesis and critique, this pass may inspect the feature
+    /// workdir, so it uses the runner's read-only tool contract.
+    pub(crate) fn start_plan_interview_directed_feedback(&mut self) -> Result<()> {
+        if self.plan_interview_directed_feedback_bg.is_some() {
+            self.message = Some("A directed plan revision is already running".into());
+            return Ok(());
+        }
+
+        let (
+            preferred_harness,
+            resolved_harness,
+            feature_name,
+            brief,
+            questions,
+            answers,
+            workdir,
+            plan,
+            instruction,
+        ) = match &self.mode {
+            AppMode::PlanInterview(state)
+                if state.phase == PlanInterviewPhase::DirectedFeedback =>
+            {
+                let Some(plan) = state.synthesized_plan.clone() else {
+                    return Ok(());
+                };
+                (
+                    state.preferred_harness.clone(),
+                    state.ai_harness.clone(),
+                    state.feature_name.clone(),
+                    state.brief.clone(),
+                    state.questions.clone(),
+                    state.answers.clone(),
+                    state.context_workdir(),
+                    plan,
+                    state.editor.text().trim().to_string(),
+                )
+            }
+            _ => return Ok(()),
+        };
+
+        if instruction.is_empty() {
+            self.message = Some("Describe how the plan should change".into());
+            return Ok(());
+        }
+
+        let harness = match resolved_harness {
+            Some(resolved) => resolved,
+            None => HeadlessRunner::select_for_interview(&preferred_harness),
+        };
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.ai_harness = Some(harness.clone());
+        }
+        let Some(harness) = harness else {
+            self.message =
+                Some("No headless-capable harness available; the plan is unchanged".into());
+            return Ok(());
+        };
+
+        let prompt = plan_interview::build_directed_revision_prompt(
+            &feature_name,
+            &plan,
+            &instruction,
+            &brief,
+            &questions,
+            &answers,
+        );
+        let token_estimate = estimate_tokens(&prompt);
+        let started = match &mut self.mode {
+            AppMode::PlanInterview(state) => state.begin_directed_feedback_loading(token_estimate),
+            _ => false,
+        };
+        if !started {
+            return Ok(());
+        }
+
+        self.log_info(
+            "plan_interview",
+            format!(
+                "starting read-only directed plan revision with {} (~{token_estimate} tokens)",
+                harness.display_name()
+            ),
+        );
+        let (tx, rx) = mpsc::channel();
+        self.plan_interview_directed_feedback_bg = Some(rx);
+        std::thread::spawn(move || {
+            let result = HeadlessRunner::run_read_only(&harness, &workdir, &prompt, None);
+            let _ = tx.send(result);
+        });
+        self.message = None;
+        Ok(())
+    }
+
+    /// Apply a completed directed revision only while its loading frame is
+    /// still active. If the user backed out, the late result is discarded and
+    /// can never overwrite a plan they chose to keep.
+    pub fn poll_plan_interview_directed_feedback_bg(&mut self) -> bool {
+        let Some(rx) = self.plan_interview_directed_feedback_bg.as_ref() else {
+            return false;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.plan_interview_directed_feedback_bg = None;
+                if let AppMode::PlanInterview(state) = &mut self.mode {
+                    state.fail_directed_feedback();
+                }
+                self.message = Some("Directed plan revision failed; the plan is unchanged".into());
+                return true;
+            }
+        };
+        self.plan_interview_directed_feedback_bg = None;
+
+        let is_loading = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state)
+                if state.phase == PlanInterviewPhase::DirectedFeedbackLoading
+        );
+        if !is_loading {
+            self.log_info(
+                "plan_interview",
+                "discarded a directed revision after the user returned to the plan".to_string(),
+            );
+            return true;
+        }
+
+        match result {
+            Ok(response) => match plan_interview::parse_synthesized_plan(&response) {
+                Some(plan) => {
+                    if let AppMode::PlanInterview(state) = &mut self.mode {
+                        state.apply_synthesis(plan);
+                    }
+                    self.persist_plan_interview_draft();
+                    self.message =
+                        Some("Plan revised from your feedback; review the changes".into());
+                }
+                None => {
+                    self.log_warn(
+                        "plan_interview",
+                        format!(
+                            "directed plan revision returned invalid markdown: {}",
+                            truncate_for_log(&response)
+                        ),
+                    );
+                    if let AppMode::PlanInterview(state) = &mut self.mode {
+                        state.fail_directed_feedback();
+                    }
+                    self.message = Some(
+                        "Directed revision returned no usable plan; your instruction is preserved"
+                            .into(),
+                    );
+                }
+            },
+            Err(error) => {
+                self.log_warn(
+                    "plan_interview",
+                    format!("directed plan revision failed: {error}"),
+                );
+                if let AppMode::PlanInterview(state) = &mut self.mode {
+                    state.fail_directed_feedback();
+                }
+                self.message =
+                    Some("Directed plan revision failed; your instruction is preserved".into());
+            }
+        }
+        true
+    }
+
     /// Poll the in-flight agent review. A failure, or output that does not
     /// match the advisory contract, returns the user to the unchanged plan
     /// with a notice — there is nothing to fall back to and nothing to lose.

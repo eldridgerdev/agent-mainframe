@@ -147,12 +147,17 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "a",
             "Agent review of the plan, or re-open one already held (uses tokens for a new review)",
         ),
+        (
+            "f",
+            "Give free-form feedback; the agent may inspect the repository read-only (uses tokens)",
+        ),
         ("r", "Regenerate the plan (uses tokens)"),
         (
             "Enter",
             "Accept plan (on creation: launch feature and seed the kickoff prompt)",
         ),
         ("Ctrl+S", "Save edit and return to preview"),
+        ("Ctrl+S (feedback)", "Send feedback and revise the plan"),
         ("Esc", "Discard edit or confirm abort"),
     ];
 

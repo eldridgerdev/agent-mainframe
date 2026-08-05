@@ -3665,6 +3665,10 @@ pub enum PlanInterviewPhase {
     Review,
     /// The proposed plan is open as raw markdown in the shared text editor.
     Editing,
+    /// The user is composing a free-form instruction for the planning agent.
+    DirectedFeedback,
+    /// A repository-aware, read-only revision from that instruction is in flight.
+    DirectedFeedbackLoading,
     /// A background headless call is reviewing the draft plan.
     CritiqueLoading,
     /// An agent's advisory review of the draft plan is on screen. The plan
@@ -3788,6 +3792,11 @@ pub struct PlanInterviewState {
     pub review_rendered_lines: Vec<ratatui::text::Line<'static>>,
     pub edit_scroll_offset: usize,
     pub edit_sync_to_cursor: bool,
+    /// Start time and prompt-size estimate for a directed revision. The
+    /// instruction itself remains in `editor` while loading so a failed call
+    /// can return it intact for retrying or adjustment.
+    pub directed_feedback_started_at: Option<std::time::Instant>,
+    pub directed_feedback_token_estimate: usize,
     /// An agent's advisory review of the plan currently at the review gate.
     /// Cleared whenever the plan changes, since the findings describe the
     /// draft they were written against.
@@ -3904,6 +3913,8 @@ impl PlanInterviewState {
             review_rendered_lines: Vec::new(),
             edit_scroll_offset: 0,
             edit_sync_to_cursor: false,
+            directed_feedback_started_at: None,
+            directed_feedback_token_estimate: 0,
             critique: None,
             critique_started_at: None,
             critique_token_estimate: 0,
@@ -4248,6 +4259,56 @@ impl PlanInterviewState {
         self.phase = PlanInterviewPhase::Review;
     }
 
+    /// Open a blank multi-line instruction editor from the review gate.
+    pub fn begin_directed_feedback(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Review || self.synthesized_plan.is_none() {
+            return false;
+        }
+        self.editor = TextEditor::new(String::new());
+        self.edit_scroll_offset = 0;
+        self.edit_sync_to_cursor = true;
+        self.phase = PlanInterviewPhase::DirectedFeedback;
+        true
+    }
+
+    /// Freeze the directed-feedback editor while a read-only agent pass runs.
+    pub fn begin_directed_feedback_loading(&mut self, token_estimate: usize) -> bool {
+        if self.phase != PlanInterviewPhase::DirectedFeedback
+            || self.synthesized_plan.is_none()
+            || self.editor.text().trim().is_empty()
+        {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::DirectedFeedbackLoading;
+        self.directed_feedback_started_at = Some(std::time::Instant::now());
+        self.directed_feedback_token_estimate = token_estimate;
+        true
+    }
+
+    /// Return to the instruction editor after a failed revision, preserving
+    /// what the user wrote so retrying does not require retyping it.
+    pub fn fail_directed_feedback(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::DirectedFeedbackLoading {
+            return false;
+        }
+        self.directed_feedback_started_at = None;
+        self.phase = PlanInterviewPhase::DirectedFeedback;
+        true
+    }
+
+    /// Leave directed feedback without changing the draft plan.
+    pub fn cancel_directed_feedback(&mut self) -> bool {
+        if !matches!(
+            self.phase,
+            PlanInterviewPhase::DirectedFeedback | PlanInterviewPhase::DirectedFeedbackLoading
+        ) {
+            return false;
+        }
+        self.directed_feedback_started_at = None;
+        self.phase = PlanInterviewPhase::Review;
+        true
+    }
+
     /// Move into the agent-review loading phase. Returns false outside the
     /// review gate so a stray keypress cannot start a paid call from a phase
     /// that has no plan to review.
@@ -4514,6 +4575,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::DirectedFeedback
+            | PlanInterviewPhase::DirectedFeedbackLoading
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
             | PlanInterviewPhase::KickoffHandoff
@@ -4589,6 +4652,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::DirectedFeedback
+            | PlanInterviewPhase::DirectedFeedbackLoading
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
             | PlanInterviewPhase::KickoffHandoff => false,
@@ -4616,6 +4681,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::DirectedFeedback
+            | PlanInterviewPhase::DirectedFeedbackLoading
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
             | PlanInterviewPhase::KickoffHandoff
@@ -5046,6 +5113,45 @@ mod tests {
         assert!(!state.save_plan_edit());
         assert_eq!(state.phase, PlanInterviewPhase::Editing);
         assert!(state.cancel_plan_edit());
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+    }
+
+    #[test]
+    fn directed_feedback_preserves_the_plan_and_retryable_instruction() {
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
+        state.apply_synthesis("# Plan: original\n".into());
+
+        assert!(state.begin_directed_feedback());
+        assert_eq!(state.phase, PlanInterviewPhase::DirectedFeedback);
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+        assert!(!state.begin_directed_feedback_loading(100));
+
+        state.editor = TextEditor::new("Inspect the router and add exact paths.".into());
+        assert!(state.begin_directed_feedback_loading(700));
+        assert_eq!(state.phase, PlanInterviewPhase::DirectedFeedbackLoading);
+        assert!(state.directed_feedback_started_at.is_some());
+        assert_eq!(state.directed_feedback_token_estimate, 700);
+
+        assert!(state.fail_directed_feedback());
+        assert_eq!(state.phase, PlanInterviewPhase::DirectedFeedback);
+        assert_eq!(
+            state.editor.text(),
+            "Inspect the router and add exact paths."
+        );
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+
+        assert!(state.cancel_directed_feedback());
         assert_eq!(state.phase, PlanInterviewPhase::Review);
         assert_eq!(
             state.synthesized_plan.as_deref(),

@@ -42,6 +42,12 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if phase == PlanInterviewPhase::Editing {
         return handle_plan_edit_key(app, key);
     }
+    if matches!(
+        phase,
+        PlanInterviewPhase::DirectedFeedback | PlanInterviewPhase::DirectedFeedbackLoading
+    ) {
+        return handle_plan_directed_feedback_key(app, key);
+    }
     if phase == PlanInterviewPhase::Review {
         return handle_plan_review_key(app, key);
     }
@@ -262,11 +268,54 @@ fn handle_plan_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('a') if key.modifiers.is_empty() => {
             app.start_plan_interview_critique()?;
         }
+        KeyCode::Char('f') if key.modifiers.is_empty() => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.begin_directed_feedback();
+            }
+            app.message = None;
+        }
         _ => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 apply_scroll_key(key, &mut state.review_scroll_offset);
             }
         }
+    }
+    Ok(())
+}
+
+/// Multi-line user direction for a repository-aware plan revision. `Ctrl+S`
+/// submits; ordinary Enter remains a newline so the instruction can be as
+/// detailed as necessary. Esc always returns to the unchanged plan, including
+/// while a paid call is in flight.
+fn handle_plan_directed_feedback_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let loading = matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::DirectedFeedbackLoading
+    );
+    match key.code {
+        KeyCode::Esc => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.cancel_directed_feedback();
+            }
+            app.message = if loading {
+                Some("Directed revision dismissed; any late result will be ignored".into())
+            } else {
+                None
+            };
+        }
+        KeyCode::Char('s') if !loading && key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.start_plan_interview_directed_feedback()?;
+        }
+        _ if !loading => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                let outcome = state.editor.handle_key(key);
+                if outcome.text_changed {
+                    state.edit_sync_to_cursor = true;
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }

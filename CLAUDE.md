@@ -76,6 +76,7 @@ app/
 ├── commands.rs      # command picker
 ├── rename.rs        # session renaming
 ├── review.rs        # trigger_final_review()
+├── plan_interview.rs # guided discovery, AI rounds, plan review
 ├── todos.rs         # native TODOs overlay (open/close, add,
 │                    # edit, toggle, reorder, spawn agent)
 ├── setup.rs         # ensure_notification_hooks(),
@@ -162,6 +163,13 @@ Key dispatch per mode:
 - `run_headless(workdir, prompt) -> Result<String>`
 - `run_headless_json(workdir, prompt) -> Result<String>`
 
+**HeadlessRunner** (headless.rs):
+
+- Harness-neutral one-shot runs for Claude, Codex, OpenCode, and Pi
+- Restricted no-tools mode for context-complete prompts
+- Read-only repository tools for directed plan revisions
+- Harness selection and fallback for plan interviews
+
 ### UI Rendering (ui/)
 
 `draw(frame, app)` in `ui/dashboard.rs` dispatches to:
@@ -180,6 +188,8 @@ Key dispatch per mode:
    - `search.rs` - search dialog
    - `hooks.rs` - change reason, running hook, hook
      prompt dialogs
+   - `plan_interview.rs` - discovery questions, loading frames,
+     plan review, editing, critique, and directed feedback
    - `todos.rs` - native TODOs list view, delete confirm,
      and quick-capture overlay
 - `centered_rect(percent_x, percent_y, area) -> Rect`
@@ -202,6 +212,7 @@ Key dispatch is split across focused modules:
   opencode pickers
 - `handlers/search.rs` - search mode
 - `handlers/change_reason.rs` - diff review prompt
+- `handlers/plan_interview.rs` - discovery and plan-review key handling
 - `handlers/todos.rs` - native TODOs overlay + quick-capture
   key dispatch
 - `handlers/mouse.rs` - mouse event handling

@@ -356,9 +356,12 @@ At the plan review gate:
 | --- | --- |
 | `j` / `k` / `PgUp` / `PgDn` | Scroll the rendered plan |
 | `e` | Edit the raw plan markdown |
+| `a` | Ask an agent to review the draft, or reopen its existing review |
+| `f` | Give a repository-aware revision instruction (uses agent tokens) |
+| `i` | Research up to four blank-line-separated focuses in isolated read-only contexts, then merge only their findings into the draft (uses agent tokens) |
 | `r` | Regenerate the plan (uses agent tokens when a headless harness is available) |
 | `Enter` | Accept the reviewed plan, write it, and launch the feature |
-| `Ctrl+S` | Save a raw-markdown edit and return to the rendered preview |
+| `Ctrl+S` | Save an edit, submit direct feedback, or start the isolated investigation shown on screen |
 | `Esc` | Discard a raw-markdown edit, or open abort confirmation from the preview |
 
 If you accept a re-run's plan while the feature's agent session is still

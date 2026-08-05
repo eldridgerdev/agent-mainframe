@@ -859,6 +859,12 @@ fn run_loop<B: Backend>(
             force_redraw = true;
         }
 
+        if app.plan_interview_investigation_bg.is_some()
+            && app.poll_plan_interview_investigation_bg()
+        {
+            force_redraw = true;
+        }
+
         if app.review_memory_bootstrap_bg.is_some() && app.poll_review_memory_bootstrap_bg() {
             force_redraw = true;
         }

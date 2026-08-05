@@ -712,6 +712,243 @@ impl App {
         true
     }
 
+    /// Run focused repository research in fresh read-only contexts, then hand
+    /// only the bounded findings to a separate no-tools planning context for
+    /// merging. This keeps exploration transcripts out of both the interview
+    /// state and the implementation session that will eventually receive the
+    /// accepted plan.
+    pub(crate) fn start_plan_interview_investigation(&mut self) -> Result<()> {
+        if self.plan_interview_investigation_bg.is_some() {
+            self.message = Some("An isolated plan investigation is already running".into());
+            return Ok(());
+        }
+
+        let (
+            preferred_harness,
+            resolved_harness,
+            feature_name,
+            brief,
+            questions,
+            answers,
+            workdir,
+            plan,
+            focuses,
+        ) = match &self.mode {
+            AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Investigation => {
+                let Some(plan) = state.synthesized_plan.clone() else {
+                    return Ok(());
+                };
+                (
+                    state.preferred_harness.clone(),
+                    state.ai_harness.clone(),
+                    state.feature_name.clone(),
+                    state.brief.clone(),
+                    state.questions.clone(),
+                    state.answers.clone(),
+                    state.context_workdir(),
+                    plan,
+                    plan_interview::investigation_focuses(state.editor.text()),
+                )
+            }
+            _ => return Ok(()),
+        };
+
+        if focuses.is_empty() {
+            self.message = Some("Describe what the investigators should research".into());
+            return Ok(());
+        }
+        if focuses.len() > plan_interview::MAX_INVESTIGATION_FOCUSES {
+            self.message = Some(format!(
+                "Use at most {} research focuses; separate them with blank lines",
+                plan_interview::MAX_INVESTIGATION_FOCUSES
+            ));
+            return Ok(());
+        }
+
+        let harness = match resolved_harness {
+            Some(resolved) => resolved,
+            None => HeadlessRunner::select_for_interview(&preferred_harness),
+        };
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.ai_harness = Some(harness.clone());
+        }
+        let Some(harness) = harness else {
+            self.message =
+                Some("No headless-capable harness available; the plan is unchanged".into());
+            return Ok(());
+        };
+
+        let investigation_prompts: Vec<(String, String)> = focuses
+            .iter()
+            .map(|focus| {
+                (
+                    focus.clone(),
+                    plan_interview::build_investigation_prompt(
+                        &feature_name,
+                        &plan,
+                        focus,
+                        &brief,
+                        &questions,
+                        &answers,
+                    ),
+                )
+            })
+            .collect();
+        let placeholder_findings: Vec<plan_interview::PlanInvestigationFinding> = focuses
+            .iter()
+            .map(|focus| plan_interview::PlanInvestigationFinding {
+                focus: focus.clone(),
+                findings: "Investigator findings will be inserted here.".into(),
+            })
+            .collect();
+        let merge_estimate = estimate_tokens(&plan_interview::build_investigation_merge_prompt(
+            &feature_name,
+            &plan,
+            &brief,
+            &questions,
+            &answers,
+            &placeholder_findings,
+        ));
+        let token_estimate = investigation_prompts
+            .iter()
+            .fold(merge_estimate, |total, (_, prompt)| {
+                total.saturating_add(estimate_tokens(prompt))
+            });
+        let started = match &mut self.mode {
+            AppMode::PlanInterview(state) => state.begin_investigation_loading(token_estimate),
+            _ => false,
+        };
+        if !started {
+            return Ok(());
+        }
+
+        self.log_info(
+            "plan_interview",
+            format!(
+                "starting {} isolated plan investigation(s) with {} (~{token_estimate} prompt tokens including merge)",
+                investigation_prompts.len(),
+                harness.display_name()
+            ),
+        );
+        let (tx, rx) = mpsc::channel();
+        self.plan_interview_investigation_bg = Some(rx);
+        std::thread::spawn(move || {
+            let result = (|| -> Result<String> {
+                let mut findings = Vec::with_capacity(investigation_prompts.len());
+                for (index, (focus, prompt)) in investigation_prompts.into_iter().enumerate() {
+                    let response = HeadlessRunner::run_read_only(&harness, &workdir, &prompt, None)
+                        .with_context(|| format!("isolated investigator {} failed", index + 1))?;
+                    let findings_markdown = plan_interview::parse_investigation_findings(&response)
+                        .with_context(|| {
+                            format!(
+                                "isolated investigator {} returned no usable findings",
+                                index + 1
+                            )
+                        })?;
+                    findings.push(plan_interview::PlanInvestigationFinding {
+                        focus,
+                        findings: findings_markdown,
+                    });
+                }
+
+                // A new headless invocation is the context boundary: the
+                // planner sees only these findings, never tool traces or the
+                // investigators' repository-exploration context.
+                let merge_prompt = plan_interview::build_investigation_merge_prompt(
+                    &feature_name,
+                    &plan,
+                    &brief,
+                    &questions,
+                    &answers,
+                    &findings,
+                );
+                HeadlessRunner::run(&harness, &workdir, &merge_prompt, None, true)
+                    .context("isolated investigation merge failed")
+            })();
+            let _ = tx.send(result);
+        });
+        self.message = None;
+        Ok(())
+    }
+
+    /// Apply the isolated investigation only while its loading frame remains
+    /// active. Dismissing it makes any late merge result inert, exactly like a
+    /// dismissed directed revision.
+    pub fn poll_plan_interview_investigation_bg(&mut self) -> bool {
+        let Some(rx) = self.plan_interview_investigation_bg.as_ref() else {
+            return false;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.plan_interview_investigation_bg = None;
+                if let AppMode::PlanInterview(state) = &mut self.mode {
+                    state.fail_investigation();
+                }
+                self.message = Some("Isolated investigation failed; the plan is unchanged".into());
+                return true;
+            }
+        };
+        self.plan_interview_investigation_bg = None;
+
+        let is_loading = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state)
+                if state.phase == PlanInterviewPhase::InvestigationLoading
+        );
+        if !is_loading {
+            self.log_info(
+                "plan_interview",
+                "discarded isolated investigation after the user returned to the plan".to_string(),
+            );
+            return true;
+        }
+
+        match result {
+            Ok(response) => match plan_interview::parse_synthesized_plan(&response) {
+                Some(plan) => {
+                    if let AppMode::PlanInterview(state) = &mut self.mode {
+                        state.apply_investigation_revision(plan);
+                    }
+                    self.persist_plan_interview_draft();
+                    self.message = Some(
+                        "Investigation findings merged into the draft; review the changes".into(),
+                    );
+                }
+                None => {
+                    self.log_warn(
+                        "plan_interview",
+                        format!(
+                            "isolated investigation merge returned invalid markdown: {}",
+                            truncate_for_log(&response)
+                        ),
+                    );
+                    if let AppMode::PlanInterview(state) = &mut self.mode {
+                        state.fail_investigation();
+                    }
+                    self.message = Some(
+                        "Investigation returned no usable revised plan; your research request is preserved"
+                            .into(),
+                    );
+                }
+            },
+            Err(error) => {
+                self.log_warn(
+                    "plan_interview",
+                    format!("isolated plan investigation failed: {error}"),
+                );
+                if let AppMode::PlanInterview(state) = &mut self.mode {
+                    state.fail_investigation();
+                }
+                self.message = Some(
+                    "Isolated investigation failed; your research request is preserved".into(),
+                );
+            }
+        }
+        true
+    }
+
     /// Poll the in-flight agent review. A failure, or output that does not
     /// match the advisory contract, returns the user to the unchanged plan
     /// with a notice — there is nothing to fall back to and nothing to lose.

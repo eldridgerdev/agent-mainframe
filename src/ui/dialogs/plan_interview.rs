@@ -28,6 +28,8 @@ pub fn draw_plan_interview_dialog(
             | PlanInterviewPhase::Editing
             | PlanInterviewPhase::DirectedFeedback
             | PlanInterviewPhase::DirectedFeedbackLoading
+            | PlanInterviewPhase::Investigation
+            | PlanInterviewPhase::InvestigationLoading
             | PlanInterviewPhase::Critique
             | PlanInterviewPhase::CritiqueLoading
     );
@@ -49,6 +51,9 @@ pub fn draw_plan_interview_dialog(
         PlanInterviewPhase::Editing => format!(" Edit Plan · {} ", state.feature_name),
         PlanInterviewPhase::DirectedFeedback | PlanInterviewPhase::DirectedFeedbackLoading => {
             format!(" Direct Plan Feedback · {} ", state.feature_name)
+        }
+        PlanInterviewPhase::Investigation | PlanInterviewPhase::InvestigationLoading => {
+            format!(" Isolated Investigation · {} ", state.feature_name)
         }
         PlanInterviewPhase::Critique | PlanInterviewPhase::CritiqueLoading => {
             format!(" Agent Review · {} ", state.feature_name)
@@ -125,6 +130,14 @@ pub fn draw_plan_interview_dialog(
         draw_directed_feedback_loading(frame, inner, state, theme, throbber_state);
         return;
     }
+    if state.phase == PlanInterviewPhase::Investigation {
+        draw_investigation_editor(frame, inner, state, message, theme);
+        return;
+    }
+    if state.phase == PlanInterviewPhase::InvestigationLoading {
+        draw_investigation_loading(frame, inner, state, theme, throbber_state);
+        return;
+    }
     if state.phase == PlanInterviewPhase::Critique {
         draw_plan_critique(frame, inner, state, message, theme);
         return;
@@ -187,6 +200,8 @@ pub fn draw_plan_interview_dialog(
         | PlanInterviewPhase::Editing
         | PlanInterviewPhase::DirectedFeedback
         | PlanInterviewPhase::DirectedFeedbackLoading
+        | PlanInterviewPhase::Investigation
+        | PlanInterviewPhase::InvestigationLoading
         | PlanInterviewPhase::Critique => {
             unreachable!()
         }
@@ -398,6 +413,8 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         PlanInterviewPhase::DirectedFeedbackLoading => {
             (total, "Revising from feedback".to_string())
         }
+        PlanInterviewPhase::Investigation => (total, "Investigation focus".to_string()),
+        PlanInterviewPhase::InvestigationLoading => (total, "Isolated investigation".to_string()),
         PlanInterviewPhase::KickoffHandoff => (total, "Plan accepted".to_string()),
         PlanInterviewPhase::Done => (total, "Complete".to_string()),
     };
@@ -467,6 +484,12 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         }
         PlanInterviewPhase::DirectedFeedbackLoading => {
             ("Investigating and revising the plan".to_string(), false)
+        }
+        PlanInterviewPhase::Investigation => {
+            ("Identify what needs repository research".to_string(), false)
+        }
+        PlanInterviewPhase::InvestigationLoading => {
+            ("Researching and merging findings".to_string(), false)
         }
         PlanInterviewPhase::KickoffHandoff => (
             "Tell the running session about the plan?".to_string(),
@@ -707,6 +730,29 @@ fn draw_directed_feedback_loading(
     );
 }
 
+/// Loading frame for focused repository research in fresh read-only contexts,
+/// followed by a separate no-tools planning merge.
+fn draw_investigation_loading(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    theme: &Theme,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+) {
+    draw_headless_loading(
+        frame,
+        area,
+        theme,
+        throbber_state,
+        format!(
+            "Investigating in isolated contexts, then merging ({}, read-only)",
+            interview_engine(state)
+        ),
+        state.investigation_started_at,
+        state.investigation_token_estimate,
+    );
+}
+
 /// Shared spinner frame for the interview's headless passes, showing elapsed
 /// time and a cheap prompt-size token estimate — mirrors the PR-review
 /// family's running frames (`draw_ai_pr_review_running`).
@@ -812,6 +858,8 @@ fn draw_plan_review(
         }),
         hint("f", theme),
         Span::raw(" direct feedback  "),
+        hint("i", theme),
+        Span::raw(" investigate  "),
         hint("r", theme),
         Span::raw(" regenerate  "),
         hint("Enter", theme),
@@ -889,6 +937,81 @@ fn draw_directed_feedback_editor(
             Span::raw(" newline  "),
             hint("Ctrl+S", theme),
             Span::raw(" investigate + revise (uses tokens)  "),
+            hint("Esc", theme),
+            Span::raw(" back to plan"),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(Style::default().bg(theme.effective_header_bg()))
+            .wrap(Wrap { trim: false }),
+        chunks[2],
+    );
+}
+
+fn draw_investigation_editor(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &mut PlanInterviewState,
+    message: Option<&str>,
+    theme: &Theme,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Name a question or plan section that needs repository evidence. Separate focuses with a blank line to run each in its own context (up to {}). Only findings are passed to the final planning merge.",
+            crate::plan_interview::MAX_INVESTIGATION_FOCUSES
+        ))
+        .style(Style::default().fg(theme.text.to_color()))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    let lines = editor_lines(
+        &state.editor,
+        theme,
+        "Trace how sessions are launched and identify the exact extension points…",
+    );
+    let wrap_width = chunks[1].width.saturating_sub(2).max(1) as usize;
+    let total_visual_lines = count_wrapped_editor_lines(&lines, wrap_width);
+    sync_editor_scroll(
+        &state.editor,
+        &mut state.edit_scroll_offset,
+        &mut state.edit_sync_to_cursor,
+        chunks[1].height.saturating_sub(2) as usize,
+        wrap_width,
+        total_visual_lines,
+    );
+    let editor = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" Research focus(es) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border.to_color())),
+        )
+        .style(Style::default().bg(theme.effective_header_bg()))
+        .wrap(Wrap { trim: false })
+        .scroll((state.edit_scroll_offset.min(u16::MAX as usize) as u16, 0));
+    frame.render_widget(editor, chunks[1]);
+
+    let footer = if let Some(message) = message {
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
+    } else {
+        Line::from(vec![
+            hint("Enter", theme),
+            Span::raw(" newline  "),
+            hint("Ctrl+S", theme),
+            Span::raw(" investigate + merge (uses tokens)  "),
             hint("Esc", theme),
             Span::raw(" back to plan"),
         ])

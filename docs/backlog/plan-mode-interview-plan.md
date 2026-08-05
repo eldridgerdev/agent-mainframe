@@ -599,6 +599,28 @@ interview with prior answers pre-filled, get an updated
       than applied late. Visual proof:
       `docs/screenshots/plan-mode-directed-feedback/`, regenerable via
       `scripts/dev/screenshot/scenarios/plan-interview-directed-feedback.txt`
+- [x] Add an optional isolated investigation pass after plan generation.
+      From the review gate, let the user identify questions or plan sections
+      that need more research, then delegate that work through the selected
+      harness's subagent mechanism (Claude subagents, the Codex equivalent, or
+      a separate ephemeral headless run when no native mechanism is exposed).
+      Give each investigator a focused prompt and read-only repository access
+      in its own context window, return only its findings to the planning
+      workflow, and merge those findings into the draft for user review. This
+      keeps codebase exploration from consuming the larger planning or
+      implementation session's context window — `i` at the review gate now
+      opens a multi-line research-focus editor; blank-line-separated focuses
+      (capped at four) each run through a fresh read-only headless invocation
+      using the interview's selected harness. A separate restricted invocation
+      receives only the validated, size-bounded findings and merges them into
+      the complete draft, so provider tool traces and exploration context never
+      enter the planning or implementation session. This portable isolated-run
+      fallback is used instead of assuming provider-specific subagent APIs.
+      Failed or dismissed passes preserve the current plan (and failures keep
+      the research request for retry); late results cannot overwrite it.
+      Visual proof: `docs/screenshots/plan-mode-isolated-investigation/`,
+      regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-isolated-investigation.txt`
 - [x] Replace the ambiguous AI-consent labels everywhere they appear
       (dialog, status footer, help, and screenshots): `a` should say
       "ask AI follow-ups" because it generates more questions;

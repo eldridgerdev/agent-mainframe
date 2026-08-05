@@ -16,7 +16,7 @@ use crate::{
         DiffPickerState, DiffScope, DiffViewerFocus, DiffViewerLayout, DiffViewerState,
         ReviewDecision, SummaryItem,
     },
-    diff::{DiffFile, DiffFileStatus, DiffLine, DiffLineKind, DiffLineLocation},
+    diff::{DiffFile, DiffFileStatus, DiffHunk, DiffLine, DiffLineKind, DiffLineLocation},
     editor::VimMode,
     highlight,
     theme::Theme,
@@ -2056,12 +2056,25 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme
         .files
         .get(state.selected_file)
         .and_then(|file| highlight::language_install_state_for_path(Path::new(&file.path)));
+    let context_level = state
+        .files
+        .get(state.selected_file)
+        .filter(|file| file.can_expand_context())
+        .map(|file| {
+            state
+                .context_expansion
+                .get(&file.path)
+                .copied()
+                .unwrap_or(crate::diff::DIFF_DEFAULT_CONTEXT)
+        });
     let footer = Paragraph::new(diff_footer_lines(
         focus,
         layout,
         new_file_selected,
         syntax_status,
         matches!(&state.scope, DiffScope::CurrentChanges),
+        context_level,
+        state.ignore_whitespace,
         theme,
     ))
     .wrap(Wrap { trim: false });
@@ -2426,6 +2439,45 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         first_line.push(Span::raw(format!(" layout:{layout_label}")));
     }
 
+    // Context expansion only means something for a file with hunks to widen —
+    // an added/deleted/binary file already shows everything it can.
+    if let Some(file) = state.files.get(state.selected_file)
+        && file.can_expand_context()
+    {
+        let level = state
+            .context_expansion
+            .get(&file.path)
+            .copied()
+            .unwrap_or(crate::diff::DIFF_DEFAULT_CONTEXT);
+        first_line.push(Span::raw("  "));
+        first_line.push(key("+"));
+        first_line.push(Span::raw("/"));
+        first_line.push(key("-"));
+        first_line.push(Span::styled(
+            format!(" context:{}", crate::app::context_level_label(level)),
+            Style::default().fg(if level == crate::diff::DIFF_DEFAULT_CONTEXT {
+                theme.text_muted.to_color()
+            } else {
+                theme.info.to_color()
+            }),
+        ));
+    }
+
+    first_line.push(Span::raw("  "));
+    first_line.push(key("W"));
+    first_line.push(Span::styled(
+        if state.ignore_whitespace {
+            " ws: ignored"
+        } else {
+            " ws: shown"
+        },
+        Style::default().fg(if state.ignore_whitespace {
+            theme.info.to_color()
+        } else {
+            theme.text_muted.to_color()
+        }),
+    ));
+
     // Offer the on-demand walkthrough only when the current file has no
     // developer note (the case where the notes panel would otherwise be empty).
     let has_note = state
@@ -2638,6 +2690,7 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
     frame.render_widget(Paragraph::new(Line::from(hint_spans)), rows[1]);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn diff_footer_lines(
     focus: &str,
     layout: &str,
@@ -2647,6 +2700,8 @@ fn diff_footer_lines(
         highlight::HighlightInstallState,
     )>,
     can_change_base: bool,
+    context_level: Option<usize>,
+    ignore_whitespace: bool,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut primary = vec![
@@ -2706,6 +2761,36 @@ fn diff_footer_lines(
         Span::styled("r", Style::default().fg(theme.warning.to_color())),
         Span::raw(" refresh  "),
     ]);
+    if let Some(level) = context_level {
+        secondary.push(Span::styled(
+            "+/-",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        secondary.push(Span::styled(
+            format!(" context:{}  ", crate::app::context_level_label(level)),
+            Style::default().fg(if level == crate::diff::DIFF_DEFAULT_CONTEXT {
+                theme.text_muted.to_color()
+            } else {
+                theme.info.to_color()
+            }),
+        ));
+    }
+    secondary.push(Span::styled(
+        "W",
+        Style::default().fg(theme.warning.to_color()),
+    ));
+    secondary.push(Span::styled(
+        if ignore_whitespace {
+            " ws: ignored  "
+        } else {
+            " ws: shown  "
+        },
+        Style::default().fg(if ignore_whitespace {
+            theme.info.to_color()
+        } else {
+            theme.text_muted.to_color()
+        }),
+    ));
     if can_change_base {
         secondary.push(Span::styled(
             "b",
@@ -2797,7 +2882,9 @@ fn patch_lines(
 
         let mut old_line = hunk.old_start;
         let mut new_line = hunk.new_start;
-        for diff_line in &hunk.lines {
+        // Which tokens changed within each paired removed/added line.
+        let intra = hunk_intra_line_ranges(hunk);
+        for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
             match diff_line.kind {
                 DiffLineKind::Context => {
                     let loc = DiffLineLocation {
@@ -2839,11 +2926,18 @@ fn patch_lines(
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         None,
-                        diff_chunks(
+                        diff_chunks_emphasized(
                             &diff_line.text,
                             removed_row_style(theme),
                             theme,
                             highlighted_line(highlights.old.as_ref(), old_line),
+                            intra[line_idx]
+                                .clone()
+                                .map(|ranges| IntraLineEmphasis {
+                                    ranges,
+                                    style: removed_emphasis_style(theme),
+                                })
+                                .as_ref(),
                         ),
                         removed_row_style(theme),
                         number_width,
@@ -2865,11 +2959,20 @@ fn patch_lines(
                     lines.extend(wrap_gutter_line(
                         None,
                         Some(new_line),
-                        diff_chunks(
+                        diff_chunks_emphasized(
                             &diff_line.text,
                             added_style,
                             theme,
                             highlighted_line(highlights.new.as_ref(), new_line),
+                            // A brand-new file has no counterpart lines, so its
+                            // rows never carry emphasis.
+                            intra[line_idx]
+                                .clone()
+                                .map(|ranges| IntraLineEmphasis {
+                                    ranges,
+                                    style: added_emphasis_style(theme),
+                                })
+                                .as_ref(),
                         ),
                         added_style,
                         number_width,
@@ -3163,6 +3266,14 @@ fn side_by_side_rows(
         && right_number.is_some()
         && left_style.bg != Some(base_bg)
         && right_style.bg != Some(base_bg);
+    // A row showing a removal beside its replacement is exactly the pair a
+    // word-level diff describes, so derive the emphasis here rather than
+    // threading it through yet another parameter.
+    let intra = if paired_change_row {
+        crate::worddiff::word_diff(line_content(&left), line_content(&right))
+    } else {
+        None
+    };
     let left_wrapped = if left_number.is_none() && left.is_empty() {
         vec![plain_chunks(
             &hatch_fill(text_width, 0),
@@ -3170,7 +3281,19 @@ fn side_by_side_rows(
         )]
     } else {
         wrap_chunks(
-            &diff_chunks(&left, left_style, theme, left_highlight),
+            &diff_chunks_emphasized(
+                &left,
+                left_style,
+                theme,
+                left_highlight,
+                intra
+                    .as_ref()
+                    .map(|diff| IntraLineEmphasis {
+                        ranges: diff.old.clone(),
+                        style: removed_emphasis_style(theme),
+                    })
+                    .as_ref(),
+            ),
             text_width,
             left_style,
         )
@@ -3182,7 +3305,19 @@ fn side_by_side_rows(
         )]
     } else {
         wrap_chunks(
-            &diff_chunks(&right, right_style, theme, right_highlight),
+            &diff_chunks_emphasized(
+                &right,
+                right_style,
+                theme,
+                right_highlight,
+                intra
+                    .as_ref()
+                    .map(|diff| IntraLineEmphasis {
+                        ranges: diff.new.clone(),
+                        style: added_emphasis_style(theme),
+                    })
+                    .as_ref(),
+            ),
             text_width,
             right_style,
         )
@@ -3429,6 +3564,20 @@ fn diff_chunks(
     theme: &Theme,
     highlighted_line: Option<&highlight::HighlightedLine>,
 ) -> Vec<StyledChunk> {
+    diff_chunks_emphasized(text, row_style, theme, highlighted_line, None)
+}
+
+/// As `diff_chunks`, but additionally brightens the byte ranges in `emphasis`
+/// (offsets into the line's content, prefix excluded) — the tokens a
+/// word-level diff found actually changed. Only the background is touched, so
+/// syntax highlighting shows through unchanged.
+fn diff_chunks_emphasized(
+    text: &str,
+    row_style: Style,
+    theme: &Theme,
+    highlighted_line: Option<&highlight::HighlightedLine>,
+    emphasis: Option<&IntraLineEmphasis>,
+) -> Vec<StyledChunk> {
     if text.is_empty() {
         return Vec::new();
     }
@@ -3450,10 +3599,80 @@ fn diff_chunks(
     }
 
     if !content.is_empty() {
-        append_highlighted_content(&mut chunks, content, row_style, theme, highlighted_line);
+        let mut content_chunks = Vec::new();
+        append_highlighted_content(
+            &mut content_chunks,
+            content,
+            row_style,
+            theme,
+            highlighted_line,
+        );
+        if let Some(emphasis) = emphasis {
+            content_chunks =
+                apply_intra_line_emphasis(content_chunks, &emphasis.ranges, emphasis.style);
+        }
+        chunks.extend(content_chunks);
     }
 
     chunks
+}
+
+/// The changed byte ranges of one line plus the style to mark them with.
+struct IntraLineEmphasis {
+    ranges: Vec<std::ops::Range<usize>>,
+    style: Style,
+}
+
+/// Split `chunks` at every emphasis boundary and patch `style` onto the parts
+/// that fall inside a changed range. `chunks` must cover the line's content
+/// contiguously from offset 0, which is what `append_highlighted_content`
+/// guarantees.
+fn apply_intra_line_emphasis(
+    chunks: Vec<StyledChunk>,
+    ranges: &[std::ops::Range<usize>],
+    style: Style,
+) -> Vec<StyledChunk> {
+    if ranges.is_empty() {
+        return chunks;
+    }
+    let mut rebuilt: Vec<StyledChunk> = Vec::with_capacity(chunks.len());
+    let mut offset = 0usize;
+    for chunk in chunks.iter() {
+        let chunk_start = offset;
+        offset += chunk.text.len();
+        // Cut points inside this chunk where emphasis starts or stops.
+        let mut cuts: Vec<usize> = vec![0, chunk.text.len()];
+        for range in ranges {
+            for edge in [range.start, range.end] {
+                if edge > chunk_start && edge < offset {
+                    cuts.push(edge - chunk_start);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let (from, to) = (pair[0], pair[1]);
+            let Some(text) = chunk.text.get(from..to) else {
+                // A cut landed mid-character: keep the chunk whole rather than
+                // slicing a UTF-8 boundary.
+                continue;
+            };
+            let absolute = chunk_start + from;
+            let emphasized = ranges
+                .iter()
+                .any(|range| absolute >= range.start && absolute < range.end);
+            rebuilt.push(StyledChunk {
+                text: text.to_string(),
+                style: if emphasized {
+                    chunk.style.patch(style)
+                } else {
+                    chunk.style
+                },
+            });
+        }
+    }
+    rebuilt
 }
 
 fn append_highlighted_content(
@@ -3737,6 +3956,75 @@ fn added_row_style(theme: &Theme) -> Style {
     ))
 }
 
+/// Background for the tokens a word-level diff found changed: the row's own
+/// hue, blended harder so the changed part reads as "more added" / "more
+/// removed" rather than as a different kind of thing. Only the background is
+/// set, so the syntax-highlight foreground survives.
+fn added_emphasis_style(theme: &Theme) -> Style {
+    Style::default().bg(blend_color(
+        popup_base_bg(theme),
+        theme.success.to_color(),
+        0.62,
+    ))
+}
+
+fn removed_emphasis_style(theme: &Theme) -> Style {
+    Style::default().bg(blend_color(
+        popup_base_bg(theme),
+        theme.danger.to_color(),
+        0.58,
+    ))
+}
+
+/// Word-level emphasis for every line of a hunk, indexed the same as
+/// `hunk.lines`.
+///
+/// Consecutive removed lines followed by consecutive added lines form a change
+/// block; within it the i-th removal pairs with the i-th addition, which is how
+/// git lays out a rewritten run and therefore what the reviewer reads as "this
+/// line became that line". Unpaired leftovers (a block that removes 3 and adds
+/// 1) get no emphasis — there is no counterpart to diff against.
+fn hunk_intra_line_ranges(hunk: &DiffHunk) -> Vec<Option<Vec<std::ops::Range<usize>>>> {
+    let mut out: Vec<Option<Vec<std::ops::Range<usize>>>> = vec![None; hunk.lines.len()];
+    let mut idx = 0usize;
+    while idx < hunk.lines.len() {
+        if !matches!(hunk.lines[idx].kind, DiffLineKind::Removed) {
+            idx += 1;
+            continue;
+        }
+        let removed_start = idx;
+        while idx < hunk.lines.len() && matches!(hunk.lines[idx].kind, DiffLineKind::Removed) {
+            idx += 1;
+        }
+        let added_start = idx;
+        while idx < hunk.lines.len() && matches!(hunk.lines[idx].kind, DiffLineKind::Added) {
+            idx += 1;
+        }
+
+        let removed = removed_start..added_start;
+        let added = added_start..idx;
+        for (old_idx, new_idx) in removed.zip(added) {
+            let old_text = line_content(&hunk.lines[old_idx].text);
+            let new_text = line_content(&hunk.lines[new_idx].text);
+            if let Some(diff) = crate::worddiff::word_diff(old_text, new_text) {
+                out[old_idx] = Some(diff.old);
+                out[new_idx] = Some(diff.new);
+            }
+        }
+    }
+    out
+}
+
+/// A diff line's text with its leading `+`/`-`/space prefix removed, matching
+/// the offsets `diff_chunks_emphasized` measures emphasis ranges against.
+fn line_content(text: &str) -> &str {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some('+' | '-' | ' ') => chars.as_str(),
+        _ => text,
+    }
+}
+
 fn removed_row_style(theme: &Theme) -> Style {
     Style::default().fg(theme.text.to_color()).bg(blend_color(
         popup_base_bg(theme),
@@ -3915,6 +4203,133 @@ mod tests {
             .collect::<String>()
     }
 
+    fn changed_pair_hunk(old: &str, new: &str) -> DiffHunk {
+        DiffHunk {
+            header: "@@ -1 +1 @@".into(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec![
+                DiffLine {
+                    kind: DiffLineKind::Removed,
+                    text: format!("-{old}"),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: format!("+{new}"),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn intra_line_ranges_pair_a_removal_with_its_replacement() {
+        let hunk = changed_pair_hunk("let x = foo(1);", "let x = foo(2);");
+        let ranges = hunk_intra_line_ranges(&hunk);
+
+        // Index 0 is the removal, index 1 its paired addition.
+        let old = ranges[0].as_ref().expect("removal has emphasis");
+        let new = ranges[1].as_ref().expect("addition has emphasis");
+        assert_eq!(&"let x = foo(1);"[old[0].clone()], "1");
+        assert_eq!(&"let x = foo(2);"[new[0].clone()], "2");
+    }
+
+    #[test]
+    fn intra_line_ranges_skip_unpaired_and_context_lines() {
+        // Two removals, one addition: only the first pair has a counterpart.
+        let hunk = DiffHunk {
+            header: "@@ -1,3 +1,2 @@".into(),
+            old_start: 1,
+            old_lines: 3,
+            new_start: 1,
+            new_lines: 2,
+            lines: vec![
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    text: " unchanged".into(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Removed,
+                    text: "-value = 1;".into(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Removed,
+                    text: "-dropped();".into(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "+value = 2;".into(),
+                },
+            ],
+        };
+        let ranges = hunk_intra_line_ranges(&hunk);
+
+        assert!(ranges[0].is_none(), "context lines are never emphasised");
+        assert!(ranges[1].is_some(), "first removal pairs with the addition");
+        assert!(ranges[2].is_none(), "second removal has no counterpart");
+        assert!(ranges[3].is_some());
+    }
+
+    #[test]
+    fn emphasis_splits_chunks_without_losing_or_reordering_text() {
+        let theme = Theme::default();
+        let row = added_row_style(&theme);
+        let emphasis = IntraLineEmphasis {
+            // Two disjoint runs inside "abcdef": "bc" and "e".
+            ranges: Vec::from([1..3, 4..5]),
+            style: added_emphasis_style(&theme),
+        };
+        let chunks = diff_chunks_emphasized("+abcdef", row, &theme, None, Some(&emphasis));
+
+        let text: String = chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(text, "+abcdef", "no text may be lost or reordered");
+
+        // Only the emphasised slices carry the brighter background; the rest
+        // keeps the plain row background.
+        let emphasised: String = chunks
+            .iter()
+            .filter(|c| c.style.bg == added_emphasis_style(&theme).bg)
+            .map(|c| c.text.as_str())
+            .collect();
+        assert_eq!(emphasised, "bce");
+    }
+
+    #[test]
+    fn emphasis_offsets_are_measured_past_the_diff_prefix() {
+        let theme = Theme::default();
+        // Offsets are into the *content*, not the raw line — starting a range
+        // at 0 must highlight `a`, never the `+` prefix.
+        let emphasis = IntraLineEmphasis {
+            ranges: Vec::from([0..3, 5..6]),
+            style: added_emphasis_style(&theme),
+        };
+        let chunks = diff_chunks_emphasized(
+            "+abcdef",
+            added_row_style(&theme),
+            &theme,
+            None,
+            Some(&emphasis),
+        );
+
+        let emphasised: String = chunks
+            .iter()
+            .filter(|c| c.style.bg == added_emphasis_style(&theme).bg)
+            .map(|c| c.text.as_str())
+            .collect();
+        assert_eq!(emphasised, "abcf");
+    }
+
+    #[test]
+    fn diff_footer_shows_the_ignore_whitespace_state() {
+        let theme = Theme::default();
+        let shown = diff_footer_lines("files", "unified", false, None, true, None, false, &theme);
+        assert!(line_text(&shown[1]).contains("ws: shown"));
+
+        let ignored = diff_footer_lines("files", "unified", false, None, true, None, true, &theme);
+        assert!(line_text(&ignored[1]).contains("ws: ignored"));
+    }
+
     #[test]
     fn diff_footer_prioritizes_syntax_install_hint() {
         let theme = Theme::default();
@@ -3927,6 +4342,8 @@ mod tests {
                 highlight::HighlightInstallState::Available,
             )),
             true,
+            None,
+            false,
             &theme,
         );
 

@@ -136,6 +136,324 @@ impl DiffFile {
         }
         out
     }
+
+    /// Whether this file's hunks can be re-rendered with more context. Needs
+    /// both blobs: expansion pulls the surrounding lines out of them. Added,
+    /// deleted, untracked and binary files never qualify — one side has no
+    /// content, and for the first three the diff already shows every line.
+    pub fn can_expand_context(&self) -> bool {
+        !self.is_binary
+            && !self.hunks.is_empty()
+            && self.old_content.is_some()
+            && self.new_content.is_some()
+    }
+
+    /// Rebuild this file's hunks with `context` lines of context around each run
+    /// of changed lines, merging hunks whose context regions meet
+    /// (`usize::MAX` renders the whole file as one hunk).
+    ///
+    /// Derived from the *current* hunks plus `old_content`/`new_content`, and
+    /// idempotent: expansion only ever adds context lines, so the runs of
+    /// added/removed lines it recovers are the same at any starting context.
+    /// That means a viewer can step the level up and down without keeping a
+    /// pristine copy of the parsed hunks around.
+    ///
+    /// Returns `None` when expansion isn't possible — including when the blobs
+    /// no longer agree with the patch, where guessing would show the reviewer
+    /// code that isn't in the diff.
+    pub fn hunks_with_context(&self, context: usize) -> Option<Vec<DiffHunk>> {
+        if !self.can_expand_context() {
+            return None;
+        }
+        let old_content = self.old_content.as_deref()?;
+        let new_content = self.new_content.as_deref()?;
+        let old_lines = content_lines(old_content);
+        let new_lines = content_lines(new_content);
+        let old_total = old_lines.len();
+        let new_total = new_lines.len();
+
+        let runs = self.change_runs();
+        if runs.is_empty() {
+            return None;
+        }
+        if !runs
+            .iter()
+            .all(|run| run.matches_content(&old_lines, &new_lines))
+        {
+            return None;
+        }
+
+        // `\ No newline at end of file` is re-emitted rather than carried over:
+        // the marker belongs to whichever side's final line lands in a hunk, and
+        // expansion changes which lines those are.
+        let old_ends_newline = old_content.is_empty() || old_content.ends_with('\n');
+        let new_ends_newline = new_content.is_empty() || new_content.ends_with('\n');
+
+        // Group runs whose context regions overlap or touch into one hunk, the
+        // same way git merges hunks at a wider `--unified`.
+        let mut groups: Vec<Vec<&ChangeRun>> = Vec::new();
+        for run in &runs {
+            let lead = run.leading_context(context);
+            let merged = groups.last_mut().is_some_and(|group| {
+                let prev = group.last().expect("groups are never empty");
+                let (prev_old_end, prev_new_end) = prev.after();
+                let trail =
+                    trailing_context(context, prev_old_end, prev_new_end, old_total, new_total);
+                if run.old_at.saturating_sub(lead) <= prev_old_end + trail {
+                    group.push(run);
+                    true
+                } else {
+                    false
+                }
+            });
+            if !merged {
+                groups.push(vec![run]);
+            }
+        }
+
+        let mut out = Vec::new();
+        for group in groups {
+            let first = group[0];
+            let lead = first.leading_context(context);
+            let old_start = first.old_at - lead;
+            let new_start = first.new_at - lead;
+            let mut old_line = old_start;
+            let mut new_line = new_start;
+            let mut lines: Vec<DiffLine> = Vec::new();
+
+            let push_context = |lines: &mut Vec<DiffLine>, old_line: usize, new_line: usize| {
+                let text = new_lines
+                    .get(new_line - 1)
+                    .copied()
+                    .or_else(|| old_lines.get(old_line - 1).copied())
+                    .unwrap_or("");
+                lines.push(DiffLine {
+                    kind: DiffLineKind::Context,
+                    text: format!(" {text}"),
+                });
+                if (old_line == old_total && !old_ends_newline)
+                    || (new_line == new_total && !new_ends_newline)
+                {
+                    lines.push(no_newline_marker());
+                }
+            };
+
+            for run in &group {
+                while old_line < run.old_at {
+                    push_context(&mut lines, old_line, new_line);
+                    old_line += 1;
+                    new_line += 1;
+                }
+                let (mut old_idx, mut new_idx) = (run.old_at, run.new_at);
+                for line in &run.lines {
+                    lines.push(line.clone());
+                    match line.kind {
+                        DiffLineKind::Removed => {
+                            if old_idx == old_total && !old_ends_newline {
+                                lines.push(no_newline_marker());
+                            }
+                            old_idx += 1;
+                        }
+                        DiffLineKind::Added => {
+                            if new_idx == new_total && !new_ends_newline {
+                                lines.push(no_newline_marker());
+                            }
+                            new_idx += 1;
+                        }
+                        _ => {}
+                    }
+                }
+                let (after_old, after_new) = run.after();
+                old_line = after_old;
+                new_line = after_new;
+            }
+
+            let trail = trailing_context(context, old_line, new_line, old_total, new_total);
+            for _ in 0..trail {
+                push_context(&mut lines, old_line, new_line);
+                old_line += 1;
+                new_line += 1;
+            }
+
+            let old_count = old_line - old_start;
+            let new_count = new_line - new_start;
+            out.push(DiffHunk {
+                header: hunk_header(old_start, old_count, new_start, new_count),
+                old_start,
+                old_lines: old_count,
+                new_start,
+                new_lines: new_count,
+                lines,
+            });
+        }
+        Some(out)
+    }
+
+    /// Recover the runs of consecutive changed lines from the current hunks —
+    /// everything expansion has to preserve verbatim.
+    fn change_runs(&self) -> Vec<ChangeRun> {
+        let mut runs = Vec::new();
+        for hunk in &self.hunks {
+            // A zero-length side means the header points at the line *before*
+            // the change (git's `@@ -5,0 +6,3 @@`), so the insertion point is
+            // the next line. `addressable_lines()` doesn't need this — every
+            // location on that side is `None` — but the context math does.
+            let mut old_line = if hunk.old_lines == 0 {
+                hunk.old_start + 1
+            } else {
+                hunk.old_start.max(1)
+            };
+            let mut new_line = if hunk.new_lines == 0 {
+                hunk.new_start + 1
+            } else {
+                hunk.new_start.max(1)
+            };
+            let mut current: Option<ChangeRun> = None;
+            for line in &hunk.lines {
+                match line.kind {
+                    DiffLineKind::Context => {
+                        runs.extend(current.take());
+                        old_line += 1;
+                        new_line += 1;
+                    }
+                    DiffLineKind::Removed => {
+                        let run = current.get_or_insert_with(|| ChangeRun::new(old_line, new_line));
+                        run.lines.push(line.clone());
+                        run.old_len += 1;
+                        old_line += 1;
+                    }
+                    DiffLineKind::Added => {
+                        let run = current.get_or_insert_with(|| ChangeRun::new(old_line, new_line));
+                        run.lines.push(line.clone());
+                        run.new_len += 1;
+                        new_line += 1;
+                    }
+                    DiffLineKind::NoNewlineMarker => {}
+                }
+            }
+            runs.extend(current.take());
+        }
+        runs
+    }
+}
+
+/// git's `--unified=3` default — the context every freshly parsed hunk carries.
+pub const DIFF_DEFAULT_CONTEXT: usize = 3;
+
+/// A run of consecutive added/removed diff lines together with where it starts
+/// on each side, recovered from a file's hunks so it can be re-emitted with a
+/// different amount of surrounding context.
+struct ChangeRun {
+    /// 1-based old-side line the run starts at (for a pure insertion, the line
+    /// it is inserted before).
+    old_at: usize,
+    /// 1-based new-side line the run starts at (for a pure deletion, the line
+    /// the removal sits before).
+    new_at: usize,
+    old_len: usize,
+    new_len: usize,
+    lines: Vec<DiffLine>,
+}
+
+impl ChangeRun {
+    fn new(old_at: usize, new_at: usize) -> Self {
+        Self {
+            old_at,
+            new_at,
+            old_len: 0,
+            new_len: 0,
+            lines: Vec::new(),
+        }
+    }
+
+    /// The first line on each side *after* this run.
+    fn after(&self) -> (usize, usize) {
+        (self.old_at + self.old_len, self.new_at + self.new_len)
+    }
+
+    /// How many context lines can precede this run, capped by both file starts
+    /// (the two sides advance in lockstep through context, so the tighter bound
+    /// wins).
+    fn leading_context(&self, context: usize) -> usize {
+        context.min(self.old_at - 1).min(self.new_at - 1)
+    }
+
+    /// Whether the run's changed lines still match the blobs they were parsed
+    /// against.
+    fn matches_content(&self, old_lines: &[&str], new_lines: &[&str]) -> bool {
+        let (mut old_idx, mut new_idx) = (self.old_at, self.new_at);
+        for line in &self.lines {
+            // The diff prefix is one ASCII byte, so slicing at 1 is a boundary.
+            let text = line.text.get(1..).unwrap_or("");
+            match line.kind {
+                DiffLineKind::Removed => {
+                    if old_idx.checked_sub(1).and_then(|i| old_lines.get(i)) != Some(&text) {
+                        return false;
+                    }
+                    old_idx += 1;
+                }
+                DiffLineKind::Added => {
+                    if new_idx.checked_sub(1).and_then(|i| new_lines.get(i)) != Some(&text) {
+                        return false;
+                    }
+                    new_idx += 1;
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+}
+
+/// How many context lines can follow a change ending just before `old_line` /
+/// `new_line`, capped by both file ends.
+fn trailing_context(
+    context: usize,
+    old_line: usize,
+    new_line: usize,
+    old_total: usize,
+    new_total: usize,
+) -> usize {
+    context
+        .min(old_total.saturating_sub(old_line - 1))
+        .min(new_total.saturating_sub(new_line - 1))
+}
+
+fn no_newline_marker() -> DiffLine {
+    DiffLine {
+        kind: DiffLineKind::NoNewlineMarker,
+        text: "\\ No newline at end of file".to_string(),
+    }
+}
+
+/// Render a unified hunk header, following git's convention of omitting a
+/// count of exactly 1.
+fn hunk_header(old_start: usize, old_count: usize, new_start: usize, new_count: usize) -> String {
+    let side = |start: usize, count: usize| {
+        if count == 1 {
+            start.to_string()
+        } else {
+            format!("{start},{count}")
+        }
+    };
+    format!(
+        "@@ -{} +{} @@",
+        side(old_start, old_count),
+        side(new_start, new_count)
+    )
+}
+
+/// Split file content into lines without the trailing empty element a final
+/// newline produces.
+fn content_lines(content: &str) -> Vec<&str> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+    content
+        .strip_suffix('\n')
+        .unwrap_or(content)
+        .split('\n')
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,19 +491,41 @@ pub enum DiffLineKind {
     NoNewlineMarker,
 }
 
-pub fn load_snapshot(workdir: &Path, override_ref: Option<&str>) -> Result<DiffSnapshot> {
+/// `git diff -w`: treat lines that differ only in whitespace as unchanged.
+/// Inserted into the argument list only when the reviewer asks for it, so the
+/// default invocation is byte-for-byte what it always was.
+const IGNORE_WHITESPACE_FLAG: &str = "--ignore-all-space";
+
+/// Splice the ignore-whitespace flag into a `git diff` argument list.
+fn with_whitespace_flag<'a>(args: &[&'a str], ignore_whitespace: bool) -> Vec<&'a str> {
+    let mut out = args.to_vec();
+    if ignore_whitespace {
+        // After the subcommand, before the revision/pathspec operands.
+        out.insert(1, IGNORE_WHITESPACE_FLAG);
+    }
+    out
+}
+
+pub fn load_snapshot(
+    workdir: &Path,
+    override_ref: Option<&str>,
+    ignore_whitespace: bool,
+) -> Result<DiffSnapshot> {
     let base = resolve_base_ref(workdir, override_ref)?;
     let tracked_patch = git_capture(
         workdir,
-        &[
-            "diff",
-            "--find-renames",
-            "--no-ext-diff",
-            "--no-color",
-            "--unified=3",
-            "--relative",
-            &base.base_commit,
-        ],
+        &with_whitespace_flag(
+            &[
+                "diff",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-color",
+                "--unified=3",
+                "--relative",
+                &base.base_commit,
+            ],
+            ignore_whitespace,
+        ),
         false,
     )?;
 
@@ -195,16 +535,19 @@ pub fn load_snapshot(workdir: &Path, override_ref: Option<&str>) -> Result<DiffS
     for rel_path in list_untracked_files(workdir)? {
         let patch = git_capture(
             workdir,
-            &[
-                "diff",
-                "--no-index",
-                "--no-ext-diff",
-                "--no-color",
-                "--unified=3",
-                "--",
-                "/dev/null",
-                &rel_path,
-            ],
+            &with_whitespace_flag(
+                &[
+                    "diff",
+                    "--no-index",
+                    "--no-ext-diff",
+                    "--no-color",
+                    "--unified=3",
+                    "--",
+                    "/dev/null",
+                    &rel_path,
+                ],
+                ignore_whitespace,
+            ),
             true,
         )?;
         for mut file in parse_unified_diff(&patch)? {
@@ -268,7 +611,11 @@ pub fn list_diff_commits(workdir: &Path) -> Result<Vec<DiffCommit>> {
 
 /// Load only the changes introduced by one commit, excluding later commits and
 /// any staged, unstaged, or untracked worktree changes.
-pub fn load_commit_snapshot(workdir: &Path, commit_ref: &str) -> Result<DiffSnapshot> {
+pub fn load_commit_snapshot(
+    workdir: &Path,
+    commit_ref: &str,
+    ignore_whitespace: bool,
+) -> Result<DiffSnapshot> {
     let verify_ref = format!("{}^{{commit}}", commit_ref.trim());
     let commit = git_capture(workdir, &["rev-parse", "--verify", &verify_ref], false)?
         .trim()
@@ -288,33 +635,39 @@ pub fn load_commit_snapshot(workdir: &Path, commit_ref: &str) -> Result<DiffSnap
     let patch = if let Some(parent) = &parent {
         git_capture(
             workdir,
-            &[
-                "diff",
-                "--find-renames",
-                "--no-ext-diff",
-                "--no-color",
-                "--unified=3",
-                "--relative",
-                parent,
-                &commit,
-            ],
+            &with_whitespace_flag(
+                &[
+                    "diff",
+                    "--find-renames",
+                    "--no-ext-diff",
+                    "--no-color",
+                    "--unified=3",
+                    "--relative",
+                    parent,
+                    &commit,
+                ],
+                ignore_whitespace,
+            ),
             false,
         )?
     } else {
         git_capture(
             workdir,
-            &[
-                "diff-tree",
-                "--root",
-                "--no-commit-id",
-                "--find-renames",
-                "--no-ext-diff",
-                "--no-color",
-                "--unified=3",
-                "--relative",
-                "-p",
-                &commit,
-            ],
+            &with_whitespace_flag(
+                &[
+                    "diff-tree",
+                    "--root",
+                    "--no-commit-id",
+                    "--find-renames",
+                    "--no-ext-diff",
+                    "--no-color",
+                    "--unified=3",
+                    "--relative",
+                    "-p",
+                    &commit,
+                ],
+                ignore_whitespace,
+            ),
             false,
         )?
     };
@@ -988,6 +1341,259 @@ index 1111111..2222222 100644
         assert_eq!(file.addressable_lines().len(), 3);
     }
 
+    /// `l1\nl2\n…\nl{n}\n`, the base every context-expansion test edits.
+    fn numbered_content(n: usize) -> String {
+        (1..=n)
+            .map(|i| format!("l{i}\n"))
+            .collect::<Vec<_>>()
+            .concat()
+    }
+
+    /// Parse `patch` as a single file and hydrate it with the blobs expansion
+    /// reads from, mirroring what `hydrate_file_contents` does after a load.
+    fn hydrated(patch: &str, old_content: String, new_content: String) -> DiffFile {
+        let mut file = parse_unified_diff(patch).unwrap().pop().unwrap();
+        file.old_content = Some(old_content);
+        file.new_content = Some(new_content);
+        file
+    }
+
+    /// A 30-line file with line 15 rewritten, at git's default `--unified=3`.
+    fn one_change_in_thirty_lines() -> DiffFile {
+        let old = numbered_content(30);
+        let new = old.replace("l15\n", "l15 changed\n");
+        hydrated(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -12,7 +12,7 @@
+ l12
+ l13
+ l14
+-l15
++l15 changed
+ l16
+ l17
+ l18
+",
+            old,
+            new,
+        )
+    }
+
+    /// A 30-line file with lines 10 and 18 rewritten — two hunks at the default
+    /// context, close enough to merge once it widens.
+    fn two_changes_in_thirty_lines() -> DiffFile {
+        let old = numbered_content(30);
+        let new = old
+            .replace("l10\n", "l10 changed\n")
+            .replace("l18\n", "l18 changed\n");
+        hydrated(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -7,7 +7,7 @@
+ l7
+ l8
+ l9
+-l10
++l10 changed
+ l11
+ l12
+ l13
+@@ -15,7 +15,7 @@
+ l15
+ l16
+ l17
+-l18
++l18 changed
+ l19
+ l20
+ l21
+",
+            old,
+            new,
+        )
+    }
+
+    fn line_texts(hunks: &[DiffHunk]) -> Vec<String> {
+        hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter().map(|line| line.text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn hunks_with_context_widens_a_hunk_using_the_blobs() {
+        let file = one_change_in_thirty_lines();
+        let hunks = file.hunks_with_context(10).unwrap();
+
+        // 10 lines each side of the single changed line, clamped by neither
+        // file end: lines 5..=25 on both sides.
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].old_start, 5);
+        assert_eq!(hunks[0].old_lines, 21);
+        assert_eq!(hunks[0].new_start, 5);
+        assert_eq!(hunks[0].new_lines, 21);
+        assert_eq!(hunks[0].header, "@@ -5,21 +5,21 @@");
+
+        let texts = line_texts(&hunks);
+        assert_eq!(texts.first().unwrap(), " l5");
+        assert_eq!(texts.last().unwrap(), " l25");
+        // The change itself is preserved verbatim, not re-derived.
+        assert!(texts.contains(&"-l15".to_string()));
+        assert!(texts.contains(&"+l15 changed".to_string()));
+    }
+
+    #[test]
+    fn hunks_with_context_merges_hunks_whose_context_regions_meet() {
+        let file = two_changes_in_thirty_lines();
+        assert_eq!(file.hunks.len(), 2);
+
+        // At 10 lines of context the two regions overlap and become one hunk
+        // covering both changes plus everything between them.
+        let hunks = file.hunks_with_context(10).unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].old_start, 1);
+        assert_eq!(hunks[0].old_lines, 28);
+        let texts = line_texts(&hunks);
+        assert!(texts.contains(&"-l10".to_string()));
+        assert!(texts.contains(&"-l18".to_string()));
+        // The line that separated the two original hunks is now context.
+        assert!(texts.contains(&" l14".to_string()));
+    }
+
+    #[test]
+    fn hunks_with_context_whole_file_covers_every_line() {
+        let file = one_change_in_thirty_lines();
+        let hunks = file.hunks_with_context(usize::MAX).unwrap();
+
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].old_start, 1);
+        assert_eq!(hunks[0].old_lines, 30);
+        assert_eq!(hunks[0].new_lines, 30);
+        let texts = line_texts(&hunks);
+        assert_eq!(texts.first().unwrap(), " l1");
+        assert_eq!(texts.last().unwrap(), " l30");
+    }
+
+    #[test]
+    fn hunks_with_context_round_trips_back_to_the_parsed_hunks() {
+        // Idempotence is what lets the viewer step the level up and down
+        // without keeping a pristine copy of the parsed hunks.
+        for mut file in [one_change_in_thirty_lines(), two_changes_in_thirty_lines()] {
+            let original = file.hunks.clone();
+            file.hunks = file.hunks_with_context(usize::MAX).unwrap();
+            file.hunks = file.hunks_with_context(25).unwrap();
+            file.hunks = file.hunks_with_context(DIFF_DEFAULT_CONTEXT).unwrap();
+            assert_eq!(file.hunks, original);
+        }
+    }
+
+    #[test]
+    fn hunks_with_context_keeps_comment_anchors_addressable() {
+        // Line comments anchor to `DiffLineLocation`s; expansion must leave
+        // every one of them present (it only ever adds context lines).
+        let mut file = one_change_in_thirty_lines();
+        let before = file.addressable_lines();
+        file.hunks = file.hunks_with_context(10).unwrap();
+        let after = file.addressable_lines();
+
+        assert!(after.len() > before.len());
+        for loc in &before {
+            assert!(after.contains(loc), "expansion dropped {loc:?}");
+        }
+    }
+
+    #[test]
+    fn hunks_with_context_refuses_when_the_blobs_no_longer_match() {
+        let mut file = one_change_in_thirty_lines();
+        // The worktree moved on underneath the parsed patch.
+        file.new_content = Some(numbered_content(30).replace("l15\n", "l15 rewritten again\n"));
+
+        assert_eq!(file.hunks_with_context(10), None);
+    }
+
+    #[test]
+    fn hunks_with_context_is_unavailable_without_both_blobs() {
+        let mut file = one_change_in_thirty_lines();
+
+        file.old_content = None;
+        assert!(!file.can_expand_context());
+        assert_eq!(file.hunks_with_context(10), None);
+
+        let mut binary = one_change_in_thirty_lines();
+        binary.is_binary = true;
+        assert!(!binary.can_expand_context());
+        assert_eq!(binary.hunks_with_context(10), None);
+    }
+
+    #[test]
+    fn hunks_with_context_clamps_at_file_boundaries() {
+        // A change on the first line has no room above it.
+        let old = numbered_content(6);
+        let new = old.replace("l1\n", "l1 changed\n");
+        let file = hydrated(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,4 @@
+-l1
++l1 changed
+ l2
+ l3
+ l4
+",
+            old,
+            new,
+        );
+
+        let hunks = file.hunks_with_context(20).unwrap();
+        assert_eq!(hunks[0].old_start, 1);
+        assert_eq!(hunks[0].old_lines, 6);
+        assert_eq!(line_texts(&hunks).last().unwrap(), " l6");
+    }
+
+    #[test]
+    fn hunks_with_context_re_emits_the_missing_newline_marker() {
+        // The marker belongs to whichever side's final line lands in a hunk,
+        // so it is re-derived from the blobs rather than carried over.
+        let old = "l1\nl2\nl3\nl4\nl5";
+        let new = "l1\nl2 changed\nl3\nl4\nl5";
+        let file = hydrated(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,4 @@
+ l1
+-l2
++l2 changed
+ l3
+ l4
+",
+            old.to_string(),
+            new.to_string(),
+        );
+
+        let hunks = file.hunks_with_context(20).unwrap();
+        let kinds: Vec<_> = hunks[0]
+            .lines
+            .iter()
+            .map(|line| line.kind.clone())
+            .collect();
+        assert_eq!(kinds.last(), Some(&DiffLineKind::NoNewlineMarker));
+        // The marker isn't addressable, so it can't shift a comment anchor.
+        assert_eq!(hunks[0].lines.len(), hunks[0].old_lines + 2);
+    }
+
     #[test]
     fn load_snapshot_hydrates_old_and_new_file_contents() {
         let repo = init_repo_with_main();
@@ -997,7 +1603,7 @@ index 1111111..2222222 100644
         git(repo.path(), &["checkout", "-b", "feature"]);
         std::fs::write(repo.path().join("src.txt"), "base\nline changed\n").unwrap();
 
-        let snapshot = load_snapshot(repo.path(), None).unwrap();
+        let snapshot = load_snapshot(repo.path(), None, false).unwrap();
         let file = snapshot
             .files
             .iter()
@@ -1090,7 +1696,7 @@ index 1111111..2222222 100644
         std::fs::write(repo.path().join("src.txt"), "base\nfeature\n").unwrap();
         std::fs::write(repo.path().join("notes.md"), "todo\n").unwrap();
 
-        let snapshot = load_snapshot(repo.path(), None).unwrap();
+        let snapshot = load_snapshot(repo.path(), None, false).unwrap();
 
         assert_eq!(snapshot.branch, "feature");
         assert_eq!(snapshot.base_ref, "main");
@@ -1137,7 +1743,7 @@ index 1111111..2222222 100644
         .unwrap();
         std::fs::write(repo.path().join("untracked.txt"), "not part of commit\n").unwrap();
 
-        let snapshot = load_commit_snapshot(repo.path(), &first).unwrap();
+        let snapshot = load_commit_snapshot(repo.path(), &first, false).unwrap();
         let file = snapshot
             .files
             .iter()

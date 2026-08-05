@@ -12,6 +12,32 @@ are tagged.
 
 ### Added
 
+- **You can expand the context around a diff's hunks.** Three lines either side
+  of a change often hides what you need to judge it — the enclosing function
+  signature, the surrounding match arm. In Final Review and the plain diff
+  viewer, `+` widens the context a step at a time (3 → 10 → 25 → 50 → the whole
+  file) and `-` narrows it back; `*` jumps straight between the whole file and
+  the default. The footer shows the current level as `context:10` /
+  `context:file`. The level is remembered per file, so moving between files
+  keeps each one where you left it, and a refresh or base-ref change re-applies
+  it instead of silently collapsing your view. Comments, the line cursor and any
+  range selection stay on exactly the lines they were on. Files that have
+  nothing more to show — added, deleted, binary — say so rather than doing
+  nothing. Line comments left on newly revealed context are still written to the
+  feedback file and sent to the fixing agent, but are not posted inline to a PR,
+  since GitHub only accepts inline comments on lines inside the PR's own diff.
+
+- **Changed lines now highlight which words actually changed.** A modified line
+  and its replacement are compared token by token, and only the parts that
+  differ get a brighter background — so a one-character edit inside a long line
+  no longer looks like a full rewrite. It works in both the unified and
+  side-by-side layouts, and sits underneath the existing syntax highlighting
+  rather than replacing it. When two lines are unrelated enough to be a
+  wholesale rewrite, nothing is highlighted: the row's add/remove colour already
+  says everything, and marking every token would be noise. Alongside it, `W`
+  toggles `git diff -w`, hiding changes that are only whitespace; the footer
+  shows `ws: shown` / `ws: ignored`.
+
 - **The diff viewers' changed-file list is now a collapsible directory tree.**
   Files are grouped under their directories instead of repeating the full path
   on every row, so a changeset spanning many folders is far easier to scan.

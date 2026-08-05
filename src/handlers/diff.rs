@@ -339,6 +339,24 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.diff_viewer_start_base_ref_edit();
                 return Ok(());
             }
+            // Widen / narrow the context around each hunk, so the enclosing
+            // function or match arm can be read without leaving the review.
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                app.diff_viewer_expand_context();
+                return Ok(());
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                app.diff_viewer_collapse_context();
+                return Ok(());
+            }
+            KeyCode::Char('*') => {
+                app.diff_viewer_toggle_whole_file_context();
+                return Ok(());
+            }
+            KeyCode::Char('W') => {
+                app.diff_viewer_toggle_ignore_whitespace();
+                return Ok(());
+            }
             KeyCode::Char('e') => {
                 app.toggle_review_notes_expanded();
                 return Ok(());
@@ -453,6 +471,18 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('i') => {
             app.open_syntax_language_picker_for_selected_diff_file();
+        }
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            app.diff_viewer_expand_context();
+        }
+        KeyCode::Char('-') | KeyCode::Char('_') => {
+            app.diff_viewer_collapse_context();
+        }
+        KeyCode::Char('*') => {
+            app.diff_viewer_toggle_whole_file_context();
+        }
+        KeyCode::Char('W') => {
+            app.diff_viewer_toggle_ignore_whitespace();
         }
         // In the file list, j/k walk *tree rows* (directories included); n/p and
         // the verdict-advance paths still move file-to-file.
@@ -830,6 +860,78 @@ oldest
             ),
             _ => panic!("not in review"),
         }
+    }
+
+    /// A review app whose file carries the blobs context expansion needs: a
+    /// 30-line file with line 15 rewritten.
+    fn make_review_app_with_expandable_file(workdir: &Path) -> App {
+        let old: String = (1..=30).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l15\n", "l15 changed\n");
+        let mut app = make_review_app_with_patch(
+            workdir,
+            "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -12,7 +12,7 @@
+ l12
+ l13
+ l14
+-l15
++l15 changed
+ l16
+ l17
+ l18
+",
+        );
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[0].old_content = Some(old);
+            state.files[0].new_content = Some(new);
+        }
+        app
+    }
+
+    fn context_hunk_len(app: &App) -> usize {
+        match &app.mode {
+            AppMode::DiffViewer(state) => state.files[0].hunks[0].old_lines,
+            _ => panic!("not in the diff viewer"),
+        }
+    }
+
+    #[test]
+    fn plus_and_minus_step_the_context_in_final_review() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_expandable_file(dir.path());
+        assert_eq!(context_hunk_len(&app), 7);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('+'))).unwrap();
+        assert_eq!(context_hunk_len(&app), 21);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('-'))).unwrap();
+        assert_eq!(context_hunk_len(&app), 7);
+
+        // `*` jumps straight to the whole file and back.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('*'))).unwrap();
+        assert_eq!(context_hunk_len(&app), 30);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('*'))).unwrap();
+        assert_eq!(context_hunk_len(&app), 7);
+    }
+
+    #[test]
+    fn context_keys_still_work_with_the_line_cursor_active() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_expandable_file(dir.path());
+
+        // `c` activates the cursor; the cursor-mode block must not swallow the
+        // context keys, since widening context is most useful while reading a
+        // specific line.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.comment_cursor.is_some()));
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('='))).unwrap();
+        assert_eq!(context_hunk_len(&app), 21);
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.comment_cursor.is_some()));
     }
 
     #[test]
@@ -1356,7 +1458,7 @@ oldest
         run_git(workdir, &["checkout", "-q", "-b", "feature"]);
         std::fs::write(workdir.join("a.rs"), "ctx\nadded line\n").unwrap();
 
-        let snapshot = crate::diff::load_snapshot(workdir, None).unwrap();
+        let snapshot = crate::diff::load_snapshot(workdir, None, false).unwrap();
         let mut app = make_review_app(workdir, &["a.rs"]);
         if let AppMode::DiffViewer(state) = &mut app.mode {
             state.files = snapshot.files;

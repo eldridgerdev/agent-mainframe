@@ -79,6 +79,7 @@ pub use self::setup::load_config;
 pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;
 pub(crate) use config_wizard::agent_toggles_to_allowed;
+pub(crate) use diff::context_level_label;
 pub(crate) use session_ops::session_kind_for_agent;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};

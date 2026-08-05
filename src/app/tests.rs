@@ -15118,6 +15118,272 @@ fn viewer_state(app: &App) -> &DiffViewerState {
     }
 }
 
+/// A 30-line file with line 15 rewritten, hydrated with the blobs context
+/// expansion reads from — the same fixture `crate::diff`'s expansion tests use,
+/// built here so the viewer can be driven end to end.
+#[cfg(test)]
+fn expandable_diff_file() -> crate::diff::DiffFile {
+    let old: String = (1..=30).map(|i| format!("l{i}\n")).collect();
+    let new = old.replace("l15\n", "l15 changed\n");
+    let mut file = crate::diff::parse_unified_diff(
+        "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -12,7 +12,7 @@
+ l12
+ l13
+ l14
+-l15
++l15 changed
+ l16
+ l17
+ l18
+",
+    )
+    .unwrap()
+    .pop()
+    .unwrap();
+    file.old_content = Some(old);
+    file.new_content = Some(new);
+    file
+}
+
+/// Install a final-review viewer over a single expandable file.
+#[cfg(test)]
+fn enter_review_with_expandable_file(app: &mut App) {
+    enter_review_with_paths(app, &["src/lib.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files = vec![expandable_diff_file()];
+    }
+}
+
+#[test]
+fn expanding_context_widens_the_hunk_and_records_the_level() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    let before = viewer_state(&app).files[0].hunks[0].old_lines;
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+
+    app.diff_viewer_expand_context();
+
+    assert_eq!(app.diff_viewer_context_level(), Some(10));
+    let state = viewer_state(&app);
+    assert!(state.files[0].hunks[0].old_lines > before);
+    assert_eq!(state.context_expansion.get("src/lib.rs").copied(), Some(10));
+    assert_eq!(app.message.as_deref(), Some("Context: 10 lines"));
+}
+
+#[test]
+fn the_context_ladder_tops_out_at_the_whole_file_and_returns_to_the_default() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    for _ in 0..4 {
+        app.diff_viewer_expand_context();
+    }
+    assert_eq!(app.diff_viewer_context_level(), Some(usize::MAX));
+    assert_eq!(viewer_state(&app).files[0].hunks[0].old_lines, 30);
+
+    // Already at the top: the level holds and the reviewer is told why.
+    app.diff_viewer_expand_context();
+    assert_eq!(app.diff_viewer_context_level(), Some(usize::MAX));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Already showing the whole file")
+    );
+
+    for _ in 0..4 {
+        app.diff_viewer_collapse_context();
+    }
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+    // Back at the default, the per-file entry is dropped rather than pinned.
+    assert!(viewer_state(&app).context_expansion.is_empty());
+    assert_eq!(viewer_state(&app).files[0].hunks[0].old_lines, 7);
+}
+
+#[test]
+fn whole_file_toggle_jumps_both_ways() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    app.diff_viewer_toggle_whole_file_context();
+    assert_eq!(app.diff_viewer_context_level(), Some(usize::MAX));
+
+    app.diff_viewer_toggle_whole_file_context();
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+}
+
+#[test]
+fn expanding_context_keeps_the_line_cursor_on_the_same_diff_line() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    // Park the cursor on the removed line and start a range selection there.
+    let removed = viewer_state(&app).files[0]
+        .addressable_lines()
+        .iter()
+        .position(|loc| loc.old_line == Some(15) && loc.new_line.is_none())
+        .unwrap();
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(removed);
+        state.comment_anchor = Some(removed);
+    }
+
+    app.diff_viewer_expand_context();
+
+    // The index moved (7 context lines were prepended) but it still points at
+    // the same line, which is what a comment would anchor to.
+    let state = viewer_state(&app);
+    let cursor = state.comment_cursor.unwrap();
+    assert_ne!(cursor, removed);
+    assert_eq!(
+        state.files[0].addressable_lines()[cursor],
+        crate::diff::DiffLineLocation {
+            old_line: Some(15),
+            new_line: None
+        }
+    );
+    assert_eq!(state.comment_anchor, Some(cursor));
+    assert!(state.cursor_sync_to_view);
+}
+
+#[test]
+fn expanding_context_raises_the_patch_scroll_bound() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    app.diff_viewer_scroll_patch_bottom();
+    let before = viewer_state(&app).patch_scroll;
+
+    app.diff_viewer_toggle_whole_file_context();
+    app.diff_viewer_scroll_patch_bottom();
+
+    // The scroll ceiling is derived from the rendered hunks, not the raw
+    // `patch` string, so the expanded rows are actually reachable.
+    assert!(
+        viewer_state(&app).patch_scroll > before,
+        "expanded content must be scrollable"
+    );
+}
+
+#[test]
+fn context_expansion_survives_a_diff_reload() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_expand_context();
+
+    // A refresh replaces `files` with freshly parsed (unexpanded) hunks.
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files = vec![expandable_diff_file()];
+        assert_eq!(state.files[0].hunks[0].old_lines, 7);
+        state.reapply_context_expansion();
+    }
+
+    let state = viewer_state(&app);
+    assert_eq!(state.files[0].hunks[0].old_lines, 21);
+    assert_eq!(state.context_expansion.get("src/lib.rs").copied(), Some(10));
+}
+
+#[test]
+fn context_expansion_is_dropped_for_a_file_that_left_the_changeset() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_expand_context();
+
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files.clear();
+        state.reapply_context_expansion();
+        assert!(state.context_expansion.is_empty());
+    }
+}
+
+#[test]
+fn toggling_ignore_whitespace_flips_the_flag_and_reloads() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    app.diff_viewer_toggle_ignore_whitespace();
+
+    // `-w` changes what git emits, so the toggle must go through the loader
+    // rather than just re-rendering what's already in memory.
+    assert!(
+        matches!(&app.mode, AppMode::DiffViewerLoading(s) if s.ignore_whitespace),
+        "toggle should flip the flag and enter the loading state"
+    );
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Ignoring whitespace-only changes (git diff -w)")
+    );
+}
+
+#[test]
+fn a_file_with_no_surrounding_context_reports_why_instead_of_no_opping() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    // `enter_review_with_paths` builds hunk-less, blob-less files — exactly the
+    // added/binary shape that can't be expanded.
+    enter_review_with_paths(&mut app, &["src/new.rs"]);
+
+    app.diff_viewer_expand_context();
+
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no surrounding context"),
+        "got {:?}",
+        app.message
+    );
+}
+
 #[test]
 fn ancestor_dirs_lists_each_level_shallowest_first() {
     assert_eq!(ancestor_dirs("README.md"), Vec::<String>::new());

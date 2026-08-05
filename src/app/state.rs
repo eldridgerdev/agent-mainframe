@@ -973,6 +973,18 @@ pub struct DiffViewerState {
     /// than a file. The selected file (and therefore the patch panel) is left
     /// alone, so collapsing a tree never changes what's being diffed.
     pub tree_cursor_dir: Option<String>,
+    /// When true the diff is loaded with `git diff -w`, so lines that differ
+    /// only in whitespace don't show as changes. Toggling re-runs the loader
+    /// (it changes what git emits, not just how it's drawn), so it survives via
+    /// the same reload path as a base-ref change.
+    pub ignore_whitespace: bool,
+    /// File path -> how many context lines that file's hunks are currently
+    /// rendered with (`usize::MAX` = the whole file). An absent entry is git's
+    /// `--unified=3` default. Applied by rewriting the file's hunks, so every
+    /// consumer — `addressable_lines()`, the renderers, comment anchors —
+    /// agrees on what the reviewer is looking at. View state only: re-applied
+    /// after a reload, never written to the progress file.
+    pub context_expansion: std::collections::HashMap<String, usize>,
 }
 
 impl DiffViewerState {
@@ -1050,6 +1062,8 @@ impl DiffViewerState {
             review_history: None,
             collapsed_dirs: std::collections::BTreeSet::new(),
             tree_cursor_dir: None,
+            ignore_whitespace: false,
+            context_expansion: std::collections::HashMap::new(),
         }
     }
 
@@ -1066,6 +1080,28 @@ impl DiffViewerState {
     /// Reset the per-file view state after the selected file changes (patch /
     /// notes scroll, and the line-comment cursor). Centralizes what several
     /// navigation paths previously duplicated.
+    /// Re-apply the reviewer's per-file context expansion to a freshly loaded
+    /// diff. Expansion is a view preference rather than part of the diff, so a
+    /// refresh (or a base-ref change) must not silently collapse what was
+    /// expanded. Files that dropped out of the changeset — or can no longer be
+    /// expanded against the new blobs — fall back to the default and lose their
+    /// entry.
+    pub fn reapply_context_expansion(&mut self) {
+        if self.context_expansion.is_empty() {
+            return;
+        }
+        let levels = std::mem::take(&mut self.context_expansion);
+        for file in self.files.iter_mut() {
+            let Some(&level) = levels.get(&file.path) else {
+                continue;
+            };
+            if let Some(hunks) = file.hunks_with_context(level) {
+                file.hunks = hunks;
+                self.context_expansion.insert(file.path.clone(), level);
+            }
+        }
+    }
+
     pub fn on_file_changed(&mut self) {
         self.patch_scroll = 0;
         self.notes_scroll = 0;

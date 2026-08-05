@@ -7,8 +7,9 @@
   re-review, the "fixes ready — re-review?" notification, local application of
   suggestion blocks, the **finish summary screen**, a **Cost** batch, the
   high-priority **close / pause without finishing** viewer item, and the
-  **`v` layout toggle** fix, the **review-round timeline/history browser**, and
-  the **hierarchical file tree + shorter Developer Notes panel**
+  **`v` layout toggle** fix, the **review-round timeline/history browser**,
+  the **hierarchical file tree + shorter Developer Notes panel**, and
+  **expandable context around hunks**
   have shipped — that closes out every item in the Loop group. The Cost batch
   makes
   bounded headless passes honor `review_model`, caps
@@ -17,8 +18,10 @@
   map keyed by `ReviewAction`) and bounded live review notes with a
   reviewer-visible archive have since shipped too. The rest of the
   viewer-ergonomics, AI co-review,
-  and workflow items are not yet started. One Cost follow-up remains:
-  measuring the most token-efficient way to dispatch review fixes.
+  and workflow items are not yet started. Three Cost follow-ups remain:
+  cumulative final-review workflow accounting, best-effort attribution of
+  review-note generation cost, and measuring the most token-efficient way to
+  dispatch review fixes.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -874,6 +877,22 @@ Cost:
       context while allowing a current note to override its archived
       predecessor. Archiving writes history before truncating the live
       file, and setup adds both note files to `.claude/.gitignore`.
+- [ ] Show cumulative token usage and estimated cost for the final-review
+      workflow at the end of the review session. Snapshot usage when the review
+      starts, accumulate the deltas from reviewer-triggered headless work
+      (walkthroughs, co-review, changeset overview, and similar actions), and
+      surface the total on the finish summary / completed-review screen. Keep
+      the accounting across pause/resume, break it down by action and token
+      class where the harness exposes that data, and clearly label missing or
+      estimated provider costs rather than silently treating them as zero.
+- [ ] Attribute token usage and cost to review-note generation as accurately as
+      the available harness data allows, and include it as a separate line in
+      the final-review cost breakdown. `.claude/review-notes.md` is normally
+      written as part of a larger agent turn rather than by an isolated model
+      call, so avoid false precision: use exact per-call usage if a harness can
+      expose it; otherwise record the turn-level delta when notes are created or
+      updated and label that value as an estimate / upper bound. Preserve enough
+      metadata to distinguish initial note generation from later note updates.
 - [ ] Investigate and implement the most token-efficient strategy for
       dispatching review comments to fixing agents. Benchmark at least four
       shapes on small, medium, and very large review rounds: one fresh agent per
@@ -996,8 +1015,83 @@ Viewer:
       `.claude/final-review-progress.json`). Navigation/collapse ops live in
       `src/app/diff.rs`, key dispatch in `src/handlers/diff.rs`, rendering
       (including `dir_row_summary`) in `src/ui/dialogs/diff.rs`.
-- [ ] Expand context around hunks (old/new content already loaded)
-- [ ] Word-level intra-line diff highlighting + ignore-whitespace toggle
+- [x] Expand context around hunks — press `+`/`=` to widen the context around
+      every hunk in the current file and `-`/`_` to narrow it, walking a ladder
+      of 3 (git's default) → 10 → 25 → 50 → whole file; `*` toggles straight
+      between the whole file and the default. `DiffFile::hunks_with_context`
+      (`src/diff.rs`) rebuilds the file's hunks at a given context by recovering
+      the runs of added/removed lines from the current hunks and re-drawing the
+      surrounding context out of `old_content`/`new_content`, merging hunks
+      whose regions meet exactly as git does at a wider `--unified`. Because
+      expansion only ever *adds* context, the recovered runs are identical at
+      any starting level, so the operation is idempotent and the viewer can step
+      up and down without keeping a pristine copy of the parsed hunks. Applied
+      by rewriting `state.files[i].hunks` in place, which is what keeps the
+      blast radius small: `addressable_lines()`, both renderers, comment
+      anchors, suggestions and search all read the hunks, so they need no
+      changes and can't drift from what's on screen. Comment anchors are line
+      numbers and survive untouched; the line cursor, range-selection anchor and
+      search matches are *indices* into `addressable_lines()`, so
+      `set_diff_context` (`src/app/diff.rs`) captures their `DiffLineLocation`s
+      before the rewrite and re-finds them after, leaving the reviewer parked on
+      the same line. `file.patch` is deliberately left alone — it feeds the
+      review fingerprint (`save_review_snapshot`) and the bounded headless
+      prompts, so expansion must not inflate token cost or make every file look
+      "changed since last review" — which meant the unified scroll ceiling had
+      to stop being `patch.lines().count()`; `unified_line_count` now derives it
+      from the prologue plus the rendered hunks (an identical value until
+      expansion). Level is per file and per session, re-applied after a refresh
+      or base-ref change via `DiffViewerState::reapply_context_expansion` so a
+      reload doesn't silently collapse the view, and dropped for files that
+      leave the changeset. Expansion refuses rather than guesses when the blobs
+      no longer match the patch, and an added/deleted/binary file (which has no
+      second blob, and already shows every line) reports why instead of being a
+      silent no-op. Both footers show `context:<n|file>`, and the keys work in
+      the plain diff viewer and while the line cursor is active — the moment
+      you most want the enclosing function in view. One knock-on had to be
+      closed: expansion makes lines commentable that git's own diff never
+      emitted, and GitHub rejects an inline review comment outside the PR's
+      diff — fatally, since `create_review` posts the batch atomically, so a
+      single such anchor would have sunk the whole review. `pr_postable_lines`
+      (`src/app/review.rs`) re-parses each file's untouched `patch` to recover
+      the real boundary, and `build_pr_review` now skips an out-of-diff comment
+      (and degrades a range whose start is out-of-diff to a single-line
+      comment) the same way it already skips an anchor-lost one. Those comments
+      still reach `.claude/final-review-feedback.md` and the fixing agent — only
+      inline PR posting is withheld.
+- [x] Word-level intra-line diff highlighting + ignore-whitespace toggle — two
+      halves of "make a changed line readable at a glance". **Word diff:** a new
+      self-contained `src/worddiff.rs` tokenizes each line into identifier runs,
+      whitespace runs and single punctuation characters, runs an LCS over the
+      tokens, and returns the byte ranges that actually changed on each side.
+      The renderer pairs the i-th removal in a change block with the i-th
+      addition — how git lays out a rewritten run, and what the reviewer reads
+      as "this line became that line" — via `hunk_intra_line_ranges`
+      (`src/ui/dialogs/diff.rs`); unpaired leftovers (a block removing 3 and
+      adding 1) get nothing, since there is no counterpart to diff against.
+      Emphasis is applied as a *background* blend of the row's own hue
+      (`added_emphasis_style` / `removed_emphasis_style`), so the existing
+      syntax-highlight foreground shows through untouched: chunks are split at
+      each range boundary by `apply_intra_line_emphasis` after
+      `append_highlighted_content` has already coloured them. Deliberately
+      declines in the cases where marking tokens is noise rather than signal —
+      either side empty or identical, a line over `MAX_TOKENS` (a minified or
+      generated line, which is also where the O(n·m) matrix would hurt), a
+      whitespace-only run, or a pair below `MIN_SIMILARITY` shared bytes, where
+      the two lines are a wholesale rewrite and the row's add/remove colour
+      already says everything. Wired into both renderers: the unified one
+      precomputes per-hunk pairings, while `side_by_side_rows` derives it in
+      place from the `paired_change_row` flag it already computed — no new
+      parameters on an already-12-argument function. **Ignore whitespace:** `W`
+      toggles `git diff -w` (`--ignore-all-space`) in the final review and the
+      plain viewer; both footers show `ws: shown` / `ws: ignored`. This changes
+      what git *emits* rather than how it is drawn, so it re-runs the loader
+      through the same reload path a base-ref change uses — which also
+      re-applies context expansion and re-anchors comments for free.
+      `with_whitespace_flag` splices the flag into each `git diff` argument list
+      (`src/diff.rs`), so the default invocation is byte-for-byte what it always
+      was; `load_snapshot` / `load_commit_snapshot` gained the flag as an
+      explicit parameter rather than a hidden default.
 - [ ] Global comment navigation across files + undo last verdict
 - [ ] Open at cursored line in `$EDITOR`
 - [ ] `?` help overlay for review mode

@@ -32,6 +32,7 @@ mod transcript;
 mod ui;
 mod upgrade;
 mod usage;
+mod worddiff;
 mod worktree;
 
 use anyhow::{Context, Result};

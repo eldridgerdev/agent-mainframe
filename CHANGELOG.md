@@ -12,6 +12,128 @@ are tagged.
 
 ### Added
 
+- **You can expand the context around a diff's hunks.** Three lines either side
+  of a change often hides what you need to judge it — the enclosing function
+  signature, the surrounding match arm. In Final Review and the plain diff
+  viewer, `+` widens the context a step at a time (3 → 10 → 25 → 50 → the whole
+  file) and `-` narrows it back; `*` jumps straight between the whole file and
+  the default. The footer shows the current level as `context:10` /
+  `context:file`. The level is remembered per file, so moving between files
+  keeps each one where you left it, and a refresh or base-ref change re-applies
+  it instead of silently collapsing your view. Comments, the line cursor and any
+  range selection stay on exactly the lines they were on: narrowing the context
+  refuses outright while it would hide part of a range you have selected, and
+  tells you where the cursor went if its own line is no longer shown. Files that have
+  nothing more to show — added, deleted, binary — say so rather than doing
+  nothing. Line comments left on newly revealed context are still written to the
+  feedback file and sent to the fixing agent, but are not posted inline to a PR,
+  since GitHub only accepts inline comments on lines inside the PR's own diff.
+
+- **Changed lines now highlight which words actually changed.** A modified line
+  and its replacement are compared token by token, and only the parts that
+  differ get a brighter background — so a one-character edit inside a long line
+  no longer looks like a full rewrite. It works in both the unified and
+  side-by-side layouts, and sits underneath the existing syntax highlighting
+  rather than replacing it. When two lines are unrelated enough to be a
+  wholesale rewrite, nothing is highlighted: the row's add/remove colour already
+  says everything, and marking every token would be noise. Alongside it, `W`
+  toggles `git diff -w`, hiding changes that are only whitespace; the footer
+  shows `ws: shown` / `ws: ignored`.
+
+- **The diff viewers' changed-file list is now a collapsible directory tree.**
+  Files are grouped under their directories instead of repeating the full path
+  on every row, so a changeset spanning many folders is far easier to scan.
+  This applies both to Final Review and to the plain diff viewer (leader `d`).
+  In the file list, `j`/`k` move through the tree (directory headers included),
+  `z` or `Enter` folds the directory under the cursor, `Z` folds or unfolds
+  everything, and `h`/`l` step out to a parent or into a directory. Parking on
+  a directory never changes which file the diff shows. A folded directory
+  reports what it is hiding — how many files, and during a review how many are
+  still undecided, any rejections, and whether anything changed since the last
+  round — so folding cannot bury outstanding work. Filters, counts and `n`/`p` file
+  navigation are unaffected by folding: landing on a file inside a folded
+  directory simply opens it up. No migration is required.
+
+- **PR Triage can run a PR's fixes in a new feature of its own.** The
+  fix-target picker (the prompt on the first `f`/`B` of a visit) has a third
+  option: `New feature…`. It creates an isolated, worktree-backed feature just
+  for that PR's triage, with its harness and vibe mode picked in one compact
+  form — or from a feature preset — independently of the feature the PR was
+  built in. So you can build a PR in SuperVibe and apply the review fixes under
+  Vibeless supervision, and the triage agent's hooks and permissions land in its
+  own worktree instead of the source feature's. The companion is seeded from the
+  PR head onto its own branch (`<pr-branch>-triage`, since git can't check the
+  PR's branch out twice) and is reused for every fix in that PR, across restarts
+  — the pane header and the fix confirm both name it, so you always know which
+  feature and mode a fix will run in. `P` and `Ctrl+Space P` follow it.
+  Because that work happens off the PR branch, a new `I` key lands it: push the
+  companion branch onto the PR branch, or cherry-pick into the source worktree.
+  Both are explicit and show the commits first — the push is never forced, and
+  the cherry-pick refuses to run while the source worktree has uncommitted
+  changes. The existing two targets are unchanged and still commit straight onto
+  the PR branch, so they never see the `I` step. The database gains a column for
+  the PR link; it is added automatically and needs no migration step.
+- **Plan-mode interviews now pause at a review gate before launching the
+  feature.** An opted-in AI flow turns the interview into a structured
+  implementation plan, then shows the rendered markdown for review. You can
+  edit the raw plan, regenerate it, scroll through the preview, or abort;
+  AMF writes `.claude/plan.md` and starts the feature only after you press
+  `Enter` to accept. If synthesis is unavailable or returns an invalid plan,
+  AMF shows the raw interview plan as a fallback. No migration is required.
+- **The dashboard now shows when an AI Review is generating.** A feature's PR
+  badge reads `[PR #123 · 4 open · AI review]` while its review runs, so you
+  can leave the AI Review pane, work elsewhere, and still see the pass is in
+  flight. The marker appears only on the feature whose review is running and
+  clears when generation succeeds, fails, or is cancelled. No migration is
+  required.
+- **Final Review now includes a review-round history browser.** Press `H` to
+  move between the live review and earlier rounds, including their verdict
+  counts, checks, comments, suggestions, and agent replies. Older archived
+  rounds load only when you navigate past the recent history, while `Enter`
+  on `Current` returns directly to the editable review. No migration is
+  required.
+- **Plan-mode interviews now ask AI-generated follow-up questions.** After
+  the configured questions, AMF offers an explicit opt-in before using any
+  agent tokens. If accepted, the feature's agent harness (or an available
+  fallback) tailors up to two more rounds to the brief and prior answers,
+  with a progress screen while each round runs. Declining or finishing early
+  uses no adaptive-interview tokens; an unavailable or failed harness lets
+  the interview complete normally. No setup or migration is required.
+- **Final Review shows a summary before it writes and dispatches anything.**
+  `q` used to gate on undecided files and then finish immediately; it now
+  opens a navigable summary listing every file's verdict, every open line/file
+  comment (and suggestion), and the general feedback, in one place. `j`/`k`
+  (and `g`/`G`) move through the list, `Enter` jumps back into the diff at
+  that item and opens its editor pre-filled — a rejection's feedback, a line
+  or file comment, or the general note — so fixing something you spot in the
+  summary no longer means hunting it down again. `q` from the summary is the
+  real finish; `Esc` just closes it and returns to reviewing, with nothing
+  written, posted, or dispatched. No migration is required.
+- **PR Triage's detail pane now shows a comment's replies, however they got
+  posted.** A reply posted outside AMF's own `R`/`n` flow — e.g. an agent
+  working the PR with its own `gh` access — previously left no trace next to
+  the original comment; you had to hunt the flat list for the reply entry. A
+  new "Replies" section lists each reply with its author, a `[via AMF]` chip
+  when it carries AMF's own posting disclosure, and the thread's current
+  `[outdated]`/`[✓ resolved]` chips, so confirming a thread already got
+  answered is a glance at the comment, refreshed on demand with `r`. The
+  `pr-continue` skill also now explicitly avoids posting a "done" reply on
+  its own initiative, and only cites a commit after confirming it actually
+  touches the comment's file.
+- **Review actions can each use a different model.** A new `review_models`
+  config setting maps an action name (`walkthrough`, `co_review`,
+  `changeset_overview`, `diff_explain`, `pr_review`, `review_memory`) to its
+  own `--model` override, so a whole-changeset overview can run on a
+  stronger model while a single-file walkthrough runs on a cheaper one. Any
+  action left unset still falls back to the existing shared `review_model`
+  setting, so nothing changes for configs that don't opt in. No migration is
+  required; existing `review_model` configs continue to work.
+- **Review Mode note reads stay bounded without losing history.** AMF now
+  keeps only the latest note for each of the 50 most recently documented
+  files in `.claude/review-notes.md`, moving older and superseded sections
+  to `.claude/review-notes-archive.md` after each agent turn. Review
+  surfaces merge both files, while agents only re-read the small live file.
+  No migration is required; AMF archives existing notes automatically.
 - **Codex can now capture visual proof of AMF UI changes.** Codex features
   receive an `amf-screenshot` skill that drives the same isolated screenshot
   harness as Claude, verifies captured frames, and returns viewable PNG or GIF

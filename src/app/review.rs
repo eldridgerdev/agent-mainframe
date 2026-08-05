@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
@@ -3192,12 +3193,14 @@ impl App {
             // review (best-effort; the local file is the source of truth either
             // way).
             let pr_note = if post_to_pr {
+                let postable = pr_postable_lines(&files);
                 self.post_final_review_to_pr(
                     &workdir,
                     &rejected,
                     &file_comment_sections,
                     &line_comment_sections,
                     &general_feedback,
+                    &postable,
                 )
             } else {
                 String::new()
@@ -3402,6 +3405,7 @@ impl App {
         file_comment_sections: &[(String, FileComment)],
         line_comment_sections: &[(String, Vec<LineComment>)],
         general_feedback: &str,
+        postable: &HashMap<String, HashSet<crate::diff::DiffLineLocation>>,
     ) -> String {
         use crate::github::{GhCli, PrResolution};
 
@@ -3410,6 +3414,7 @@ impl App {
             file_comment_sections,
             line_comment_sections,
             general_feedback,
+            postable,
         );
         let pr = match GhCli::resolve_pr(workdir) {
             Ok(PrResolution::Found(pr)) => pr,
@@ -3749,7 +3754,7 @@ fn apply_suggestions_to_file(
 /// (case-insensitive substring), ascending. Empty for a blank query. Matches
 /// against `addressable_line_texts()` (diff prefix stripped) so a query hits the
 /// same content regardless of whether the line was added, removed or context.
-fn compute_search_matches(file: &crate::diff::DiffFile, query: &str) -> Vec<usize> {
+pub(crate) fn compute_search_matches(file: &crate::diff::DiffFile, query: &str) -> Vec<usize> {
     if query.trim().is_empty() {
         return Vec::new();
     }
@@ -3921,6 +3926,35 @@ fn severity_review_event(
     }
 }
 
+/// The diff lines GitHub will accept an inline review comment on, per file:
+/// the ones in the diff git actually produced. `DiffFile::patch` preserves that
+/// verbatim no matter how far the reviewer expanded the *rendered* context
+/// (`hunks_with_context` rewrites `hunks` only), so re-parsing it recovers the
+/// real boundary. This matters because `create_review` posts every inline
+/// comment in one batch — a single anchor outside the PR's diff would reject
+/// the whole review, losing the comments that were postable.
+///
+/// A file whose patch can't be re-parsed is left out of the map entirely, which
+/// callers read as "unrestricted" — the pre-expansion behaviour.
+fn pr_postable_lines(
+    files: &[crate::diff::DiffFile],
+) -> HashMap<String, HashSet<crate::diff::DiffLineLocation>> {
+    let mut out = HashMap::new();
+    for file in files {
+        let Ok(parsed) = crate::diff::parse_unified_diff(&file.patch) else {
+            continue;
+        };
+        let Some(original) = parsed.first() else {
+            continue;
+        };
+        out.insert(
+            file.path.clone(),
+            original.addressable_lines().into_iter().collect(),
+        );
+    }
+    out
+}
+
 /// Assemble a GitHub PR review from a finished final review. Line comments
 /// become inline review comments — anchored to the current file line
 /// (`RIGHT`) or, for a deletion-only line, the base file line (`LEFT`).
@@ -3928,13 +3962,15 @@ fn severity_review_event(
 /// have a file — they become `subject_type: file` comments instead of being
 /// dumped into the summary body (GitHub's batch review endpoint can't carry
 /// those, so the caller posts them as separate `create_file_comment` calls).
-/// The summary body carries only the general feedback. Returns `(body,
-/// comments, file_comments)`.
+/// The summary body carries only the general feedback. `postable` bounds which
+/// lines may be commented on inline (see `pr_postable_lines`); a path with no
+/// entry is unrestricted. Returns `(body, comments, file_comments)`.
 fn build_pr_review(
     rejected: &[(String, String, Severity)],
     file_comment_sections: &[(String, FileComment)],
     line_comment_sections: &[(String, Vec<LineComment>)],
     general_feedback: &str,
+    postable: &HashMap<String, HashSet<crate::diff::DiffLineLocation>>,
 ) -> (
     String,
     Vec<crate::github::PrReviewComment>,
@@ -3942,6 +3978,10 @@ fn build_pr_review(
 ) {
     let mut comments = Vec::new();
     for (path, file_comments) in line_comment_sections {
+        let allowed = postable.get(path);
+        let in_diff = |loc: &crate::diff::DiffLineLocation| {
+            allowed.is_none_or(|allowed| allowed.contains(loc))
+        };
         for comment in file_comments {
             // A comment we couldn't re-anchor holds a stale line number; posting
             // it inline would pin it to the wrong line. Omit it — the local
@@ -3949,14 +3989,21 @@ fn build_pr_review(
             if comment.anchor_lost {
                 continue;
             }
+            // Likewise for a line the reviewer only reached by expanding the
+            // rendered context: it's valid local feedback, but GitHub rejects
+            // an inline comment outside the PR's own diff.
+            if !in_diff(&comment.location) {
+                continue;
+            }
             let Some((line, side)) = pr_line_side(&comment.location) else {
                 continue;
             };
             // For a span, anchor the start with GitHub's start_line/start_side.
             // Drop the range (post as a single-line comment at the end) if the
-            // start can't be mapped to a line/side.
+            // start can't be mapped to a line/side — or falls outside the diff.
             let (start_line, start_side) = comment
                 .start
+                .filter(|s| in_diff(s))
                 .and_then(|s| pr_line_side(&s))
                 .map(|(l, sd)| (Some(l), Some(sd)))
                 .unwrap_or((None, None));
@@ -4656,10 +4703,12 @@ mod tests {
         CHECK_OUTPUT_MAX_CHARS, anchor_file_path, apply_suggestions_to_file, archive_review_notes,
         build_pr_review, build_walkthrough_prompt, comment_anchor_label, compose_feedback_log,
         compute_search_matches, load_review_notes, parse_agent_responses, parse_co_review_output,
-        parse_review_history_rounds, parse_review_notes, reanchor_file_comments,
+        parse_review_history_rounds, parse_review_notes, pr_postable_lines, reanchor_file_comments,
         severity_review_event, split_overflow_review_notes, split_overflow_rounds,
         truncate_check_output,
     };
+    use std::collections::{HashMap, HashSet};
+
     use crate::app::state::DiffViewerState;
     use crate::app::{CommentAnchorContext, FileComment, LineComment, Severity};
     use crate::diff::{
@@ -4894,8 +4943,13 @@ mod tests {
                 line_comment(None, Some(7), "why delete this?"),
             ],
         )];
-        let (body, comments, file_comments) =
-            build_pr_review(&rejected, &[], &line_comments, "overall LGTM-ish");
+        let (body, comments, file_comments) = build_pr_review(
+            &rejected,
+            &[],
+            &line_comments,
+            "overall LGTM-ish",
+            &HashMap::new(),
+        );
 
         // Inline comments: an added/current line posts on RIGHT, a deletion-only
         // line on LEFT.
@@ -4926,10 +4980,115 @@ mod tests {
             "src/c.rs".to_string(),
             vec![line_comment(Some(3), None, "nit")],
         )];
-        let (body, comments, file_comments) = build_pr_review(&[], &[], &line_comments, "");
+        let (body, comments, file_comments) =
+            build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         assert!(body.is_empty());
         assert_eq!(comments.len(), 1);
         assert!(file_comments.is_empty());
+    }
+
+    #[test]
+    fn pr_review_skips_a_comment_on_a_line_outside_the_prs_diff() {
+        // Expanding the rendered context lets the reviewer comment on a line
+        // git's own diff never emitted. GitHub rejects an inline comment there,
+        // and `create_review` posts the batch atomically — so it must be
+        // dropped rather than allowed to sink the whole review.
+        let line_comments = vec![(
+            "src/c.rs".to_string(),
+            vec![
+                line_comment(Some(3), None, "in the diff"),
+                line_comment(Some(90), None, "only visible after expanding"),
+            ],
+        )];
+        let postable: HashMap<String, HashSet<crate::diff::DiffLineLocation>> = [(
+            "src/c.rs".to_string(),
+            HashSet::from([crate::diff::DiffLineLocation {
+                old_line: None,
+                new_line: Some(3),
+            }]),
+        )]
+        .into_iter()
+        .collect();
+
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &postable);
+
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].line, 3);
+        // With no entry for the path the map imposes no restriction, which is
+        // the pre-expansion behaviour.
+        let (_, unrestricted, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
+        assert_eq!(unrestricted.len(), 2);
+    }
+
+    #[test]
+    fn pr_review_drops_a_range_whose_start_is_outside_the_prs_diff() {
+        let line_comments = vec![(
+            "src/c.rs".to_string(),
+            vec![ranged_comment(10, 14, "this whole block")],
+        )];
+        // The end is in the diff but the start was only revealed by expansion:
+        // post it as a single-line comment rather than an invalid span.
+        let postable: HashMap<String, HashSet<crate::diff::DiffLineLocation>> = [(
+            "src/c.rs".to_string(),
+            HashSet::from([crate::diff::DiffLineLocation {
+                old_line: None,
+                new_line: Some(14),
+            }]),
+        )]
+        .into_iter()
+        .collect();
+
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &postable);
+
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].line, 14);
+        assert_eq!(comments[0].start_line, None);
+        assert_eq!(comments[0].start_side, None);
+    }
+
+    #[test]
+    fn pr_postable_lines_tracks_the_original_patch_not_the_expanded_hunks() {
+        let old: String = (1..=30).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l15\n", "l15 changed\n");
+        let mut file = crate::diff::parse_unified_diff(
+            "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -12,7 +12,7 @@
+ l12
+ l13
+ l14
+-l15
++l15 changed
+ l16
+ l17
+ l18
+",
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        file.old_content = Some(old);
+        file.new_content = Some(new);
+
+        // Expansion rewrites `hunks` but deliberately leaves `patch` alone, so
+        // the postable set still describes git's real diff.
+        file.hunks = file.hunks_with_context(usize::MAX).unwrap();
+        assert_eq!(file.addressable_lines().len(), 31);
+
+        let postable = pr_postable_lines(std::slice::from_ref(&file));
+        let allowed = &postable["a.rs"];
+        assert_eq!(allowed.len(), 8);
+        assert!(allowed.contains(&crate::diff::DiffLineLocation {
+            old_line: Some(12),
+            new_line: Some(12)
+        }));
+        assert!(!allowed.contains(&crate::diff::DiffLineLocation {
+            old_line: Some(1),
+            new_line: Some(1)
+        }));
     }
 
     #[test]
@@ -4938,7 +5097,7 @@ mod tests {
             "src/c.rs".to_string(),
             vec![ranged_comment(10, 14, "this whole block")],
         )];
-        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].line, 14);
         assert_eq!(comments[0].side, "RIGHT");
@@ -4952,7 +5111,7 @@ mod tests {
             "src/c.rs".to_string(),
             vec![line_comment(Some(5), None, "nit")],
         )];
-        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         assert_eq!(comments[0].start_line, None);
         assert_eq!(comments[0].start_side, None);
     }
@@ -4962,7 +5121,7 @@ mod tests {
         let mut comment = line_comment(Some(5), None, "use a guard");
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
-        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         assert_eq!(comments.len(), 1);
         // The comment body leads with the conventional-comments severity tag.
         assert_eq!(
@@ -4976,7 +5135,7 @@ mod tests {
         let mut comment = line_comment(Some(5), None, "");
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
-        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         // Even a suggestion-only comment carries its severity tag.
         assert_eq!(
             comments[0].body,
@@ -5021,7 +5180,7 @@ mod tests {
     fn feedback_file_comment_tags_whole_file_rejection_with_severity() {
         // A whole-file rejection's file-level comment carries its severity tag.
         let rejected = vec![("a.rs".to_string(), "fix".to_string(), Severity::Blocker)];
-        let (_, _, file_comments) = build_pr_review(&rejected, &[], &[], "");
+        let (_, _, file_comments) = build_pr_review(&rejected, &[], &[], "", &HashMap::new());
         assert_eq!(file_comments.len(), 1);
         assert_eq!(file_comments[0].path, "a.rs");
         assert_eq!(file_comments[0].body, "**[blocker]** fix");
@@ -5038,7 +5197,8 @@ mod tests {
                 carried: false,
             },
         )];
-        let (body, inline, file_comments) = build_pr_review(&[], &comments, &[], "");
+        let (body, inline, file_comments) =
+            build_pr_review(&[], &comments, &[], "", &HashMap::new());
         assert!(body.is_empty());
         assert!(inline.is_empty());
         assert_eq!(file_comments.len(), 1);
@@ -5867,7 +6027,7 @@ index 1111111..2222222 100644
 
         // A stale line number must never be posted inline on the PR.
         let sections = vec![("src/foo.rs".to_string(), vec![comment])];
-        let (body, comments, _) = build_pr_review(&[], &[], &sections, "");
+        let (body, comments, _) = build_pr_review(&[], &[], &sections, "", &HashMap::new());
         assert!(comments.is_empty(), "lost anchor must not post inline");
         assert!(!body.contains("src/foo.rs:42"));
     }

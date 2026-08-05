@@ -597,8 +597,15 @@ impl App {
     /// Re-render the selected file's hunks with `level` lines of context
     /// (`usize::MAX` = the whole file), keeping the line cursor and any range
     /// selection parked on the same diff lines.
+    ///
+    /// Narrowing the context drops lines, so a cursor or selection endpoint can
+    /// point at a line the rebuilt hunks no longer show. Rather than let a later
+    /// comment attach somewhere the reviewer never pointed at, a live range
+    /// selection blocks the change outright and a lone cursor is moved to the
+    /// nearest surviving line and reported.
     fn set_diff_context(&mut self, level: usize) {
         let mut message = None;
+        let mut rebuilt_hunks = false;
         if let AppMode::DiffViewer(state) = &mut self.mode {
             let idx = state.selected_file;
             let rebuilt = match state.files.get(idx) {
@@ -615,11 +622,51 @@ impl App {
                         // Comment anchors are line numbers and survive
                         // untouched; the cursor and selection anchor are
                         // indices into `addressable_lines()`, which expansion
-                        // renumbers, so remember where they point.
+                        // renumbers, so resolve them to locations and re-find
+                        // them in the hunks we're about to install.
                         let locs = file.addressable_lines();
-                        let cursor = state.comment_cursor.and_then(|i| locs.get(i).copied());
-                        let anchor = state.comment_anchor.and_then(|i| locs.get(i).copied());
-                        Some((file.path.clone(), hunks, cursor, anchor))
+                        let next_locs = crate::diff::addressable_lines_in(&hunks);
+                        let cursor_loc = state.comment_cursor.and_then(|i| locs.get(i).copied());
+                        let anchor_loc = state.comment_anchor.and_then(|i| locs.get(i).copied());
+                        let survives = |loc: Option<crate::diff::DiffLineLocation>| {
+                            loc.is_some_and(|loc| next_locs.contains(&loc))
+                        };
+
+                        if state.comment_anchor.is_some()
+                            && !(survives(cursor_loc) && survives(anchor_loc))
+                        {
+                            // Both ends of a range have to land on the lines the
+                            // reviewer picked, or the range means something else.
+                            message = Some(
+                                "Selected lines would be hidden at that context level — clear the selection (Esc) first".to_string(),
+                            );
+                            None
+                        } else {
+                            let cursor = match (state.comment_cursor, cursor_loc) {
+                                (None, _) => CursorPlacement::Inactive,
+                                (Some(_), Some(loc)) => match next_locs
+                                    .iter()
+                                    .position(|candidate| *candidate == loc)
+                                {
+                                    Some(index) => CursorPlacement::Kept(index),
+                                    None => match nearest_location(&next_locs, loc) {
+                                        Some((index, landed)) => {
+                                            CursorPlacement::Moved(index, landed)
+                                        }
+                                        None => CursorPlacement::Inactive,
+                                    },
+                                },
+                                // A stale index: nothing to preserve, so park on
+                                // the first line still rendered.
+                                (Some(_), None) => next_locs
+                                    .first()
+                                    .map(|loc| CursorPlacement::Moved(0, *loc))
+                                    .unwrap_or(CursorPlacement::Inactive),
+                            };
+                            let anchor = anchor_loc
+                                .and_then(|loc| next_locs.iter().position(|c| *c == loc));
+                            Some((file.path.clone(), hunks, cursor, anchor))
+                        }
                     }
                     None => {
                         message = Some(format!(
@@ -633,22 +680,28 @@ impl App {
 
             if let Some((path, hunks, cursor, anchor)) = rebuilt {
                 state.files[idx].hunks = hunks;
+                rebuilt_hunks = true;
                 if level == crate::diff::DIFF_DEFAULT_CONTEXT {
                     state.context_expansion.remove(&path);
                 } else {
                     state.context_expansion.insert(path, level);
                 }
 
-                let locs = state.files[idx].addressable_lines();
-                let find = |loc: Option<crate::diff::DiffLineLocation>| {
-                    loc.and_then(|loc| locs.iter().position(|candidate| *candidate == loc))
-                };
-                if state.comment_cursor.is_some() {
-                    state.comment_cursor = find(cursor).or(Some(0));
-                    state.cursor_sync_to_view = true;
+                let mut moved_to = None;
+                match cursor {
+                    CursorPlacement::Inactive => state.comment_cursor = None,
+                    CursorPlacement::Kept(index) => {
+                        state.comment_cursor = Some(index);
+                        state.cursor_sync_to_view = true;
+                    }
+                    CursorPlacement::Moved(index, landed) => {
+                        state.comment_cursor = Some(index);
+                        state.cursor_sync_to_view = true;
+                        moved_to = Some(landed);
+                    }
                 }
                 if state.comment_anchor.is_some() {
-                    state.comment_anchor = find(anchor);
+                    state.comment_anchor = anchor;
                 }
                 // Search matches are indices too — recompute them against the
                 // rebuilt hunks rather than leaving stale rows highlighted.
@@ -662,7 +715,22 @@ impl App {
                         .and_then(|cursor| matches.iter().position(|&m| m == cursor));
                     state.search_matches = matches;
                 }
-                message = Some(context_level_message(level));
+                message = Some(match moved_to {
+                    Some(landed) => format!(
+                        "{} — cursor moved to {}, its line is no longer shown",
+                        context_level_message(level),
+                        describe_location(landed)
+                    ),
+                    None => context_level_message(level),
+                });
+            }
+        }
+        // The rebuilt hunks may render shorter than the ones they replaced, so a
+        // viewport parked near the old bottom would show blank rows.
+        if rebuilt_hunks {
+            let max_scroll = self.diff_viewer_patch_line_count().saturating_sub(1);
+            if let AppMode::DiffViewer(state) = &mut self.mode {
+                state.patch_scroll = state.patch_scroll.min(max_scroll);
             }
         }
         if message.is_some() {
@@ -758,7 +826,7 @@ impl App {
         Some((view, workdir))
     }
 
-    fn diff_viewer_patch_line_count(&self) -> usize {
+    pub(crate) fn diff_viewer_patch_line_count(&self) -> usize {
         match &self.mode {
             AppMode::DiffViewer(state) => state
                 .files
@@ -797,6 +865,54 @@ impl App {
 /// The context ladder the expand/collapse keys walk: git's default up to the
 /// whole file.
 const CONTEXT_STEPS: [usize; 5] = [crate::diff::DIFF_DEFAULT_CONTEXT, 10, 25, 50, usize::MAX];
+
+/// Where the review line cursor ends up after the hunks are rebuilt at a new
+/// context level.
+enum CursorPlacement {
+    /// No cursor was active (or nothing is addressable any more).
+    Inactive,
+    /// The same diff line, at its new index.
+    Kept(usize),
+    /// Its line is gone; parked on this index, showing that location.
+    Moved(usize, crate::diff::DiffLineLocation),
+}
+
+/// The rendered line closest to `target` for when `target` itself is no longer
+/// rendered. Distance is measured on whichever side both locations name, so a
+/// dropped context line falls back to its nearest neighbour in either file.
+fn nearest_location(
+    locs: &[crate::diff::DiffLineLocation],
+    target: crate::diff::DiffLineLocation,
+) -> Option<(usize, crate::diff::DiffLineLocation)> {
+    locs.iter()
+        .enumerate()
+        .filter_map(|(index, loc)| location_distance(*loc, target).map(|d| (d, index, *loc)))
+        .min_by_key(|&(distance, index, _)| (distance, index))
+        .map(|(_, index, loc)| (index, loc))
+}
+
+fn location_distance(
+    a: crate::diff::DiffLineLocation,
+    b: crate::diff::DiffLineLocation,
+) -> Option<usize> {
+    let old = a.old_line.zip(b.old_line).map(|(x, y)| x.abs_diff(y));
+    let new = a.new_line.zip(b.new_line).map(|(x, y)| x.abs_diff(y));
+    match (old, new) {
+        (Some(old), Some(new)) => Some(old.min(new)),
+        (Some(distance), None) | (None, Some(distance)) => Some(distance),
+        (None, None) => None,
+    }
+}
+
+/// How a diff line reads in a status message: its current-file number when it
+/// has one, else the base-file number of a removed line.
+fn describe_location(loc: crate::diff::DiffLineLocation) -> String {
+    match (loc.new_line, loc.old_line) {
+        (Some(new), _) => format!("line {new}"),
+        (None, Some(old)) => format!("base line {old}"),
+        (None, None) => "the first diff line".to_string(),
+    }
+}
 
 fn context_level_message(level: usize) -> String {
     match level {

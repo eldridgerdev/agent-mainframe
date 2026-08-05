@@ -5,12 +5,23 @@
 //! line doesn't read the same as a full rewrite. Pure and self-contained: it
 //! takes the two line texts and returns byte ranges to emphasise on each side.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::rc::Rc;
 
 /// Lines longer than this (in tokens) skip word diffing. The matrix below is
 /// O(n·m), and a minified or generated line is exactly where the result would
 /// be noise anyway.
 const MAX_TOKENS: usize = 400;
+
+/// Cached pairs kept per thread before the whole cache is dropped, so the memo
+/// can't creep as the reviewer walks a large changeset. Only the selected file's
+/// hunks are rendered, so this is sized to hold every changed pair of a very
+/// large single file — a cap that a frame could exceed would clear and refill on
+/// every frame, i.e. never hit.
+const MAX_CACHED_PAIRS: usize = 16_384;
 
 /// How much of a pair must be shared before intra-line highlighting is worth
 /// showing. Below this the two lines are effectively unrelated, and marking
@@ -75,6 +86,61 @@ impl TokenClass {
             TokenClass::Other
         }
     }
+}
+
+/// One memoised pair. The line texts are kept so a hash collision is caught
+/// rather than silently emphasising the wrong tokens.
+struct CachedPair {
+    old: String,
+    new: String,
+    diff: Option<Rc<WordDiff>>,
+}
+
+thread_local! {
+    static PAIR_CACHE: RefCell<HashMap<u64, CachedPair>> = RefCell::new(HashMap::new());
+}
+
+/// `word_diff`, memoised on the pair of line texts.
+///
+/// The renderers rebuild every visible row from scratch on each frame (twice,
+/// when the cursor sync re-measures the patch), and the LCS matrix is O(n·m) in
+/// tokens — up to `MAX_TOKENS`² cells per pair. Hashing the two lines is linear
+/// in their length, so the memo turns a per-frame quadratic cost into a lookup.
+///
+/// Keying on the text rather than on a line index means it stays correct across
+/// anything that rewrites the hunks — a base-ref change, `-w`, context
+/// expansion: a rewritten line simply misses the cache.
+pub fn word_diff_cached(old: &str, new: &str) -> Option<Rc<WordDiff>> {
+    let key = pair_key(old, new);
+    PAIR_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(entry) = cache.get(&key)
+            && entry.old == old
+            && entry.new == new
+        {
+            return entry.diff.clone();
+        }
+        let diff = word_diff(old, new).map(Rc::new);
+        if cache.len() >= MAX_CACHED_PAIRS {
+            cache.clear();
+        }
+        cache.insert(
+            key,
+            CachedPair {
+                old: old.to_string(),
+                new: new.to_string(),
+                diff: diff.clone(),
+            },
+        );
+        diff
+    })
+}
+
+fn pair_key(old: &str, new: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    old.hash(&mut hasher);
+    new.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The byte ranges that changed between a removed line and its paired added
@@ -268,6 +334,39 @@ mod tests {
                 .all(|r| !"        value = 1;"[r.clone()].trim().is_empty())),
             "whitespace-only run was highlighted: {diff:?}"
         );
+    }
+
+    #[test]
+    fn word_diff_cached_repeats_the_uncached_answer() {
+        let old = "let value = compute(a, b);";
+        let new = "let value = compute(a, c);";
+
+        let first = word_diff_cached(old, new).unwrap();
+        let second = word_diff_cached(old, new).unwrap();
+
+        assert_eq!(*first, word_diff(old, new).unwrap());
+        // Second call was a hit, not a recomputation.
+        assert!(Rc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn word_diff_cached_keys_on_both_lines() {
+        let old = "call(first, middle, last)";
+        let first = word_diff_cached(old, "call(FIRST, middle, last)").unwrap();
+        let second = word_diff_cached(old, "call(first, middle, LAST)").unwrap();
+
+        // Same left side, different right side: distinct entries, and the ranges
+        // point at the token that actually changed in each pair.
+        assert_ne!(first.old, second.old);
+        assert_eq!(&old[first.old[0].clone()], "first");
+        assert_eq!(&old[second.old[0].clone()], "last");
+    }
+
+    #[test]
+    fn word_diff_cached_remembers_a_declined_pair() {
+        // A `None` is cached too, so an unrelated pair isn't re-diffed each frame.
+        assert!(word_diff_cached("same", "same").is_none());
+        assert!(word_diff_cached("same", "same").is_none());
     }
 
     #[test]

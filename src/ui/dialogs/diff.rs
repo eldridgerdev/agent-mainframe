@@ -3270,7 +3270,7 @@ fn side_by_side_rows(
     // word-level diff describes, so derive the emphasis here rather than
     // threading it through yet another parameter.
     let intra = if paired_change_row {
-        crate::worddiff::word_diff(line_content(&left), line_content(&right))
+        crate::worddiff::word_diff_cached(line_content(&left), line_content(&right))
     } else {
         None
     };
@@ -3984,6 +3984,10 @@ fn removed_emphasis_style(theme: &Theme) -> Style {
 /// git lays out a rewritten run and therefore what the reviewer reads as "this
 /// line became that line". Unpaired leftovers (a block that removes 3 and adds
 /// 1) get no emphasis — there is no counterpart to diff against.
+///
+/// Runs on every frame, so the per-pair token diff comes from
+/// `worddiff::word_diff_cached` rather than being recomputed: only the (cheap)
+/// walk over the hunk's lines is repeated.
 fn hunk_intra_line_ranges(hunk: &DiffHunk) -> Vec<Option<Vec<std::ops::Range<usize>>>> {
     let mut out: Vec<Option<Vec<std::ops::Range<usize>>>> = vec![None; hunk.lines.len()];
     let mut idx = 0usize;
@@ -4006,9 +4010,9 @@ fn hunk_intra_line_ranges(hunk: &DiffHunk) -> Vec<Option<Vec<std::ops::Range<usi
         for (old_idx, new_idx) in removed.zip(added) {
             let old_text = line_content(&hunk.lines[old_idx].text);
             let new_text = line_content(&hunk.lines[new_idx].text);
-            if let Some(diff) = crate::worddiff::word_diff(old_text, new_text) {
-                out[old_idx] = Some(diff.old);
-                out[new_idx] = Some(diff.new);
+            if let Some(diff) = crate::worddiff::word_diff_cached(old_text, new_text) {
+                out[old_idx] = Some(diff.old.clone());
+                out[new_idx] = Some(diff.new.clone());
             }
         }
     }

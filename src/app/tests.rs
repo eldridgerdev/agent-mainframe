@@ -15294,6 +15294,159 @@ fn expanding_context_raises_the_patch_scroll_bound() {
     );
 }
 
+/// The index of the whole-file-only context line `l1`, which narrowing the
+/// context back to the default hides again.
+#[cfg(test)]
+fn whole_file_only_line(app: &App) -> usize {
+    viewer_state(app).files[0]
+        .addressable_lines()
+        .iter()
+        .position(|loc| loc.old_line == Some(1))
+        .expect("the whole file starts at old line 1")
+}
+
+#[test]
+fn narrowing_context_refuses_while_the_selected_range_would_be_hidden() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_toggle_whole_file_context();
+
+    // A range selection whose start only exists at whole-file context.
+    let top = whole_file_only_line(&app);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(top + 4);
+        state.comment_anchor = Some(top);
+    }
+
+    app.diff_viewer_toggle_whole_file_context();
+
+    // Refused outright: dropping an endpoint would silently re-point a comment
+    // made afterwards at lines the reviewer never selected.
+    assert_eq!(app.diff_viewer_context_level(), Some(usize::MAX));
+    let state = viewer_state(&app);
+    assert_eq!(state.comment_cursor, Some(top + 4));
+    assert_eq!(state.comment_anchor, Some(top));
+    assert_eq!(
+        app.message.as_deref(),
+        Some(
+            "Selected lines would be hidden at that context level — clear the selection (Esc) first"
+        )
+    );
+}
+
+#[test]
+fn narrowing_context_keeps_a_selection_that_stays_visible() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_toggle_whole_file_context();
+
+    // The changed line survives at any context level, so the range travels.
+    let changed = viewer_state(&app).files[0]
+        .addressable_lines()
+        .iter()
+        .position(|loc| loc.old_line == Some(15) && loc.new_line.is_none())
+        .unwrap();
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(changed);
+        state.comment_anchor = Some(changed);
+    }
+
+    app.diff_viewer_toggle_whole_file_context();
+
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+    let state = viewer_state(&app);
+    let cursor = state.comment_cursor.unwrap();
+    assert_eq!(
+        state.files[0].addressable_lines()[cursor],
+        crate::diff::DiffLineLocation {
+            old_line: Some(15),
+            new_line: None
+        }
+    );
+    assert_eq!(state.comment_anchor, Some(cursor));
+}
+
+#[test]
+fn narrowing_context_moves_a_hidden_cursor_to_the_nearest_line_and_reports_it() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_toggle_whole_file_context();
+
+    let top = whole_file_only_line(&app);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(top);
+        state.comment_anchor = None;
+    }
+
+    app.diff_viewer_toggle_whole_file_context();
+
+    // No selection to protect, so the change goes ahead — but the cursor lands
+    // on the nearest line still rendered (old line 12, the hunk's first
+    // context line) rather than silently snapping to index 0 of a file whose
+    // first rendered line has moved.
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+    let state = viewer_state(&app);
+    let cursor = state.comment_cursor.unwrap();
+    assert_eq!(
+        state.files[0].addressable_lines()[cursor],
+        crate::diff::DiffLineLocation {
+            old_line: Some(12),
+            new_line: Some(12)
+        }
+    );
+    assert!(state.cursor_sync_to_view);
+    let message = app.message.clone().unwrap();
+    assert!(
+        message.contains("cursor moved to line 12"),
+        "the move must be reported: {message}"
+    );
+}
+
+#[test]
+fn narrowing_context_clamps_the_patch_scroll_into_the_shorter_patch() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    app.diff_viewer_toggle_whole_file_context();
+    app.diff_viewer_scroll_patch_bottom();
+    let expanded_scroll = viewer_state(&app).patch_scroll;
+
+    app.diff_viewer_toggle_whole_file_context();
+
+    // The patch is short again; leaving the old offset would render a blank
+    // panel until the reviewer scrolled back up.
+    let max_scroll = app.diff_viewer_patch_line_count().saturating_sub(1);
+    let scroll = viewer_state(&app).patch_scroll;
+    assert!(
+        scroll <= max_scroll,
+        "scroll {scroll} is past the new last line {max_scroll}"
+    );
+    assert!(
+        expanded_scroll > max_scroll,
+        "the test must actually start out of range: {expanded_scroll} vs {max_scroll}"
+    );
+}
+
 #[test]
 fn context_expansion_survives_a_diff_reload() {
     let store = store_with_feature(ProjectStatus::Idle);

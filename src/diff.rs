@@ -56,6 +56,45 @@ pub struct DiffLineLocation {
     pub new_line: Option<usize>,
 }
 
+/// `DiffFile::addressable_lines()` over bare hunks, so a caller holding a
+/// freshly built hunk list (context expansion) can see where its lines would
+/// land before committing it to the file.
+pub fn addressable_lines_in(hunks: &[DiffHunk]) -> Vec<DiffLineLocation> {
+    let mut out = Vec::new();
+    for hunk in hunks {
+        let mut old_line = hunk.old_start;
+        let mut new_line = hunk.new_start;
+        for line in &hunk.lines {
+            match line.kind {
+                DiffLineKind::Context => {
+                    out.push(DiffLineLocation {
+                        old_line: Some(old_line),
+                        new_line: Some(new_line),
+                    });
+                    old_line += 1;
+                    new_line += 1;
+                }
+                DiffLineKind::Removed => {
+                    out.push(DiffLineLocation {
+                        old_line: Some(old_line),
+                        new_line: None,
+                    });
+                    old_line += 1;
+                }
+                DiffLineKind::Added => {
+                    out.push(DiffLineLocation {
+                        old_line: None,
+                        new_line: Some(new_line),
+                    });
+                    new_line += 1;
+                }
+                DiffLineKind::NoNewlineMarker => {}
+            }
+        }
+    }
+    out
+}
+
 impl DiffFile {
     /// Commentable diff lines (context / added / removed) across every hunk, in
     /// display order, each tagged with its base/current line numbers. Hunk
@@ -63,39 +102,7 @@ impl DiffFile {
     /// in the same order the unified patch renderer does, so an index into the
     /// returned vector matches a rendered diff row.
     pub fn addressable_lines(&self) -> Vec<DiffLineLocation> {
-        let mut out = Vec::new();
-        for hunk in &self.hunks {
-            let mut old_line = hunk.old_start;
-            let mut new_line = hunk.new_start;
-            for line in &hunk.lines {
-                match line.kind {
-                    DiffLineKind::Context => {
-                        out.push(DiffLineLocation {
-                            old_line: Some(old_line),
-                            new_line: Some(new_line),
-                        });
-                        old_line += 1;
-                        new_line += 1;
-                    }
-                    DiffLineKind::Removed => {
-                        out.push(DiffLineLocation {
-                            old_line: Some(old_line),
-                            new_line: None,
-                        });
-                        old_line += 1;
-                    }
-                    DiffLineKind::Added => {
-                        out.push(DiffLineLocation {
-                            old_line: None,
-                            new_line: Some(new_line),
-                        });
-                        new_line += 1;
-                    }
-                    DiffLineKind::NoNewlineMarker => {}
-                }
-            }
-        }
-        out
+        addressable_lines_in(&self.hunks)
     }
 
     /// The index into `addressable_lines()` of each hunk's first addressable

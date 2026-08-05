@@ -12,6 +12,10 @@ are tagged.
 
 ### Added
 
+- **Codex can now capture visual proof of AMF UI changes.** Codex features
+  receive an `amf-screenshot` skill that drives the same isolated screenshot
+  harness as Claude, verifies captured frames, and returns viewable PNG or GIF
+  files without touching the user's real AMF database or tmux sessions.
 - **Leaving a plan interview no longer loses your answers.** Answers are saved
   as you give them, so aborting the interview, cancelling the feature, or
   closing AMF entirely keeps them. Starting the interview again for the same
@@ -77,7 +81,8 @@ are tagged.
 No migration is required. Plan interviews still work without a database, and
 existing features are unaffected — the first interview you run after upgrading
 starts saving its answers. Existing saved sessions pick up the hyperlink fix
-when they are reopened.
+when they are reopened, and Codex features receive the screenshot skill when
+their local agent setup next runs.
 
 ## [v0.33.0] - 2026-07-28
 

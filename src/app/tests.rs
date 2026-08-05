@@ -7383,6 +7383,18 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
         !workdir.path().join(".codex").join("config.toml").exists(),
         "repo-root codex feature should not write unsupported project-local config"
     );
+    let screenshot_skill = workdir
+        .path()
+        .join(".agents/skills/amf-screenshot/SKILL.md");
+    let screenshot_skill = std::fs::read_to_string(screenshot_skill)
+        .expect("Codex features should get the AMF screenshot skill");
+    assert!(
+        screenshot_skill.contains("name: amf-screenshot")
+            && screenshot_skill.contains("scripts/dev/screenshot/amf-capture.sh")
+            && !screenshot_skill.contains("allowed-tools:")
+            && !screenshot_skill.contains("Artifact tool"),
+        "Codex should get its native screenshot workflow, got: {screenshot_skill}"
+    );
 
     let second = TempDir::new().unwrap();
     call_ensure_hooks_for(&second, VibeMode::Vibe, AgentKind::Codex, true);
@@ -7487,6 +7499,13 @@ fn cleanup_codex_hooks_removes_helper_script() {
     assert!(
         !codex_dir.join("config.toml").exists(),
         "cleanup should not leave behind unsupported project-local config"
+    );
+    assert!(
+        !workdir
+            .path()
+            .join(".agents/skills/amf-screenshot")
+            .exists(),
+        "cleanup should remove the managed Codex screenshot skill"
     );
 }
 

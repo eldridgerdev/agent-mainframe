@@ -735,6 +735,10 @@ pub struct App {
     /// so a late review can never be mistaken for a synthesis result and
     /// overwrite the plan it was only meant to comment on.
     pub plan_interview_critique_bg: Option<Receiver<Result<String>>>,
+    /// Receiver for a user-directed plan revision. This pass is separate from
+    /// synthesis and critique because it may inspect the feature workdir with
+    /// read-only tools and is only valid for its dedicated loading phase.
+    pub plan_interview_directed_feedback_bg: Option<Receiver<Result<String>>>,
     /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
@@ -2138,6 +2142,7 @@ impl App {
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
+            plan_interview_directed_feedback_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
@@ -2352,6 +2357,7 @@ impl App {
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
+            plan_interview_directed_feedback_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,

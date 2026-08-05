@@ -157,11 +157,12 @@ pub struct PlanQuestion {
 }
 ```
 
-- **Built-in bank** (in code, `src/plan_interview.rs`): a small
-  curated set covering scope ("what's in / explicitly out?"), users
-  and entry points, UI surface, data model / persistence, external
-  integrations, risks/unknowns, and definition of done. Order fixed;
-  all optional except the feature brief.
+- **Built-in bank** (in code, `src/plan_interview.rs`): five curated
+  prompts covering scope; users, entry points, and workflow/UI changes;
+  data, persistence, and external integrations; risks/unknowns; and
+  definition of done. The two related groups were consolidated after
+  dogfooding so the default interview stays short. Order fixed; all
+  optional except the feature brief.
 - **User templates** (config): a `plan_questions` array in
   `config.json`, merged global → project by `id` exactly like
   `feature_presets` / `prompt_templates` in `extension.rs` (project
@@ -585,6 +586,19 @@ interview with prior answers pre-filled, get an updated
 
 ### Epic 6 — Polish
 
+- [x] Add directed feedback at the plan review gate: `f` opens a multi-line
+      instruction editor and `Ctrl+S` asks the planning agent to revise the
+      current draft. The revision prompt carries the plan and full interview
+      transcript, runs in the feature workdir with repository-inspection tools
+      constrained to read-only access, and requires the complete structured
+      plan back rather than a prose report. A valid result replaces only the
+      staged draft and returns to the review gate for inspection before accept;
+      a failed or malformed result preserves both the prior plan and the user's
+      instruction for retry. Esc keeps the plan unchanged, and a result that
+      arrives after the user dismisses the loading frame is discarded rather
+      than applied late. Visual proof:
+      `docs/screenshots/plan-mode-directed-feedback/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-directed-feedback.txt`
 - [x] Replace the ambiguous AI-consent labels everywhere they appear
       (dialog, status footer, help, and screenshots): `a` should say
       "ask AI follow-ups" because it generates more questions;
@@ -595,15 +609,19 @@ interview with prior answers pre-filled, get an updated
       and token-cost difference between all three actions, and the compact
       footers use those same labels. The two adaptive-interview screenshots
       were regenerated from the updated UI.
-- [ ] Re-evaluate the built-in question bank after dogfooding:
-      identify which questions consistently add useful planning
-      context, then remove or combine low-value prompts so the
-      default interview stays short
+- [x] Re-evaluate the built-in question bank after dogfooding:
+      reduced the default from seven questions to five by combining
+      users/entry-points with workflow/UI changes and combining
+      data/persistence with external integrations. Scope, risks/unknowns,
+      and definition of done remain separate because each consistently
+      contributes a distinct planning decision. The surviving question
+      IDs remain stable; projects that override either retired ID still
+      get that configured question appended as a project-specific prompt
 - [ ] Preset interplay verified (preset with plan_mode → interview);
       batch creation explicitly skips with a notice
 - [ ] Empty/edge handling: zero-question config, brief-only fast path
       ("just synthesize from the brief"), giant answers
-- [ ] CHANGELOG + CLAUDE.md architecture-section updates
+- [x] CHANGELOG + CLAUDE.md architecture-section updates
 - [ ] Update this doc's status / trim to a pointer once in progress
 
 ## Open questions

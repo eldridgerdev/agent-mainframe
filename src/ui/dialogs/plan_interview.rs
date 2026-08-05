@@ -26,6 +26,8 @@ pub fn draw_plan_interview_dialog(
         state.phase,
         PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::DirectedFeedback
+            | PlanInterviewPhase::DirectedFeedbackLoading
             | PlanInterviewPhase::Critique
             | PlanInterviewPhase::CritiqueLoading
     );
@@ -45,6 +47,9 @@ pub fn draw_plan_interview_dialog(
     let title = match state.phase {
         PlanInterviewPhase::Review => format!(" Plan Review · {} ", state.feature_name),
         PlanInterviewPhase::Editing => format!(" Edit Plan · {} ", state.feature_name),
+        PlanInterviewPhase::DirectedFeedback | PlanInterviewPhase::DirectedFeedbackLoading => {
+            format!(" Direct Plan Feedback · {} ", state.feature_name)
+        }
         PlanInterviewPhase::Critique | PlanInterviewPhase::CritiqueLoading => {
             format!(" Agent Review · {} ", state.feature_name)
         }
@@ -112,6 +117,14 @@ pub fn draw_plan_interview_dialog(
         draw_plan_edit(frame, inner, state, message, theme);
         return;
     }
+    if state.phase == PlanInterviewPhase::DirectedFeedback {
+        draw_directed_feedback_editor(frame, inner, state, message, theme);
+        return;
+    }
+    if state.phase == PlanInterviewPhase::DirectedFeedbackLoading {
+        draw_directed_feedback_loading(frame, inner, state, theme, throbber_state);
+        return;
+    }
     if state.phase == PlanInterviewPhase::Critique {
         draw_plan_critique(frame, inner, state, message, theme);
         return;
@@ -170,7 +183,11 @@ pub fn draw_plan_interview_dialog(
         PlanInterviewPhase::CritiqueLoading => {
             draw_critique_loading(frame, chunks[2], state, theme, throbber_state)
         }
-        PlanInterviewPhase::Review | PlanInterviewPhase::Editing | PlanInterviewPhase::Critique => {
+        PlanInterviewPhase::Review
+        | PlanInterviewPhase::Editing
+        | PlanInterviewPhase::DirectedFeedback
+        | PlanInterviewPhase::DirectedFeedbackLoading
+        | PlanInterviewPhase::Critique => {
             unreachable!()
         }
         PlanInterviewPhase::Done => {
@@ -377,6 +394,10 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         }
         PlanInterviewPhase::Review => (total, "Plan review".to_string()),
         PlanInterviewPhase::Editing => (total, "Edit plan".to_string()),
+        PlanInterviewPhase::DirectedFeedback => (total, "Direct feedback".to_string()),
+        PlanInterviewPhase::DirectedFeedbackLoading => {
+            (total, "Revising from feedback".to_string())
+        }
         PlanInterviewPhase::KickoffHandoff => (total, "Plan accepted".to_string()),
         PlanInterviewPhase::Done => (total, "Complete".to_string()),
     };
@@ -441,6 +462,12 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         PlanInterviewPhase::Critique => ("Agent review of the plan".to_string(), false),
         PlanInterviewPhase::Review => ("Review implementation plan".to_string(), false),
         PlanInterviewPhase::Editing => ("Edit raw markdown".to_string(), false),
+        PlanInterviewPhase::DirectedFeedback => {
+            ("Tell the planning agent what to change".to_string(), false)
+        }
+        PlanInterviewPhase::DirectedFeedbackLoading => {
+            ("Investigating and revising the plan".to_string(), false)
+        }
         PlanInterviewPhase::KickoffHandoff => (
             "Tell the running session about the plan?".to_string(),
             false,
@@ -657,6 +684,29 @@ fn draw_critique_loading(
     );
 }
 
+/// Loading frame for a free-form revision that may inspect repository files
+/// through the runner's read-only tool policy.
+fn draw_directed_feedback_loading(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    theme: &Theme,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+) {
+    draw_headless_loading(
+        frame,
+        area,
+        theme,
+        throbber_state,
+        format!(
+            "Investigating and revising the plan ({}, read-only)",
+            interview_engine(state)
+        ),
+        state.directed_feedback_started_at,
+        state.directed_feedback_token_estimate,
+    );
+}
+
 /// Shared spinner frame for the interview's headless passes, showing elapsed
 /// time and a cheap prompt-size token estimate — mirrors the PR-review
 /// family's running frames (`draw_ai_pr_review_running`).
@@ -760,6 +810,8 @@ fn draw_plan_review(
         } else {
             " agent review  "
         }),
+        hint("f", theme),
+        Span::raw(" direct feedback  "),
         hint("r", theme),
         Span::raw(" regenerate  "),
         hint("Enter", theme),
@@ -772,6 +824,80 @@ fn draw_plan_review(
             .style(Style::default().bg(theme.effective_header_bg()))
             .wrap(Wrap { trim: false }),
         chunks[1],
+    );
+}
+
+fn draw_directed_feedback_editor(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &mut PlanInterviewState,
+    message: Option<&str>,
+    theme: &Theme,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(
+            "Give a concrete revision instruction. The agent may inspect this feature's repository read-only—for example, locate a component and add the exact files and tests to the plan.",
+        )
+        .style(Style::default().fg(theme.text_muted.to_color()))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    let lines = editor_lines(
+        &state.editor,
+        theme,
+        "Investigate where X is implemented and update the plan with the findings…",
+    );
+    let wrap_width = chunks[1].width.saturating_sub(2).max(1) as usize;
+    let total_visual_lines = count_wrapped_editor_lines(&lines, wrap_width);
+    sync_editor_scroll(
+        &state.editor,
+        &mut state.edit_scroll_offset,
+        &mut state.edit_sync_to_cursor,
+        chunks[1].height.saturating_sub(2) as usize,
+        wrap_width,
+        total_visual_lines,
+    );
+    let editor = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" Revision instruction ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border.to_color())),
+        )
+        .style(Style::default().bg(theme.effective_header_bg()))
+        .wrap(Wrap { trim: false })
+        .scroll((state.edit_scroll_offset.min(u16::MAX as usize) as u16, 0));
+    frame.render_widget(editor, chunks[1]);
+
+    let footer = if let Some(message) = message {
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
+    } else {
+        Line::from(vec![
+            hint("Enter", theme),
+            Span::raw(" newline  "),
+            hint("Ctrl+S", theme),
+            Span::raw(" investigate + revise (uses tokens)  "),
+            hint("Esc", theme),
+            Span::raw(" back to plan"),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(Style::default().bg(theme.effective_header_bg()))
+            .wrap(Wrap { trim: false }),
+        chunks[2],
     );
 }
 

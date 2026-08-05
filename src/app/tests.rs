@@ -3165,6 +3165,103 @@ fn begin_plan_critique_for_test(app: &mut App) -> std::sync::mpsc::Sender<anyhow
     tx
 }
 
+/// Drop straight into an in-flight directed revision without launching a real
+/// harness. The production path builds the same state immediately before it
+/// spawns the read-only worker.
+fn begin_directed_plan_revision_for_test(
+    app: &mut App,
+) -> std::sync::mpsc::Sender<anyhow::Result<String>> {
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    assert!(state.begin_directed_feedback());
+    state.editor = crate::editor::TextEditor::new(
+        "Inspect the router and add the concrete files to Tasks.".into(),
+    );
+    assert!(state.begin_directed_feedback_loading(650));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_directed_feedback_bg = Some(rx);
+    tx
+}
+
+#[test]
+fn directed_plan_feedback_replaces_the_draft_then_returns_to_review() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_directed_plan_revision_for_test(&mut app);
+    let revised = original.replace("Implement the feature", "Update src/handlers/router.rs");
+    tx.send(Ok(revised.clone())).unwrap();
+
+    assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(app.plan_interview_directed_feedback_bg.is_none());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Plan revised from your feedback; review the changes")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(revised.as_str())
+    ));
+}
+
+#[test]
+fn unusable_directed_feedback_preserves_the_instruction_and_plan_for_retry() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_directed_plan_revision_for_test(&mut app);
+    tx.send(Ok("I inspected the repository and have suggestions.".into()))
+        .unwrap();
+
+    assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::DirectedFeedback
+                && state.editor.text().contains("Inspect the router")
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Directed revision returned no usable plan; your instruction is preserved")
+    );
+}
+
+#[test]
+fn dismissing_directed_feedback_discards_its_late_revision() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_directed_plan_revision_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review
+    ));
+
+    let revised = original.replace("Implement the feature", "Update src/handlers/router.rs");
+    tx.send(Ok(revised)).unwrap();
+    assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
+}
+
 #[test]
 fn agent_review_is_advisory_and_leaves_the_plan_untouched() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();

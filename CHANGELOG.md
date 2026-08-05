@@ -53,6 +53,12 @@ are tagged.
   old plan. Accepting now offers to open the running session with a kickoff
   prompt pointing at the new plan — seeded in the composer, not sent, so you
   decide when it lands. Declining costs nothing: the plan is written either way.
+- **Plan drafts now accept direct feedback before approval.** Press `f` at the
+  review gate to tell the planning agent exactly what to change. The agent can
+  inspect the feature repository read-only when the request needs concrete
+  code locations, then returns a revised draft for you to review before
+  accepting it. Failed revisions keep both the current plan and your
+  instruction so you can retry without retyping it.
 
 ### Changed
 
@@ -62,6 +68,10 @@ are tagged.
   dialog and key hints clearly identify which choices use tokens. The step fits
   an 80x24 terminal, and a smaller one gets shorter wording rather than a
   disclosure cut off mid-sentence.
+- **The default plan interview is shorter.** Five built-in questions now cover
+  the same discovery areas that previously took seven by combining user and UI
+  workflow prompts, and data and integration prompts. Project questions that
+  override either retired question ID remain available as configured prompts.
 
 ### Fixed
 

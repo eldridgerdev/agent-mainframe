@@ -644,18 +644,17 @@ impl App {
                         } else {
                             let cursor = match (state.comment_cursor, cursor_loc) {
                                 (None, _) => CursorPlacement::Inactive,
-                                (Some(_), Some(loc)) => match next_locs
-                                    .iter()
-                                    .position(|candidate| *candidate == loc)
-                                {
-                                    Some(index) => CursorPlacement::Kept(index),
-                                    None => match nearest_location(&next_locs, loc) {
-                                        Some((index, landed)) => {
-                                            CursorPlacement::Moved(index, landed)
-                                        }
-                                        None => CursorPlacement::Inactive,
-                                    },
-                                },
+                                (Some(_), Some(loc)) => {
+                                    match next_locs.iter().position(|candidate| *candidate == loc) {
+                                        Some(index) => CursorPlacement::Kept(index),
+                                        None => match nearest_location(&next_locs, loc) {
+                                            Some((index, landed)) => {
+                                                CursorPlacement::Moved(index, landed)
+                                            }
+                                            None => CursorPlacement::Inactive,
+                                        },
+                                    }
+                                }
                                 // A stale index: nothing to preserve, so park on
                                 // the first line still rendered.
                                 (Some(_), None) => next_locs
@@ -663,8 +662,8 @@ impl App {
                                     .map(|loc| CursorPlacement::Moved(0, *loc))
                                     .unwrap_or(CursorPlacement::Inactive),
                             };
-                            let anchor = anchor_loc
-                                .and_then(|loc| next_locs.iter().position(|c| *c == loc));
+                            let anchor =
+                                anchor_loc.and_then(|loc| next_locs.iter().position(|c| *c == loc));
                             Some((file.path.clone(), hunks, cursor, anchor))
                         }
                     }

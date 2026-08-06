@@ -411,7 +411,7 @@ pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Char('j') | KeyCode::Down => {
             let preview = if let AppMode::ThemePicker(state) = &mut app.mode {
-                if let Some(group) = &mut state.group {
+                let preview = if let Some(group) = &mut state.group {
                     if group.selected + 1 < group.themes.len() {
                         group.selected += 1;
                     }
@@ -420,8 +420,15 @@ pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                     if state.selected + 1 < state.entries.len() {
                         state.selected += 1;
                     }
-                    state.entries.get(state.selected).and_then(|e| e.preview_theme())
+                    state
+                        .entries
+                        .get(state.selected)
+                        .and_then(|e| e.preview_theme())
+                };
+                if let Some(name) = preview {
+                    state.previewed = name;
                 }
+                preview
             } else {
                 None
             };
@@ -431,7 +438,7 @@ pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
         }
         KeyCode::Char('k') | KeyCode::Up => {
             let preview = if let AppMode::ThemePicker(state) = &mut app.mode {
-                if let Some(group) = &mut state.group {
+                let preview = if let Some(group) = &mut state.group {
                     if group.selected > 0 {
                         group.selected -= 1;
                     }
@@ -440,8 +447,15 @@ pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                     if state.selected > 0 {
                         state.selected -= 1;
                     }
-                    state.entries.get(state.selected).and_then(|e| e.preview_theme())
+                    state
+                        .entries
+                        .get(state.selected)
+                        .and_then(|e| e.preview_theme())
+                };
+                if let Some(name) = preview {
+                    state.previewed = name;
                 }
+                preview
             } else {
                 None
             };
@@ -463,9 +477,11 @@ pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                         Some(ThemePickerEntry::Group { label, themes }) => {
                             let label = *label;
                             let themes = themes.clone();
+                            // Land on whatever this row was already previewing
+                            // so the drill-in doesn't jump somewhere else.
                             let group_selected = themes
                                 .iter()
-                                .position(|t| *t == state.original_theme)
+                                .position(|t| *t == state.previewed)
                                 .unwrap_or(0);
                             let preview = themes.get(group_selected).copied();
                             if let AppMode::ThemePicker(state) = &mut app.mode {
@@ -474,6 +490,9 @@ pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                                     themes,
                                     selected: group_selected,
                                 });
+                                if let Some(name) = preview {
+                                    state.previewed = name;
+                                }
                             }
                             if let Some(name) = preview {
                                 app.preview_theme(name);
@@ -743,6 +762,7 @@ mod tests {
         CommandAction, MarkdownFilePickerState, MarkdownViewerState, SteeringPromptState, ViewState,
     };
     use crate::project::{AgentKind, Feature, Project, ProjectStore, VibeMode};
+    use crate::theme::{Theme, ThemeName};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use tempfile::TempDir;
 
@@ -1222,5 +1242,135 @@ mod tests {
             }
             _ => panic!("expected debug log to stay open"),
         }
+    }
+
+    fn theme_app(active: ThemeName) -> App {
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.config.theme = active;
+        app.start_theme_picker();
+        app
+    }
+
+    fn picker(app: &App) -> &crate::app::ThemePickerState {
+        match &app.mode {
+            AppMode::ThemePicker(state) => state,
+            _ => panic!("expected the theme picker to be open"),
+        }
+    }
+
+    fn highlighted_group_theme(app: &App) -> ThemeName {
+        let group = picker(app)
+            .group
+            .as_ref()
+            .expect("expected to be on a group's second screen");
+        group.themes[group.selected]
+    }
+
+    #[test]
+    fn opening_the_picker_on_a_grouped_theme_lands_inside_the_group() {
+        let app = theme_app(ThemeName::CatppuccinMacchiato);
+
+        assert_eq!(picker(&app).group.as_ref().unwrap().label, "Catppuccin");
+        assert_eq!(
+            highlighted_group_theme(&app),
+            ThemeName::CatppuccinMacchiato
+        );
+        match picker(&app).entries.get(picker(&app).selected) {
+            Some(ThemePickerEntry::Group { label, .. }) => assert_eq!(*label, "Catppuccin"),
+            _ => panic!("expected the group's own row to be selected at the top level"),
+        }
+    }
+
+    #[test]
+    fn opening_the_picker_on_a_standalone_theme_stays_at_the_top_level() {
+        let app = theme_app(ThemeName::Nord);
+
+        assert!(picker(&app).group.is_none());
+        match picker(&app).entries.get(picker(&app).selected) {
+            Some(ThemePickerEntry::Theme(name)) => assert_eq!(*name, ThemeName::Nord),
+            _ => panic!("expected the Nord row to be selected"),
+        }
+    }
+
+    #[test]
+    fn entering_a_group_lands_on_the_variant_being_previewed() {
+        // Opens straight onto Catppuccin's screen with Mocha highlighted.
+        let mut app = theme_app(ThemeName::CatppuccinMocha);
+        handle_theme_picker_key(&mut app, KeyCode::Esc).unwrap();
+        let group_row = picker(&app).selected;
+
+        // Navigating off the group row and back previews its first variant,
+        // so drilling in must land there rather than on the active theme.
+        handle_theme_picker_key(&mut app, KeyCode::Char('k')).unwrap();
+        handle_theme_picker_key(&mut app, KeyCode::Char('j')).unwrap();
+        assert_eq!(picker(&app).selected, group_row);
+        assert_eq!(picker(&app).previewed, ThemeName::CatppuccinLatte);
+
+        handle_theme_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(highlighted_group_theme(&app), ThemeName::CatppuccinLatte);
+    }
+
+    #[test]
+    fn backing_out_of_a_group_keeps_its_variant_as_the_drill_in_target() {
+        let mut app = theme_app(ThemeName::CatppuccinMocha);
+        handle_theme_picker_key(&mut app, KeyCode::Esc).unwrap();
+
+        assert!(
+            picker(&app).group.is_none(),
+            "Esc should not close the picker"
+        );
+        assert_eq!(picker(&app).previewed, ThemeName::CatppuccinMocha);
+
+        handle_theme_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(highlighted_group_theme(&app), ThemeName::CatppuccinMocha);
+    }
+
+    #[test]
+    fn enter_on_a_standalone_theme_applies_it_and_closes() {
+        let mut app = theme_app(ThemeName::Nord);
+        handle_theme_picker_key(&mut app, KeyCode::Char('j')).unwrap();
+
+        handle_theme_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(app.config.theme, ThemeName::GruvboxDark);
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
+
+    #[test]
+    fn enter_inside_a_group_applies_the_highlighted_variant() {
+        let mut app = theme_app(ThemeName::CatppuccinLatte);
+        handle_theme_picker_key(&mut app, KeyCode::Char('j')).unwrap();
+
+        handle_theme_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(app.config.theme, ThemeName::CatppuccinFrappe);
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
+
+    #[test]
+    fn esc_at_the_top_level_restores_the_original_theme_and_closes() {
+        let mut app = theme_app(ThemeName::Nord);
+        handle_theme_picker_key(&mut app, KeyCode::Char('j')).unwrap();
+        assert_eq!(app.theme.name, Theme::load(&ThemeName::GruvboxDark).name);
+
+        handle_theme_picker_key(&mut app, KeyCode::Esc).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Normal));
+        assert_eq!(app.config.theme, ThemeName::Nord);
+        assert_eq!(app.theme.name, Theme::load(&ThemeName::Nord).name);
     }
 }

@@ -56,7 +56,12 @@ pub fn draw_theme_picker(
             .take(visible_height)
             .map(|(i, theme_name)| {
                 let label = strip_group_prefix(theme_name.display_name(), group.label);
-                render_row(i == group.selected, theme_name == current_theme, &label, theme)
+                render_row(
+                    i == group.selected,
+                    theme_name == current_theme,
+                    &label,
+                    theme,
+                )
             })
             .collect()
     } else {

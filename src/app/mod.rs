@@ -3120,6 +3120,7 @@ impl App {
             selected,
             entries,
             original_theme,
+            previewed: original_theme,
             group,
         });
     }

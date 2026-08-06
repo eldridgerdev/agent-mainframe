@@ -3218,6 +3218,10 @@ pub struct ThemePickerState {
     pub selected: usize,
     pub entries: Vec<ThemePickerEntry>,
     pub original_theme: crate::theme::ThemeName,
+    /// The theme currently rendered on screen (live preview). Drilling into
+    /// a group lands on this theme when it's a member, so where `Enter` puts
+    /// the cursor always matches what the user is already looking at.
+    pub previewed: crate::theme::ThemeName,
     pub group: Option<ThemePickerGroupState>,
 }
 

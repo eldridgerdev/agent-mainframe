@@ -51,6 +51,24 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // The review key-help overlay is read-only and captures every key while
+    // open, so a key pressed to dismiss it can never also act on the review
+    // underneath. `?` toggles, matching the dashboard's help overlay.
+    let help_open = matches!(&app.mode, AppMode::DiffViewer(state) if state.help_open);
+    if help_open {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => app.close_review_help(),
+            KeyCode::Char('j') | KeyCode::Down => app.review_help_scroll_down(PATCH_SCROLL_STEP),
+            KeyCode::Char('k') | KeyCode::Up => app.review_help_scroll_up(PATCH_SCROLL_STEP),
+            KeyCode::PageDown => app.review_help_scroll_down(PATCH_PAGE_STEP),
+            KeyCode::PageUp => app.review_help_scroll_up(PATCH_PAGE_STEP),
+            KeyCode::Home | KeyCode::Char('g') => app.review_help_scroll_top(),
+            KeyCode::End | KeyCode::Char('G') => app.review_help_scroll_bottom(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // The review timeline/history browser is read-only and captures every key
     // while open. Horizontal navigation changes rounds; vertical navigation
     // scrolls the selected round's independently rendered markdown body.
@@ -333,6 +351,13 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         match code {
+            // Reached from the line cursor too: the cursor-active block above
+            // doesn't claim `?`, so the overlay is one key away from anywhere in
+            // the review that isn't already a text input or a modal.
+            KeyCode::Char('?') => {
+                app.open_review_help();
+                return Ok(());
+            }
             KeyCode::Char('H') => {
                 app.open_review_history();
                 return Ok(());
@@ -808,6 +833,126 @@ index 1111111..2222222 100644
 +fn gamma_alpha() {}
  fn delta() {}
 ";
+
+    fn help_open(app: &App) -> bool {
+        matches!(&app.mode, AppMode::DiffViewer(state) if state.help_open)
+    }
+
+    #[test]
+    fn question_mark_toggles_the_review_help_overlay() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        assert!(help_open(&app));
+
+        // `?` closes it again, like the dashboard overlay.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        assert!(!help_open(&app));
+    }
+
+    #[test]
+    fn help_overlay_opens_and_closes_with_the_line_cursor_active() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_patch(dir.path(), SEARCH_PATCH);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        let cursor_before = match &app.mode {
+            AppMode::DiffViewer(state) => state.comment_cursor,
+            _ => unreachable!(),
+        };
+        assert!(cursor_before.is_some());
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        assert!(help_open(&app));
+
+        // Esc closes the overlay without also unwinding cursor mode underneath.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        assert!(!help_open(&app));
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.comment_cursor, cursor_before),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn help_overlay_swallows_review_keys_while_open() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        // `a` would approve, `n` would advance, `q` would start the finish flow.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.help_open);
+                assert!(state.decisions.is_empty());
+                assert_eq!(state.selected_file, 0);
+            }
+            _ => unreachable!(),
+        }
+
+        // `q` closes the overlay rather than opening the pre-finish summary.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.help_open);
+                assert!(!state.summary_open);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn help_overlay_scroll_clamps_to_the_rendered_body() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+
+        // Stand in for what the renderer records each frame.
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.help_rendered_lines = 40;
+            state.help_view_height = 10;
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('G'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.help_scroll, 30),
+            _ => unreachable!(),
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.help_scroll, 30),
+            _ => unreachable!(),
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('g'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.help_scroll, 0),
+            _ => unreachable!(),
+        }
+
+        // Reopening always lands back at the top.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('G'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.help_scroll, 0),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn question_mark_is_inert_in_the_plain_diff_viewer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.review = false;
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        assert!(!help_open(&app));
+    }
 
     #[test]
     fn history_navigation_loads_archive_only_after_live_rounds() {

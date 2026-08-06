@@ -1,0 +1,23 @@
+# plan-mode-preset-batch: shows the batch-creation settings screen after
+# plan-mode preset behavior was verified. Batch creation intentionally does
+# not fan out into one interview per feature, and the UI now says so before
+# confirmation.
+
+# Open batch feature creation from the dashboard.
+key:B
+wait:200
+
+# Workspace path -> project name -> count -> base name -> settings.
+key:Enter
+wait:100
+key:Enter
+wait:100
+key:Enter
+wait:100
+key:Enter
+wait:200
+
+shot:batch-plan-interview-notice
+
+# Leave without creating any features.
+key:Escape

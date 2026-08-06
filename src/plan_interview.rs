@@ -6,6 +6,7 @@
 
 #![allow(dead_code)] // Introduced ahead of the Epic 1 UI integration.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read as _;
@@ -22,6 +23,13 @@ pub const INVESTIGATION_MERGE_PROMPT_VERSION: u32 = 2;
 pub const MAX_AI_QUESTIONS_PER_ROUND: usize = 5;
 pub const MAX_AI_ROUNDS: usize = 2;
 pub const MAX_INVESTIGATION_FOCUSES: usize = 4;
+/// Maximum characters from one user-authored interview field handed to a
+/// headless model. The full value remains in the in-memory/SQLite transcript
+/// and raw-plan fallback; only the paid model context is bounded.
+pub const MODEL_INPUT_FIELD_MAX_CHARS: usize = 12_000;
+
+const MODEL_INPUT_TRUNCATION_MARKER: &str =
+    "\n… (truncated for model input; full text remains in the interview transcript)";
 
 const README_CONTEXT_MAX_CHARS: usize = 12_000;
 const CLAUDE_CONTEXT_MAX_CHARS: usize = 12_000;
@@ -269,7 +277,7 @@ pub fn gather_repository_context(workdir: &Path) -> RepositoryContext {
 struct InterviewAnswer<'a> {
     id: &'a str,
     question: &'a str,
-    answer: Option<&'a str>,
+    answer: Option<Cow<'a, str>>,
 }
 
 /// One answered question. Synthesis writes down what was decided, so a
@@ -279,7 +287,23 @@ struct InterviewAnswer<'a> {
 struct AnsweredQuestion<'a> {
     id: &'a str,
     question: &'a str,
-    answer: &'a str,
+    answer: Cow<'a, str>,
+}
+
+/// Bound one user-authored field before it enters a model prompt.
+///
+/// Answers are intentionally not truncated when they are recorded or rendered
+/// into the deterministic fallback plan. Keeping the bound at this prompt
+/// boundary prevents one pasted log or document from exhausting every later
+/// adaptive/review call while preserving the user's original input losslessly.
+fn bounded_model_input(value: &str) -> Cow<'_, str> {
+    let Some((byte_index, _)) = value.char_indices().nth(MODEL_INPUT_FIELD_MAX_CHARS) else {
+        return Cow::Borrowed(value);
+    };
+    Cow::Owned(format!(
+        "{}{MODEL_INPUT_TRUNCATION_MARKER}",
+        &value[..byte_index]
+    ))
 }
 
 fn interview_answers<'a>(
@@ -292,7 +316,10 @@ fn interview_answers<'a>(
         .map(|(index, question)| InterviewAnswer {
             id: &question.id,
             question: &question.text,
-            answer: answers.get(index).and_then(|answer| answer.as_deref()),
+            answer: answers
+                .get(index)
+                .and_then(|answer| answer.as_deref())
+                .map(bounded_model_input),
         })
         .collect()
 }
@@ -315,7 +342,7 @@ fn answered_questions<'a>(
             Some(AnsweredQuestion {
                 id: &question.id,
                 question: &question.text,
-                answer,
+                answer: bounded_model_input(answer),
             })
         })
         .collect()
@@ -335,7 +362,7 @@ pub fn build_interviewer_prompt(
         prompt_version: u32,
         round: usize,
         feature_name: &'a str,
-        feature_brief: &'a str,
+        feature_brief: Cow<'a, str>,
         prior_answers: Vec<InterviewAnswer<'a>>,
         existing_question_ids: Vec<&'a str>,
         repository_context: &'a RepositoryContext,
@@ -345,7 +372,7 @@ pub fn build_interviewer_prompt(
         prompt_version: INTERVIEWER_PROMPT_VERSION,
         round,
         feature_name,
-        feature_brief: brief,
+        feature_brief: bounded_model_input(brief),
         prior_answers: interview_answers(questions, answers),
         existing_question_ids: questions
             .iter()
@@ -376,7 +403,7 @@ pub fn build_synthesis_prompt(
     struct SynthesisInput<'a> {
         prompt_version: u32,
         feature_name: &'a str,
-        feature_brief: &'a str,
+        feature_brief: Cow<'a, str>,
         interview_answers: Vec<AnsweredQuestion<'a>>,
         repository_context: &'a RepositoryContext,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -386,7 +413,7 @@ pub fn build_synthesis_prompt(
     let input = SynthesisInput {
         prompt_version: SYNTHESIS_PROMPT_VERSION,
         feature_name,
-        feature_brief: brief,
+        feature_brief: bounded_model_input(brief),
         // Skipped questions are omitted entirely rather than sent as nulls:
         // the plan should reflect what the user decided, not carry a list of
         // prompts they declined.
@@ -422,7 +449,7 @@ pub fn build_critique_prompt(
         prompt_version: u32,
         feature_name: &'a str,
         draft_plan: &'a str,
-        feature_brief: &'a str,
+        feature_brief: Cow<'a, str>,
         interview_answers: Vec<InterviewAnswer<'a>>,
         repository_context: &'a RepositoryContext,
     }
@@ -431,7 +458,7 @@ pub fn build_critique_prompt(
         prompt_version: CRITIQUE_PROMPT_VERSION,
         feature_name,
         draft_plan: plan,
-        feature_brief: brief,
+        feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
         repository_context: context,
     };
@@ -458,7 +485,7 @@ pub fn build_directed_revision_prompt(
         feature_name: &'a str,
         draft_plan: &'a str,
         user_instruction: &'a str,
-        feature_brief: &'a str,
+        feature_brief: Cow<'a, str>,
         interview_answers: Vec<InterviewAnswer<'a>>,
     }
 
@@ -467,7 +494,7 @@ pub fn build_directed_revision_prompt(
         feature_name,
         draft_plan: plan,
         user_instruction: instruction,
-        feature_brief: brief,
+        feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
     };
     let input_json = serde_json::to_string_pretty(&input)
@@ -515,7 +542,7 @@ pub fn build_investigation_prompt(
         feature_name: &'a str,
         draft_plan: &'a str,
         research_focus: &'a str,
-        feature_brief: &'a str,
+        feature_brief: Cow<'a, str>,
         interview_answers: Vec<InterviewAnswer<'a>>,
     }
 
@@ -524,7 +551,7 @@ pub fn build_investigation_prompt(
         feature_name,
         draft_plan: plan,
         research_focus: focus,
-        feature_brief: brief,
+        feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
     };
     let input_json = serde_json::to_string_pretty(&input)
@@ -550,7 +577,7 @@ pub fn build_investigation_merge_prompt(
         prompt_version: u32,
         feature_name: &'a str,
         draft_plan: &'a str,
-        feature_brief: &'a str,
+        feature_brief: Cow<'a, str>,
         interview_answers: Vec<InterviewAnswer<'a>>,
         investigation_findings: &'a [PlanInvestigationFinding],
     }
@@ -559,7 +586,7 @@ pub fn build_investigation_merge_prompt(
         prompt_version: INVESTIGATION_MERGE_PROMPT_VERSION,
         feature_name,
         draft_plan: plan,
-        feature_brief: brief,
+        feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
         investigation_findings: findings,
     };
@@ -1129,6 +1156,57 @@ mod tests {
         // A first pass must not hint at feedback that does not exist.
         assert!(!prompt.contains("reviewer_feedback"));
         assert!(!prompt.contains("This request is a revision"));
+    }
+
+    #[test]
+    fn model_prompts_bound_giant_briefs_and_answers_without_losing_unicode_boundaries() {
+        let questions = vec![PlanQuestion {
+            id: "details".into(),
+            text: "Paste the detailed constraints.".into(),
+            kind: PlanQuestionKind::FreeText,
+            source: QuestionSource::Builtin,
+            optional: true,
+        }];
+        let brief = format!("{}BRIEF_TAIL", "β".repeat(MODEL_INPUT_FIELD_MAX_CHARS + 1));
+        let answer = format!(
+            "{}ANSWER_TAIL",
+            "🧰".repeat(MODEL_INPUT_FIELD_MAX_CHARS + 1)
+        );
+        let context = RepositoryContext {
+            top_level_entries: Vec::new(),
+            readme_head: None,
+            claude_md: None,
+        };
+
+        let prompt = build_synthesis_prompt(
+            "bounded-input",
+            &brief,
+            &questions,
+            &[Some(answer)],
+            &context,
+            None,
+        );
+
+        assert_eq!(
+            prompt
+                .matches("truncated for model input; full text remains in the interview transcript")
+                .count(),
+            2
+        );
+        assert!(!prompt.contains("BRIEF_TAIL"));
+        assert!(!prompt.contains("ANSWER_TAIL"));
+        // JSON serialization escapes no part of these Unicode scalar values;
+        // their presence proves truncation stopped on a char boundary.
+        assert!(prompt.contains('β'));
+        assert!(prompt.contains('🧰'));
+    }
+
+    #[test]
+    fn small_model_inputs_are_unchanged() {
+        assert!(matches!(
+            bounded_model_input("short answer"),
+            Cow::Borrowed("short answer")
+        ));
     }
 
     /// The interviewer and reviewer both need the *asked* set, not just the

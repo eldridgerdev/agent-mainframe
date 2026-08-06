@@ -806,6 +806,16 @@ mod tests {
     }
 
     #[test]
+    fn skipping_builtins_without_templates_produces_an_empty_question_bank() {
+        let config = ExtensionConfig {
+            skip_builtin_questions: Some(true),
+            ..Default::default()
+        };
+
+        assert!(config.plan_interview_questions().is_empty());
+    }
+
+    #[test]
     fn configured_plan_questions_parse_free_text_and_select_options() {
         let raw = r#"{
             "plan_questions": [

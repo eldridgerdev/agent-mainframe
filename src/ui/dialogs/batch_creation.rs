@@ -317,6 +317,13 @@ fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesSta
         ])
         .split(inner);
 
+    let plan_notice = Paragraph::new(Line::from(vec![
+        Span::styled(" Note: ", Style::default().fg(theme.warning.to_color())),
+        Span::raw("Plan interviews are skipped for batch creation."),
+    ]))
+    .style(Style::default().fg(theme.text_muted.to_color()));
+    frame.render_widget(plan_notice, chunks[0]);
+
     let constraints: Vec<Constraint> = if state.agent == AgentKind::Claude {
         vec![
             Constraint::Length(3),
@@ -409,4 +416,35 @@ fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesSta
         Span::raw(" back"),
     ]));
     frame.render_widget(hints, chunks[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+
+    #[test]
+    fn feature_settings_explain_that_plan_interviews_are_skipped() {
+        let mut state = CreateBatchFeaturesState::with_workspace(Some("/tmp/repo".to_string()));
+        state.step = CreateBatchFeaturesStep::FeatureSettings;
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_create_batch_features_dialog(frame, &state, &Theme::default()))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("Plan interviews are skipped for batch creation."));
+    }
 }

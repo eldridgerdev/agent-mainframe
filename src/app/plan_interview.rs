@@ -1948,6 +1948,26 @@ mod tests {
     }
 
     #[test]
+    fn static_plan_preserves_a_giant_answer_losslessly() {
+        let questions = vec![free_text_question("details", "What are the details?")];
+        let answer = format!(
+            "{}FULL_ANSWER_TAIL",
+            "🧰".repeat(crate::plan_interview::MODEL_INPUT_FIELD_MAX_CHARS + 1)
+        );
+
+        let plan = render_static_plan(
+            "large-input",
+            "Keep the complete interview locally.",
+            &questions,
+            &[Some(answer.clone())],
+        );
+
+        assert!(plan.contains(&answer));
+        assert!(plan.ends_with("FULL_ANSWER_TAIL\n"));
+        assert!(!plan.contains("truncated for model input"));
+    }
+
+    #[test]
     fn writing_plan_creates_claude_dir_and_idempotent_ignore_entry() {
         let workdir = TempDir::new().unwrap();
         fs::create_dir(workdir.path().join(".claude")).unwrap();

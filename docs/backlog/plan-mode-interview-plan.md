@@ -1,6 +1,6 @@
 # Plan Mode: guided feature discovery interview
 
-- **Status:** In progress
+- **Status:** Complete
 - **Owner:** unassigned
 - **Relates to:** current plan mode (`ensure_plan_mode_claude_md` in
   `src/app/setup.rs`, `Feature.plan_mode` in `src/project.rs`), feature
@@ -639,12 +639,32 @@ interview with prior answers pre-filled, get an updated
       contributes a distinct planning decision. The surviving question
       IDs remain stable; projects that override either retired ID still
       get that configured question appended as a project-specific prompt
-- [ ] Preset interplay verified (preset with plan_mode → interview);
-      batch creation explicitly skips with a notice
-- [ ] Empty/edge handling: zero-question config, brief-only fast path
-      ("just synthesize from the brief"), giant answers
+- [x] Preset interplay verified (preset with plan_mode → interview);
+      batch creation explicitly skips with a notice — an end-to-end
+      feature-creation regression applies a plan-mode preset and proves the
+      launch is deferred into `PlanInterview`, while the batch settings dialog
+      tells users that plan interviews are skipped for batch creation (with a
+      render test keeping the notice visible). Visual proof:
+      `docs/screenshots/plan-mode-preset-batch/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-mode-preset-batch.txt`
+- [x] Empty/edge handling: zero-question config, brief-only fast path
+      ("just synthesize from the brief"), giant answers — opting out of the
+      built-in bank with no configured replacements now has explicit regression
+      coverage, and `Ctrl+F` from the required brief is covered end to end as a
+      direct synthesis path with no question or adaptive round. Briefs and
+      answers larger than 12,000 Unicode characters are preserved losslessly in
+      the draft/transcript and raw-plan fallback, while each field is bounded
+      with an explicit truncation marker at the model-prompt boundary so pasted
+      logs or documents cannot consume an unbounded headless context. Visual
+      proof of the zero-question and brief-only flow:
+      `docs/screenshots/plan-mode-edge-handling/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-edge-handling.txt`
 - [x] CHANGELOG + CLAUDE.md architecture-section updates
-- [ ] Update this doc's status / trim to a pointer once in progress
+- [x] Update this doc's status / trim to a pointer once in progress — status is
+      now complete and the backlog index points to the shipped workflow. This
+      document remains as the design/implementation record because it captures
+      the settled decisions, fallback semantics, and reproducible visual proof;
+      the user-facing workflow and keys live in `README.md`
 
 ## Open questions
 

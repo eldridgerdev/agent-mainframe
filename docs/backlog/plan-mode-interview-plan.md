@@ -199,15 +199,18 @@ pub struct PlanQuestion {
   - opencode: `opencode run <prompt>` in `<workdir>` (default text
     output; `--format json` emits raw event streams, more parsing
     for no gain)
-  - pi: no confirmed non-interactive mode; probe at runtime and
-    fall through to the fallback order until verified
+  - pi: `pi -p --no-session`, with the prompt piped over stdin;
+    context-complete calls add `--no-tools` plus resource-discovery
+    shutoffs, while repository investigations allow only
+    `read,grep,find,ls`
   `headless_available(agent) -> bool` probes the binary once so the
   UI can say up front which engine will power the interview. All
   harnesses take the prompt over stdin where supported — interview
   prompts carry accumulated Q&A plus repo context and can outgrow
   the Linux argv size cap (the E2BIG failure `run_headless` already
   guards against).
-- **Harness selection:** prefer the feature's configured agent; if
+- **Harness selection:** prefer the feature's configured agent (including Pi
+  when its installed CLI advertises the full safe-headless flag set); if
   it has no headless support or isn't installed, fall back to the
   first available harness (claude → codex → opencode), and if none
   are available degrade to static-questions-only with a notice. The
@@ -394,13 +397,18 @@ interview shows them merged with (or replacing) the built-in bank.
 Demo: after static questions, an explicit token-use prompt offers AI
 follow-ups. Opting in opens a loading frame and asks questions
 tailored to the answers — powered by the feature's own harness
-(claude, codex, or opencode); declining, failure, or an environment
+(claude, codex, opencode, or pi); declining, failure, or an environment
 with no headless-capable harness silently proceeds without them.
 
 - [x] `src/headless.rs`: runner dispatching by `AgentKind`
-      (`claude -p`, `codex exec`, `opencode run`), availability
+      (`claude -p`, `codex exec`, `opencode run`, `pi -p`), availability
       probe, fallback order (feature's agent → claude → codex →
-      opencode → static-only)
+      opencode → static-only). Pi was enabled on 2026-08-06 after its
+      print, ephemeral-session, no-tools, read-only tool allowlist, resource
+      isolation, project-trust, and model flags were verified; older Pi
+      versions continue through the fallback order. Visual proof:
+      `docs/screenshots/plan-mode-pi-headless/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-pi-headless.txt`
 - [x] Interviewer prompt constant (fenced-JSON reply contract) +
       repo-context gatherer (bounded: README head, dir listing,
       CLAUDE.md)
@@ -668,15 +676,18 @@ interview with prior answers pre-filled, get an updated
 
 ## Open questions
 
-Only one remains; the rest were resolved on 2026-07-13 (decisions
-recorded inline in the design sections above):
+None. The original design questions are recorded below with their resolutions.
 
-- **Pi headless support:** does pi expose a usable non-interactive
-  mode? Not installed on the dev box to verify. Until confirmed, pi
-  features run their interview through the fallback order
-  (claude → codex → opencode → static-only) via the runtime probe.
+### Resolved
 
-### Resolved (2026-07-13)
+- **Pi headless support** → resolved 2026-08-06 from the official CLI
+  contract: `-p` consumes piped stdin and exits, `--no-session` keeps calls
+  ephemeral, `--no-tools` disables all tools, and
+  `--tools read,grep,find,ls` provides the read-only investigation surface.
+  AMF also disables discovered extensions, skills, prompt templates, and
+  context files and ignores project-local config for these runs. The runtime
+  availability probe requires every relied-on flag, preserving the former
+  fallback behavior for older Pi installations.
 
 - **Cross-restart resume** → persist drafts to SQLite; resume/discard
   offered on re-entry (see UX flow; lands with Epic 5).

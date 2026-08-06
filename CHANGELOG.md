@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **Pi can now power its own plan interviews.** When the installed Pi CLI
+  advertises its current safe-headless contract, AMF prefers it for Pi
+  features instead of immediately falling back to Claude, Codex, or Opencode.
+  Question generation and synthesis run without tools or repository-provided
+  resources; directed feedback and isolated investigations receive only Pi's
+  read, grep, find, and list tools. Every call is ephemeral. Older Pi versions
+  keep the existing fallback behavior and do not run with weakened isolation.
+  No migration is required.
+
 - **The theme picker groups subtypes instead of listing all 28 themes flat.**
   Catppuccin and Gruvbox Material alone made up 22 of the picker's 28 rows,
   burying the six standalone themes (Default, AMF, Dracula, Nord, Gruvbox

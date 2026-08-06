@@ -740,6 +740,12 @@ pub struct App {
     /// synthesis and critique because it may inspect the feature workdir with
     /// read-only tools and is only valid for its dedicated loading phase.
     pub plan_interview_directed_feedback_bg: Option<Receiver<Result<String>>>,
+    /// Receiver for the optional context-isolated investigation workflow. Its
+    /// worker runs one fresh read-only context per focus, then a separate
+    /// no-tools merge context, and returns the proposed revised plan alongside
+    /// the focuses whose investigator failed.
+    pub plan_interview_investigation_bg:
+        Option<Receiver<Result<crate::plan_interview::PlanInvestigationOutcome>>>,
     /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
@@ -1014,7 +1020,11 @@ impl App {
             // while plan-interview AI work runs in the background.
             AppMode::PlanInterview(state) => matches!(
                 state.phase,
-                PlanInterviewPhase::AiLoading | PlanInterviewPhase::SynthesisLoading
+                PlanInterviewPhase::AiLoading
+                    | PlanInterviewPhase::SynthesisLoading
+                    | PlanInterviewPhase::CritiqueLoading
+                    | PlanInterviewPhase::DirectedFeedbackLoading
+                    | PlanInterviewPhase::InvestigationLoading
             ),
             _ => false,
         };
@@ -2144,6 +2154,7 @@ impl App {
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
             plan_interview_directed_feedback_bg: None,
+            plan_interview_investigation_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
@@ -2359,6 +2370,7 @@ impl App {
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
             plan_interview_directed_feedback_bg: None,
+            plan_interview_investigation_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,

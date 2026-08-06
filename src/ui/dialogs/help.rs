@@ -151,6 +151,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "f",
             "Give free-form feedback; the agent may inspect the repository read-only (uses tokens)",
         ),
+        (
+            "i",
+            "Research focused questions in isolated read-only contexts, then merge findings (uses tokens)",
+        ),
         ("r", "Regenerate the plan (uses tokens)"),
         (
             "Enter",
@@ -158,6 +162,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ),
         ("Ctrl+S", "Save edit and return to preview"),
         ("Ctrl+S (feedback)", "Send feedback and revise the plan"),
+        (
+            "Ctrl+S (research)",
+            "Run isolated investigators and merge their findings",
+        ),
         ("Esc", "Discard edit or confirm abort"),
     ];
 

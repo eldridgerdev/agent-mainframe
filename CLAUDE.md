@@ -189,7 +189,8 @@ Key dispatch per mode:
    - `hooks.rs` - change reason, running hook, hook
      prompt dialogs
    - `plan_interview.rs` - discovery questions, loading frames,
-     plan review, editing, critique, and directed feedback
+     plan review, editing, critique, directed feedback, and isolated
+     investigation
    - `todos.rs` - native TODOs list view, delete confirm,
      and quick-capture overlay
 - `centered_rect(percent_x, percent_y, area) -> Rect`

@@ -3184,6 +3184,34 @@ fn begin_directed_plan_revision_for_test(
     tx
 }
 
+/// Drop straight into an in-flight isolated investigation without launching
+/// real read-only or merge harnesses.
+fn begin_plan_investigation_for_test(
+    app: &mut App,
+) -> std::sync::mpsc::Sender<anyhow::Result<crate::plan_interview::PlanInvestigationOutcome>> {
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    assert!(state.begin_investigation());
+    state.editor = crate::editor::TextEditor::new(
+        "Trace the session launch boundary and identify its tests.".into(),
+    );
+    assert!(state.begin_investigation_loading(1_200));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_investigation_bg = Some(rx);
+    tx
+}
+
+/// A merge result in which every investigator completed.
+fn investigation_outcome(
+    merge_response: String,
+) -> crate::plan_interview::PlanInvestigationOutcome {
+    crate::plan_interview::PlanInvestigationOutcome {
+        merge_response,
+        failed_focuses: Vec::new(),
+    }
+}
+
 #[test]
 fn directed_plan_feedback_replaces_the_draft_then_returns_to_review() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
@@ -3254,6 +3282,132 @@ fn dismissing_directed_feedback_discards_its_late_revision() {
     let revised = original.replace("Implement the feature", "Update src/handlers/router.rs");
     tx.send(Ok(revised)).unwrap();
     assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
+}
+
+#[test]
+fn isolated_investigation_merges_findings_then_returns_to_review() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_plan_investigation_for_test(&mut app);
+    let revised = original.replace("Implement the feature", "Update src/app/feature_ops.rs");
+    tx.send(Ok(investigation_outcome(revised.clone()))).unwrap();
+
+    assert!(app.poll_plan_interview_investigation_bg());
+    assert!(app.plan_interview_investigation_bg.is_none());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Investigation findings merged into the draft; review the changes")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(revised.as_str())
+    ));
+}
+
+#[test]
+fn partly_failed_isolated_investigation_still_merges_what_completed() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_plan_investigation_for_test(&mut app);
+    let revised = original.replace("Implement the feature", "Update src/app/feature_ops.rs");
+    tx.send(Ok(crate::plan_interview::PlanInvestigationOutcome {
+        merge_response: revised.clone(),
+        failed_focuses: vec!["Trace the notification hooks.".into()],
+    }))
+    .unwrap();
+
+    assert!(app.poll_plan_interview_investigation_bg());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Investigation merged with 1 focus(es) unresearched; review the changes")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(revised.as_str())
+    ));
+}
+
+#[test]
+fn pasting_into_the_investigation_focus_editor_inserts_text() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        assert!(state.begin_investigation());
+    }
+
+    crate::handlers::handle_paste(&mut app, "Trace the session launch boundary.").unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Investigation
+                && state.editor.text() == "Trace the session launch boundary."
+                && state.edit_sync_to_cursor
+    ));
+}
+
+#[test]
+fn failed_isolated_investigation_preserves_focus_and_plan_for_retry() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_plan_investigation_for_test(&mut app);
+    tx.send(Err(anyhow::anyhow!("investigator failed")))
+        .unwrap();
+
+    assert!(app.poll_plan_interview_investigation_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Investigation
+                && state.editor.text().contains("Trace the session launch boundary")
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Isolated investigation failed; your research request is preserved")
+    );
+}
+
+#[test]
+fn dismissing_isolated_investigation_discards_its_late_revision() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_plan_investigation_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review
+    ));
+
+    let revised = original.replace("Implement the feature", "Update src/app/feature_ops.rs");
+    tx.send(Ok(investigation_outcome(revised))).unwrap();
+    assert!(app.poll_plan_interview_investigation_bg());
     assert!(matches!(
         &app.mode,
         AppMode::PlanInterview(state)

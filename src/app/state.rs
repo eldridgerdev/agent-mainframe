@@ -3705,6 +3705,12 @@ pub enum PlanInterviewPhase {
     DirectedFeedback,
     /// A repository-aware, read-only revision from that instruction is in flight.
     DirectedFeedbackLoading,
+    /// The user is identifying one or more plan questions that need a focused,
+    /// context-isolated repository investigation.
+    Investigation,
+    /// Fresh read-only investigator contexts are gathering findings, after
+    /// which a separate no-tools planning context merges them into the draft.
+    InvestigationLoading,
     /// A background headless call is reviewing the draft plan.
     CritiqueLoading,
     /// An agent's advisory review of the draft plan is on screen. The plan
@@ -3833,6 +3839,10 @@ pub struct PlanInterviewState {
     /// can return it intact for retrying or adjustment.
     pub directed_feedback_started_at: Option<std::time::Instant>,
     pub directed_feedback_token_estimate: usize,
+    /// Start time and aggregate prompt-size estimate for the isolated
+    /// investigation plus its separate no-tools merge pass.
+    pub investigation_started_at: Option<std::time::Instant>,
+    pub investigation_token_estimate: usize,
     /// An agent's advisory review of the plan currently at the review gate.
     /// Cleared whenever the plan changes, since the findings describe the
     /// draft they were written against.
@@ -3951,6 +3961,8 @@ impl PlanInterviewState {
             edit_sync_to_cursor: false,
             directed_feedback_started_at: None,
             directed_feedback_token_estimate: 0,
+            investigation_started_at: None,
+            investigation_token_estimate: 0,
             critique: None,
             critique_started_at: None,
             critique_token_estimate: 0,
@@ -4345,6 +4357,64 @@ impl PlanInterviewState {
         true
     }
 
+    /// Open a blank editor for research questions or plan sections that need
+    /// repository evidence before the plan is accepted.
+    pub fn begin_investigation(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Review || self.synthesized_plan.is_none() {
+            return false;
+        }
+        self.editor = TextEditor::new(String::new());
+        self.edit_scroll_offset = 0;
+        self.edit_sync_to_cursor = true;
+        self.phase = PlanInterviewPhase::Investigation;
+        true
+    }
+
+    /// Freeze the research-focus editor while isolated investigators and the
+    /// final no-tools merge pass run in the background.
+    pub fn begin_investigation_loading(&mut self, token_estimate: usize) -> bool {
+        if self.phase != PlanInterviewPhase::Investigation
+            || self.synthesized_plan.is_none()
+            || self.editor.text().trim().is_empty()
+        {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::InvestigationLoading;
+        self.investigation_started_at = Some(std::time::Instant::now());
+        self.investigation_token_estimate = token_estimate;
+        true
+    }
+
+    /// Return to the research-focus editor after any investigator or merge
+    /// failure, preserving the request so the user can retry or narrow it.
+    pub fn fail_investigation(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::InvestigationLoading {
+            return false;
+        }
+        self.investigation_started_at = None;
+        self.phase = PlanInterviewPhase::Investigation;
+        true
+    }
+
+    /// Leave the optional investigation without changing the draft plan.
+    pub fn cancel_investigation(&mut self) -> bool {
+        if !matches!(
+            self.phase,
+            PlanInterviewPhase::Investigation | PlanInterviewPhase::InvestigationLoading
+        ) {
+            return false;
+        }
+        self.investigation_started_at = None;
+        self.phase = PlanInterviewPhase::Review;
+        true
+    }
+
+    /// Apply the context-isolated merge result and return to the review gate.
+    pub fn apply_investigation_revision(&mut self, plan: String) {
+        self.investigation_started_at = None;
+        self.apply_synthesis(plan);
+    }
+
     /// Move into the agent-review loading phase. Returns false outside the
     /// review gate so a stray keypress cannot start a paid call from a phase
     /// that has no plan to review.
@@ -4613,6 +4683,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::Editing
             | PlanInterviewPhase::DirectedFeedback
             | PlanInterviewPhase::DirectedFeedbackLoading
+            | PlanInterviewPhase::Investigation
+            | PlanInterviewPhase::InvestigationLoading
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
             | PlanInterviewPhase::KickoffHandoff
@@ -4690,6 +4762,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::Editing
             | PlanInterviewPhase::DirectedFeedback
             | PlanInterviewPhase::DirectedFeedbackLoading
+            | PlanInterviewPhase::Investigation
+            | PlanInterviewPhase::InvestigationLoading
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
             | PlanInterviewPhase::KickoffHandoff => false,
@@ -4719,6 +4793,8 @@ impl PlanInterviewState {
             | PlanInterviewPhase::Editing
             | PlanInterviewPhase::DirectedFeedback
             | PlanInterviewPhase::DirectedFeedbackLoading
+            | PlanInterviewPhase::Investigation
+            | PlanInterviewPhase::InvestigationLoading
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
             | PlanInterviewPhase::KickoffHandoff
@@ -5193,6 +5269,34 @@ mod tests {
             state.synthesized_plan.as_deref(),
             Some("# Plan: original\n")
         );
+    }
+
+    #[test]
+    fn isolated_investigation_preserves_the_plan_and_retryable_focus() {
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
+        state.apply_synthesis("# Plan: original\n".into());
+
+        assert!(state.begin_investigation());
+        assert_eq!(state.phase, PlanInterviewPhase::Investigation);
+        assert!(!state.begin_investigation_loading(100));
+
+        state.editor = TextEditor::new("Trace the session launch boundary.".into());
+        assert!(state.begin_investigation_loading(1_200));
+        assert_eq!(state.phase, PlanInterviewPhase::InvestigationLoading);
+        assert!(state.investigation_started_at.is_some());
+        assert_eq!(state.investigation_token_estimate, 1_200);
+
+        assert!(state.fail_investigation());
+        assert_eq!(state.phase, PlanInterviewPhase::Investigation);
+        assert_eq!(state.editor.text(), "Trace the session launch boundary.");
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+
+        assert!(state.cancel_investigation());
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
     }
 
     #[test]

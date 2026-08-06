@@ -48,6 +48,12 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
     ) {
         return handle_plan_directed_feedback_key(app, key);
     }
+    if matches!(
+        phase,
+        PlanInterviewPhase::Investigation | PlanInterviewPhase::InvestigationLoading
+    ) {
+        return handle_plan_investigation_key(app, key);
+    }
     if phase == PlanInterviewPhase::Review {
         return handle_plan_review_key(app, key);
     }
@@ -274,6 +280,12 @@ fn handle_plan_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             app.message = None;
         }
+        KeyCode::Char('i') if key.modifiers.is_empty() => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.begin_investigation();
+            }
+            app.message = None;
+        }
         _ => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 apply_scroll_key(key, &mut state.review_scroll_offset);
@@ -306,6 +318,42 @@ fn handle_plan_directed_feedback_key(app: &mut App, key: KeyEvent) -> Result<()>
         }
         KeyCode::Char('s') if !loading && key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.start_plan_interview_directed_feedback()?;
+        }
+        _ if !loading => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                let outcome = state.editor.handle_key(key);
+                if outcome.text_changed {
+                    state.edit_sync_to_cursor = true;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Research-focus editor for context-isolated repository investigation. Blank
+/// lines delimit separate investigator contexts; `Ctrl+S` starts the paid
+/// read-only passes and their separate no-tools merge.
+fn handle_plan_investigation_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let loading = matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::InvestigationLoading
+    );
+    match key.code {
+        KeyCode::Esc => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.cancel_investigation();
+            }
+            app.message = if loading {
+                Some("Investigation dismissed; any late result will be ignored".into())
+            } else {
+                None
+            };
+        }
+        KeyCode::Char('s') if !loading && key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.start_plan_interview_investigation()?;
         }
         _ if !loading => {
             if let AppMode::PlanInterview(state) = &mut app.mode {

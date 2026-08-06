@@ -181,6 +181,13 @@ are tagged.
   code locations, then returns a revised draft for you to review before
   accepting it. Failed revisions keep both the current plan and your
   instruction so you can retry without retyping it.
+- **Plan research can now stay out of the implementation session's context.**
+  Press `i` at the plan review gate and enter up to four research focuses,
+  separated by blank lines. AMF runs each in a fresh read-only agent context,
+  validates and bounds the findings, then gives only those findings to a
+  separate no-tools planning pass that merges them into the draft. Failed or
+  dismissed investigations leave the current plan untouched, and a failure
+  preserves the research request for retry. No migration is required.
 
 ### Changed
 

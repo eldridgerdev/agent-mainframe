@@ -1,0 +1,32 @@
+# plan-interview-isolated-investigation: proves the optional, context-isolated
+# research UI at the plan review gate.
+#
+# Requires --seed with a create-project payload and --seed-feature with a
+# create-feature payload for the same project. A draft plan is inserted into
+# the scratch database so the capture reaches the review gate without spending
+# tokens on synthesis. The scenario stops in the focus editor and makes no
+# investigator or merge call.
+
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db"
+wait:500
+
+# Select the seeded feature, open its on-demand interview, and resume the
+# already-synthesized draft straight into the review gate.
+key:j
+wait:400
+key:P
+wait:900
+key:r
+wait:900
+shot:review-gate-with-investigate-action
+
+# `i` opens the research-focus editor. Two blank-line-separated focuses prove
+# the context boundary without pressing Ctrl+S or spending agent tokens.
+key:i
+wait:500
+text:Trace the sidebar plan preview from disk to rendering.
+key:Enter
+key:Enter
+text:Identify focused tests for narrow terminal widths.
+wait:500
+shot:isolated-investigation-editor

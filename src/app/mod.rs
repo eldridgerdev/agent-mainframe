@@ -816,6 +816,10 @@ pub struct App {
     /// once that session is observed thinking-then-idle, at which point a
     /// "fixes ready — re-review?" notification is raised.
     pub awaiting_review_fixes: HashMap<String, AwaitingReviewFix>,
+    /// A file the reviewer asked to open in `$VISUAL`/`$EDITOR`. Set by the
+    /// review viewer and drained by the main loop, which suspends the TUI,
+    /// runs the editor, and restores the screen.
+    pub pending_editor: Option<PendingEditorOpen>,
     pub ipc_tool_sessions: std::collections::HashSet<String>,
     /// Feature-session IDs currently reported as thinking by hook/plugin IPC.
     /// Unlike `ipc_thinking_sessions`, this distinguishes agent windows that
@@ -2173,6 +2177,7 @@ impl App {
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             awaiting_review_fixes: HashMap::new(),
+            pending_editor: None,
             ipc_tool_sessions: std::collections::HashSet::new(),
             ipc_thinking_feature_sessions: std::collections::HashSet::new(),
             ipc_tool_feature_sessions: std::collections::HashSet::new(),
@@ -2389,6 +2394,7 @@ impl App {
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             awaiting_review_fixes: HashMap::new(),
+            pending_editor: None,
             ipc_tool_sessions: std::collections::HashSet::new(),
             ipc_thinking_feature_sessions: std::collections::HashSet::new(),
             ipc_tool_feature_sessions: std::collections::HashSet::new(),

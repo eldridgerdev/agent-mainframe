@@ -18,9 +18,10 @@
   `final-review-feedback.md` with an archive file, and batches REVIEW MODE's
   note instruction per turn. Per-action model overrides (a `review_models`
   map keyed by `ReviewAction`) and bounded live review notes with a
-  reviewer-visible archive have since shipped too. The remaining
-  viewer-ergonomics items are `$EDITOR` at the cursored line, a `?` help
-  overlay, and mouse support; the AI co-review
+  reviewer-visible archive have since shipped too, as has `$EDITOR` at the
+  cursored line. The remaining
+  viewer-ergonomics items are a `?` help
+  overlay and mouse support; the AI co-review
   and workflow items are not yet started. Three Cost follow-ups remain:
   cumulative final-review workflow accounting, best-effort attribution of
   review-note generation cost, and measuring the most token-efficient way to
@@ -1132,7 +1133,38 @@ Viewer:
       once the review has a comment, `U` once there's a verdict to take back).
       `diff_review_jump_comment` / `diff_review_undo_verdict` in
       `src/app/review.rs`; key dispatch in `src/handlers/diff.rs`.
-- [ ] Open at cursored line in `$EDITOR`
+- [x] Open at cursored line in `$EDITOR` — press `E` in Final Review to suspend
+      the TUI and open the current file in `$VISUAL` / `$EDITOR` (falling back
+      to `vi`), placing the cursor on the line under the review cursor. With the
+      cursor off it opens at the first hunk instead, so the key is useful before
+      entering cursor mode. Because the cursor indexes `addressable_lines()`,
+      which includes removed lines that no longer exist in the working copy, a
+      cursor parked on a deletion lands on the nearest surviving line above it
+      (else below) rather than at the top of the file — `editor_target_line`
+      in `src/app/review.rs`. The target file is validated through the existing
+      `guarded_worktree_file` (regular file, inside the worktree, not a
+      symlink); a deleted or binary file reports why instead of being a silent
+      no-op, and the footer hint is hidden for those files rather than
+      advertising a key that can only explain itself.
+      Line-number syntax is per editor (`editor_invocation`): `+N file` for the
+      vi family / nano / emacs / kak / micro, `--goto path:N` (plus an implied
+      `--wait`, since a GUI editor that forks would return straight to a
+      redrawn TUI) for VS Code and its forks, `path:N` for helix / sublime /
+      zed, and — deliberately — plain `path` for an editor AMF doesn't
+      recognise, since an unsupported flag would be read as a second filename
+      and open an empty buffer called `+42`. An `$EDITOR` carrying its own
+      flags (`emacsclient -nw`) is preserved.
+      Resolution happens in the app layer, but the suspend/run/restore is the
+      main loop's (`run_pending_editor`, `src/main.rs`), which owns raw mode
+      and the alternate screen — the app hands over a `PendingEditorOpen`
+      (`src/app/state.rs`) and the loop drains it. Teardown/restore mirrors
+      `main`'s setup exactly, so the editor sees the terminal it would have
+      had if AMF were never started, and the screen is always restored before
+      any error is reported. On return, the file's size/mtime is compared
+      against a fingerprint taken before handing over; if the reviewer actually
+      changed something, the diff is reloaded through the ordinary
+      `refresh_diff_viewer` path — which re-anchors comments for free — rather
+      than leaving stale hunks under the existing annotations.
 - [ ] `?` help overlay for review mode
 - [ ] Mouse support in the diff viewer (file list, patch scroll,
       comment cursor)

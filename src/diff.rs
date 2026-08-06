@@ -144,6 +144,14 @@ impl DiffFile {
         out
     }
 
+    /// Whether opening this file in `$EDITOR` can do anything useful. A deletion
+    /// has no file left on disk and a binary blob has nothing an editor can show,
+    /// so both footers use this to hide the `E` hint rather than advertise a key
+    /// that can only report why it won't work.
+    pub fn can_open_in_editor(&self) -> bool {
+        !self.is_binary && !matches!(self.status, DiffFileStatus::Deleted)
+    }
+
     /// Whether this file's hunks can be re-rendered with more context. Needs
     /// both blobs: expansion pulls the surrounding lines out of them. Added,
     /// deleted, untracked and binary files never qualify — one side has no

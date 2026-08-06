@@ -2227,6 +2227,46 @@ impl App {
         }
     }
 
+    /// Open the current file in `$VISUAL`/`$EDITOR`, at the cursored line when
+    /// the line cursor is active. Only resolves and validates the target here —
+    /// the actual suspend/run/restore is the main loop's job, since it owns the
+    /// terminal state (`PendingEditorOpen`).
+    pub fn diff_review_open_in_editor(&mut self) {
+        let resolved = match &self.mode {
+            AppMode::DiffViewer(state) => {
+                let Some(file) = state.files.get(state.selected_file) else {
+                    self.message = Some("No file to open".to_string());
+                    return;
+                };
+                // A deletion has no file on disk, and a binary one has nothing
+                // an editor can usefully show — say so rather than failing on
+                // the filesystem check with a vaguer message.
+                if matches!(file.status, crate::diff::DiffFileStatus::Deleted) {
+                    self.message = Some(format!("{} was deleted — nothing to open", file.path));
+                    return;
+                }
+                if file.is_binary {
+                    self.message = Some(format!("{} is binary — nothing to edit", file.path));
+                    return;
+                }
+                match guarded_worktree_file(&state.workdir, &file.path) {
+                    Ok(path) => Ok(PendingEditorOpen {
+                        path,
+                        workdir: state.workdir.clone(),
+                        line: editor_target_line(file, state.comment_cursor),
+                        display: file.path.clone(),
+                    }),
+                    Err(reason) => Err(format!("Cannot open {}: {reason}", file.path)),
+                }
+            }
+            _ => return,
+        };
+        match resolved {
+            Ok(request) => self.pending_editor = Some(request),
+            Err(message) => self.message = Some(message),
+        }
+    }
+
     /// Undo the most recent explicit verdict (`a` / `s` / a typed rejection),
     /// restoring the file's previous decision — including whether it was one
     /// the line-comment rule had set implicitly — and returning the selection
@@ -3850,6 +3890,146 @@ fn guarded_worktree_file(workdir: &Path, relative: &str) -> std::result::Result<
     Ok(path)
 }
 
+/// The 1-based line in the file *on disk* that the editor should open at.
+///
+/// The cursor indexes `addressable_lines()`, which includes removed lines that
+/// no longer exist in the working copy. For one of those, land on the nearest
+/// surviving line above (else below) so the editor still arrives at the change
+/// instead of the top of the file. With the cursor off, this resolves to the
+/// first line of the first hunk.
+fn editor_target_line(file: &crate::diff::DiffFile, cursor: Option<usize>) -> Option<usize> {
+    let locations = file.addressable_lines();
+    if locations.is_empty() {
+        return None;
+    }
+    let start = cursor.unwrap_or(0).min(locations.len() - 1);
+    if let Some(line) = locations[start].new_line {
+        return Some(line);
+    }
+    locations[..start]
+        .iter()
+        .rev()
+        .find_map(|location| location.new_line)
+        .or_else(|| {
+            locations[start + 1..]
+                .iter()
+                .find_map(|location| location.new_line)
+        })
+}
+
+/// GUI editors fork and return immediately unless told to block, which would
+/// drop the reviewer back into a redrawn TUI with the file still open
+/// elsewhere. Only editors that actually accept `--wait` are listed.
+fn editor_needs_wait(stem: &str) -> bool {
+    matches!(
+        stem,
+        "code"
+            | "code-insiders"
+            | "codium"
+            | "vscodium"
+            | "cursor"
+            | "windsurf"
+            | "subl"
+            | "sublime_text"
+            | "zed"
+    )
+}
+
+/// Build the `(program, args)` to run for an `$EDITOR` value, placing the
+/// cursor on `line` where the editor is known to support it.
+///
+/// `editor` is split on whitespace so a value carrying its own flags
+/// (`code --wait`, `emacsclient -nw`) works; full shell quoting is deliberately
+/// not emulated. An editor we don't recognise is opened at the top of the file
+/// rather than guessing a flag it would read as a second filename.
+fn editor_invocation(
+    editor: &str,
+    path: &str,
+    line: Option<usize>,
+) -> Option<(String, Vec<String>)> {
+    let mut parts = editor.split_whitespace();
+    let program = parts.next()?.to_string();
+    let mut args: Vec<String> = parts.map(str::to_string).collect();
+
+    let stem = Path::new(&program)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if editor_needs_wait(&stem) && !args.iter().any(|arg| arg == "--wait" || arg == "-w") {
+        args.push("--wait".to_string());
+    }
+
+    match line {
+        // `+N file` — the convention vi and its descendants share.
+        Some(line)
+            if matches!(
+                stem.as_str(),
+                "vi" | "vim"
+                    | "nvim"
+                    | "view"
+                    | "gvim"
+                    | "mvim"
+                    | "nano"
+                    | "pico"
+                    | "emacs"
+                    | "emacsclient"
+                    | "joe"
+                    | "jed"
+                    | "mg"
+                    | "ne"
+                    | "kak"
+                    | "micro"
+            ) =>
+        {
+            args.push(format!("+{line}"));
+            args.push(path.to_string());
+        }
+        // VS Code and its forks need an explicit --goto.
+        Some(line)
+            if matches!(
+                stem.as_str(),
+                "code" | "code-insiders" | "codium" | "vscodium" | "cursor" | "windsurf"
+            ) =>
+        {
+            args.push("--goto".to_string());
+            args.push(format!("{path}:{line}"));
+        }
+        // `file:line` as a single argument.
+        Some(line)
+            if matches!(
+                stem.as_str(),
+                "hx" | "helix" | "subl" | "sublime_text" | "zed"
+            ) =>
+        {
+            args.push(format!("{path}:{line}"));
+        }
+        _ => args.push(path.to_string()),
+    }
+
+    Some((program, args))
+}
+
+/// Resolve the editor to run: `$VISUAL`, then `$EDITOR`, then `vi` — the
+/// standard precedence, so AMF honours whatever the reviewer's shell already
+/// configures. Blank values are ignored rather than treated as a program name.
+pub fn resolve_editor_command(
+    path: &str,
+    line: Option<usize>,
+) -> std::result::Result<(String, Vec<String>), String> {
+    let configured = ["VISUAL", "EDITOR"]
+        .iter()
+        .find_map(|name| match std::env::var(name) {
+            Ok(value) if !value.trim().is_empty() => Some(value),
+            _ => None,
+        })
+        .unwrap_or_else(|| "vi".to_string());
+
+    editor_invocation(&configured, path, line)
+        .ok_or_else(|| format!("$EDITOR ({configured}) is not a runnable command"))
+}
+
 /// Apply a set of suggestions for one file in a single write. The whole-file
 /// equality check is the dirty-file guard; bottom-up replacements keep the
 /// original line coordinates valid when earlier suggestions add/remove lines.
@@ -4898,10 +5078,10 @@ mod tests {
     use super::{
         CHECK_OUTPUT_MAX_CHARS, anchor_file_path, apply_suggestions_to_file, archive_review_notes,
         build_pr_review, build_walkthrough_prompt, comment_anchor_label, compose_feedback_log,
-        compute_search_matches, load_review_notes, parse_agent_responses, parse_co_review_output,
-        parse_review_history_rounds, parse_review_notes, pr_postable_lines, reanchor_file_comments,
-        severity_review_event, split_overflow_review_notes, split_overflow_rounds,
-        truncate_check_output,
+        compute_search_matches, editor_invocation, editor_target_line, load_review_notes,
+        parse_agent_responses, parse_co_review_output, parse_review_history_rounds,
+        parse_review_notes, pr_postable_lines, reanchor_file_comments, severity_review_event,
+        split_overflow_review_notes, split_overflow_rounds, truncate_check_output,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -6226,5 +6406,105 @@ index 1111111..2222222 100644
         let (body, comments, _) = build_pr_review(&[], &[], &sections, "", &HashMap::new());
         assert!(comments.is_empty(), "lost anchor must not post inline");
         assert!(!body.contains("src/foo.rs:42"));
+    }
+
+    /// Addressable lines: 0 context(new 1), 1 removed(new None), 2 added(new 2),
+    /// 3 added(new 3), 4 context(new 4).
+    fn editor_line_file() -> DiffFile {
+        parse_unified_diff(
+            "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1,3 +1,4 @@
+ fn alpha() {}
+-fn beta() {}
++fn beta_two() {}
++fn gamma_alpha() {}
+ fn delta() {}
+",
+        )
+        .unwrap()
+        .remove(0)
+    }
+
+    #[test]
+    fn editor_target_line_uses_the_cursored_lines_current_side_number() {
+        let file = editor_line_file();
+        assert_eq!(editor_target_line(&file, Some(2)), Some(2));
+        assert_eq!(editor_target_line(&file, Some(3)), Some(3));
+        assert_eq!(editor_target_line(&file, Some(4)), Some(4));
+    }
+
+    #[test]
+    fn editor_target_line_falls_back_to_the_nearest_surviving_line() {
+        let file = editor_line_file();
+        // Index 1 is a removal: it has no line in the file on disk, so the
+        // editor should land on the surviving line just above it.
+        assert_eq!(editor_target_line(&file, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn editor_target_line_without_a_cursor_lands_on_the_first_hunk() {
+        let file = editor_line_file();
+        assert_eq!(editor_target_line(&file, None), Some(1));
+    }
+
+    #[test]
+    fn editor_target_line_is_none_when_there_is_nothing_addressable() {
+        let mut file = editor_line_file();
+        file.hunks.clear();
+        assert_eq!(editor_target_line(&file, None), None);
+        assert_eq!(editor_target_line(&file, Some(3)), None);
+    }
+
+    #[test]
+    fn editor_invocation_uses_the_plus_flag_for_vi_style_editors() {
+        let (program, args) = editor_invocation("nvim", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(program, "nvim");
+        assert_eq!(args, vec!["+42".to_string(), "src/a.rs".to_string()]);
+    }
+
+    #[test]
+    fn editor_invocation_keeps_flags_baked_into_the_env_var() {
+        let (program, args) = editor_invocation("emacsclient -nw", "src/a.rs", Some(7)).unwrap();
+        assert_eq!(program, "emacsclient");
+        assert_eq!(args, vec!["-nw", "+7", "src/a.rs"]);
+    }
+
+    #[test]
+    fn editor_invocation_makes_vscode_block_and_goto() {
+        let (program, args) = editor_invocation("code", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(program, "code");
+        assert_eq!(args, vec!["--wait", "--goto", "src/a.rs:42"]);
+
+        // An explicit --wait must not be duplicated.
+        let (_, args) = editor_invocation("code --wait", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(args, vec!["--wait", "--goto", "src/a.rs:42"]);
+    }
+
+    #[test]
+    fn editor_invocation_uses_path_suffix_syntax_where_that_is_the_convention() {
+        let (_, args) = editor_invocation("hx", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(args, vec!["src/a.rs:42"]);
+    }
+
+    #[test]
+    fn editor_invocation_opens_an_unknown_editor_at_the_top_rather_than_guessing() {
+        // A flag an editor doesn't understand would be read as a second
+        // filename, silently opening an empty buffer called `+42`.
+        let (program, args) = editor_invocation("my-editor", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(program, "my-editor");
+        assert_eq!(args, vec!["src/a.rs"]);
+    }
+
+    #[test]
+    fn editor_invocation_handles_an_absolute_path_and_no_line() {
+        let (program, args) = editor_invocation("/usr/bin/vim", "src/a.rs", None).unwrap();
+        assert_eq!(program, "/usr/bin/vim");
+        assert_eq!(args, vec!["src/a.rs"]);
+
+        assert!(editor_invocation("   ", "src/a.rs", Some(1)).is_none());
     }
 }

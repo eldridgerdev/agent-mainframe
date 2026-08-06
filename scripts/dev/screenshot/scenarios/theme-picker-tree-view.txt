@@ -1,0 +1,68 @@
+# theme-picker-tree-view: proves the theme picker's grouped tree view.
+# Subtype-heavy families (Catppuccin: 4 variants, Gruvbox Material: 18
+# variants) collapse into single "Group (N) ›" rows at the top level;
+# Enter on a group drills into a second screen listing just its
+# members, Esc backs out without closing the picker.
+#
+# Run with:
+#   ./amf-capture.sh --scenario scenarios/theme-picker-tree-view.txt --keep
+
+shot:dashboard
+
+# 'T' opens the theme picker.
+key:T
+wait:200
+shot:top-level-list
+
+# Move down to the "Catppuccin (4) ›" group row.
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+wait:200
+shot:top-level-catppuccin-highlighted
+
+# Enter drills into the group's second screen.
+key:Enter
+wait:200
+shot:catppuccin-group-open
+
+# Esc backs out to the top-level list (picker stays open).
+key:Escape
+wait:200
+shot:back-to-top-level
+
+# Move down one more to "Gruvbox Material (18) ›".
+key:j
+wait:200
+shot:top-level-gruvbox-material-highlighted
+
+key:Enter
+wait:200
+shot:gruvbox-material-group-open
+
+# Scroll further into the 18-item group to show the scrollbar kicking in.
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+wait:200
+shot:gruvbox-material-scrolled
+
+# Apply the highlighted theme and confirm the dashboard picks it up.
+key:Enter
+wait:300
+shot:dashboard-theme-applied

@@ -3085,16 +3085,43 @@ impl App {
     }
 
     pub fn start_theme_picker(&mut self) {
-        let themes = crate::theme::Theme::list();
-        let selected = themes
-            .iter()
-            .position(|t| *t == self.config.theme)
-            .unwrap_or(0);
+        let entries = ThemePickerEntry::build();
         let original_theme = self.config.theme;
+
+        // If the active theme lives inside a group, land directly on its
+        // second screen with that theme pre-selected instead of forcing the
+        // user to drill back in.
+        let mut selected = 0;
+        let mut group = None;
+        for (i, entry) in entries.iter().enumerate() {
+            match entry {
+                ThemePickerEntry::Theme(name) if *name == original_theme => {
+                    selected = i;
+                    break;
+                }
+                ThemePickerEntry::Group { label, themes } if themes.contains(&original_theme) => {
+                    selected = i;
+                    let group_selected = themes
+                        .iter()
+                        .position(|t| *t == original_theme)
+                        .unwrap_or(0);
+                    group = Some(ThemePickerGroupState {
+                        label,
+                        themes: themes.clone(),
+                        selected: group_selected,
+                    });
+                    break;
+                }
+                _ => {}
+            }
+        }
+
         self.mode = AppMode::ThemePicker(ThemePickerState {
             selected,
-            themes,
+            entries,
             original_theme,
+            previewed: original_theme,
+            group,
         });
     }
 

@@ -8,16 +8,19 @@
   suggestion blocks, the **finish summary screen**, a **Cost** batch, the
   high-priority **close / pause without finishing** viewer item, and the
   **`v` layout toggle** fix, the **review-round timeline/history browser**,
-  the **hierarchical file tree + shorter Developer Notes panel**, and
-  **expandable context around hunks**
+  the **hierarchical file tree + shorter Developer Notes panel**,
+  **expandable context around hunks**, **word-level intra-line diff
+  highlighting + the ignore-whitespace toggle**, and **global comment
+  navigation + undo last verdict**
   have shipped — that closes out every item in the Loop group. The Cost batch
   makes
   bounded headless passes honor `review_model`, caps
   `final-review-feedback.md` with an archive file, and batches REVIEW MODE's
   note instruction per turn. Per-action model overrides (a `review_models`
   map keyed by `ReviewAction`) and bounded live review notes with a
-  reviewer-visible archive have since shipped too. The rest of the
-  viewer-ergonomics, AI co-review,
+  reviewer-visible archive have since shipped too. The remaining
+  viewer-ergonomics items are `$EDITOR` at the cursored line, a `?` help
+  overlay, and mouse support; the AI co-review
   and workflow items are not yet started. Three Cost follow-ups remain:
   cumulative final-review workflow accounting, best-effort attribution of
   review-note generation cost, and measuring the most token-efficient way to
@@ -1092,7 +1095,43 @@ Viewer:
       (`src/diff.rs`), so the default invocation is byte-for-byte what it always
       was; `load_snapshot` / `load_commit_snapshot` gained the flag as an
       explicit parameter rather than a hidden default.
-- [ ] Global comment navigation across files + undo last verdict
+- [x] Global comment navigation across files + undo last verdict — two
+      independent gaps in moving around a finished-ish review. **Comment
+      navigation:** `Tab` only ever cycled AI *drafts* within the current file,
+      so there was no way to sweep every annotation before finishing without
+      re-finding each file by hand. `}` / `{` now move the line cursor to the
+      next / previous comment (draft or kept) anywhere in the review, wrapping
+      at either end, and work both at the top level and with the cursor already
+      active. `review_comment_stops` (`src/app/review.rs`) builds the itinerary
+      as `(file index, first covered line index)` pairs over
+      `visible_file_indices()` — so the active `F` filter narrows the walk the
+      same way it narrows `n`/`p` — in file order and then diff-line order,
+      computing `addressable_lines()` only for files that actually carry a
+      comment. With the cursor off, forward starts *before* the current file's
+      first comment and backward *after* its last, so the first press lands
+      inside the file already on screen rather than skipping past it; the cursor
+      is then set unconditionally (after `on_file_changed`, which would
+      otherwise reset it to line 0), so jumping also turns the cursor on. An
+      anchor-lost comment has no line to park on, so it's skipped and counted —
+      the message reads `Comment 3/7 — src/foo.rs:42 (1 anchor-lost skipped)`
+      rather than the jump silently going nowhere. **Undo:** `U` takes back the
+      last explicit verdict (`a`, `s`, or a typed `r` rejection) and returns the
+      selection to that file, since all three advance away from it — an
+      accidental `a` previously meant hunting the file down in the list again.
+      `push_verdict_undo` (`src/app/state.rs`) records the file's prior
+      `ReviewDecision` *and* whether it was in `auto_rejected`, so undoing a
+      verdict that overrode a comment-implied rejection restores the
+      implicit/explicit distinction rather than pinning it as explicit. A press
+      that changes nothing (re-approving an approved file) isn't recorded, so
+      `U` is never a silent no-op. It's a stack (`VERDICT_UNDO_LIMIT` = 50), so
+      repeated presses walk back through successive verdicts; it is deliberately
+      session-only — an undo corrects the key you just pressed, so unlike the
+      verdicts themselves it doesn't survive a pause/resume. Restoring a verdict
+      can push the file back out of the active filter, and the message says so.
+      Both footers gained hints, each shown only once it means something (`{`/`}`
+      once the review has a comment, `U` once there's a verdict to take back).
+      `diff_review_jump_comment` / `diff_review_undo_verdict` in
+      `src/app/review.rs`; key dispatch in `src/handlers/diff.rs`.
 - [ ] Open at cursored line in `$EDITOR`
 - [ ] `?` help overlay for review mode
 - [ ] Mouse support in the diff viewer (file list, patch scroll,

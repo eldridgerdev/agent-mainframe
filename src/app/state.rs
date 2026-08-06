@@ -188,6 +188,23 @@ pub struct AwaitingReviewFix {
     pub started_thinking: bool,
 }
 
+/// A request to suspend the TUI and hand the terminal to `$VISUAL`/`$EDITOR`.
+/// Raised by the review viewer (`E`) and drained by the main loop, which owns
+/// the terminal's raw-mode/alternate-screen state — the app layer can resolve
+/// *what* to open but must not tear the screen down underneath itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingEditorOpen {
+    /// Absolute path to the file, already validated as a regular file inside
+    /// the worktree.
+    pub path: PathBuf,
+    /// Directory the editor is spawned in.
+    pub workdir: PathBuf,
+    /// 1-based line to place the cursor on, when the editor understands one.
+    pub line: Option<usize>,
+    /// Worktree-relative path, for the message shown after the editor exits.
+    pub display: String,
+}
+
 pub enum RenameReturnTo {
     Dashboard,
     SessionSwitcher(super::SessionSwitcherState),

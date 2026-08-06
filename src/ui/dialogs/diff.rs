@@ -2184,7 +2184,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             first_spans.push(Span::raw(" clear"));
         }
         let first = Line::from(first_spans);
-        let second = Line::from(vec![
+        let mut second_spans = vec![
             key(" j"),
             Span::raw("/"),
             key("k"),
@@ -2207,10 +2207,15 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             Span::raw(" apply suggestion  "),
             key("R"),
             Span::raw(" resolve/reopen  "),
-            key("{"),
-            Span::raw("/"),
-            key("}"),
-            Span::raw(" comment  "),
+            key("E"),
+            Span::raw(" $EDITOR  "),
+        ];
+        // Same gating as the non-cursor footer: cross-file comment navigation
+        // only earns its slot once there is a comment somewhere to jump to.
+        if state.line_comments.values().any(|cs| !cs.is_empty()) {
+            second_spans.extend([key("{"), Span::raw("/"), key("}"), Span::raw(" comment  ")]);
+        }
+        second_spans.extend([
             key("n"),
             Span::raw("/"),
             key("p"),
@@ -2222,6 +2227,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             key("q"),
             Span::raw(" finish"),
         ]);
+        let second = Line::from(second_spans);
 
         // When the cursor sits on a commented line, peek the comment body in a
         // bordered box above the hints so the reviewer can read what they wrote
@@ -2436,6 +2442,14 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         key("Tab"),
         Span::raw(" focus  "),
     ]);
+    // Opening in `$EDITOR` needs a file that exists on disk with text in it, so
+    // it stays hidden for a deletion or a binary blob rather than advertising a
+    // key that can only report why it can't work.
+    if state.files.get(state.selected_file).is_some_and(|file| {
+        !file.is_binary && !matches!(file.status, crate::diff::DiffFileStatus::Deleted)
+    }) {
+        first_line.extend([key("E"), Span::raw(" $EDITOR  ")]);
+    }
     let layout_label = match effective_layout(state) {
         DiffViewerLayout::Unified => "unified",
         DiffViewerLayout::SideBySide => "side-by-side",

@@ -12,6 +12,23 @@ are tagged.
 
 ### Added
 
+- **You can open the file you are reviewing in your own editor, at the line you
+  are looking at.** Sometimes you need to poke around the real file before you
+  can write the comment. In Final Review, `E` suspends AMF and opens the current
+  file in `$VISUAL` / `$EDITOR` (falling back to `vi`), with the cursor already
+  on the line the review cursor is on; with the line cursor off it opens at the
+  first hunk. Quitting the editor drops you back exactly where you were. If you
+  changed the file while you were in there, AMF notices and reloads the diff, so
+  your comments never end up sitting on hunks that have moved. The line jump
+  works with the vi family, nano, emacs, kak, micro, helix, Sublime, Zed, and
+  VS Code and its forks (which are told to wait rather than returning
+  immediately); an editor AMF does not recognise simply opens at the top of the
+  file rather than being handed a flag it would treat as a filename. An
+  `$EDITOR` that already carries its own flags, like `emacsclient -nw`, is
+  respected. Files with nothing to open — a deletion, or a binary — say so
+  instead of doing nothing, and the footer hint hides itself for them. No
+  configuration and no migration are required.
+
 - **You can jump between your review comments across every file, and undo a
   verdict you did not mean to give.** In Final Review, `}` and `{` move to the
   next and previous comment anywhere in the changeset, wrapping at either end —

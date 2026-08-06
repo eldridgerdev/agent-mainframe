@@ -985,7 +985,29 @@ pub struct DiffViewerState {
     /// agrees on what the reviewer is looking at. View state only: re-applied
     /// after a reload, never written to the progress file.
     pub context_expansion: std::collections::HashMap<String, usize>,
+    /// Undo stack for explicit verdicts (approve / skip / typed rejection), most
+    /// recent last. Session-only: an undo is a correction of the key you just
+    /// pressed, so it deliberately doesn't survive a pause/resume the way the
+    /// verdicts themselves do.
+    pub verdict_undo: Vec<VerdictUndo>,
 }
+
+/// One entry on the verdict undo stack: everything needed to put a file's
+/// verdict back exactly as it was before the reviewer's last `a` / `s` / `r`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerdictUndo {
+    pub path: String,
+    /// The file's verdict before the undone action. `None` when it had none
+    /// (undecided or previously skipped).
+    pub previous: Option<ReviewDecision>,
+    /// Whether that previous verdict was one the line-comment rule had set
+    /// implicitly, so undoing restores the implicit/explicit distinction too.
+    pub previous_auto_rejected: bool,
+}
+
+/// How many verdicts back `U` can walk. A bound only so a very long review
+/// can't grow the stack without limit; deep undo is not the point.
+pub const VERDICT_UNDO_LIMIT: usize = 50;
 
 impl DiffViewerState {
     pub fn new(from_view: ViewState, workdir: PathBuf) -> Self {
@@ -1064,6 +1086,7 @@ impl DiffViewerState {
             tree_cursor_dir: None,
             ignore_whitespace: false,
             context_expansion: std::collections::HashMap::new(),
+            verdict_undo: Vec::new(),
         }
     }
 
@@ -1119,6 +1142,31 @@ impl DiffViewerState {
         // know the tree can be folded.
         self.tree_cursor_dir = None;
         self.reveal_selected_file();
+    }
+
+    /// Record `path`'s current verdict on the undo stack before an explicit
+    /// verdict replaces it, so `U` can put it back exactly — including whether
+    /// the rejection being replaced was one the line-comment rule had set
+    /// implicitly. A press that changes nothing isn't recorded: re-approving an
+    /// already-approved file would otherwise leave a `U` that does nothing
+    /// visible.
+    pub fn push_verdict_undo(&mut self, path: &str, next: Option<&ReviewDecision>) {
+        let previous = self.decisions.get(path).cloned();
+        let previous_auto_rejected = self.auto_rejected.contains(path);
+        // Every verdict path also drops the file from `auto_rejected`, so an
+        // implicit rejection is a real change even when the verdict compares
+        // equal.
+        if previous.as_ref() == next && !previous_auto_rejected {
+            return;
+        }
+        if self.verdict_undo.len() >= VERDICT_UNDO_LIMIT {
+            self.verdict_undo.remove(0);
+        }
+        self.verdict_undo.push(VerdictUndo {
+            path: path.to_string(),
+            previous,
+            previous_auto_rejected,
+        });
     }
 
     /// Whether the file at `path` carries a `Blocker`-severity signal: either a

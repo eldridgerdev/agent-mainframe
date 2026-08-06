@@ -18,14 +18,17 @@ pub const SYNTHESIS_PROMPT_VERSION: u32 = 1;
 pub const CRITIQUE_PROMPT_VERSION: u32 = 1;
 pub const DIRECTED_REVISION_PROMPT_VERSION: u32 = 1;
 pub const INVESTIGATION_PROMPT_VERSION: u32 = 1;
-pub const INVESTIGATION_MERGE_PROMPT_VERSION: u32 = 1;
+pub const INVESTIGATION_MERGE_PROMPT_VERSION: u32 = 2;
 pub const MAX_AI_QUESTIONS_PER_ROUND: usize = 5;
 pub const MAX_AI_ROUNDS: usize = 2;
 pub const MAX_INVESTIGATION_FOCUSES: usize = 4;
 
 const README_CONTEXT_MAX_CHARS: usize = 12_000;
 const CLAUDE_CONTEXT_MAX_CHARS: usize = 12_000;
-const INVESTIGATION_FINDINGS_MAX_CHARS: usize = 12_000;
+/// Per-investigator ceiling on the findings handed to the merge pass. Public
+/// because the pre-flight token disclosure has to size the merge prompt before
+/// any findings exist.
+pub const INVESTIGATION_FINDINGS_MAX_CHARS: usize = 12_000;
 const DIRECTORY_CONTEXT_MAX_ENTRIES: usize = 100;
 const DIRECTORY_CONTEXT_MAX_CHARS: usize = 8_000;
 
@@ -188,6 +191,8 @@ Requirements:
   findings are the only new repository evidence available to this pass.
 - Incorporate verified findings into the relevant sections and implementation tasks, not into a separate
   investigation report.
+- A finding may report that its own investigation failed. Treat that focus as unresearched: change nothing
+  on its account and keep what it asked about under risks / open questions.
 - Preserve settled interview decisions unless a finding proves an underlying repository assumption false.
 - Keep inference and remaining unknowns visible under risks / open questions.
 - Keep tasks ordered, implementation-ready, and paired with relevant verification."#;
@@ -205,6 +210,43 @@ pub struct RepositoryContext {
 pub struct PlanInvestigationFinding {
     pub focus: String,
     pub findings: String,
+}
+
+/// What one isolated-investigation pass hands back to the UI thread: the merge
+/// response, plus the focuses whose investigator produced nothing. A single
+/// failure is reported rather than fatal, because the investigators that did
+/// complete are already paid for.
+#[derive(Debug, Clone)]
+pub struct PlanInvestigationOutcome {
+    pub merge_response: String,
+    pub failed_focuses: Vec<String>,
+}
+
+/// Stand-in recorded for a focus whose investigator failed, so the merge pass
+/// sees the gap explicitly instead of planning as if the focus had been
+/// researched and come back empty.
+pub const FAILED_INVESTIGATION_FINDINGS: &str = r#"# Investigation findings: unavailable
+
+## Answer
+This investigation did not complete; no findings are available for this focus.
+
+## Evidence
+None — nothing was inspected.
+
+## Plan implications
+None. Treat this focus as unresearched.
+
+## Remaining unknowns
+Everything the focus asked about remains unverified.
+"#;
+
+/// A worst-case stand-in for one investigator's report, used to size the merge
+/// prompt before any real findings exist. Findings are truncated at
+/// [`INVESTIGATION_FINDINGS_MAX_CHARS`], so a placeholder of exactly that
+/// length keeps the disclosed token estimate a ceiling instead of an
+/// understatement of a paid call.
+pub fn investigation_findings_size_placeholder() -> String {
+    "x".repeat(INVESTIGATION_FINDINGS_MAX_CHARS)
 }
 
 /// Gather a small, deterministic repository snapshot for adaptive questioning.
@@ -582,17 +624,22 @@ pub fn parse_plan_critique(response: &str) -> Option<String> {
     Some(format!("{critique}\n"))
 }
 
-/// Validate the bounded report returned by one isolated investigator. A plan
-/// rewrite is rejected even if it otherwise contains markdown headings: the
-/// planning context should receive findings only.
+/// Validate the bounded report returned by one isolated investigator.
+///
+/// Validation is as lenient as [`parse_plan_critique`]'s and for the same
+/// reason: nothing machine-reads the title, the findings are handed to the
+/// merge pass as prose, and rejecting a paid read-only run over a retitled or
+/// recased heading throws away work the user already paid for. What must still
+/// be rejected is a refusal (no headings at all) and a plan rewrite, which the
+/// synthesis contract's title identifies — the planning context should receive
+/// findings only.
 pub fn parse_investigation_findings(response: &str) -> Option<String> {
     let findings = strip_markdown_fence(response);
     let title = findings.lines().next()?;
-    if !title
-        .to_ascii_lowercase()
-        .starts_with("# investigation findings:")
-        || !findings.lines().any(|line| line.starts_with("## "))
-    {
+    if !title.starts_with("# ") || title.to_ascii_lowercase().starts_with("# plan:") {
+        return None;
+    }
+    if !findings.lines().any(|line| line.starts_with("## ")) {
         return None;
     }
     let mut chars = findings.chars();
@@ -1498,5 +1545,18 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn investigation_findings_parser_keeps_retitled_reports() {
+        // A paid read-only run that answers the focus is usable however it
+        // titles itself; only a refusal and a plan rewrite are rejected.
+        let retitled = "# Findings: session launch\n\n## Answer\nLaunch runs in feature_ops.\n";
+        assert_eq!(
+            parse_investigation_findings(retitled).as_deref(),
+            Some(retitled)
+        );
+        assert!(parse_investigation_findings("I could not inspect the repository.").is_none());
+        assert!(parse_investigation_findings("# Findings: routing\n\nNo sections.\n").is_none());
     }
 }

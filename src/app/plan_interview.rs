@@ -5,7 +5,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::sync::mpsc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::pr_review::estimate_tokens;
 use super::{
@@ -794,11 +794,16 @@ impl App {
                 )
             })
             .collect();
+        // The merge prompt carries the investigators' real reports, each bounded
+        // at `INVESTIGATION_FINDINGS_MAX_CHARS`. Sizing it with a short
+        // placeholder would omit that payload entirely and understate a paid
+        // call by roughly 3k tokens per focus, so the estimate uses the bound
+        // and comes out a ceiling.
         let placeholder_findings: Vec<plan_interview::PlanInvestigationFinding> = focuses
             .iter()
             .map(|focus| plan_interview::PlanInvestigationFinding {
                 focus: focus.clone(),
-                findings: "Investigator findings will be inserted here.".into(),
+                findings: plan_interview::investigation_findings_size_placeholder(),
             })
             .collect();
         let merge_estimate = estimate_tokens(&plan_interview::build_investigation_merge_prompt(
@@ -833,22 +838,46 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.plan_interview_investigation_bg = Some(rx);
         std::thread::spawn(move || {
-            let result = (|| -> Result<String> {
-                let mut findings = Vec::with_capacity(investigation_prompts.len());
+            let result = (|| -> Result<plan_interview::PlanInvestigationOutcome> {
+                let total = investigation_prompts.len();
+                let mut findings = Vec::with_capacity(total);
+                let mut failed_focuses = Vec::new();
                 for (index, (focus, prompt)) in investigation_prompts.into_iter().enumerate() {
-                    let response = HeadlessRunner::run_read_only(&harness, &workdir, &prompt, None)
-                        .with_context(|| format!("isolated investigator {} failed", index + 1))?;
-                    let findings_markdown = plan_interview::parse_investigation_findings(&response)
-                        .with_context(|| {
-                            format!(
-                                "isolated investigator {} returned no usable findings",
-                                index + 1
-                            )
-                        })?;
+                    // One investigator's failure costs only its own focus. The
+                    // runs that already completed are paid for, so the gap is
+                    // recorded for the merge pass and the batch continues
+                    // instead of forcing a retry that re-runs everything.
+                    let findings_markdown =
+                        HeadlessRunner::run_read_only(&harness, &workdir, &prompt, None)
+                            .with_context(|| format!("isolated investigator {} failed", index + 1))
+                            .and_then(|response| {
+                                plan_interview::parse_investigation_findings(&response)
+                                    .with_context(|| {
+                                        format!(
+                                            "isolated investigator {} returned no usable findings",
+                                            index + 1
+                                        )
+                                    })
+                            });
+                    let findings_markdown = match findings_markdown {
+                        Ok(findings_markdown) => findings_markdown,
+                        Err(error) => {
+                            crate::debug::log_to_file(
+                                crate::debug::LogLevel::Warn,
+                                "plan_interview",
+                                &format!("{error:#}"),
+                            );
+                            failed_focuses.push(focus.clone());
+                            plan_interview::FAILED_INVESTIGATION_FINDINGS.to_string()
+                        }
+                    };
                     findings.push(plan_interview::PlanInvestigationFinding {
                         focus,
                         findings: findings_markdown,
                     });
+                }
+                if failed_focuses.len() == total {
+                    bail!("every isolated investigator failed");
                 }
 
                 // A new headless invocation is the context boundary: the
@@ -862,8 +891,13 @@ impl App {
                     &answers,
                     &findings,
                 );
-                HeadlessRunner::run(&harness, &workdir, &merge_prompt, None, true)
-                    .context("isolated investigation merge failed")
+                let merge_response =
+                    HeadlessRunner::run(&harness, &workdir, &merge_prompt, None, true)
+                        .context("isolated investigation merge failed")?;
+                Ok(plan_interview::PlanInvestigationOutcome {
+                    merge_response,
+                    failed_focuses,
+                })
             })();
             let _ = tx.send(result);
         });
@@ -906,22 +940,29 @@ impl App {
         }
 
         match result {
-            Ok(response) => match plan_interview::parse_synthesized_plan(&response) {
+            Ok(outcome) => match plan_interview::parse_synthesized_plan(&outcome.merge_response) {
                 Some(plan) => {
                     if let AppMode::PlanInterview(state) = &mut self.mode {
                         state.apply_investigation_revision(plan);
                     }
                     self.persist_plan_interview_draft();
-                    self.message = Some(
-                        "Investigation findings merged into the draft; review the changes".into(),
-                    );
+                    // A partly failed batch still merges what completed, so the
+                    // notice names the gap rather than implying every focus was
+                    // researched.
+                    self.message = Some(match outcome.failed_focuses.len() {
+                        0 => "Investigation findings merged into the draft; review the changes"
+                            .to_string(),
+                        failed => format!(
+                            "Investigation merged with {failed} focus(es) unresearched; review the changes"
+                        ),
+                    });
                 }
                 None => {
                     self.log_warn(
                         "plan_interview",
                         format!(
                             "isolated investigation merge returned invalid markdown: {}",
-                            truncate_for_log(&response)
+                            truncate_for_log(&outcome.merge_response)
                         ),
                     );
                     if let AppMode::PlanInterview(state) = &mut self.mode {

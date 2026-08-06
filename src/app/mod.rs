@@ -742,8 +742,10 @@ pub struct App {
     pub plan_interview_directed_feedback_bg: Option<Receiver<Result<String>>>,
     /// Receiver for the optional context-isolated investigation workflow. Its
     /// worker runs one fresh read-only context per focus, then a separate
-    /// no-tools merge context, and returns only the proposed revised plan.
-    pub plan_interview_investigation_bg: Option<Receiver<Result<String>>>,
+    /// no-tools merge context, and returns the proposed revised plan alongside
+    /// the focuses whose investigator failed.
+    pub plan_interview_investigation_bg:
+        Option<Receiver<Result<crate::plan_interview::PlanInvestigationOutcome>>>,
     /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].

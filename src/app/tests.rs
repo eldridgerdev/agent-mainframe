@@ -3188,7 +3188,7 @@ fn begin_directed_plan_revision_for_test(
 /// real read-only or merge harnesses.
 fn begin_plan_investigation_for_test(
     app: &mut App,
-) -> std::sync::mpsc::Sender<anyhow::Result<String>> {
+) -> std::sync::mpsc::Sender<anyhow::Result<crate::plan_interview::PlanInvestigationOutcome>> {
     let AppMode::PlanInterview(state) = &mut app.mode else {
         panic!("expected plan interview mode");
     };
@@ -3200,6 +3200,16 @@ fn begin_plan_investigation_for_test(
     let (tx, rx) = std::sync::mpsc::channel();
     app.plan_interview_investigation_bg = Some(rx);
     tx
+}
+
+/// A merge result in which every investigator completed.
+fn investigation_outcome(
+    merge_response: String,
+) -> crate::plan_interview::PlanInvestigationOutcome {
+    crate::plan_interview::PlanInvestigationOutcome {
+        merge_response,
+        failed_focuses: Vec::new(),
+    }
 }
 
 #[test]
@@ -3290,7 +3300,7 @@ fn isolated_investigation_merges_findings_then_returns_to_review() {
 
     let tx = begin_plan_investigation_for_test(&mut app);
     let revised = original.replace("Implement the feature", "Update src/app/feature_ops.rs");
-    tx.send(Ok(revised.clone())).unwrap();
+    tx.send(Ok(investigation_outcome(revised.clone()))).unwrap();
 
     assert!(app.poll_plan_interview_investigation_bg());
     assert!(app.plan_interview_investigation_bg.is_none());
@@ -3303,6 +3313,54 @@ fn isolated_investigation_merges_findings_then_returns_to_review() {
         AppMode::PlanInterview(state)
             if state.phase == PlanInterviewPhase::Review
                 && state.synthesized_plan.as_deref() == Some(revised.as_str())
+    ));
+}
+
+#[test]
+fn partly_failed_isolated_investigation_still_merges_what_completed() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_plan_investigation_for_test(&mut app);
+    let revised = original.replace("Implement the feature", "Update src/app/feature_ops.rs");
+    tx.send(Ok(crate::plan_interview::PlanInvestigationOutcome {
+        merge_response: revised.clone(),
+        failed_focuses: vec!["Trace the notification hooks.".into()],
+    }))
+    .unwrap();
+
+    assert!(app.poll_plan_interview_investigation_bg());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Investigation merged with 1 focus(es) unresearched; review the changes")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(revised.as_str())
+    ));
+}
+
+#[test]
+fn pasting_into_the_investigation_focus_editor_inserts_text() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        assert!(state.begin_investigation());
+    }
+
+    crate::handlers::handle_paste(&mut app, "Trace the session launch boundary.").unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Investigation
+                && state.editor.text() == "Trace the session launch boundary."
+                && state.edit_sync_to_cursor
     ));
 }
 
@@ -3348,7 +3406,7 @@ fn dismissing_isolated_investigation_discards_its_late_revision() {
     ));
 
     let revised = original.replace("Implement the feature", "Update src/app/feature_ops.rs");
-    tx.send(Ok(revised)).unwrap();
+    tx.send(Ok(investigation_outcome(revised))).unwrap();
     assert!(app.poll_plan_interview_investigation_bg());
     assert!(matches!(
         &app.mode,

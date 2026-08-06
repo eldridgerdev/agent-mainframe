@@ -1,0 +1,60 @@
+# plan-interview-edge-handling: demonstrates the Epic 6 empty/edge paths.
+#
+# Requires --seed with a create-project payload whose repository has
+# `.amf/config.json` containing `{"skip_builtin_questions": true}` and no
+# `plan_questions`. The scenario takes the zero-token raw-plan choice rather
+# than launching a headless model.
+
+# Start a single-feature creation flow for the seeded project.
+key:n
+wait:300
+key:Enter
+wait:200
+text:brief-only-edge
+wait:200
+key:Enter
+wait:200
+key:Enter
+wait:200
+
+# Turn on collaborative planning from the Mode step.
+key:Tab
+key:Tab
+key:Tab
+wait:200
+key:j
+wait:200
+key:Enter
+key:Enter
+key:Enter
+key:Enter
+wait:300
+key:Enter
+wait:700
+
+# With the built-in bank disabled and no templates, the required brief is the
+# only interview step (Step 1/1). The footer exposes Ctrl+F as the direct
+# "draft plan now" path.
+text:Create a brief-only planning path that remains safe for very large pasted answers.
+wait:500
+shot:zero-question-brief-only-fast-path
+
+# Enter moves directly to the finishing choice because there are no static
+# questions. This frame makes all three paths explicit, including Ctrl+F's
+# direct synthesis and Enter's zero-token raw-plan review.
+key:Enter
+wait:500
+shot:zero-question-finishing-choice
+
+# Take the zero-token choice. The review contains only the brief: no empty Q&A
+# heading and no placeholder questions.
+key:Enter
+wait:700
+shot:brief-only-raw-plan-review
+
+# Leave without accepting, so no feature or agent session is created.
+key:Escape
+wait:300
+shot:brief-only-abort-confirmation
+key:n
+wait:500

@@ -7,7 +7,7 @@ use super::sync::pane_shows_thinking_hint;
 use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
-use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
+use crate::extension::{ExtensionConfig, FeaturePreset, HookConfig, HookPrompt, LifecycleHooks};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::sync::{
@@ -2711,6 +2711,70 @@ fn create_feature_with_plan_mode_defers_launch_into_interview() {
 }
 
 #[test]
+fn plan_mode_preset_defers_feature_launch_into_interview() {
+    let repo = TempDir::new().unwrap();
+    let now = Utc::now();
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![Project {
+            id: "proj-1".into(),
+            name: "my-project".into(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: vec![],
+        extra: HashMap::new(),
+    };
+    let mut state = CreateFeatureState::new(
+        "my-project".into(),
+        repo.path().to_path_buf(),
+        Vec::new(),
+        true,
+    );
+    state.step = CreateFeatureStep::SelectPreset;
+    state.feature_presets = vec![FeaturePreset {
+        name: "Plan first".into(),
+        plan_mode: true,
+        ..Default::default()
+    }];
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::CreatingFeature(state);
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+    match &mut app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert!(state.plan_mode, "the preset must enable plan mode");
+            state.branch = "preset-planned-feature".into();
+            state.step = CreateFeatureStep::SessionName;
+        }
+        _ => panic!("expected the preset to return to feature creation"),
+    }
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+
+    assert!(app.store.projects[0].features.is_empty());
+    match &app.mode {
+        AppMode::PlanInterview(interview) => {
+            assert_eq!(interview.feature_name, "preset-planned-feature");
+            assert_eq!(interview.phase, PlanInterviewPhase::Brief);
+            assert!(interview.pending_launch.as_ref().unwrap().plan_mode);
+        }
+        _ => panic!("expected a plan-mode preset to open the interview"),
+    }
+}
+
+#[test]
 fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
     let repo = TempDir::new().unwrap();
     let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
@@ -3708,6 +3772,38 @@ fn plan_interview_done_without_ai_consent_uses_raw_fallback_without_headless_wor
                     .synthesized_plan
                     .as_deref()
                     .is_some_and(|plan| plan.contains("## Feature brief\n\nA useful feature"))
+    ));
+}
+
+#[test]
+fn ctrl_f_from_the_brief_is_a_brief_only_synthesis_fast_path() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    force_plan_interview_raw_fallback(&mut app);
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.questions.clear();
+        state.answers.clear();
+        state.editor = crate::editor::TextEditor::new("Plan directly from this brief.".into());
+    } else {
+        panic!("expected plan interview mode");
+    }
+
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert!(app.plan_interview_ai_bg.is_none());
+    assert!(app.plan_interview_synthesis_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesis_requested
+                && state.questions.is_empty()
+                && state.synthesized_plan.as_deref()
+                    == Some("# Plan: planned-feature\n\n## Feature brief\n\nPlan directly from this brief.\n")
     ));
 }
 

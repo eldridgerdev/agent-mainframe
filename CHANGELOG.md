@@ -227,6 +227,14 @@ are tagged.
 
 ### Changed
 
+- **Plan mode now handles presets, empty question banks, and large answers
+  predictably.** A preset that enables plan mode opens the same guided
+  interview as the manual toggle, while batch creation now explains that it
+  skips interviews. Projects that disable the built-in bank without adding
+  custom questions can draft directly from the required brief. Very large
+  briefs and answers remain complete in the saved interview and raw plan, but
+  AMF bounds each field before sending it to an AI so pasted logs or documents
+  cannot consume unlimited model context. No migration is required.
 - **The optional AI step now says exactly what each choice does.** Press `a` to
   ask AI follow-up questions, `Ctrl+F` to draft the plan immediately from saved
   answers, or `Enter` to review a raw plan without spending agent tokens. The

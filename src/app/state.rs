@@ -3139,10 +3139,86 @@ impl SummaryState {
     }
 }
 
+pub enum ThemePickerEntry {
+    Theme(crate::theme::ThemeName),
+    Group {
+        label: &'static str,
+        themes: Vec<crate::theme::ThemeName>,
+    },
+}
+
+impl ThemePickerEntry {
+    /// The theme this entry previews when highlighted: itself for a single
+    /// theme, or the first member for a group (a representative peek).
+    pub fn preview_theme(&self) -> Option<crate::theme::ThemeName> {
+        match self {
+            ThemePickerEntry::Theme(name) => Some(*name),
+            ThemePickerEntry::Group { themes, .. } => themes.first().copied(),
+        }
+    }
+
+    /// The full set of top-level entries, with subtype-heavy families
+    /// (Catppuccin, Gruvbox Material) collapsed into groups so they don't
+    /// clog the single-level list.
+    pub fn build() -> Vec<Self> {
+        use crate::theme::ThemeName::*;
+
+        vec![
+            ThemePickerEntry::Theme(Default),
+            ThemePickerEntry::Theme(Amf),
+            ThemePickerEntry::Theme(Dracula),
+            ThemePickerEntry::Theme(Nord),
+            ThemePickerEntry::Theme(GruvboxDark),
+            ThemePickerEntry::Theme(GruvboxLight),
+            ThemePickerEntry::Group {
+                label: "Catppuccin",
+                themes: vec![
+                    CatppuccinLatte,
+                    CatppuccinFrappe,
+                    CatppuccinMacchiato,
+                    CatppuccinMocha,
+                ],
+            },
+            ThemePickerEntry::Group {
+                label: "Gruvbox Material",
+                themes: vec![
+                    GruvboxMaterialDarkHard,
+                    GruvboxMaterialDarkMedium,
+                    GruvboxMaterialDarkSoft,
+                    GruvboxMaterialLightHard,
+                    GruvboxMaterialLightMedium,
+                    GruvboxMaterialLightSoft,
+                    GruvboxMaterialMixDarkHard,
+                    GruvboxMaterialMixDarkMedium,
+                    GruvboxMaterialMixDarkSoft,
+                    GruvboxMaterialMixLightHard,
+                    GruvboxMaterialMixLightMedium,
+                    GruvboxMaterialMixLightSoft,
+                    GruvboxMaterialOriginalDarkHard,
+                    GruvboxMaterialOriginalDarkMedium,
+                    GruvboxMaterialOriginalDarkSoft,
+                    GruvboxMaterialOriginalLightHard,
+                    GruvboxMaterialOriginalLightMedium,
+                    GruvboxMaterialOriginalLightSoft,
+                ],
+            },
+        ]
+    }
+}
+
+/// Second-screen state for a group entry drilled into from the top-level
+/// list; `None` means the picker is showing the top-level list.
+pub struct ThemePickerGroupState {
+    pub label: &'static str,
+    pub themes: Vec<crate::theme::ThemeName>,
+    pub selected: usize,
+}
+
 pub struct ThemePickerState {
     pub selected: usize,
-    pub themes: Vec<crate::theme::ThemeName>,
+    pub entries: Vec<ThemePickerEntry>,
     pub original_theme: crate::theme::ThemeName,
+    pub group: Option<ThemePickerGroupState>,
 }
 
 pub struct SyntaxLanguageRow {

@@ -12,6 +12,23 @@ are tagged.
 
 ### Added
 
+- **The theme picker groups subtypes instead of listing all 28 themes flat.**
+  Catppuccin and Gruvbox Material alone made up 22 of the picker's 28 rows,
+  burying the six standalone themes (Default, AMF, Dracula, Nord, Gruvbox
+  Dark, Gruvbox Light) in the middle of a long list. Both families now
+  collapse into a single row — `Catppuccin (4)`, `Gruvbox Material (18)` —
+  giving eight rows at the top level. Opening a group (`Enter`) drills into
+  its own screen listing just that family's variants, with the repeated
+  family name dropped from each row (`Dark Hard` instead of `Gruvbox Material
+  Dark Hard`); `Esc` backs out to the top level without closing the picker.
+  Highlighting a group previews its first variant, matching how hovering a
+  single theme already worked. Reopening the picker while a grouped theme is
+  active goes straight to that group's screen with the active variant already
+  selected, rather than starting over at the top. No migration is required;
+  keybindings are unchanged (`T` opens the picker, `j`/`k` navigate, `Enter`
+  applies or opens a group, `t` toggles transparency, `Esc`/`q` backs out or
+  closes).
+
 - **You can expand the context around a diff's hunks.** Three lines either side
   of a change often hides what you need to judge it — the enclosing function
   signature, the surrounding match arm. In Final Review and the plain diff

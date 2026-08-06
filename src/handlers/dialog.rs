@@ -1,7 +1,9 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, AppMode, CreateProjectStep, StoppedSessionChoice};
+use crate::app::{
+    App, AppMode, CreateProjectStep, StoppedSessionChoice, ThemePickerEntry, ThemePickerGroupState,
+};
 
 const STEERING_PROMPT_PAGE_SCROLL: usize = 6;
 
@@ -408,11 +410,18 @@ pub fn handle_delete_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
 pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Char('j') | KeyCode::Down => {
-            let preview = if let AppMode::ThemePicker(state) = &mut app.mode
-                && state.selected + 1 < state.themes.len()
-            {
-                state.selected += 1;
-                state.themes.get(state.selected).copied()
+            let preview = if let AppMode::ThemePicker(state) = &mut app.mode {
+                if let Some(group) = &mut state.group {
+                    if group.selected + 1 < group.themes.len() {
+                        group.selected += 1;
+                    }
+                    group.themes.get(group.selected).copied()
+                } else {
+                    if state.selected + 1 < state.entries.len() {
+                        state.selected += 1;
+                    }
+                    state.entries.get(state.selected).and_then(|e| e.preview_theme())
+                }
             } else {
                 None
             };
@@ -421,11 +430,18 @@ pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            let preview = if let AppMode::ThemePicker(state) = &mut app.mode
-                && state.selected > 0
-            {
-                state.selected -= 1;
-                state.themes.get(state.selected).copied()
+            let preview = if let AppMode::ThemePicker(state) = &mut app.mode {
+                if let Some(group) = &mut state.group {
+                    if group.selected > 0 {
+                        group.selected -= 1;
+                    }
+                    group.themes.get(group.selected).copied()
+                } else {
+                    if state.selected > 0 {
+                        state.selected -= 1;
+                    }
+                    state.entries.get(state.selected).and_then(|e| e.preview_theme())
+                }
             } else {
                 None
             };
@@ -434,26 +450,62 @@ pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
             }
         }
         KeyCode::Enter => {
-            let theme_name = match &app.mode {
-                AppMode::ThemePicker(state) => state.themes.get(state.selected).copied(),
-                _ => None,
-            };
-            if let Some(name) = theme_name {
-                app.apply_theme(name);
+            if let AppMode::ThemePicker(state) = &app.mode {
+                if let Some(group) = &state.group {
+                    if let Some(name) = group.themes.get(group.selected).copied() {
+                        app.apply_theme(name);
+                    }
+                } else {
+                    match state.entries.get(state.selected) {
+                        Some(ThemePickerEntry::Theme(name)) => {
+                            app.apply_theme(*name);
+                        }
+                        Some(ThemePickerEntry::Group { label, themes }) => {
+                            let label = *label;
+                            let themes = themes.clone();
+                            let group_selected = themes
+                                .iter()
+                                .position(|t| *t == state.original_theme)
+                                .unwrap_or(0);
+                            let preview = themes.get(group_selected).copied();
+                            if let AppMode::ThemePicker(state) = &mut app.mode {
+                                state.group = Some(ThemePickerGroupState {
+                                    label,
+                                    themes,
+                                    selected: group_selected,
+                                });
+                            }
+                            if let Some(name) = preview {
+                                app.preview_theme(name);
+                            }
+                        }
+                        None => {}
+                    }
+                }
             }
         }
         KeyCode::Char('t') => {
             app.toggle_transparent_background();
         }
         KeyCode::Esc | KeyCode::Char('q') => {
-            let original = match &app.mode {
-                AppMode::ThemePicker(state) => Some(state.original_theme),
-                _ => None,
-            };
-            if let Some(name) = original {
+            let mut had_group = false;
+            let mut preview = None;
+            if let AppMode::ThemePicker(state) = &mut app.mode {
+                if state.group.take().is_some() {
+                    // Leave the current preview as-is: it's already a member
+                    // of the group we just backed out of, so there's
+                    // nothing more accurate to show at the top level.
+                    had_group = true;
+                } else {
+                    preview = Some(state.original_theme);
+                }
+            }
+            if let Some(name) = preview {
                 app.preview_theme(name);
             }
-            app.mode = AppMode::Normal;
+            if !had_group {
+                app.mode = AppMode::Normal;
+            }
         }
         _ => {}
     }

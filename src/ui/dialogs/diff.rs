@@ -2081,6 +2081,17 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme
     frame.render_widget(footer, area);
 }
 
+/// Whether the `E $EDITOR` hint earns its footer slot for the selected file.
+/// Shared by the cursor and non-cursor footers so the two can't drift: a
+/// deleted or binary file is still selectable (and, in cursor mode, still has
+/// addressable removed lines), but `E` on it can only report why it won't open.
+fn editor_hint_applies(state: &DiffViewerState) -> bool {
+    state
+        .files
+        .get(state.selected_file)
+        .is_some_and(|file| file.can_open_in_editor())
+}
+
 fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
 
@@ -2207,9 +2218,13 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             Span::raw(" apply suggestion  "),
             key("R"),
             Span::raw(" resolve/reopen  "),
-            key("E"),
-            Span::raw(" $EDITOR  "),
         ];
+        // Same gating as the non-cursor footer: a deleted or binary file has
+        // nothing for an editor to open, even though its removed lines stay
+        // addressable and so can still be cursored.
+        if editor_hint_applies(state) {
+            second_spans.extend([key("E"), Span::raw(" $EDITOR  ")]);
+        }
         // Same gating as the non-cursor footer: cross-file comment navigation
         // only earns its slot once there is a comment somewhere to jump to.
         if state.line_comments.values().any(|cs| !cs.is_empty()) {
@@ -2445,9 +2460,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
     // Opening in `$EDITOR` needs a file that exists on disk with text in it, so
     // it stays hidden for a deletion or a binary blob rather than advertising a
     // key that can only report why it can't work.
-    if state.files.get(state.selected_file).is_some_and(|file| {
-        !file.is_binary && !matches!(file.status, crate::diff::DiffFileStatus::Deleted)
-    }) {
+    if editor_hint_applies(state) {
         first_line.extend([key("E"), Span::raw(" $EDITOR  ")]);
     }
     let layout_label = match effective_layout(state) {
@@ -4713,6 +4726,51 @@ index 0000000..1111111
         );
         // 20 body lines (+ severity header) clamp to 6 visible + 2 border rows.
         assert_eq!(cursor_comment_preview_rows(&state), 8);
+    }
+
+    #[test]
+    fn editor_hint_hides_for_a_deleted_file_in_both_footers() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        fn footer_text(state: &mut DiffViewerState) -> String {
+            let backend = TestBackend::new(200, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| draw_diff_viewer(frame, state, &Theme::default()))
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        }
+
+        let (mut state, _) = single_added_line_review_state();
+        // A live file advertises `E` whether or not the line cursor is up.
+        assert!(footer_text(&mut state).contains("$EDITOR"));
+        state.comment_cursor = Some(0);
+        assert!(footer_text(&mut state).contains("$EDITOR"));
+
+        // A deletion keeps its removed lines addressable, so the cursor can
+        // still sit on one — but there is nothing on disk for `E` to open.
+        state.files[0].status = DiffFileStatus::Deleted;
+        state.files[0].hunks[0].lines[0] = crate::diff::DiffLine {
+            kind: crate::diff::DiffLineKind::Removed,
+            text: "-x".to_string(),
+        };
+        assert!(!state.files[0].addressable_lines().is_empty());
+        assert!(!footer_text(&mut state).contains("$EDITOR"));
+        state.comment_cursor = None;
+        assert!(!footer_text(&mut state).contains("$EDITOR"));
+
+        // Same for a binary blob, which has nothing an editor can show.
+        state.files[0].status = DiffFileStatus::Modified;
+        state.files[0].is_binary = true;
+        assert!(!footer_text(&mut state).contains("$EDITOR"));
+        state.comment_cursor = Some(0);
+        assert!(!footer_text(&mut state).contains("$EDITOR"));
     }
 
     #[test]

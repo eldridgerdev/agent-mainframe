@@ -21,6 +21,11 @@ are tagged.
   keep the existing fallback behavior and do not run with weakened isolation.
   No migration is required.
 
+- **AI Review can pick a model when it runs on Pi.** Pi previously skipped
+  straight to its default model because AMF didn't pass `--model` to it;
+  now that it does, the model picker opens for Pi like it does for every
+  other harness, and a configured `review_model` applies to Pi runs.
+
 - **The theme picker groups subtypes instead of listing all 28 themes flat.**
   Catppuccin and Gruvbox Material alone made up 22 of the picker's 28 rows,
   burying the six standalone themes (Default, AMF, Dracula, Nord, Gruvbox

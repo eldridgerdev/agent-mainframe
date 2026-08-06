@@ -11829,6 +11829,37 @@ fn enter_ai_review_for_feature(app: &mut App) {
 }
 
 #[test]
+fn ai_review_model_picker_opens_for_pi() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(std::path::PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        state.harness = Some(AgentKind::Pi);
+    }
+
+    app.start_ai_pr_review();
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            // Pi's headless CLI takes `--model`, so it must get the picker
+            // rather than being force-skipped to the harness default.
+            assert!(!state.model_picked);
+            let pick = state
+                .model_pick
+                .as_ref()
+                .expect("Pi should open the model picker");
+            assert_eq!(pick.rows, vec![ModelPickRow::Default, ModelPickRow::Custom]);
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+    assert!(app.ai_review_bg.is_none(), "review should not have started");
+}
+
+#[test]
 fn ai_review_model_picker_backs_through_custom_editor_and_rebuilds_for_new_harness() {
     let store = store_with_feature(ProjectStatus::Idle);
     let mut worktree = MockWorktreeOps::new();

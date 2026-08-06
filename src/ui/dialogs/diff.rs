@@ -2207,6 +2207,10 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             Span::raw(" apply suggestion  "),
             key("R"),
             Span::raw(" resolve/reopen  "),
+            key("{"),
+            Span::raw("/"),
+            key("}"),
+            Span::raw(" comment  "),
             key("n"),
             Span::raw("/"),
             key("p"),
@@ -2409,6 +2413,15 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         key("p"),
         Span::raw(" file  "),
     ]);
+    // Cross-file comment navigation only means something once something has
+    // been commented on, so it stays out of an otherwise dense footer until then.
+    if state.line_comments.values().any(|cs| !cs.is_empty()) {
+        first_line.extend([key("{"), Span::raw("/"), key("}"), Span::raw(" comment  ")]);
+    }
+    // Likewise the undo hint: shown only while there's a verdict to take back.
+    if !state.verdict_undo.is_empty() {
+        first_line.extend([key("U"), Span::raw(" undo verdict  ")]);
+    }
     // Tree folding only means something once the changeset spans directories.
     if state.files.iter().any(|file| file.path.contains('/')) {
         first_line.extend([key("z"), Span::raw("/"), key("Z"), Span::raw(" fold  ")]);

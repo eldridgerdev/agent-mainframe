@@ -792,13 +792,14 @@ impl App {
             if !state.review {
                 return;
             }
-            if let Some(file) = state.files.get(state.selected_file) {
+            if let Some(path) = state.files.get(state.selected_file).map(|f| f.path.clone()) {
+                state.push_verdict_undo(&path, Some(&ReviewDecision::Approve));
                 state
                     .decisions
-                    .insert(file.path.clone(), ReviewDecision::Approve);
+                    .insert(path.clone(), ReviewDecision::Approve);
                 // An explicit verdict wins over (and sticks against) a
                 // rejection auto-set by a line comment.
-                state.auto_rejected.remove(&file.path);
+                state.auto_rejected.remove(&path);
             }
         }
         self.diff_review_advance();
@@ -811,12 +812,13 @@ impl App {
             if !state.review {
                 return;
             }
-            if let Some(file) = state.files.get(state.selected_file) {
-                state.decisions.remove(&file.path);
+            if let Some(path) = state.files.get(state.selected_file).map(|f| f.path.clone()) {
+                state.push_verdict_undo(&path, None);
+                state.decisions.remove(&path);
                 // An explicit skip clears a comment-implied rejection. A later
                 // comment mutation on the file re-defaults it — a fresh signal
                 // on a file with no verdict.
-                state.auto_rejected.remove(&file.path);
+                state.auto_rejected.remove(&path);
             }
         }
         self.diff_review_advance();
@@ -2108,6 +2110,201 @@ impl App {
         }
     }
 
+    /// Every line comment across the *visible* files as `(file index, first
+    /// covered line index)` pairs, in file order and then in diff-line order —
+    /// the itinerary `{` / `}` walk. Also reports how many comments had no
+    /// anchor to park on, so an all-lost file can say why it went nowhere.
+    ///
+    /// `addressable_lines()` is only computed for files that actually carry a
+    /// comment, so a large changeset with a handful of annotations stays cheap.
+    fn review_comment_stops(state: &DiffViewerState) -> (Vec<(usize, usize)>, usize) {
+        let mut stops: Vec<(usize, usize)> = Vec::new();
+        let mut lost = 0usize;
+        for file_idx in state.visible_file_indices() {
+            let Some(file) = state.files.get(file_idx) else {
+                continue;
+            };
+            let Some(comments) = state.line_comments.get(&file.path) else {
+                continue;
+            };
+            if comments.is_empty() {
+                continue;
+            }
+            let locs = file.addressable_lines();
+            let mut indices: Vec<usize> = Vec::new();
+            for comment in comments {
+                // A comment whose anchor no longer resolves (moved code, a
+                // reload) has no line to put the cursor on — count it rather
+                // than pretending it isn't there.
+                match comment.covered_indices(&locs) {
+                    Some(range) => indices.push(*range.start()),
+                    None => lost += 1,
+                }
+            }
+            indices.sort_unstable();
+            indices.dedup();
+            stops.extend(indices.into_iter().map(|idx| (file_idx, idx)));
+        }
+        (stops, lost)
+    }
+
+    /// Move the line cursor to the next (`dir >= 0`) or previous comment
+    /// anywhere in the review, wrapping at either end. Unlike `Tab` — which
+    /// cycles the AI's *drafts* within the current file — this walks every
+    /// comment (draft or kept) across every visible file, so a reviewer can
+    /// sweep their whole annotation set before finishing without re-finding
+    /// each file by hand.
+    pub fn diff_review_jump_comment(&mut self, dir: isize) {
+        let message = match &mut self.mode {
+            AppMode::DiffViewer(state) if state.review => {
+                let (stops, lost) = Self::review_comment_stops(state);
+                if stops.is_empty() {
+                    Some(if lost > 0 {
+                        format!("No comment anchors to jump to ({lost} lost their anchor)")
+                    } else {
+                        "No comments in this review yet".to_string()
+                    })
+                } else {
+                    let sel = state.selected_file;
+                    // With the cursor off, forward starts before the current file's
+                    // first comment and backward after its last, so the first press
+                    // lands inside the file the reviewer is already looking at.
+                    let cursor = state.comment_cursor.map(|c| c as isize);
+                    let target_pos = if dir >= 0 {
+                        let from = cursor.unwrap_or(-1);
+                        stops
+                            .iter()
+                            .position(|&(f, i)| f > sel || (f == sel && (i as isize) > from))
+                            .unwrap_or(0)
+                    } else {
+                        let from = cursor.unwrap_or(isize::MAX);
+                        stops
+                            .iter()
+                            .rposition(|&(f, i)| f < sel || (f == sel && (i as isize) < from))
+                            .unwrap_or(stops.len() - 1)
+                    };
+                    let (file_idx, line_idx) = stops[target_pos];
+                    if state.selected_file != file_idx {
+                        state.selected_file = file_idx;
+                        state.on_file_changed();
+                    }
+                    // Set after `on_file_changed` (which would otherwise reset the
+                    // cursor to line 0), and unconditionally, so jumping to a
+                    // comment also turns the cursor on when it was off.
+                    state.comment_cursor = Some(line_idx);
+                    state.comment_anchor = None;
+                    state.cursor_sync_to_view = true;
+
+                    let anchor = state
+                        .files
+                        .get(file_idx)
+                        .and_then(|file| {
+                            let locs = file.addressable_lines();
+                            let comment =
+                                state.line_comments.get(&file.path)?.iter().find(|c| {
+                                    c.covered_indices(&locs)
+                                        .is_some_and(|range| range.contains(&line_idx))
+                                })?;
+                            Some(comment_anchor_label(&file.path, comment))
+                        })
+                        .unwrap_or_default();
+                    let lost_note = if lost > 0 {
+                        format!(" ({lost} anchor-lost skipped)")
+                    } else {
+                        String::new()
+                    };
+                    Some(format!(
+                        "Comment {}/{} — {anchor}{lost_note}",
+                        target_pos + 1,
+                        stops.len()
+                    ))
+                }
+            }
+            _ => None,
+        };
+        if let Some(message) = message {
+            self.message = Some(message);
+        }
+    }
+
+    /// Undo the most recent explicit verdict (`a` / `s` / a typed rejection),
+    /// restoring the file's previous decision — including whether it was one
+    /// the line-comment rule had set implicitly — and returning the selection
+    /// to that file, since the verdict keys advance away from it. Comments,
+    /// suggestions and general feedback are untouched: only verdicts are undone.
+    pub fn diff_review_undo_verdict(&mut self) {
+        // `(message, whether anything actually changed)` — "nothing to undo"
+        // still reports, but must not rewrite the progress file.
+        let outcome: Option<(String, bool)> = match &mut self.mode {
+            AppMode::DiffViewer(state) if state.review => match state.verdict_undo.pop() {
+                None => Some(("No verdict to undo".to_string(), false)),
+                Some(entry) => {
+                    match entry.previous.clone() {
+                        Some(decision) => {
+                            state.decisions.insert(entry.path.clone(), decision);
+                        }
+                        None => {
+                            state.decisions.remove(&entry.path);
+                        }
+                    }
+                    if entry.previous_auto_rejected {
+                        state.auto_rejected.insert(entry.path.clone());
+                    } else {
+                        state.auto_rejected.remove(&entry.path);
+                    }
+                    let restored = match &entry.previous {
+                        None => "no verdict",
+                        Some(ReviewDecision::Approve) => "approved",
+                        Some(ReviewDecision::Reject { .. }) => "needs revision",
+                    };
+                    match state.files.iter().position(|f| f.path == entry.path) {
+                        Some(idx) => {
+                            if state.selected_file != idx {
+                                state.selected_file = idx;
+                                state.on_file_changed();
+                            } else {
+                                state.reveal_selected_file();
+                            }
+                            // Restoring a verdict can push the file back out of the
+                            // active filter; say so rather than leaving the reviewer
+                            // wondering why the list didn't move.
+                            let hidden = !state.visible_file_indices().contains(&idx);
+                            let filter_note = if hidden {
+                                format!(" (hidden by the {} filter)", state.file_filter.label())
+                            } else {
+                                String::new()
+                            };
+                            Some((
+                                format!(
+                                    "Undid verdict on {} — {restored}{filter_note}",
+                                    entry.path
+                                ),
+                                true,
+                            ))
+                        }
+                        // The file left the changeset since the verdict was set (a
+                        // refresh, a base-ref change). The decision is still worth
+                        // restoring; there is just nowhere to navigate to.
+                        None => Some((
+                            format!(
+                                "Undid verdict on {} — {restored} (no longer in the diff)",
+                                entry.path
+                            ),
+                            true,
+                        )),
+                    }
+                }
+            },
+            _ => None,
+        };
+        if let Some((message, changed)) = outcome {
+            self.message = Some(message);
+            if changed {
+                self.persist_review_progress();
+            }
+        }
+    }
+
     /// Begin entering rejection feedback for the current file, pre-filling any
     /// feedback already recorded for it.
     pub fn diff_review_start_feedback(&mut self) {
@@ -2270,14 +2467,13 @@ impl App {
             }
             let feedback = state.feedback_editor.text().trim().to_string();
             let severity = state.comment_severity;
-            if let Some(file) = state.files.get(state.selected_file) {
-                state.decisions.insert(
-                    file.path.clone(),
-                    ReviewDecision::Reject { feedback, severity },
-                );
+            if let Some(path) = state.files.get(state.selected_file).map(|f| f.path.clone()) {
+                let decision = ReviewDecision::Reject { feedback, severity };
+                state.push_verdict_undo(&path, Some(&decision));
+                state.decisions.insert(path.clone(), decision);
                 // The reviewer typed this rejection themselves: it is explicit
                 // now and no longer tracks the file's comments.
-                state.auto_rejected.remove(&file.path);
+                state.auto_rejected.remove(&path);
             }
             state.feedback_editing = false;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());

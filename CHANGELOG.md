@@ -12,6 +12,25 @@ are tagged.
 
 ### Added
 
+- **You can jump between your review comments across every file, and undo a
+  verdict you did not mean to give.** In Final Review, `}` and `{` move to the
+  next and previous comment anywhere in the changeset, wrapping at either end —
+  so you can sweep everything you annotated before finishing without hunting
+  down each file again. (`Tab` still cycles the AI's draft comments within the
+  current file.) Pressing `}` with the line cursor off turns it on and starts
+  with the file already on screen; a comment whose line has since moved and
+  cannot be located is skipped and reported rather than jumped to blindly.
+  Separately, `U` takes back the last approve, skip or rejection and puts you
+  back on that file, since all three advance to the next one — an accidental
+  `a` no longer means finding the file again by hand. Press it repeatedly to
+  walk back through several verdicts. Undo restores the verdict exactly,
+  including whether a rejection had been implied by your line comments rather
+  than typed out, and touches nothing else: comments, suggestions and general
+  feedback are left alone. Both hints appear in the footer only once they would
+  do something. Undo covers the current sitting, so pausing and resuming a
+  review starts it fresh — your verdicts themselves are still saved as before.
+  No migration is required.
+
 - **You can expand the context around a diff's hunks.** Three lines either side
   of a change often hides what you need to judge it — the enclosing function
   signature, the surrounding match arm. In Final Review and the plain diff

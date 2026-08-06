@@ -459,9 +459,9 @@ pub struct AppConfig {
     /// for every review action listed on [`ReviewAction`], independent of
     /// whatever model the feature's own interactive session runs. Format
     /// depends on the harness running the review (a bare name/alias for
-    /// Claude/Codex, `provider/model` for Opencode; not applied for Pi, whose
-    /// headless model flag isn't verified). `None` (default) passes no
-    /// explicit model, so the harness's own default model applies. Overridden
+    /// Claude/Codex/Pi, `provider/model` for Opencode). `None` (default)
+    /// passes no explicit model, so the harness's own default model applies.
+    /// Overridden
     /// per-action by `review_models`; see [`AppConfig::review_model_for`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_model: Option<String>,

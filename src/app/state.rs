@@ -2113,7 +2113,13 @@ pub struct BootstrapRunState {
 pub struct CompactConfirmState {
     /// Bullet count in the doc as it stands, read synchronously when the
     /// overlay opens (a local file read — cheap enough not to background).
+    /// Re-read for the newly selected doc on every `scope` toggle, so the
+    /// number always describes what `⏎` would actually compact.
     pub existing_findings: usize,
+    /// Which doc gets compacted, toggled with `g`. Defaults to `Project` when
+    /// that doc has findings, otherwise `Global` — so `c` still reaches the
+    /// only non-empty doc without the user having to know to press `g`.
+    pub scope: crate::app::review_memory::MemoryScope,
 }
 
 /// Full-screen progress view for the review-memory compact pass's background
@@ -2127,6 +2133,10 @@ pub struct CompactRunState {
     /// re-resolve it (a second `repo_root` lookup) once the background
     /// thread reports back.
     pub path: PathBuf,
+    /// Which doc the run is rewriting, carried through from confirm so the
+    /// running screen can name it (the path alone doesn't read as
+    /// project-vs-global at a glance).
+    pub scope: crate::app::review_memory::MemoryScope,
     pub stage: crate::app::pr_review::CompactStage,
 }
 
@@ -2143,12 +2153,24 @@ pub struct CompactReviewState {
     pub origin: PrPickerState,
     /// Resolved path of the review-memory doc this will write to.
     pub path: PathBuf,
+    /// Which doc is being rewritten, so the success toast names it.
+    pub scope: crate::app::review_memory::MemoryScope,
     /// Bullet count in the doc before compacting, for the "N -> M" summary.
     pub original_findings: usize,
     /// Bullet count in the agent's proposed replacement, for the same summary.
     pub proposed_findings: usize,
     /// The proposed replacement text, editable before writing.
     pub editor: TextEditor,
+    /// The doc exactly as the compact pass read it. The write re-reads the file
+    /// and compares against this before overwriting, so findings another AMF
+    /// session appended while the agent ran (or while this dialog sat open) are
+    /// re-applied rather than clobbered — the cross-project doc in particular is
+    /// shared by every AMF session on the machine.
+    pub original_content: String,
+    /// Set once a write has been refused because the doc on disk diverged in
+    /// ways an append can't explain. The next confirm overwrites deliberately,
+    /// so the user is warned but never stuck.
+    pub overwrite_confirmed: bool,
     /// True while keystrokes go to the editor (`e` to enter); false in the
     /// confirm view (`⏎`/`w` write / `e` edit / `esc` discard).
     pub editing: bool,

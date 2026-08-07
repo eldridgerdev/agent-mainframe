@@ -273,6 +273,15 @@ are tagged.
 
 ### Changed
 
+- **Global review memory can now be compacted from PR Triage.** Press `c` in
+  the PR picker, then `g` to switch between the project and cross-project
+  memory docs. AMF shows the selected path and finding count before spending
+  agent tokens, and opens directly on the global doc when it is the only one
+  with findings. Because the cross-project doc is shared by every AMF session
+  on your machine, writing a compacted version re-reads it first: findings
+  another session added while the pass ran are kept, and an edit AMF cannot
+  re-apply on top of the rewrite asks you to confirm before it overwrites
+  anything.
 - **Session summaries now use the feature's own agent harness.** Generating a
   one-line summary for a Codex, Opencode, or Pi feature no longer silently
   launches Claude; Claude features continue to use Claude. No configuration or

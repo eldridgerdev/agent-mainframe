@@ -11441,6 +11441,7 @@ fn poll_review_memory_compact_bg_success_opens_review_dialog() {
             original_findings: 5,
             proposed_findings: 3,
             proposed_content: "# Review memory\n\n## Tests\n- Merged finding\n".to_string(),
+            original_content: "# Review memory\n\n## Tests\n- One\n- Two\n".to_string(),
         },
     ))))
     .unwrap();
@@ -11576,6 +11577,7 @@ fn cancel_review_memory_compact_does_not_reopen_review_dialog_over_the_user() {
             original_findings: 2,
             proposed_findings: 1,
             proposed_content: "# Review memory\n".to_string(),
+            original_content: "# Review memory\n\n## Tests\n- One\n- Two\n".to_string(),
         },
     ))))
     .unwrap();
@@ -11592,7 +11594,11 @@ fn cancel_review_memory_compact_does_not_reopen_review_dialog_over_the_user() {
     );
 }
 
+/// Enter the compact review dialog with `content` proposed for `path`, taking
+/// the conflict baseline from whatever is on disk at `path` right now — the
+/// same snapshot the background pass would have read.
 fn enter_compact_review_for_test(app: &mut App, path: std::path::PathBuf, content: &str) {
+    let original_content = std::fs::read_to_string(&path).unwrap_or_default();
     let origin = crate::app::PrPickerState {
         workdir: std::path::PathBuf::from("/tmp/test-workdir"),
         entries: vec![],
@@ -11610,6 +11616,8 @@ fn enter_compact_review_for_test(app: &mut App, path: std::path::PathBuf, conten
         original_findings: 3,
         proposed_findings: 2,
         editor: crate::editor::TextEditor::new(content.to_string()),
+        original_content,
+        overwrite_confirmed: false,
         editing: false,
         scroll: 0,
         sync_to_cursor: false,
@@ -11648,6 +11656,110 @@ fn pr_review_compact_write_overwrites_file_and_returns_to_picker() {
         app.toasts
             .last()
             .is_some_and(|t| t.message.contains("3") && t.message.contains("2"))
+    );
+}
+
+#[test]
+fn pr_review_compact_write_keeps_findings_appended_while_the_dialog_was_open() {
+    // The compact proposal rewrites a snapshot taken before the agent pass. Any
+    // AMF session can append to the same doc in that window (every session on
+    // the machine shares the global one), so those findings have to survive the
+    // rewrite instead of being clobbered by a stale snapshot.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("review-memory.md");
+    std::fs::write(
+        &path,
+        "# Review memory\n\n## Tests\n- Stale one\n- Stale two\n",
+    )
+    .unwrap();
+
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_compact_review_for_test(
+        &mut app,
+        path.clone(),
+        "# Review memory\n\n## Tests\n- Merged finding\n",
+    );
+
+    // Another session appends after the snapshot was taken.
+    crate::app::review_memory::append_finding(
+        &path,
+        crate::app::review_memory::MemoryScope::Project,
+        "Concurrency",
+        "Guard the shared doc",
+    )
+    .unwrap();
+
+    app.pr_review_compact_write().unwrap();
+
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("- Merged finding"));
+    assert!(contents.contains("- Guard the shared doc"));
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("kept 1 finding added elsewhere"))
+    );
+}
+
+#[test]
+fn pr_review_compact_write_refuses_once_when_the_doc_diverged_then_overwrites() {
+    // A change no append can explain (prose hand-edited, findings deleted)
+    // can't be replayed onto the rewrite, so the first confirm reports it
+    // inline and writes nothing; confirming again is a deliberate overwrite.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("review-memory.md");
+    std::fs::write(
+        &path,
+        "# Review memory\n\n## Tests\n- Stale one\n- Stale two\n",
+    )
+    .unwrap();
+
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_compact_review_for_test(
+        &mut app,
+        path.clone(),
+        "# Review memory\n\n## Tests\n- Merged finding\n",
+    );
+
+    let hand_edited = "# Review memory\n\nHand-written note.\n\n## Tests\n- Stale one\n";
+    std::fs::write(&path, hand_edited).unwrap();
+
+    app.pr_review_compact_write().unwrap();
+
+    match &app.mode {
+        AppMode::ReviewMemoryCompactReview(state) => {
+            assert!(
+                state
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("changed on disk"))
+            );
+            assert!(state.overwrite_confirmed);
+        }
+        other => panic!(
+            "expected the dialog to stay open, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), hand_edited);
+
+    app.pr_review_compact_write().unwrap();
+
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# Review memory\n\n## Tests\n- Merged finding\n"
     );
 }
 

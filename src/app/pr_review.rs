@@ -139,6 +139,11 @@ pub struct CompactOutcome {
     pub proposed_findings: usize,
     /// The full proposed replacement document text.
     pub proposed_content: String,
+    /// The doc exactly as it was read off disk for this pass. Carried so the
+    /// write can tell whether another session appended to the file while the
+    /// agent ran or the user reviewed the proposal, instead of overwriting
+    /// findings it never saw (see [`review_memory::doc_drift`]).
+    pub original_content: String,
 }
 
 /// Messages sent back from the background compact thread. `Compacting` fires
@@ -1571,6 +1576,7 @@ fn run_review_memory_compact(
             original_findings,
             proposed_findings,
             proposed_content,
+            original_content: contents,
         })
     });
     let _ = tx.send(CompactProgress::Done(result));
@@ -4246,6 +4252,8 @@ impl App {
                                         original_findings: outcome.original_findings,
                                         proposed_findings: outcome.proposed_findings,
                                         editor: TextEditor::new(outcome.proposed_content),
+                                        original_content: outcome.original_content,
+                                        overwrite_confirmed: false,
                                         editing: false,
                                         scroll: 0,
                                         sync_to_cursor: false,
@@ -4356,24 +4364,67 @@ impl App {
     /// proposal (see [`run_review_memory_compact`]). A write failure keeps
     /// the dialog open with the error shown inline, same as
     /// [`App::pr_review_post_ai_review`]'s recoverable-error handling.
+    ///
+    /// The proposal is a wholesale rewrite of a snapshot taken before the agent
+    /// pass, so the doc is re-read here and compared against that snapshot
+    /// first. Every other AMF flow only ever *appends* to these docs, and the
+    /// cross-project doc is shared by every AMF session on the machine, so the
+    /// common conflict is "another session appended findings while this dialog
+    /// was open": those are replayed on top of the rewrite instead of being
+    /// clobbered. A change an append can't explain (hand-edited prose, deleted
+    /// findings) refuses the first write and reports it inline; confirming
+    /// again overwrites deliberately.
     pub fn pr_review_compact_write(&mut self) -> Result<()> {
         let AppMode::ReviewMemoryCompactReview(state) = &mut self.mode else {
             return Ok(());
         };
         let content = state.editor.text().to_string();
+
+        let on_disk = match std::fs::read_to_string(&state.path) {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                state.error = Some(format!("Could not re-read the doc before writing: {e}"));
+                return Ok(());
+            }
+        };
+        let carried = match review_memory::doc_drift(&state.original_content, &on_disk) {
+            review_memory::DocDrift::Unchanged => Vec::new(),
+            review_memory::DocDrift::Appended(added) => added,
+            review_memory::DocDrift::Diverged(added) => {
+                if !state.overwrite_confirmed {
+                    state.overwrite_confirmed = true;
+                    state.error = Some(
+                        "This doc changed on disk since the compact pass read it, in ways \
+                         AMF can't re-apply on top of the rewrite. Confirm again to \
+                         overwrite it anyway, or esc to discard and re-run the compact pass."
+                            .to_string(),
+                    );
+                    return Ok(());
+                }
+                added
+            }
+        };
+
+        let (content, restored) = review_memory::append_findings_to_doc(&content, &carried);
         match std::fs::write(&state.path, &content) {
             Ok(()) => {
                 let (original, proposed) = (state.original_findings, state.proposed_findings);
                 let scope = state.scope;
                 let origin = state.origin.clone();
                 self.mode = AppMode::PrPicker(origin);
+                let carried_note = match restored {
+                    0 => String::new(),
+                    1 => " · kept 1 finding added elsewhere".to_string(),
+                    n => format!(" · kept {n} findings added elsewhere"),
+                };
                 self.push_toast_success(format!(
-                    "Compacted {} review memory · {original} \u{2192} {proposed} findings",
+                    "Compacted {} review memory · {original} \u{2192} {proposed} findings{carried_note}",
                     scope.label()
                 ));
             }
             Err(e) => {
-                state.error = Some(e.to_string());
+                state.error = Some(format!("Write failed: {e}"));
             }
         }
         Ok(())

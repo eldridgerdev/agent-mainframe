@@ -2044,6 +2044,16 @@ pub struct CompactReviewState {
     pub proposed_findings: usize,
     /// The proposed replacement text, editable before writing.
     pub editor: TextEditor,
+    /// The doc exactly as the compact pass read it. The write re-reads the file
+    /// and compares against this before overwriting, so findings another AMF
+    /// session appended while the agent ran (or while this dialog sat open) are
+    /// re-applied rather than clobbered — the cross-project doc in particular is
+    /// shared by every AMF session on the machine.
+    pub original_content: String,
+    /// Set once a write has been refused because the doc on disk diverged in
+    /// ways an append can't explain. The next confirm overwrites deliberately,
+    /// so the user is warned but never stuck.
+    pub overwrite_confirmed: bool,
     /// True while keystrokes go to the editor (`e` to enter); false in the
     /// confirm view (`⏎`/`w` write / `e` edit / `esc` discard).
     pub editing: bool,

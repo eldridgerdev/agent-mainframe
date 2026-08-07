@@ -469,7 +469,7 @@ pub fn draw_review_memory_compact_review(
 
     let mut constraints = vec![Constraint::Length(1)]; // path line
     if state.error.is_some() {
-        constraints.push(Constraint::Length(2)); // error message
+        constraints.push(Constraint::Length(3)); // error / conflict message
     }
     constraints.push(Constraint::Min(1)); // doc body / editor
     constraints.push(Constraint::Length(1)); // key hints
@@ -489,9 +489,11 @@ pub fn draw_review_memory_compact_review(
     row += 1;
 
     if let Some(error) = &state.error {
+        // Already a full sentence at the call site — an io failure or a
+        // "the doc changed under you" conflict, which read differently.
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                format!("Write failed: {error}"),
+                error.clone(),
                 Style::default().fg(theme.danger.to_color()),
             )))
             .wrap(Wrap { trim: false }),

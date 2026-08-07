@@ -262,7 +262,10 @@ const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Tab", "Move focus between the file list and the patch"),
             ("PgUp / PgDn", "Scroll the patch a screen at a time"),
             ("h / l", "Collapse-or-out / expand-or-in (file list)"),
-            ("z / Z", "Fold the cursored directory / whole tree (file list)"),
+            (
+                "z / Z",
+                "Fold the cursored directory / whole tree (file list)",
+            ),
             ("/", "Search this file's diff; n / N cycle matches"),
             ("F", "Cycle the file-list filter"),
             ("", "(all / undecided / rejected / blockers / …)"),
@@ -298,7 +301,10 @@ const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("t", "Fix target: the live agent pane / a dedicated session"),
             ("X", "Also apply remaining suggestions when finishing"),
             ("q", "Review summary, then finish"),
-            ("", "(writes feedback, may post to the PR, dispatches fixes)"),
+            (
+                "",
+                "(writes feedback, may post to the PR, dispatches fixes)",
+            ),
             ("Esc", "Pause — leave the review with all progress kept"),
         ],
     ),

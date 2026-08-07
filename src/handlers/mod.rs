@@ -79,6 +79,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
     match &app.mode {
         AppMode::Normal => handle_normal_key(app, key),
         AppMode::Todos(_) => handle_todos_key(app, key),
+        // Learning Mode has no entry key yet; `handlers::learning` takes over
+        // here once the overlay is reachable.
+        AppMode::Learning(_) => Ok(()),
         AppMode::TodoQuickCapture(_) => handle_todo_quick_capture_key(app, key),
         AppMode::TodosHostReassign(_) => handle_todos_host_reassign_key(app, key.code),
         AppMode::CreatingProject(_) => handle_create_project_key(app, key),

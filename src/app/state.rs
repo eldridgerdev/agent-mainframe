@@ -2956,9 +2956,550 @@ pub struct TodosHostReassignState {
     pub todo_count: usize,
 }
 
+/// Which files Learning Mode lists.
+// Learning Mode's overlay lands in the plan's Epics 2-5
+// (`docs/backlog/learning-mode-plan.md`), so this state is written before
+// anything reads it. The `dead_code` allows through the end of
+// `LearningViewState` come off in Epic 6.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowseScope {
+    /// Every file in the project's working tree (git-tracked plus untracked
+    /// files git doesn't ignore).
+    RepoTree,
+    /// Only the files changed on the feature's branch.
+    BranchChanges,
+}
+
+#[allow(dead_code)]
+impl BrowseScope {
+    /// Short header label.
+    pub fn label(self) -> &'static str {
+        match self {
+            BrowseScope::RepoTree => "Repo tree",
+            BrowseScope::BranchChanges => "Branch changes",
+        }
+    }
+
+    /// Spelled-out description — the header says what the scope *is* rather
+    /// than relying on the user knowing AMF's vocabulary.
+    pub fn description(self) -> &'static str {
+        match self {
+            BrowseScope::RepoTree => "all files in this project",
+            BrowseScope::BranchChanges => "files changed on this branch",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            BrowseScope::RepoTree => BrowseScope::BranchChanges,
+            BrowseScope::BranchChanges => BrowseScope::RepoTree,
+        }
+    }
+}
+
+/// What a Learning Mode question is asked *about*. Persisted as an
+/// `anchor_kind` string plus an optional line range (see [`LearningAnchor::kind_str`]
+/// and [`LearningAnchor::from_parts`]).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningAnchor {
+    /// The repository as a whole — used by the orientation ("give me a tour")
+    /// question, which has no file to point at.
+    Project,
+    /// The whole of the currently loaded file.
+    File,
+    /// A hunk of the current file's diff, by index into `DiffFile::hunks`.
+    /// Only reachable in [`BrowseScope::BranchChanges`] — repo-tree browsing
+    /// has no diff, so a hunk has nothing to mean there.
+    Hunk { index: usize },
+    /// An inclusive 1-based line range in the current file.
+    Lines { start: usize, end: usize },
+}
+
+#[allow(dead_code)]
+impl LearningAnchor {
+    /// Stable string stored in `learning_qa.anchor_kind`.
+    pub fn kind_str(self) -> &'static str {
+        match self {
+            LearningAnchor::Project => "project",
+            LearningAnchor::File => "file",
+            LearningAnchor::Hunk { .. } => "hunk",
+            LearningAnchor::Lines { .. } => "lines",
+        }
+    }
+
+    /// The persisted line range: `(line_start, line_end)`, both `None` for
+    /// anchors that cover no specific lines.
+    pub fn line_range(self) -> (Option<usize>, Option<usize>) {
+        match self {
+            LearningAnchor::Project | LearningAnchor::File => (None, None),
+            LearningAnchor::Hunk { index } => (Some(index), None),
+            LearningAnchor::Lines { start, end } => (Some(start), Some(end)),
+        }
+    }
+
+    /// Rebuild an anchor from its persisted parts. Unknown kinds and
+    /// range-less `lines` rows fall back to [`LearningAnchor::File`] rather
+    /// than failing the load — a slightly coarse anchor beats a lost note.
+    pub fn from_parts(kind: &str, start: Option<usize>, end: Option<usize>) -> Self {
+        match kind {
+            "project" => LearningAnchor::Project,
+            "hunk" => match start {
+                Some(index) => LearningAnchor::Hunk { index },
+                None => LearningAnchor::File,
+            },
+            "lines" => match (start, end) {
+                (Some(start), Some(end)) => LearningAnchor::Lines { start, end },
+                (Some(start), None) => LearningAnchor::Lines { start, end: start },
+                _ => LearningAnchor::File,
+            },
+            _ => LearningAnchor::File,
+        }
+    }
+
+    /// Plain-words description echoed above the question input, e.g.
+    /// `lines 40-58 of src/app/learning.rs`.
+    pub fn describe(self, path: Option<&str>) -> String {
+        let path = path.unwrap_or("this file");
+        match self {
+            LearningAnchor::Project => "this whole project".to_string(),
+            LearningAnchor::File => format!("all of {path}"),
+            LearningAnchor::Hunk { index } => format!("change #{} in {path}", index + 1),
+            LearningAnchor::Lines { start, end } if start == end => {
+                format!("line {start} of {path}")
+            }
+            LearningAnchor::Lines { start, end } => format!("lines {start}-{end} of {path}"),
+        }
+    }
+}
+
+/// What the user is asking for. Chosen at ask time and re-labelable
+/// afterwards; it shapes the prompt framing and which follow-up action the UI
+/// offers first, nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningQaIntent {
+    /// Teach me what this does. No change is proposed; the answer lives on as
+    /// an anchored note.
+    Explain,
+    /// Propose a concrete change.
+    Action,
+}
+
+#[allow(dead_code)]
+impl LearningQaIntent {
+    /// Stable string stored in `learning_qa.intent`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LearningQaIntent::Explain => "explain",
+            LearningQaIntent::Action => "action",
+        }
+    }
+
+    pub fn from_str(raw: &str) -> Self {
+        match raw {
+            "action" => LearningQaIntent::Action,
+            _ => LearningQaIntent::Explain,
+        }
+    }
+
+    /// The label the ask keys carry in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            LearningQaIntent::Explain => "Explain this to me",
+            LearningQaIntent::Action => "Ask for a change",
+        }
+    }
+
+    /// Compact marker + word shown on a Q&A row.
+    pub fn marker(self) -> &'static str {
+        match self {
+            LearningQaIntent::Explain => "? explain",
+            LearningQaIntent::Action => "! change",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            LearningQaIntent::Explain => LearningQaIntent::Action,
+            LearningQaIntent::Action => LearningQaIntent::Explain,
+        }
+    }
+}
+
+/// How much the answer should assume. A per-session setting, not a
+/// per-question one; it changes prompt wording only — never tools, model, or
+/// which files are visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningLevel {
+    /// Default: assume no prior knowledge of this codebase, define jargon,
+    /// end with a "Where to look next" pointer.
+    Newcomer,
+    /// Denser answers for a user who has outgrown the newcomer framing.
+    Familiar,
+}
+
+#[allow(dead_code)]
+impl LearningLevel {
+    /// Stable string stored in `learning_sessions.level` / `learning_qa.level`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LearningLevel::Newcomer => "newcomer",
+            LearningLevel::Familiar => "familiar",
+        }
+    }
+
+    pub fn from_str(raw: &str) -> Self {
+        match raw {
+            "familiar" => LearningLevel::Familiar,
+            _ => LearningLevel::Newcomer,
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            LearningLevel::Newcomer => LearningLevel::Familiar,
+            LearningLevel::Familiar => LearningLevel::Newcomer,
+        }
+    }
+}
+
+/// Whether an answer came from the fast no-tools pass or the slower pass that
+/// lets the agent read the rest of the repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningRunMode {
+    /// `HeadlessRunner::run(.., restricted = true)` — answered from the
+    /// prompt's own context only.
+    NoTools,
+    /// `HeadlessRunner::run_read_only` — the agent may read the repository.
+    DeepDive,
+}
+
+#[allow(dead_code)]
+impl LearningRunMode {
+    /// Stable string stored in `learning_qa.run_mode`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LearningRunMode::NoTools => "no_tools",
+            LearningRunMode::DeepDive => "deep_dive",
+        }
+    }
+
+    pub fn from_str(raw: &str) -> Self {
+        match raw {
+            "deep_dive" => LearningRunMode::DeepDive,
+            _ => LearningRunMode::NoTools,
+        }
+    }
+
+    /// What the mode does, in the user's terms rather than AMF's.
+    pub fn description(self) -> &'static str {
+        match self {
+            LearningRunMode::NoTools => "this file only",
+            LearningRunMode::DeepDive => "read the repo",
+        }
+    }
+}
+
+/// Lifecycle of one queued question. Rendered as a full word, never a glyph
+/// alone — a stalled screen must not be ambiguous between "thinking" and
+/// "broken".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningQaStatus {
+    /// Enqueued, no thread started yet.
+    Pending,
+    /// A headless run is in flight.
+    Running,
+    /// An answer arrived.
+    Answered,
+    /// The run failed; `LearningQa::error` carries what to do about it.
+    Failed,
+}
+
+#[allow(dead_code)]
+impl LearningQaStatus {
+    /// Stable string stored in `learning_qa.status`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LearningQaStatus::Pending => "pending",
+            LearningQaStatus::Running => "running",
+            LearningQaStatus::Answered => "answered",
+            LearningQaStatus::Failed => "failed",
+        }
+    }
+
+    pub fn from_str(raw: &str) -> Self {
+        match raw {
+            "running" => LearningQaStatus::Running,
+            "answered" => LearningQaStatus::Answered,
+            "failed" => LearningQaStatus::Failed,
+            _ => LearningQaStatus::Pending,
+        }
+    }
+
+    /// The word shown on the row.
+    pub fn word(self) -> &'static str {
+        match self {
+            LearningQaStatus::Pending => "queued",
+            LearningQaStatus::Running => "thinking…",
+            LearningQaStatus::Answered => "answered",
+            LearningQaStatus::Failed => "failed",
+        }
+    }
+
+    /// True while the user is still waiting on this row (drives the header's
+    /// in-flight counter).
+    pub fn is_in_flight(self) -> bool {
+        matches!(self, LearningQaStatus::Pending | LearningQaStatus::Running)
+    }
+}
+
+/// One question and its answer, anchored to a place in the project. The
+/// in-memory list is the overlay's source of truth; the DB persists it when
+/// one is available (mirroring the TODOs overlay).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LearningQa {
+    pub id: String,
+    /// `learning_sessions.id` this row belongs to.
+    pub session_id: String,
+    /// Set on a follow-up: the row whose question and answer are carried into
+    /// this one's prompt. Follow-ups render indented under their parent.
+    pub parent_qa_id: Option<String>,
+    /// Repo-relative path, `None` for the project-level anchor.
+    pub file_path: Option<String>,
+    pub anchor: LearningAnchor,
+    /// The text the anchor covered when the question was asked. Kept verbatim
+    /// so the answer stays readable even after the file moves on.
+    pub selection_text: String,
+    pub question: String,
+    pub intent: LearningQaIntent,
+    /// The level this row was answered at, so a reloaded answer explains why
+    /// it reads the way it does.
+    pub level: LearningLevel,
+    pub answer: Option<String>,
+    pub harness: AgentKind,
+    pub run_mode: LearningRunMode,
+    pub status: LearningQaStatus,
+    /// Failure text for a `Failed` row, phrased as what to do next.
+    pub error: Option<String>,
+    /// `todos.id`, set only once the user explicitly made this answer
+    /// actionable. Renders as `→ TODO` and makes re-invocation jump to the
+    /// item instead of duplicating it.
+    pub todo_id: Option<String>,
+    /// `FeatureSession.id` of a live session escalated from this row.
+    pub spawned_session_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A Learning Mode session: one per project, carrying the settings that
+/// outlive a single question.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LearningSession {
+    pub id: String,
+    pub project_id: String,
+    /// Feature the session was opened under (its workdir is what gets read).
+    pub feature_id: String,
+    pub title: String,
+    pub harness: AgentKind,
+    pub level: LearningLevel,
+    /// False until the first-open help overlay has been shown once.
+    pub onboarding_seen: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Which group a file-list row belongs to.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningListGroup {
+    /// The pinned orientation group shown at the top of repo-tree scope until
+    /// the project has some Q&A history.
+    StartHere,
+    /// The ordinary file list.
+    Files,
+}
+
+/// One row in Learning Mode's file list.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LearningListEntry {
+    /// Collapsible header for the `Start here` group.
+    StartHereHeader,
+    /// The repo-level orientation question — anchors to the project rather
+    /// than to any file.
+    ProjectTour,
+    /// A file. `diff_index` indexes `LearningViewState::diff_files` in
+    /// branch-changes scope and is `None` in repo-tree scope.
+    File {
+        path: String,
+        group: LearningListGroup,
+        diff_index: Option<usize>,
+    },
+}
+
+#[allow(dead_code)]
+impl LearningListEntry {
+    /// The repo-relative path this row loads, if it loads one.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            LearningListEntry::File { path, .. } => Some(path.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Whether the cursor can rest here (group headers are skipped by
+    /// navigation only when collapsed — they stay selectable so the group can
+    /// be expanded again).
+    pub fn is_file(&self) -> bool {
+        matches!(self, LearningListEntry::File { .. })
+    }
+}
+
+/// Which pane has focus in the Learning Mode overlay.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningFocus {
+    FileList,
+    Content,
+    Qa,
+}
+
+/// An open question prompt. The same editor serves both intents and
+/// follow-ups; the title bar shows the resolved anchor and chosen intent.
+#[allow(dead_code)]
+pub struct LearningQuestionEditor {
+    pub editor: TextEditor,
+    pub intent: LearningQaIntent,
+    /// Set when this prompt is a follow-up to an existing row.
+    pub parent_qa_id: Option<String>,
+    /// Anchor captured when the prompt opened, so browsing can't move it.
+    pub anchor: LearningAnchor,
+    pub file_path: Option<String>,
+    /// The anchored text captured alongside `anchor`.
+    pub selection_text: String,
+    pub scroll: usize,
+    pub sync_to_cursor: bool,
+}
+
+/// State for the Learning Mode overlay (`AppMode::Learning`) — a read-only
+/// file browser over a project, with an agent answering questions about
+/// whatever the cursor is on. Nothing in this mode writes to the repository.
+#[allow(dead_code)]
+pub struct LearningViewState {
+    /// Project being studied.
+    pub project_id: String,
+    /// Project / feature indices the overlay was opened from, used to resolve
+    /// the feature for escalation and to restore dashboard selection on close.
+    pub pi: usize,
+    pub fi: usize,
+    /// Display labels for the header.
+    pub project_name: String,
+    pub feature_name: String,
+    /// The feature's working directory — everything is read from here.
+    pub workdir: PathBuf,
+    /// False for non-git projects, where branch-changes scope has no meaning
+    /// and the file list falls back to a capped plain walk.
+    pub is_git: bool,
+    pub scope: BrowseScope,
+    /// File-list rows in display order (`Start here` group first, when shown).
+    pub entries: Vec<LearningListEntry>,
+    pub selected_entry: usize,
+    pub list_scroll: usize,
+    pub start_here_collapsed: bool,
+    /// Diff snapshot backing `BrowseScope::BranchChanges`.
+    pub diff_files: Vec<crate::diff::DiffFile>,
+    /// Lines of the loaded file, and the path they came from.
+    pub content: Vec<String>,
+    pub content_path: Option<String>,
+    pub content_scroll: usize,
+    /// Why the selected file could not be shown (binary, too large, unreadable).
+    pub content_error: Option<String>,
+    /// Cursor into the content pane: a 0-based index into `content` in
+    /// repo-tree scope, or into the file's `addressable_lines()` in
+    /// branch-changes scope.
+    pub cursor_line: usize,
+    /// Start of an in-progress multi-line selection; `None` selects only the
+    /// cursor line.
+    pub selection_anchor: Option<usize>,
+    /// The anchor a question would currently be asked against.
+    pub anchor: LearningAnchor,
+    pub focus: LearningFocus,
+    /// Open question prompt, if any.
+    pub question: Option<LearningQuestionEditor>,
+    /// Q&A history for this project, oldest first, follow-ups after parents.
+    pub qa: Vec<LearningQa>,
+    pub selected_qa: usize,
+    pub qa_scroll: usize,
+    /// Answer pane state — offset plus the render cache
+    /// `draw_markdown_document` needs.
+    pub answer_open: bool,
+    pub answer_scroll: usize,
+    pub answer_rendered_width: u16,
+    pub answer_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    /// Harness answering questions. Pre-selected, so the picker is optional.
+    pub harness: AgentKind,
+    pub level: LearningLevel,
+    /// `learning_sessions.id` backing this overlay.
+    pub session_id: String,
+    /// True while the `?` help overlay is open (also shown automatically on
+    /// first open, per `onboarding_seen`).
+    pub help_open: bool,
+    pub help_scroll: usize,
+    /// Transient error banner (file load, DB, run dispatch).
+    pub error: Option<String>,
+}
+
+#[allow(dead_code)]
+impl LearningViewState {
+    /// How many answers are still generating — shown in the header so a slow
+    /// run reads as progress rather than a hang.
+    pub fn in_flight_count(&self) -> usize {
+        self.qa.iter().filter(|q| q.status.is_in_flight()).count()
+    }
+
+    /// The path a question would anchor to, `None` for the project anchor.
+    pub fn anchor_path(&self) -> Option<&str> {
+        match self.anchor {
+            LearningAnchor::Project => None,
+            _ => self.content_path.as_deref(),
+        }
+    }
+
+    /// The currently selected file-list entry.
+    pub fn selected_entry(&self) -> Option<&LearningListEntry> {
+        self.entries.get(self.selected_entry)
+    }
+
+    /// The `DiffFile` behind the selected entry, in branch-changes scope.
+    pub fn selected_diff_file(&self) -> Option<&crate::diff::DiffFile> {
+        match self.entries.get(self.selected_entry) {
+            Some(LearningListEntry::File {
+                diff_index: Some(i), ..
+            }) => self.diff_files.get(*i),
+            _ => None,
+        }
+    }
+
+    /// Whether hunk selection is available — it needs a diff, so repo-tree
+    /// scope has none.
+    pub fn hunk_selection_available(&self) -> bool {
+        self.scope == BrowseScope::BranchChanges && self.selected_diff_file().is_some()
+    }
+
+    /// The Q&A row under the history cursor.
+    pub fn selected_qa(&self) -> Option<&LearningQa> {
+        self.qa.get(self.selected_qa)
+    }
+}
+
 pub enum AppMode {
     Normal,
     Todos(TodoViewState),
+    /// Read-only Learning Mode overlay: browse the project and ask an agent
+    /// about what you're looking at (`crate::app::learning`).
+    #[allow(dead_code)] // Entered by the plan's Epic 4 dashboard key.
+    Learning(Box<LearningViewState>),
     TodoQuickCapture(TodoQuickCaptureState),
     /// Re-home or delete a project's TODO list after its host feature is deleted.
     TodosHostReassign(TodosHostReassignState),

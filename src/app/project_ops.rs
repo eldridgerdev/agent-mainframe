@@ -308,6 +308,18 @@ impl App {
             );
         }
 
+        // Learning Mode history is keyed the same way, for the same reason.
+        let learning_cleanup_err = match (&self.db, &project_id) {
+            (Some(db), Some(pid)) => db.delete_learning_sessions_for_project(pid).err(),
+            _ => None,
+        };
+        if let (Some(e), Some(pid)) = (learning_cleanup_err, &project_id) {
+            self.log_warn(
+                "learning",
+                format!("failed to delete learning history for project {pid}: {e}"),
+            );
+        }
+
         self.store.remove_project(&project_name);
         self.save()?;
 

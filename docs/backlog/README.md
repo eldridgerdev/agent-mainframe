@@ -82,6 +82,17 @@ doc always says exactly what remains.
   (add/edit/notes/done/priority/reorder/delete + a scratchpad note),
   spawning an agent from a TODO with a pre-filled composer prompt, and
   quick-capture from any session view are all in place.
+- [Learning Mode](learning-mode-plan.md) — _In progress._ A read-only
+  overlay (`K`) for studying a project you didn't write: browse the repo
+  tree or just the branch's changes, anchor a question to a file, hunk,
+  line range, or the project as a whole, and get a headless answer from
+  the selected harness. Built for a newcomer — nothing mutates the repo,
+  answers default to a define-your-terms "newcomer" level, starter
+  questions and a "Start here" group give a first move, and follow-ups
+  thread. Answers persist per project as anchored notes; making one
+  actionable (a TODO) or escalating it into a live agent session are
+  explicit, optional gestures. Six epics: foundations, browsing, asking,
+  surface, acting on an answer, hardening.
 - [Bug backlog](bug-backlog-plan.md) — _Backlog._ Running list of known
   bugs not yet scheduled for a fix, one section per bug. Currently
   tracks recently fixed dashboard, sidebar, and composer-pane regressions.

@@ -1119,6 +1119,37 @@ fn normalize_patch_path(path: &str) -> Option<String> {
     }
 }
 
+/// Every file in `workdir`'s working tree that git knows or would accept:
+/// tracked files plus untracked ones that aren't ignored, repo-relative and
+/// sorted. Learning Mode's repo-tree browse scope is built from this.
+///
+/// Delegating to `git ls-files` means `.gitignore` (and every other exclude
+/// source git honours) is applied by git itself rather than reimplemented
+/// here — which also keeps `target/`, `node_modules/`, and friends out of the
+/// list for free. Deleted-but-still-tracked paths are filtered out, since a
+/// browser can't open a file that isn't on disk.
+#[allow(dead_code)] // Consumed by Learning Mode's repo-tree scope (Epic 2).
+pub fn list_repo_files(workdir: &Path) -> Result<Vec<String>> {
+    let stdout = git_capture(
+        workdir,
+        &["ls-files", "--cached", "--others", "--exclude-standard"],
+        false,
+    )?;
+    let mut files: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| workdir.join(line).is_file())
+        .map(ToOwned::to_owned)
+        .collect();
+    // `--cached` and `--others` are emitted as two runs, and a path staged for
+    // deletion can also show up untracked, so sort and dedupe rather than
+    // trusting git's ordering.
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
 fn list_untracked_files(workdir: &Path) -> Result<Vec<String>> {
     let stdout = git_capture(
         workdir,
@@ -1772,6 +1803,52 @@ index 1111111..2222222 100644
         assert!(file.patch.contains("+first"));
         assert!(!file.patch.contains("second"));
         assert!(!file.patch.contains("uncommitted"));
+    }
+
+    #[test]
+    fn list_repo_files_covers_tracked_and_unignored_untracked_files() {
+        let repo = init_repo_with_main();
+        std::fs::write(repo.path().join(".gitignore"), "ignored.txt\nbuild/\n").unwrap();
+        git(repo.path(), &["add", ".gitignore"]);
+        git(repo.path(), &["commit", "-m", "add gitignore"]);
+
+        // Tracked in a subdirectory.
+        std::fs::create_dir_all(repo.path().join("src")).unwrap();
+        std::fs::write(repo.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        git(repo.path(), &["add", "src/main.rs"]);
+        git(repo.path(), &["commit", "-m", "add source"]);
+
+        // Untracked but not ignored — a newcomer should still be able to read it.
+        std::fs::write(repo.path().join("notes.md"), "scratch\n").unwrap();
+        // Ignored, by file and by directory.
+        std::fs::write(repo.path().join("ignored.txt"), "secret\n").unwrap();
+        std::fs::create_dir_all(repo.path().join("build")).unwrap();
+        std::fs::write(repo.path().join("build/out.o"), "binary\n").unwrap();
+
+        let files = list_repo_files(repo.path()).unwrap();
+
+        assert!(files.contains(&"src.txt".to_string()), "{files:?}");
+        assert!(files.contains(&"src/main.rs".to_string()), "{files:?}");
+        assert!(files.contains(&".gitignore".to_string()), "{files:?}");
+        assert!(files.contains(&"notes.md".to_string()), "{files:?}");
+        assert!(!files.contains(&"ignored.txt".to_string()), "{files:?}");
+        assert!(!files.contains(&"build/out.o".to_string()), "{files:?}");
+
+        let mut sorted = files.clone();
+        sorted.sort();
+        assert_eq!(files, sorted, "output should be sorted");
+    }
+
+    #[test]
+    fn list_repo_files_skips_tracked_files_deleted_from_disk() {
+        let repo = init_repo_with_main();
+        std::fs::remove_file(repo.path().join("src.txt")).unwrap();
+
+        let files = list_repo_files(repo.path()).unwrap();
+        assert!(
+            !files.contains(&"src.txt".to_string()),
+            "a file that isn't on disk can't be browsed: {files:?}"
+        );
     }
 
     fn init_repo_with_main() -> TempDir {

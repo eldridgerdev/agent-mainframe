@@ -80,6 +80,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist plan-interview drafts and accepted transcripts per feature",
             MIGRATION_016,
         ),
+        (
+            "Add learning_sessions + learning_qa tables for Learning Mode",
+            MIGRATION_017,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -339,6 +343,65 @@ CREATE INDEX IF NOT EXISTS idx_plan_interviews_updated
     ON plan_interviews(updated_at);
 ";
 
+// Learning Mode's Q&A history (see `docs/backlog/learning-mode-plan.md`).
+// Shaped after MIGRATION_011's todo tables: `project_id` / `feature_id` are
+// plain TEXT with no FK to projects/features (those live in the store tables
+// and are rewritten wholesale on save), so cleanup on project deletion is
+// explicit — see `learning::delete_sessions_for_project`.
+//
+// `project_id` is deliberately *not* UNIQUE: whether a project has one
+// learning session or many is still open (the plan's "learning-session
+// lifecycle" question), and v1's one-per-project behaviour is enforced in
+// `load_or_create_session` rather than baked into the schema.
+//
+// `parent_qa_id` self-references so a follow-up thread dies with the question
+// it hangs off, matching the session→Q&A cascade.
+const MIGRATION_017: &str = "
+CREATE TABLE IF NOT EXISTS learning_sessions (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    feature_id      TEXT NOT NULL,
+    title           TEXT NOT NULL DEFAULT '',
+    harness         TEXT NOT NULL DEFAULT 'claude',
+    level           TEXT NOT NULL DEFAULT 'newcomer',
+    onboarding_seen INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_learning_sessions_project
+    ON learning_sessions(project_id);
+
+CREATE TABLE IF NOT EXISTS learning_qa (
+    id                  TEXT PRIMARY KEY,
+    learning_session_id TEXT NOT NULL
+                        REFERENCES learning_sessions(id) ON DELETE CASCADE,
+    parent_qa_id        TEXT REFERENCES learning_qa(id) ON DELETE CASCADE,
+    file_path           TEXT,
+    anchor_kind         TEXT NOT NULL DEFAULT 'file',
+    line_start          INTEGER,
+    line_end            INTEGER,
+    selection_text      TEXT NOT NULL DEFAULT '',
+    question            TEXT NOT NULL,
+    intent              TEXT NOT NULL DEFAULT 'explain',
+    level               TEXT NOT NULL DEFAULT 'newcomer',
+    answer              TEXT,
+    harness             TEXT NOT NULL DEFAULT 'claude',
+    run_mode            TEXT NOT NULL DEFAULT 'no_tools',
+    status              TEXT NOT NULL DEFAULT 'pending',
+    error               TEXT,
+    todo_id             TEXT,
+    spawned_session_id  TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_learning_qa_session
+    ON learning_qa(learning_session_id);
+CREATE INDEX IF NOT EXISTS idx_learning_qa_parent
+    ON learning_qa(parent_qa_id);
+";
+
 const MIGRATION_001: &str = "
 CREATE TABLE IF NOT EXISTS store_meta (
     key   TEXT PRIMARY KEY,
@@ -416,6 +479,61 @@ CREATE TABLE IF NOT EXISTS session_bookmarks (
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
+
+    /// A DB last touched before Learning Mode existed (schema version 16)
+    /// upgrades in place: only 017 replays, and it lands the two new tables.
+    #[test]
+    fn migration_017_upgrades_a_v016_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (16, datetime('now'), 'seed');",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 17);
+        for table in ["learning_sessions", "learning_qa"] {
+            let found: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(found, 1, "{table} should exist after migration 017");
+        }
+    }
+
+    /// A brand-new DB arrives at the same place in one pass.
+    #[test]
+    fn fresh_database_lands_at_the_latest_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 17);
+    }
+
+    /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
+    /// an older AMF and back doesn't duplicate or drop anything.
+    #[test]
+    fn migrations_are_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        super::run(&conn).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 17);
+    }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old
     /// (head-SHA-keyed) schema recorded once per SHA collapse to a single row

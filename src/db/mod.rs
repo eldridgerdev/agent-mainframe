@@ -1,5 +1,6 @@
 mod ai_review_cache;
 mod debug_log;
+pub mod learning;
 mod migrations;
 pub mod plan_interviews;
 mod pr_comment_triage;
@@ -318,6 +319,74 @@ impl AmfDb {
 
     pub fn reorder_todos(&self, ordered_ids: &[String]) -> Result<()> {
         todos::reorder_todos(&self.conn, ordered_ids)
+    }
+}
+
+/// Learning Mode sessions and their anchored Q&A history (see
+/// `docs/backlog/learning-mode-plan.md`). The overlay lands in later epics, so
+/// parts of this are written before anything reads them.
+#[allow(dead_code)]
+impl AmfDb {
+    /// The project's learning session, or `None` if it has never opened
+    /// Learning Mode.
+    pub fn learning_session(&self, project_id: &str) -> Result<Option<learning::LearningSession>> {
+        learning::load_session(&self.conn, project_id)
+    }
+
+    /// Return the project's learning session, creating one hosted by
+    /// `feature_id` if it has none.
+    pub fn load_or_create_learning_session(
+        &self,
+        project_id: &str,
+        feature_id: &str,
+        title: &str,
+        harness: &crate::project::AgentKind,
+        level: learning::LearningLevel,
+    ) -> Result<learning::LearningSession> {
+        learning::load_or_create_session(&self.conn, project_id, feature_id, title, harness, level)
+    }
+
+    pub fn create_learning_session(
+        &self,
+        project_id: &str,
+        feature_id: &str,
+        title: &str,
+        harness: &crate::project::AgentKind,
+        level: learning::LearningLevel,
+    ) -> Result<learning::LearningSession> {
+        learning::create_session(&self.conn, project_id, feature_id, title, harness, level)
+    }
+
+    /// Persist a session's harness / level / onboarding flag.
+    pub fn update_learning_session(&self, session: &learning::LearningSession) -> Result<()> {
+        learning::update_session(&self.conn, session)
+    }
+
+    pub fn set_learning_onboarding_seen(&self, session_id: &str) -> Result<()> {
+        learning::set_onboarding_seen(&self.conn, session_id)
+    }
+
+    pub fn delete_learning_session(&self, session_id: &str) -> Result<()> {
+        learning::delete_session(&self.conn, session_id)
+    }
+
+    /// Drop a deleted project's learning history, since there is no FK cascade
+    /// from `projects`.
+    pub fn delete_learning_sessions_for_project(&self, project_id: &str) -> Result<()> {
+        learning::delete_sessions_for_project(&self.conn, project_id)
+    }
+
+    pub fn learning_qa(&self, session_id: &str) -> Result<Vec<learning::LearningQa>> {
+        learning::list_qa(&self.conn, session_id)
+    }
+
+    pub fn upsert_learning_qa(&self, qa: &learning::LearningQa) -> Result<()> {
+        learning::upsert_qa(&self.conn, qa)
+    }
+
+    /// Delete one Q&A row; its follow-up thread cascades away with it.
+    pub fn delete_learning_qa(&self, qa_id: &str) -> Result<()> {
+        learning::delete_qa(&self.conn, qa_id)
     }
 }
 

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::claude::ClaudeLauncher;
+use crate::headless::HeadlessRunner;
 use crate::project::AgentKind;
 use crate::tmux::TmuxManager;
 
@@ -19,38 +19,94 @@ impl SummaryManager {
     ) -> Result<String> {
         let content = TmuxManager::capture_pane(tmux_session, window)?;
 
-        let lines: Vec<&str> = content.lines().collect();
-        if lines.len() < MIN_CONTENT_LINES {
-            anyhow::bail!("Content too short for summary");
-        }
+        summarize_content_with(&content, workdir, &agent, HeadlessRunner::run)
+    }
+}
 
-        let recent_lines: String = lines[lines.len().saturating_sub(50)..].join("\n");
+fn summarize_content_with(
+    content: &str,
+    workdir: &Path,
+    agent: &AgentKind,
+    run_headless: impl FnOnce(&AgentKind, &Path, &str, Option<&str>, bool) -> Result<String>,
+) -> Result<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.len() < MIN_CONTENT_LINES {
+        anyhow::bail!("Content too short for summary");
+    }
 
-        let prompt = format!(
-            "Summarize this {} session in one line (max {} chars). \
+    let recent_lines: String = lines[lines.len().saturating_sub(50)..].join("\n");
+
+    let prompt = format!(
+        "Summarize this {} session in one line (max {} chars). \
              Focus on what was done or what's blocking. \
              Be concise and specific. \
              Example: 'Refactored auth module, waiting on test fix'\n\n\
              Session output:\n{}",
-            agent.display_name(),
-            SUMMARY_MAX_CHARS,
-            recent_lines
-        );
+        agent.display_name(),
+        SUMMARY_MAX_CHARS,
+        recent_lines
+    );
 
-        let summary = ClaudeLauncher::run_headless(workdir, &prompt)?;
+    let summary = run_headless(agent, workdir, &prompt, None, true)?;
 
-        let trimmed = summary.trim().lines().next().unwrap_or("").to_string();
+    let trimmed = summary.trim().lines().next().unwrap_or("").to_string();
 
-        let truncated = if trimmed.len() > SUMMARY_MAX_CHARS {
-            let mut end = SUMMARY_MAX_CHARS;
-            while end > 0 && !trimmed.is_char_boundary(end) {
-                end -= 1;
-            }
-            trimmed[..end].to_string()
-        } else {
-            trimmed
-        };
+    let truncated = if trimmed.len() > SUMMARY_MAX_CHARS {
+        let mut end = SUMMARY_MAX_CHARS;
+        while end > 0 && !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        trimmed[..end].to_string()
+    } else {
+        trimmed
+    };
 
-        Ok(truncated)
+    Ok(truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summary_uses_the_features_harness_in_restricted_headless_mode() {
+        let content = (1..=MIN_CONTENT_LINES)
+            .map(|line| format!("session line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let summary = summarize_content_with(
+            &content,
+            Path::new("/tmp/feature"),
+            &AgentKind::Codex,
+            |agent, workdir, prompt, model, restricted| {
+                assert_eq!(agent, &AgentKind::Codex);
+                assert_eq!(workdir, Path::new("/tmp/feature"));
+                assert_eq!(model, None);
+                assert!(restricted);
+                assert!(prompt.contains("Summarize this Codex session"));
+                assert!(prompt.contains("session line 5"));
+                Ok("Implemented harness-aware summaries\nignored second line".into())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary, "Implemented harness-aware summaries");
+    }
+
+    #[test]
+    fn summary_truncation_preserves_utf8_boundaries() {
+        let content = ["line"; MIN_CONTENT_LINES].join("\n");
+        let generated = format!("{}é", "a".repeat(SUMMARY_MAX_CHARS - 1));
+
+        let summary = summarize_content_with(
+            &content,
+            Path::new("/tmp/feature"),
+            &AgentKind::Pi,
+            |_, _, _, _, _| Ok(generated),
+        )
+        .unwrap();
+
+        assert_eq!(summary, "a".repeat(SUMMARY_MAX_CHARS - 1));
     }
 }

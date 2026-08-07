@@ -1007,6 +1007,17 @@ pub struct DiffViewerState {
     /// pressed, so it deliberately doesn't survive a pause/resume the way the
     /// verdicts themselves do.
     pub verdict_undo: Vec<VerdictUndo>,
+    /// True while the review-mode `?` help overlay is shown. The review key
+    /// surface outgrew what two footer rows can teach, so the overlay lists it
+    /// grouped by task. Read-only and takes full key precedence while open,
+    /// mirroring `changeset_overview_open`.
+    pub help_open: bool,
+    pub help_scroll: usize,
+    /// Rendered line count / viewport height of the help overlay at the last
+    /// draw, mirroring `changeset_overview_rendered_lines` /
+    /// `changeset_overview_view_height` so scroll clamps to the real bottom.
+    pub help_rendered_lines: usize,
+    pub help_view_height: usize,
 }
 
 /// One entry on the verdict undo stack: everything needed to put a file's
@@ -1104,6 +1115,10 @@ impl DiffViewerState {
             ignore_whitespace: false,
             context_expansion: std::collections::HashMap::new(),
             verdict_undo: Vec::new(),
+            help_open: false,
+            help_scroll: 0,
+            help_rendered_lines: 0,
+            help_view_height: 0,
         }
     }
 

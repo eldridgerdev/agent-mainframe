@@ -18,10 +18,11 @@
   `final-review-feedback.md` with an archive file, and batches REVIEW MODE's
   note instruction per turn. Per-action model overrides (a `review_models`
   map keyed by `ReviewAction`) and bounded live review notes with a
-  reviewer-visible archive have since shipped too, as has `$EDITOR` at the
-  cursored line. The remaining
-  viewer-ergonomics items are a `?` help
-  overlay and mouse support; the AI co-review
+  reviewer-visible archive have since shipped too, as have `$EDITOR` at the
+  cursored line and the `?` help overlay. The remaining
+  viewer-ergonomics items are mouse support and a newly-found footer bug (the
+  review footer's second hint row is silently clipped by the first row's
+  wrapping); the AI co-review
   and workflow items are not yet started. Three Cost follow-ups remain:
   cumulative final-review workflow accounting, best-effort attribution of
   review-note generation cost, and measuring the most token-efficient way to
@@ -1165,7 +1166,50 @@ Viewer:
       changed something, the diff is reloaded through the ordinary
       `refresh_diff_viewer` path — which re-anchors comments for free — rather
       than leaving stale hunks under the existing annotations.
-- [ ] `?` help overlay for review mode
+- [x] `?` help overlay for review mode — press `?` in Final Review (at the top
+      level or with the line cursor active) for a scrollable, read-only listing
+      of the whole review key surface, grouped by what the reviewer is doing:
+      Verdicts, Comments, Line cursor, Moving around, Reading the diff, Context
+      and AI passes, and Finishing. It reuses the modal shape the review already
+      has — `centered_rect` + `draw_modal_overlay`, `j`/`k`, PageUp/PageDown and
+      `g`/`G` to scroll, `?`/`q`/`Esc` to close — and takes full key precedence
+      while open (checked first in `handle_diff_viewer_key`, before the history,
+      overview, interdiff and summary modals), so a key pressed to dismiss it
+      can never also approve a file or start the finish flow. Content lives in
+      one `REVIEW_HELP_SECTIONS` table (`src/ui/dialogs/diff.rs`) next to the
+      footer it backfills, and the passes that cost tokens (`w`, `A`, `O`) are
+      labeled as such while `I` is explicitly marked local and free.
+      Discoverability drove one non-obvious placement: the `? keys` footer hint
+      leads the review footer's *first* line rather than joining the second,
+      because that first line is dense enough to wrap into both footer rows on a
+      narrow terminal and clip the second — and in cursor mode, where the two
+      lines swap roles, it rides on the short position-label line instead. A
+      render test asserts the hint survives at both 200 and 90 columns, with and
+      without the cursor. Scroll clamps to the real rendered height via
+      `help_rendered_lines` / `help_view_height`, recorded by the renderer each
+      frame exactly like the changeset-overview modal, and reopening always
+      lands back at the top. Review-only: the plain diff viewer's key surface
+      still fits in its own footer, so `?` there is inert.
+      `open_review_help` / `review_help_scroll_*` in `src/app/review.rs`.
+- [ ] The review footer's second hint row is clipped on ordinary terminals —
+      found while capturing the `?` overlay above. `draw_review_footer` renders
+      two `Line`s into a 2-row area with `Wrap { trim: false }`, but the first
+      line (verdicts, comments, navigation, layout, whitespace, walkthrough, AI
+      review, overview, history, undecided count) is long enough to wrap into
+      *both* rows on its own at 160 columns, so the second line — `j/k scroll`,
+      `b base ref`, `F filter`, `t target`, `X apply-at-finish`, `q finish`,
+      `Esc pause` — is silently dropped and never drawn. Those are exactly the
+      round-level keys a reviewer needs and the hardest to guess. The `?`
+      overlay makes them discoverable, but the footer itself is still lying by
+      omission, and the drop is width-dependent so it can't be reasoned about
+      from the code. Options worth weighing: measure the wrapped height and
+      grow the footer to fit (it already grows for the feedback editor and the
+      comment peek box), prioritise the hints and drop the least important ones
+      explicitly rather than by accident, or split the two rows into
+      independently-rendered areas so neither can eat the other. Any fix wants
+      a render test at a few widths, since the bug is invisible at the width
+      the existing tests use. See
+      `docs/screenshots/final-review-help-overlay/01-review-footer-help-hint.png`.
 - [ ] Mouse support in the diff viewer (file list, patch scroll,
       comment cursor)
 

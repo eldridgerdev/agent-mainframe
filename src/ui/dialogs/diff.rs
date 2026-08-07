@@ -202,6 +202,180 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     if state.review_history.is_some() {
         draw_review_history_modal(frame, state, theme);
     }
+    // Drawn last so it sits on top of anything else the reviewer left open.
+    if state.help_open {
+        draw_review_help_modal(frame, state, theme);
+    }
+}
+
+/// The review key surface, grouped by what the reviewer is trying to do. This
+/// is the `?` overlay's content: the two footer rows can only ever show the
+/// keys that apply right now, so the full set needs somewhere to live.
+///
+/// An empty key column is a continuation line for the entry above it.
+const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Verdicts",
+        &[
+            ("a", "Approve the current file"),
+            ("r", "Needs revision — opens the feedback editor"),
+            ("s", "Skip the current file (no verdict)"),
+            ("u", "Jump to the next file with no verdict"),
+            ("U", "Undo the last verdict and go back to that file"),
+        ],
+    ),
+    (
+        "Comments",
+        &[
+            ("c", "Toggle the line cursor (see \"Line cursor\" below)"),
+            ("m", "File comment — an observation that does not reject"),
+            ("M", "Resolve / reopen this file's comment"),
+            ("f", "General feedback for the whole review"),
+            ("{ / }", "Previous / next comment, across every file"),
+            ("Ctrl+E", "Cycle severity while an editor is open"),
+            ("", "(blocker / suggestion / nit / question / praise)"),
+            ("Tab", "Submit an open editor  ·  Esc cancels it"),
+        ],
+    ),
+    (
+        "Line cursor (press c first)",
+        &[
+            ("j / k", "Move the cursor a line at a time"),
+            ("[ / ]", "Jump to the previous / next hunk"),
+            ("v", "Start a range selection; v again clears it"),
+            ("Enter", "Comment on the cursored line or selected span"),
+            ("S", "Suggest a replacement for the line / span"),
+            ("x", "Apply the cursored suggestion to the worktree"),
+            ("R", "Resolve / reopen the cursored thread"),
+            ("a / d", "Accept / dismiss the AI draft under the cursor"),
+            ("Tab", "Jump to the next AI draft in this file"),
+            ("E", "Open this file at this line in $EDITOR"),
+            ("Esc / c", "Leave cursor mode"),
+        ],
+    ),
+    (
+        "Moving around",
+        &[
+            ("n / p", "Next / previous file"),
+            ("j / k", "Scroll the patch, or walk file-tree rows"),
+            ("g / G", "Jump to the top / bottom of the focused panel"),
+            ("Tab", "Move focus between the file list and the patch"),
+            ("PgUp / PgDn", "Scroll the patch a screen at a time"),
+            ("h / l", "Collapse-or-out / expand-or-in (file list)"),
+            ("z / Z", "Fold the cursored directory / whole tree (file list)"),
+            ("/", "Search this file's diff; n / N cycle matches"),
+            ("F", "Cycle the file-list filter"),
+            ("", "(all / undecided / rejected / blockers / …)"),
+        ],
+    ),
+    (
+        "Reading the diff",
+        &[
+            ("v", "Unified / side-by-side layout"),
+            ("+ / -", "Widen / narrow the context around each hunk"),
+            ("*", "Toggle straight to whole-file context and back"),
+            ("W", "Toggle ignore-whitespace (git diff -w)"),
+            ("e", "Expand / collapse the developer notes panel"),
+            ("", "(while expanded, j / k scroll the note)"),
+            ("i", "Install or repair this file's syntax parser"),
+            ("E", "Open this file in $EDITOR"),
+            ("b", "Diff against a different base ref"),
+        ],
+    ),
+    (
+        "Context and AI passes",
+        &[
+            ("w", "Generate a walkthrough for a noteless file (tokens)"),
+            ("A", "AI co-review pass over this file (tokens)"),
+            ("O", "Whole-changeset overview / risk summary (tokens)"),
+            ("I", "Diff since the last review round (local, free)"),
+            ("H", "Review-round timeline and history browser"),
+        ],
+    ),
+    (
+        "Finishing",
+        &[
+            ("t", "Fix target: the live agent pane / a dedicated session"),
+            ("X", "Also apply remaining suggestions when finishing"),
+            ("q", "Review summary, then finish"),
+            ("", "(writes feedback, may post to the PR, dispatches fixes)"),
+            ("Esc", "Pause — leave the review with all progress kept"),
+        ],
+    ),
+];
+
+/// A scrollable, read-only listing of every review-mode key (`?`). Takes full
+/// key precedence while open (`handle_diff_viewer_key`), like the other review
+/// modals. Groups mirror the dashboard help overlay's shape so the two read the
+/// same way.
+fn draw_review_help_modal(frame: &mut Frame, state: &mut DiffViewerState, theme: &Theme) {
+    let area = centered_rect(72, 84, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Final Review — Keys ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(inner);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (section, binds) in REVIEW_HELP_SECTIONS {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            format!("  {section}"),
+            Style::default()
+                .fg(theme.primary.to_color())
+                .add_modifier(Modifier::BOLD),
+        )));
+        for (key, desc) in *binds {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {key:>14}"),
+                    Style::default()
+                        .fg(theme.warning.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+            ]));
+        }
+    }
+
+    state.help_rendered_lines = lines.len();
+    state.help_view_height = rows[0].height as usize;
+    let scroll = state
+        .help_scroll
+        .min(lines.len().saturating_sub(rows[0].height as usize));
+
+    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), rows[0]);
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    let hint = Line::from(vec![
+        key("j"),
+        Span::raw("/"),
+        key("k"),
+        Span::raw(" scroll  "),
+        key("g"),
+        Span::raw("/"),
+        key("G"),
+        Span::raw(" top/bottom  "),
+        key("?"),
+        Span::raw("/"),
+        key("q"),
+        Span::raw("/"),
+        key("Esc"),
+        Span::raw(" close"),
+    ]);
+    frame.render_widget(Paragraph::new(hint), rows[1]);
 }
 
 /// Read-only review-round timeline (`H`). `Current` is generated from the
@@ -2160,6 +2334,9 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             }
             None => format!(" line cursor @ {} ", cursor + 1),
         };
+        // Cursor mode inverts the non-cursor footer's shape — here the first
+        // line is the short one and the key row is what wraps — so the help
+        // hint rides on the position label instead of leading the key row.
         let mut first_spans = vec![
             Span::styled(
                 position_label,
@@ -2171,6 +2348,8 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                 format!("({comment_count} comment(s) on this file)  "),
                 Style::default().fg(theme.info.to_color()),
             ),
+            key("?"),
+            Span::raw(" keys  "),
         ];
         // Surface a committed search so its shadowing of n/N is discoverable.
         if !state.editing_search && !state.search_query.trim().is_empty() {
@@ -2381,8 +2560,14 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
     second_line.push(key("Esc"));
     second_line.push(Span::raw(" pause (keep progress)"));
 
+    // `?` leads the row rather than joining the second one: the first line is
+    // long enough to wrap into both footer rows on a narrow terminal, clipping
+    // the second, and the pointer to the full key list is the one hint that
+    // must never be the thing that falls off.
     let mut first_line = vec![
-        key(" a"),
+        key(" ?"),
+        Span::raw(" keys  "),
+        key("a"),
         Span::raw(" approve  "),
         key("r"),
         Span::raw(" reject  "),
@@ -4663,6 +4848,90 @@ index 0000000..1111111
         assert!(rendered.contains("Current Review"));
         assert!(rendered.contains("Approved: 1"));
         assert!(rendered.contains("press Enter to return to editing"));
+    }
+
+    #[test]
+    fn help_modal_renders_grouped_keys_and_records_its_scroll_extent() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut state, _) = single_added_line_review_state();
+        state.help_open = true;
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_diff_viewer(frame, &mut state, &Theme::default()))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Final Review"));
+        assert!(rendered.contains("Verdicts"));
+        assert!(rendered.contains("Approve the current file"));
+        assert!(rendered.contains("Line cursor"));
+
+        // The overlay is taller than its viewport, and the renderer has to
+        // report both so `G` can clamp to the real bottom.
+        assert!(state.help_rendered_lines > state.help_view_height);
+        assert!(state.help_view_height > 0);
+    }
+
+    /// Structural guard on the help table: a section that renders as a bare
+    /// heading, or a continuation line with nothing above it to continue, is a
+    /// rendering bug that only shows up on screen.
+    #[test]
+    fn help_sections_are_non_empty_and_uniquely_titled() {
+        let mut titles = std::collections::HashSet::new();
+        for (title, binds) in REVIEW_HELP_SECTIONS {
+            assert!(titles.insert(*title), "duplicate help section: {title}");
+            assert!(!binds.is_empty(), "empty help section: {title}");
+            // A blank key column is a continuation line, so it must follow a
+            // real binding rather than lead a section.
+            assert!(
+                !binds[0].0.is_empty(),
+                "section {title} starts with a continuation line"
+            );
+            for (_, desc) in *binds {
+                assert!(!desc.is_empty(), "empty help description in {title}");
+            }
+        }
+    }
+
+    #[test]
+    fn review_footer_always_advertises_the_help_key() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut state, _) = single_added_line_review_state();
+
+        // Both footer shapes — the cursor-off hints and the cursor-mode hints —
+        // point at `?`, since it's the only way to see the keys they omit. The
+        // narrow width is the case that matters: the dense key row wraps into
+        // both footer rows there, so a hint on the wrong line is clipped away.
+        for width in [200u16, 90] {
+            for cursor in [None, Some(0)] {
+                state.comment_cursor = cursor;
+                let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+                terminal
+                    .draw(|frame| draw_diff_viewer(frame, &mut state, &Theme::default()))
+                    .unwrap();
+                let rendered = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    rendered.contains("? keys"),
+                    "footer missing the help hint (width: {width}, cursor: {cursor:?})"
+                );
+            }
+        }
     }
 
     #[test]

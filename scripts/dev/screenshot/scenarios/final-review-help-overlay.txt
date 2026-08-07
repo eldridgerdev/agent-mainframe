@@ -1,0 +1,71 @@
+# final-review-help-overlay: proves the new `?` key help overlay in Final
+# Review. The two footer rows can only show the keys that apply right now, so
+# `?` opens a scrollable, grouped listing of the whole review key surface.
+#
+# Run with:
+#   ./amf-capture.sh --scenario <this file> \
+#     --seed <seed-project.json> --seed-feature <seed-feature.json> \
+#     --geometry 160x44
+
+shot:dashboard
+
+# Down onto the seeded feature row; Enter expands it to its sessions, then
+# down again onto "Claude 1" and Enter opens that session's view.
+key:j
+wait:300
+key:Enter
+wait:500
+key:j
+wait:300
+key:Enter
+wait:4000
+shot:feature-view
+
+# Leader (Ctrl+Space) then `f` triggers Final Review; the diff load is async.
+key:C-Space
+wait:400
+text:f
+wait:4000
+
+# Advance to src/auth/token.rs -- the substantive file, and one with a
+# developer note, so the frames show a real review rather than AMF's own
+# review-mode setup files.
+text:n
+wait:300
+text:n
+wait:600
+shot:review-footer-help-hint
+
+# `?` opens the help overlay at the top of the list.
+text:?
+wait:600
+shot:help-overlay-top
+
+# Page down through the later groups.
+key:PageDown
+wait:400
+shot:help-overlay-scrolled
+
+key:PageDown
+wait:400
+shot:help-overlay-finishing
+
+# Esc closes the overlay and returns to the review untouched.
+key:Escape
+wait:500
+shot:back-in-review
+
+# Cursor mode: the footer swaps shape, and the help hint moves onto the short
+# position-label line so it can't be clipped.
+text:c
+wait:600
+shot:cursor-footer-help-hint
+
+# `?` is reachable from cursor mode too.
+text:?
+wait:600
+shot:help-overlay-from-cursor
+
+key:Escape
+wait:400
+shot:cursor-mode-intact

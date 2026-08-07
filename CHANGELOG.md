@@ -12,6 +12,21 @@ are tagged.
 
 ### Added
 
+- **Final Review has a `?` key that shows you all of its keys.** The review
+  screen has grown a lot of bindings, and the two footer rows can only ever
+  show the ones that apply right now — so keys you had not used yet were
+  effectively invisible. Pressing `?` (at the top level or with the line cursor
+  active) opens a scrollable list of the whole key surface, grouped by what you
+  are trying to do: Verdicts, Comments, Line cursor, Moving around, Reading the
+  diff, Context and AI passes, and Finishing. The actions that spend tokens
+  (`w` walkthrough, `A` AI co-review, `O` changeset overview) are labelled as
+  such, and `I` is marked as the local, free one. `j`/`k`, PageUp/PageDown and
+  `g`/`G` scroll it; `?`, `q` or `Esc` closes it. While it is open it takes
+  every key, so the key you press to dismiss it cannot also approve a file or
+  start the finish flow. The footer now carries a `? keys` hint pointing at it.
+  The plain diff viewer is unchanged — its own footer still covers everything
+  it does.
+
 - **Pi can now power its own plan interviews.** When the installed Pi CLI
   advertises its current safe-headless contract, AMF prefers it for Pi
   features instead of immediately falling back to Claude, Codex, or Opencode.

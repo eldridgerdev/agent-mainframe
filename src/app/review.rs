@@ -1944,6 +1944,57 @@ impl App {
         }
     }
 
+    /// Open the review-mode key-help overlay (`?`). Review-only: the plain diff
+    /// viewer's key surface still fits in its footer. Always reopens at the top
+    /// so `?` lands on the same first screen every time.
+    pub fn open_review_help(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode
+            && state.review
+        {
+            state.help_open = true;
+            state.help_scroll = 0;
+        }
+    }
+
+    pub fn close_review_help(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.help_open = false;
+        }
+    }
+
+    /// Max scroll offset for the help overlay, in the visual lines the renderer
+    /// last reported. Mirrors `changeset_overview_max_scroll`.
+    fn review_help_max_scroll(state: &DiffViewerState) -> usize {
+        state
+            .help_rendered_lines
+            .saturating_sub(state.help_view_height)
+    }
+
+    pub fn review_help_scroll_down(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let max = Self::review_help_max_scroll(state);
+            state.help_scroll = (state.help_scroll + amount).min(max);
+        }
+    }
+
+    pub fn review_help_scroll_up(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.help_scroll = state.help_scroll.saturating_sub(amount);
+        }
+    }
+
+    pub fn review_help_scroll_top(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.help_scroll = 0;
+        }
+    }
+
+    pub fn review_help_scroll_bottom(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.help_scroll = Self::review_help_max_scroll(state);
+        }
+    }
+
     /// Accept the AI draft comment under the line cursor, promoting it to a
     /// permanent human comment. Returns `true` if a draft was accepted (so the
     /// key handler can stop), `false` if the cursored line carries no draft.

@@ -10,334 +10,73 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.34.0] - 2026-08-07
+
 ### Added
 
-- **Final Review has a `?` key that shows you all of its keys.** The review
-  screen has grown a lot of bindings, and the two footer rows can only ever
-  show the ones that apply right now — so keys you had not used yet were
-  effectively invisible. Pressing `?` (at the top level or with the line cursor
-  active) opens a scrollable list of the whole key surface, grouped by what you
-  are trying to do: Verdicts, Comments, Line cursor, Moving around, Reading the
-  diff, Context and AI passes, and Finishing. The actions that spend tokens
-  (`w` walkthrough, `A` AI co-review, `O` changeset overview) are labelled as
-  such, and `I` is marked as the local, free one. `j`/`k`, PageUp/PageDown and
-  `g`/`G` scroll it; `?`, `q` or `Esc` closes it. While it is open it takes
-  every key, so the key you press to dismiss it cannot also approve a file or
-  start the finish flow. The footer now carries a `? keys` hint pointing at it.
-  The plain diff viewer is unchanged — its own footer still covers everything
-  it does.
-
-- **Pi can now power its own plan interviews.** When the installed Pi CLI
-  advertises its current safe-headless contract, AMF prefers it for Pi
-  features instead of immediately falling back to Claude, Codex, or Opencode.
-  Question generation and synthesis run without tools or repository-provided
-  resources; directed feedback and isolated investigations receive only Pi's
-  read, grep, find, and list tools. Every call is ephemeral. Older Pi versions
-  keep the existing fallback behavior and do not run with weakened isolation.
-  No migration is required.
-
-- **AI Review can pick a model when it runs on Pi.** Pi previously skipped
-  straight to its default model because AMF didn't pass `--model` to it;
-  now that it does, the model picker opens for Pi like it does for every
-  other harness, and a configured `review_model` applies to Pi runs.
-
-- **You can open the file you are reviewing in your own editor, at the line you
-  are looking at.** Sometimes you need to poke around the real file before you
-  can write the comment. In Final Review, `E` suspends AMF and opens the current
-  file in `$VISUAL` / `$EDITOR` (falling back to `vi`), with the cursor already
-  on the line the review cursor is on; with the line cursor off it opens at the
-  first hunk. Quitting the editor drops you back exactly where you were. If you
-  changed the file while you were in there, AMF notices and reloads the diff, so
-  your comments never end up sitting on hunks that have moved. The line jump
-  works with the vi family, nano, emacs, kak, micro, helix, Sublime, Zed, and
-  VS Code and its forks (which are told to wait rather than returning
-  immediately); an editor AMF does not recognise simply opens at the top of the
-  file rather than being handed a flag it would treat as a filename. An
-  `$EDITOR` that already carries its own flags, like `emacsclient -nw`, is
-  respected. Files with nothing to open — a deletion, or a binary — say so
-  instead of doing nothing, and the footer hint hides itself for them. No
-  configuration and no migration are required.
-
-- **The theme picker groups subtypes instead of listing all 28 themes flat.**
-  Catppuccin and Gruvbox Material alone made up 22 of the picker's 28 rows,
-  burying the six standalone themes (Default, AMF, Dracula, Nord, Gruvbox
-  Dark, Gruvbox Light) in the middle of a long list. Both families now
-  collapse into a single row — `Catppuccin (4)`, `Gruvbox Material (18)` —
-  giving eight rows at the top level. Opening a group (`Enter`) drills into
-  its own screen listing just that family's variants, with the repeated
-  family name dropped from each row (`Dark Hard` instead of `Gruvbox Material
-  Dark Hard`); `Esc` backs out to the top level without closing the picker.
-  Highlighting a group previews its first variant, matching how hovering a
-  single theme already worked. Reopening the picker while a grouped theme is
-  active goes straight to that group's screen with the active variant already
-  selected, rather than starting over at the top. No migration is required;
-  keybindings are unchanged (`T` opens the picker, `j`/`k` navigate, `Enter`
-  applies or opens a group, `t` toggles transparency, `Esc`/`q` backs out or
-  closes).
-
-- **You can jump between your review comments across every file, and undo a
-  verdict you did not mean to give.** In Final Review, `}` and `{` move to the
-  next and previous comment anywhere in the changeset, wrapping at either end —
-  so you can sweep everything you annotated before finishing without hunting
-  down each file again. (`Tab` still cycles the AI's draft comments within the
-  current file.) Pressing `}` with the line cursor off turns it on and starts
-  with the file already on screen; a comment whose line has since moved and
-  cannot be located is skipped and reported rather than jumped to blindly.
-  Separately, `U` takes back the last approve, skip or rejection and puts you
-  back on that file, since all three advance to the next one — an accidental
-  `a` no longer means finding the file again by hand. Press it repeatedly to
-  walk back through several verdicts. Undo restores the verdict exactly,
-  including whether a rejection had been implied by your line comments rather
-  than typed out, and touches nothing else: comments, suggestions and general
-  feedback are left alone. Both hints appear in the footer only once they would
-  do something. Undo covers the current sitting, so pausing and resuming a
-  review starts it fresh — your verdicts themselves are still saved as before.
-  No migration is required.
-
-- **You can expand the context around a diff's hunks.** Three lines either side
-  of a change often hides what you need to judge it — the enclosing function
-  signature, the surrounding match arm. In Final Review and the plain diff
-  viewer, `+` widens the context a step at a time (3 → 10 → 25 → 50 → the whole
-  file) and `-` narrows it back; `*` jumps straight between the whole file and
-  the default. The footer shows the current level as `context:10` /
-  `context:file`. The level is remembered per file, so moving between files
-  keeps each one where you left it, and a refresh or base-ref change re-applies
-  it instead of silently collapsing your view. Comments, the line cursor and any
-  range selection stay on exactly the lines they were on: narrowing the context
-  refuses outright while it would hide part of a range you have selected, and
-  tells you where the cursor went if its own line is no longer shown. Files that have
-  nothing more to show — added, deleted, binary — say so rather than doing
-  nothing. Line comments left on newly revealed context are still written to the
-  feedback file and sent to the fixing agent, but are not posted inline to a PR,
-  since GitHub only accepts inline comments on lines inside the PR's own diff.
-
-- **Changed lines now highlight which words actually changed.** A modified line
-  and its replacement are compared token by token, and only the parts that
-  differ get a brighter background — so a one-character edit inside a long line
-  no longer looks like a full rewrite. It works in both the unified and
-  side-by-side layouts, and sits underneath the existing syntax highlighting
-  rather than replacing it. When two lines are unrelated enough to be a
-  wholesale rewrite, nothing is highlighted: the row's add/remove colour already
-  says everything, and marking every token would be noise. Alongside it, `W`
-  toggles `git diff -w`, hiding changes that are only whitespace; the footer
-  shows `ws: shown` / `ws: ignored`.
-
-- **The diff viewers' changed-file list is now a collapsible directory tree.**
-  Files are grouped under their directories instead of repeating the full path
-  on every row, so a changeset spanning many folders is far easier to scan.
-  This applies both to Final Review and to the plain diff viewer (leader `d`).
-  In the file list, `j`/`k` move through the tree (directory headers included),
-  `z` or `Enter` folds the directory under the cursor, `Z` folds or unfolds
-  everything, and `h`/`l` step out to a parent or into a directory. Parking on
-  a directory never changes which file the diff shows. A folded directory
-  reports what it is hiding — how many files, and during a review how many are
-  still undecided, any rejections, and whether anything changed since the last
-  round — so folding cannot bury outstanding work. Filters, counts and `n`/`p` file
-  navigation are unaffected by folding: landing on a file inside a folded
-  directory simply opens it up. No migration is required.
-
-- **PR Triage can run a PR's fixes in a new feature of its own.** The
-  fix-target picker (the prompt on the first `f`/`B` of a visit) has a third
-  option: `New feature…`. It creates an isolated, worktree-backed feature just
-  for that PR's triage, with its harness and vibe mode picked in one compact
-  form — or from a feature preset — independently of the feature the PR was
-  built in. So you can build a PR in SuperVibe and apply the review fixes under
-  Vibeless supervision, and the triage agent's hooks and permissions land in its
-  own worktree instead of the source feature's. The companion is seeded from the
-  PR head onto its own branch (`<pr-branch>-triage`, since git can't check the
-  PR's branch out twice) and is reused for every fix in that PR, across restarts
-  — the pane header and the fix confirm both name it, so you always know which
-  feature and mode a fix will run in. `P` and `Ctrl+Space P` follow it.
-  Because that work happens off the PR branch, a new `I` key lands it: push the
-  companion branch onto the PR branch, or cherry-pick into the source worktree.
-  Both are explicit and show the commits first — the push is never forced, and
-  the cherry-pick refuses to run while the source worktree has uncommitted
-  changes. The existing two targets are unchanged and still commit straight onto
-  the PR branch, so they never see the `I` step. The database gains a column for
-  the PR link; it is added automatically and needs no migration step.
-- **Plan-mode interviews now pause at a review gate before launching the
-  feature.** An opted-in AI flow turns the interview into a structured
-  implementation plan, then shows the rendered markdown for review. You can
-  edit the raw plan, regenerate it, scroll through the preview, or abort;
-  AMF writes `.claude/plan.md` and starts the feature only after you press
-  `Enter` to accept. If synthesis is unavailable or returns an invalid plan,
-  AMF shows the raw interview plan as a fallback. No migration is required.
-- **The dashboard now shows when an AI Review is generating.** A feature's PR
-  badge reads `[PR #123 · 4 open · AI review]` while its review runs, so you
-  can leave the AI Review pane, work elsewhere, and still see the pass is in
-  flight. The marker appears only on the feature whose review is running and
-  clears when generation succeeds, fails, or is cancelled. No migration is
-  required.
-- **Final Review now includes a review-round history browser.** Press `H` to
-  move between the live review and earlier rounds, including their verdict
-  counts, checks, comments, suggestions, and agent replies. Older archived
-  rounds load only when you navigate past the recent history, while `Enter`
-  on `Current` returns directly to the editable review. No migration is
-  required.
-- **Plan-mode interviews now ask AI-generated follow-up questions.** After
-  the configured questions, AMF offers an explicit opt-in before using any
-  agent tokens. If accepted, the feature's agent harness (or an available
-  fallback) tailors up to two more rounds to the brief and prior answers,
-  with a progress screen while each round runs. Declining or finishing early
-  uses no adaptive-interview tokens; an unavailable or failed harness lets
-  the interview complete normally. No setup or migration is required.
-- **Final Review shows a summary before it writes and dispatches anything.**
-  `q` used to gate on undecided files and then finish immediately; it now
-  opens a navigable summary listing every file's verdict, every open line/file
-  comment (and suggestion), and the general feedback, in one place. `j`/`k`
-  (and `g`/`G`) move through the list, `Enter` jumps back into the diff at
-  that item and opens its editor pre-filled — a rejection's feedback, a line
-  or file comment, or the general note — so fixing something you spot in the
-  summary no longer means hunting it down again. `q` from the summary is the
-  real finish; `Esc` just closes it and returns to reviewing, with nothing
-  written, posted, or dispatched. No migration is required.
-- **PR Triage's detail pane now shows a comment's replies, however they got
-  posted.** A reply posted outside AMF's own `R`/`n` flow — e.g. an agent
-  working the PR with its own `gh` access — previously left no trace next to
-  the original comment; you had to hunt the flat list for the reply entry. A
-  new "Replies" section lists each reply with its author, a `[via AMF]` chip
-  when it carries AMF's own posting disclosure, and the thread's current
-  `[outdated]`/`[✓ resolved]` chips, so confirming a thread already got
-  answered is a glance at the comment, refreshed on demand with `r`. The
-  `pr-continue` skill also now explicitly avoids posting a "done" reply on
-  its own initiative, and only cites a commit after confirming it actually
-  touches the comment's file.
-- **Review actions can each use a different model.** A new `review_models`
-  config setting maps an action name (`walkthrough`, `co_review`,
-  `changeset_overview`, `diff_explain`, `pr_review`, `review_memory`) to its
-  own `--model` override, so a whole-changeset overview can run on a
-  stronger model while a single-file walkthrough runs on a cheaper one. Any
-  action left unset still falls back to the existing shared `review_model`
-  setting, so nothing changes for configs that don't opt in. No migration is
-  required; existing `review_model` configs continue to work.
-- **Review Mode note reads stay bounded without losing history.** AMF now
-  keeps only the latest note for each of the 50 most recently documented
-  files in `.claude/review-notes.md`, moving older and superseded sections
-  to `.claude/review-notes-archive.md` after each agent turn. Review
-  surfaces merge both files, while agents only re-read the small live file.
-  No migration is required; AMF archives existing notes automatically.
-- **Codex can now capture visual proof of AMF UI changes.** Codex features
-  receive an `amf-screenshot` skill that drives the same isolated screenshot
-  harness as Claude, verifies captured frames, and returns viewable PNG or GIF
-  files without touching the user's real AMF database or tmux sessions.
-- **Leaving a plan interview no longer loses your answers.** Answers are saved
-  as you give them, so aborting the interview, cancelling the feature, or
-  closing AMF entirely keeps them. Starting the interview again for the same
-  feature offers to resume the saved draft or discard it and start over, and
-  tells you when it was saved, how much was answered, and whether a plan had
-  already been generated — nothing is restored until you choose.
-- **Resuming picks up where you stopped.** You land on the first question still
-  unanswered rather than walking forward through answers you already gave.
-  Adaptive AI rounds you already paid for are kept, and a draft that already
-  had a generated plan reopens at the review gate instead of generating a
-  second one.
-- **Accepting a plan keeps the interview behind it.** The questions and answers
-  are stored with the feature and used to pre-fill a re-run. Deleting a feature
-  removes its stored interviews.
-- **Re-planning a feature starts from the plan you already accepted.** Running
-  the interview again on a feature fills in the brief and every answer from the
-  last plan you accepted for it: `Enter` keeps an answer, typing changes it, and
-  `Ctrl+R` restores it if you change your mind. Each question says whether its
-  answer is still the previous one, has been changed, or has been cleared —
-  clearing one drops it from the new plan. If you edited a multiple-choice
-  question's options in `plan_questions` since then, its old answer is left out
-  rather than pre-filled as a choice that no longer exists. Follow-up questions
-  an AI round asked last time are asked again with their answers, but adaptive
-  rounds are not reused: a re-run asks for its own opt-in before spending any
-  tokens.
-- **You can now plan a feature you already created.** Press `P` on a feature, or
-  pick `plan-interview` from the command picker, to run the same interview
-  without going through the creation wizard. Accepting rewrites that feature's
-  own plan, turns plan mode on for it, and points its agent at the plan —
-  previously the interview only ran while creating a feature. Leaving the
-  interview is non-destructive: the feature keeps whatever plan it had.
-- **A running session can now be told about a plan you just accepted.** An
-  agent reads its instruction file once, at startup, so re-planning a feature
-  whose session was already running used to leave that session working from the
-  old plan. Accepting now offers to open the running session with a kickoff
-  prompt pointing at the new plan — seeded in the composer, not sent, so you
-  decide when it lands. Declining costs nothing: the plan is written either way.
-- **Plan drafts now accept direct feedback before approval.** Press `f` at the
-  review gate to tell the planning agent exactly what to change. The agent can
-  inspect the feature repository read-only when the request needs concrete
-  code locations, then returns a revised draft for you to review before
-  accepting it. Failed revisions keep both the current plan and your
-  instruction so you can retry without retyping it.
-- **Plan research can now stay out of the implementation session's context.**
-  Press `i` at the plan review gate and enter up to four research focuses,
-  separated by blank lines. AMF runs each in a fresh read-only agent context,
-  validates and bounds the findings, then gives only those findings to a
-  separate no-tools planning pass that merges them into the draft. Failed or
-  dismissed investigations leave the current plan untouched, and a failure
-  preserves the research request for retry. No migration is required.
+- **Final Review now has a complete key reference.** Press `?` from the review
+  or line cursor to open a scrollable, grouped list of every review shortcut,
+  including clear labels for actions that spend agent tokens.
+- **Final Review can open the current file in your editor.** Press `E` to open
+  the reviewed file at the cursored line using `$VISUAL` or `$EDITOR`.
+  Returning to AMF reloads the diff if the file changed.
+- **Final Review can navigate comments across files and undo verdicts.** Use
+  `{` and `}` to visit review comments throughout the changeset, and `U`
+  to restore the most recent approve, skip, or rejection.
+- **Diff review has richer context controls.** Use `+`, `-`, or `*` to
+  expand and contract hunks up to the whole file, and `W` to hide
+  whitespace-only changes. Modified lines also highlight the exact words that
+  changed in unified and side-by-side layouts.
+- **Plan interviews can be resumed, rerun, and used on existing features.**
+  Answers and generated drafts survive cancellation or restart, accepted
+  answers prefill later planning passes, and `P` starts an interview for a
+  feature that already exists.
+- **Plans can be refined without filling the implementation session with
+  research.** Press `f` to give a draft direct revision feedback or `i` to
+  run isolated, read-only investigations. After accepting a new plan for a
+  running feature, AMF can seed a handoff prompt into that feature's composer.
+- **Pi can power plan interviews and expose model selection for AI Review.**
+  Current Pi installations use the safe headless flow; older versions keep the
+  existing fallback to another available harness.
+- **The theme picker groups large theme families.** Catppuccin and Gruvbox
+  Material now open into their own variant screens, keeping the top-level
+  picker short while preserving live previews and existing shortcuts.
+- **Codex sessions can capture AMF UI proof.** New Codex feature setup includes
+  the `amf-screenshot` skill for isolated PNG and GIF capture without touching
+  the user's real AMF database or tmux sessions.
 
 ### Changed
 
-- **Global review memory can now be compacted from PR Triage.** Press `c` in
-  the PR picker, then `g` to switch between the project and cross-project
-  memory docs. AMF shows the selected path and finding count before spending
-  agent tokens, and opens directly on the global doc when it is the only one
-  with findings. Because the cross-project doc is shared by every AMF session
-  on your machine, writing a compacted version re-reads it first: findings
-  another session added while the pass ran are kept, and an edit AMF cannot
-  re-apply on top of the rewrite asks you to confirm before it overwrites
-  anything.
-- **Session summaries now use the feature's own agent harness.** Generating a
-  one-line summary for a Codex, Opencode, or Pi feature no longer silently
-  launches Claude; Claude features continue to use Claude. No configuration or
-  migration is required.
-- **Plan mode now handles presets, empty question banks, and large answers
-  predictably.** A preset that enables plan mode opens the same guided
-  interview as the manual toggle, while batch creation now explains that it
-  skips interviews. Projects that disable the built-in bank without adding
-  custom questions can draft directly from the required brief. Very large
-  briefs and answers remain complete in the saved interview and raw plan, but
-  AMF bounds each field before sending it to an AI so pasted logs or documents
-  cannot consume unlimited model context. No migration is required.
-- **The optional AI step now says exactly what each choice does.** Press `a` to
-  ask AI follow-up questions, `Ctrl+F` to draft the plan immediately from saved
-  answers, or `Enter` to review a raw plan without spending agent tokens. The
-  dialog and key hints clearly identify which choices use tokens. The step fits
-  an 80x24 terminal, and a smaller one gets shorter wording rather than a
-  disclosure cut off mid-sentence.
-- **The default plan interview is shorter.** Five built-in questions now cover
-  the same discovery areas that previously took seven by combining user and UI
-  workflow prompts, and data and integration prompts. Project questions that
-  override either retired question ID remain available as configured prompts.
+- **Global review memory can be compacted from PR Triage.** Press `c`, then
+  `g`, to select the cross-project memory document. AMF preserves findings
+  added by another session while compaction is running and asks before any
+  conflicting overwrite.
+- **Session summaries use the feature's own harness.** Codex, OpenCode, and Pi
+  features no longer launch Claude just to generate their one-line summary.
+- **Plan interviews are clearer and safer at their edges.** The optional AI
+  step identifies token-using choices, the default interview is shorter,
+  presets enter the same guided flow, projects with no questions can draft
+  from the brief, and oversized answers are bounded only when sent to an AI.
 
 ### Fixed
 
-- **AMF feedback no longer sticks to the bottom-left of an agent pane.**
-  Repaint confirmations and any other transient AMF status messages now appear
-  as timed toasts, then clear automatically without covering harness output.
-- **Custom-session Nerd Font icons can now be chosen visually in the config
-  wizard.** The chooser previews useful session icons and still accepts custom
-  glyphs. Existing bundled names such as `nf-md-server` now render as icons,
-  so no config migration is required.
-- **OSC 8 hyperlinks now work through AMF's managed tmux server on macOS.**
-  Terminals that support hyperlinks can open links from agent sessions normally,
-  including saved sessions reopened after upgrading.
-- **Final Review's footer no longer hides half its keys.** The footer has two
-  rows of hints, and the first one — verdicts, comments, navigation, layout,
-  AI passes — is long enough to wrap onto both of them, which silently pushed
-  the entire second row off the screen. That second row is where the
-  round-level keys live: `b` base ref, `F` filter, `t` fix target, `X` apply
-  suggestions at finish, `q` finish, and `Esc` pause. They were never drawn, at
-  any terminal 200 columns or narrower, and nothing indicated they were
-  missing. The footer now grows to fit the hints it actually has and draws each
-  row in its own space, so neither row can consume the other. Narrower
-  terminals were losing more than the second row — at 120 columns the first row
-  was also cut off mid-hint, and in cursor mode `c`/`Esc exit cursor` was
-  among the casualties. The hints are capped so they cannot crowd out the diff
-  on a short terminal. Nothing to configure.
+- **Pane feedback no longer covers agent output indefinitely.** Repaint and
+  status confirmations appear as timed toasts and clear automatically.
+- **Custom-session icons can be chosen visually.** The config wizard previews
+  useful Nerd Font icons and correctly renders existing bundled icon names.
+- **Managed tmux hyperlinks work on macOS.** OSC 8 links from agent sessions
+  open normally after the session is reopened.
+- **Final Review no longer clips its footer shortcuts.** Both hint rows receive
+  their own space, including at narrower terminal widths, while short terminals
+  still preserve room for the diff.
 
 ### Migration
 
-No migration is required. Plan interviews still work without a database, and
-existing features are unaffected — the first interview you run after upgrading
-starts saving its answers. Existing saved sessions pick up the hyperlink fix
-when they are reopened, and Codex features receive the screenshot skill when
-their local agent setup next runs.
+No migration is required. AMF creates plan-interview storage automatically.
+Existing saved sessions pick up the macOS hyperlink fix when reopened, and
+Codex features receive the screenshot skill when their local setup next runs.
 
 ## [v0.33.0] - 2026-07-28
 

@@ -1,7 +1,7 @@
 # Learning Mode
 
-- **Status:** In progress — Epic 1 (foundations) complete; Epic 2
-  (browsing) next.
+- **Status:** In progress — Epics 1 (foundations) and 2 (browsing)
+  complete; Epic 3 (asking) next.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -456,24 +456,48 @@ closes out.
 
 ### Epic 2 — Browsing (overlay, file list, content, selection)
 
-- [ ] Implement `src/app/learning.rs` open/close plus file-list loading
+- [x] Implement `src/app/learning.rs` open/close plus file-list loading
       for both scopes: `crate::diff::load_snapshot` for
       `BranchChanges`, `list_repo_files` (with a capped plain walk for
-      non-git projects) for `RepoTree`. Verify by opening the overlay
-      on a feature and toggling scopes, including on a non-git project.
-- [ ] Build the **Start here** orientation group: existence-check the
+      non-git projects) for `RepoTree`. Verified by overlay-level tests
+      that open on a real temp repo and toggle scopes
+      (`opening_lists_repo_files_with_the_orientation_group_on_top`,
+      `toggling_scope_switches_to_the_branch_s_changed_files_and_back`,
+      `a_non_git_project_stays_in_repo_tree_scope_and_explains_why`,
+      `the_overlay_works_without_a_database`,
+      `closing_returns_to_the_feature_it_was_opened_from`). Limits now
+      set: 2 MB per file, 20k repo entries, walk depth 12, and a short
+      skip list for the non-git walk (whether those are the right
+      numbers stays open below). Repo-tree is the default scope, and
+      branch-changes is refused with an explanation on a non-git
+      project.
+- [x] Build the **Start here** orientation group: existence-check the
       fixed candidate list in the workdir, pin the surviving entries
       above the repo-tree file list, hide the group once the project
       has any Q&A history, and expose the repo-level "tour this
-      project" question. Unit-test candidate resolution against a temp
-      dir with a partial candidate set and against one with none.
-- [ ] Implement file content loading (binary/size skip) and the
+      project" question. Tests: `start_here_lists_only_files_that_exist`,
+      `start_here_is_empty_for_a_project_following_no_conventions`,
+      `start_here_ignores_directories`,
+      `repo_tree_entries_pin_the_orientation_group_on_top`,
+      `collapsing_the_group_keeps_only_its_header`,
+      `collapsing_the_orientation_group_keeps_the_cursor_on_its_file`.
+      The cursor opens on the tour question rather than the group
+      header, so the first thing a newcomer sees is a question they can
+      ask.
+- [x] Implement file content loading (binary/size skip) and the
       selection model — project / file / hunk / line range — with hunk
-      selection unavailable in `RepoTree` scope. Reuse
-      `DiffFile::hunk_start_indices()` and `addressable_line_texts()`
-      for hunk anchors and selection text. Add unit tests for anchor
-      construction, range clamping, and hunk-anchor absence in
-      repo-tree scope.
+      selection unavailable in `RepoTree` scope. Tests:
+      `binary_and_oversized_files_are_skipped_with_a_reason`,
+      `text_files_load_as_lines`, `line_anchor_is_one_based_and_clamped`,
+      `empty_file_anchors_to_the_file`,
+      `selection_text_covers_the_anchored_lines_only`,
+      `hunk_lookup_finds_the_enclosing_hunk`,
+      `hunk_selection_is_unavailable_in_repo_tree_scope`,
+      `hunk_selection_works_only_once_a_changed_file_is_loaded`,
+      `selecting_a_file_loads_its_content_and_a_line_anchor`. Pressing
+      the hunk key in repo-tree scope says why there's no hunk instead
+      of doing nothing, which closes the "missing key may read as a
+      bug" concern below.
 
 ### Epic 3 — Asking (prompts, headless execution, async queue)
 

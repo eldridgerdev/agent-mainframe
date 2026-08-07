@@ -12,6 +12,7 @@ mod config_wizard;
 mod diff;
 mod feature_ops;
 mod hooks;
+mod learning;
 mod navigation;
 mod notifications;
 mod opencode;

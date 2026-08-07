@@ -1,6 +1,6 @@
 # Plan Mode: guided feature discovery interview
 
-- **Status:** In progress
+- **Status:** Complete
 - **Owner:** unassigned
 - **Relates to:** current plan mode (`ensure_plan_mode_claude_md` in
   `src/app/setup.rs`, `Feature.plan_mode` in `src/project.rs`), feature
@@ -111,11 +111,15 @@ On-demand command on a feature ─┴─> PlanInterview mode
              built-in bank + project question templates
              (free-text or select-options; skippable; back-nav)
     Phase 2  Optional AI adaptive rounds (capped, e.g. 2 rounds × ≤5
-             questions): an explicit token-use prompt defaults to no
-             headless work; after opt-in, the feature's agent harness gets
-             brief + answers + repo context, returns follow-up
-             questions as JSON; loading overlay while it runs;
-             failure falls back to "no follow-ups"
+             questions): an explicit token-use prompt offers three
+             deliberately distinct outcomes:
+             a       ask AI to generate more interview questions,
+                     then answer them before plan drafting
+             Ctrl+F  stop asking questions and use AI to draft the
+                     plan now from answers already collected
+             Enter   make no AI call and review the raw interview plan
+             The feature's agent harness receives the brief + answers
+             + repo context; failure falls back to "no follow-ups"
     Phase 3  Synthesis: a headless harness run turns the full Q&A into a
              structured plan (Goal / Decisions / Architecture / UI /
              Tasks / Risks); loading overlay
@@ -125,16 +129,19 @@ On-demand command on a feature ─┴─> PlanInterview mode
               launch/seed session
 ```
 
-Every phase supports `Esc`-out with confirmation, and a dedicated
-"synthesize now" key ends the questioning early from any phase and
-jumps straight to synthesis with the answers so far. Answers are
-persisted as a **draft** in SQLite as they're given (decided
+Every phase supports `Esc`-out with confirmation. “Ask AI follow-ups”
+and “draft the plan now” are not synonyms: the first creates more
+questions for the user to answer, while the second ends questioning
+and generates the plan immediately from the answers already saved.
+Interview answers are persisted as a **draft** in SQLite as they're
+given (decided
 2026-07-13): abandoning the mode or restarting AMF keeps the draft,
 and re-entering the interview for that feature offers to resume or
 discard it. Accepting the plan finalizes the draft into the
 transcript; drafts for deleted features are cleaned up with the
-feature. (Draft persistence lands with Epic 5's table; Epics 1–4
-hold the in-progress interview in memory only.)
+feature. Because the feature-creation trigger runs before the feature
+exists, its draft is keyed by project + branch until the accept re-files
+the transcript under the real feature id.
 
 ### Question model
 
@@ -150,11 +157,12 @@ pub struct PlanQuestion {
 }
 ```
 
-- **Built-in bank** (in code, `src/plan_interview.rs`): a small
-  curated set covering scope ("what's in / explicitly out?"), users
-  and entry points, UI surface, data model / persistence, external
-  integrations, risks/unknowns, and definition of done. Order fixed;
-  all optional except the feature brief.
+- **Built-in bank** (in code, `src/plan_interview.rs`): five curated
+  prompts covering scope; users, entry points, and workflow/UI changes;
+  data, persistence, and external integrations; risks/unknowns; and
+  definition of done. The two related groups were consolidated after
+  dogfooding so the default interview stays short. Order fixed; all
+  optional except the feature brief.
 - **User templates** (config): a `plan_questions` array in
   `config.json`, merged global → project by `id` exactly like
   `feature_presets` / `prompt_templates` in `extension.rs` (project
@@ -191,15 +199,18 @@ pub struct PlanQuestion {
   - opencode: `opencode run <prompt>` in `<workdir>` (default text
     output; `--format json` emits raw event streams, more parsing
     for no gain)
-  - pi: no confirmed non-interactive mode; probe at runtime and
-    fall through to the fallback order until verified
+  - pi: `pi -p --no-session`, with the prompt piped over stdin;
+    context-complete calls add `--no-tools` plus resource-discovery
+    shutoffs, while repository investigations allow only
+    `read,grep,find,ls`
   `headless_available(agent) -> bool` probes the binary once so the
   UI can say up front which engine will power the interview. All
   harnesses take the prompt over stdin where supported — interview
   prompts carry accumulated Q&A plus repo context and can outgrow
   the Linux argv size cap (the E2BIG failure `run_headless` already
   guards against).
-- **Harness selection:** prefer the feature's configured agent; if
+- **Harness selection:** prefer the feature's configured agent (including Pi
+  when its installed CLI advertises the full safe-headless flag set); if
   it has no headless support or isn't installed, fall back to the
   first available harness (claude → codex → opencode), and if none
   are available degrade to static-questions-only with a notice. The
@@ -233,9 +244,11 @@ pub struct PlanQuestion {
   Token figures come from the harness's own output/metadata via the
   existing usage subsystem; harnesses that don't report stay
   time-only.
-- Follow-up (out of scope here): `summary.rs` hardcodes
-  `ClaudeLauncher::run_headless` today even for codex/opencode/pi
-  sessions; once the runner exists it should switch over.
+- Completed follow-up (2026-08-06): `summary.rs` now uses the shared
+  `HeadlessRunner` with the feature's configured harness, so codex, opencode,
+  and pi session summaries no longer invoke Claude. Summary generation is a
+  restricted no-tools call because the captured pane already supplies all of
+  the context it needs.
 
 ### Synthesis output & handoff
 
@@ -348,7 +361,7 @@ picks the plan up with no display-layer changes.
 - [x] Question dialog UI: multi-line free-text (TextEditor) and
       select-options rendering, progress header, skip/back keys,
       "finish early" key (writes answers-so-far; becomes
-      "synthesize now" once Epic 4 lands)
+      "draft plan now" once Epic 4 lands)
 - [x] Feature-creation integration: defer `PreparedFeatureLaunch`
       until interview completes; abort path (launch-anyway vs cancel)
 - [x] Write brief + answers into the workdir's `.claude/plan.md`
@@ -386,13 +399,18 @@ interview shows them merged with (or replacing) the built-in bank.
 Demo: after static questions, an explicit token-use prompt offers AI
 follow-ups. Opting in opens a loading frame and asks questions
 tailored to the answers — powered by the feature's own harness
-(claude, codex, or opencode); declining, failure, or an environment
+(claude, codex, opencode, or pi); declining, failure, or an environment
 with no headless-capable harness silently proceeds without them.
 
 - [x] `src/headless.rs`: runner dispatching by `AgentKind`
-      (`claude -p`, `codex exec`, `opencode run`), availability
+      (`claude -p`, `codex exec`, `opencode run`, `pi -p`), availability
       probe, fallback order (feature's agent → claude → codex →
-      opencode → static-only)
+      opencode → static-only). Pi was enabled on 2026-08-06 after its
+      print, ephemeral-session, no-tools, read-only tool allowlist, resource
+      isolation, project-trust, and model flags were verified; older Pi
+      versions continue through the fallback order. Visual proof:
+      `docs/screenshots/plan-mode-pi-headless/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-pi-headless.txt`
 - [x] Interviewer prompt constant (fenced-JSON reply contract) +
       repo-context gatherer (bounded: README head, dir listing,
       CLAUDE.md)
@@ -433,13 +451,26 @@ seeded kickoff composer), or abort.
       dropped whenever the plan changes. `Esc` during the review returns
       to the plan rather than opening the interview's abort confirmation,
       so a generated plan can't be lost to a stray keypress
-- [ ] Accept path: write `.claude/plan.md`, augment the instruction
+- [x] Accept path: write `.claude/plan.md`, augment the instruction
       block ("plan is user-approved"), run deferred launch, seed
-      composer kickoff prompt via `open_compose_seeded`
+      composer kickoff prompt via `open_compose_seeded` — the launch's
+      `ensure_feature_running` already injects the approved-plan block,
+      so accept adds the seeding step and lands the user in the new
+      session's composer with an editable, unsubmitted kickoff prompt.
+      Best-effort by design: it runs after the feature is created and
+      started, so a startup-steering prompt or a feature with no
+      tmux-backed agent session skips the seed rather than failing the
+      accept
 - [x] Replace Epic 1's raw-Q&A plan-file write with synthesized doc
       (raw Q&A kept as fallback when synthesis fails)
-- [ ] Omit skipped and unanswered questions from both synthesis input
+- [x] Omit skipped and unanswered questions from both synthesis input
       and the raw-Q&A fallback plan so they do not add irrelevant context
+      — blank answers count as skips, and an interview with nothing
+      answered degrades to the brief alone (no empty `## Q&A`). The
+      interviewer and critique prompts deliberately still receive the
+      full asked-set with `answer: null`: the interviewer must not
+      re-ask what the user passed over, and the reviewer judges the plan
+      against everything the interview covered
 
 ### Epic 5 — On-demand interviews + persistence
 
@@ -447,43 +478,226 @@ Demo: press the keybinding on an existing feature, re-run the
 interview with prior answers pre-filled, get an updated
 `.claude/plan.md`.
 
-- [ ] Migration + `src/db/plan_interviews.rs`: interview store keyed
+- [x] Migration + `src/db/plan_interviews.rs`: interview store keyed
       by feature id (questions, answers, source, plan, timestamps,
-      draft-vs-final state)
-- [ ] Draft persistence: save answers as given; on interview entry
+      draft-vs-final state) — `MIGRATION_016` keys on
+      `(feature_id, stage)` rather than `feature_id` alone so a re-run
+      can save a draft without destroying the accepted transcript it is
+      revising; `finalize_draft` promotes one to the other in a single
+      transaction. `questions`/`answers` are JSON columns (read and
+      written whole, and `PlanQuestion` already serializes), padded to
+      equal length on both save and load so every reader gets an aligned
+      pair; `answer_for(id)` is the id-keyed lookup the re-run pre-fill
+      needs when config has changed the bank between runs.
+      `ai_rounds_completed` is stored rather than derived from the
+      question list: a round that returned nothing usable still counted
+      against the cap, and resuming a draft must not hand back paid
+      rounds. Like `todo_lists`, `feature_id` carries no FK —
+      `store::save` full-replaces `features` and would cascade-wipe the
+      rows (covered by a test) — so cleanup is explicit via
+      `delete_for_feature`, wired into the feature-delete path with the
+      next item
+- [x] Draft persistence: save answers as given; on interview entry
       with an existing draft, offer resume/discard; clean up drafts
-      when their feature is deleted
-- [ ] Save final transcript on accept (both triggers)
-- [ ] Command-picker entry + dashboard keybinding for the selected
-      feature; no-pending-launch variant of the mode
-- [ ] Re-run flow: pre-fill prior answers, per-question keep/change
-- [ ] Live-session handoff: offer to send kickoff prompt when the
-      feature's agent session is running
+      when their feature is deleted — the draft is saved after every
+      action that records something (advance, skip, back, finish-early,
+      a finished AI round, a synthesized plan, a plan edit) and skipped
+      until the brief exists, since an interview with no brief has
+      nothing to resume into. A feature-creation interview predates the
+      feature's uuid, so its draft is keyed
+      `pending:<project>/<branch>` (`plan_interview::pending_interview_key`)
+      — the identity the user re-enters when they come back to create the
+      same feature. `PlanInterviewPhase::ResumePrompt` is the first screen
+      when a draft exists: `r` resumes, `d` discards (deleting the row),
+      `Esc` keeps it and falls through to the normal abort choice. Resume
+      matches answers by **question id**, not position, because config can
+      change the bank between runs; stored AI questions absent from the
+      current bank are appended and `ai_rounds_completed` restored, so
+      paid rounds are never re-earned; a draft that already holds a
+      generated plan reopens at the review gate instead of synthesizing
+      again. Persistence is silent on failure throughout — the interview
+      runs entirely from memory without a DB (covered by a test). Visual
+      proof: `docs/screenshots/plan-mode-draft-resume/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-resume.txt`
+- [x] Save final transcript on accept (both triggers) — landed with the
+      draft lifecycle rather than after it: a draft still offered for
+      resume after a successful accept is a bug in the item above, and
+      consuming it via `finalize_draft` is the same work as deleting it.
+      `finalize_draft` now takes both keys and re-files the transcript
+      under the feature id the accept just created, which is where the
+      re-run pre-fill will look for it
+- [x] Command-picker entry + dashboard keybinding for the selected
+      feature; no-pending-launch variant of the mode — `P` on the
+      dashboard and a `plan-interview` command-picker entry (offered only
+      with a feature or session selected, since the interview plans one
+      workdir) both open
+      `PlanInterviewState::for_feature`, keyed by the feature's **id** so
+      the accepted transcript lands where the re-run pre-fill will look
+      for it. The workdir moved out of `pending_launch` onto the state
+      itself (`context_workdir()` backs the three headless call sites,
+      which previously fell back to the process cwd), so accept writes the
+      plan into the feature's own workdir rather than bailing out. Accept
+      also calls `ensure_plan_mode_instructions` and sets
+      `feature.plan_mode`: writing `.claude/plan.md` alone leaves the agent
+      never told the plan exists, and a restart would stop injecting the
+      block. Abort is non-destructive — there is no launch to cancel, so
+      the confirm offers only "leave the plan unchanged" and `n` is inert.
+      Visual proof: `docs/screenshots/plan-mode-on-demand/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-on-demand.txt`. The
+      capture stops short of accepting — that runs a real headless synthesis
+      call, so the accept path is covered by
+      `accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir`
+      instead
+- [x] Re-run flow: pre-fill prior answers, per-question keep/change — entering
+      an on-demand interview loads the feature's accepted transcript
+      (`plan_interview_final`) and adopts it as the run's **baseline**: the brief
+      lands in the editor and every answer is matched back by question **id**
+      (config can change the bank between runs), with the previous run's AI
+      questions carried in with their answers since the current bank cannot
+      contain them. Spent AI rounds are deliberately *not* carried — a re-run is
+      a new interview and gets its own consent and its own budget. Keep/change is
+      in-place rather than a per-question card: `Enter` keeps the pre-filled
+      answer, typing changes it, and `Ctrl+R` restores the accepted one, with a
+      note under the question naming which of the three states it is in
+      (kept / changed / cleared). The note carries the `Ctrl+R` hint because the
+      footer's hint row already wraps to both its lines at ordinary widths.
+      Emptying a pre-filled answer records as a skip, which is how a re-run drops
+      an answer that no longer applies. A draft and an accepted transcript can
+      both exist for one feature: the draft prompt still comes first and its
+      answers win when resumed, but discarding it now falls back to the accepted
+      answers instead of blanking the interview. Visual proof:
+      `docs/screenshots/plan-mode-rerun/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-rerun.txt` — a re-run needs
+      an accepted transcript to read, so the capture inserts that row into the
+      scratch DB directly rather than paying for a real synthesis pass (snippet in
+      that directory's README)
+- [x] Live-session handoff: offer to send kickoff prompt when the
+      feature's agent session is running — an accepted **on-demand** plan lands
+      `PlanInterviewPhase::KickoffHandoff` when the feature has a live
+      agent-harness session, offering to open it with the composer seeded
+      (`y`) or leave it running (`n`/`Esc`). The offer comes strictly *after*
+      the accept has fully landed — plan file, instruction block, `plan_mode`,
+      transcript — so declining costs nothing and the only thing on offer is
+      interrupting a session that may be mid-task; the seed is editable and
+      unsubmitted like every other compose seed. "Live" means both halves,
+      feature not `Stopped` **and** `session_exists`: status is only reconciled
+      every few seconds, so a session killed outside AMF still reads as running
+      and would otherwise be offered a prompt into nothing. The target is held
+      by session **id**, not index, because the accept saves the store before
+      the prompt is answered. The feature-creation trigger is unchanged — it
+      seeds the session it just launched without asking, since there is no
+      running work to interrupt. Visual proof:
+      `docs/screenshots/plan-mode-live-handoff/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-live-handoff.txt` —
+      reaching a handoff needs a real accept, so the scenario seeds a
+      draft that already holds a plan
+      (`scripts/dev/screenshot/seed_plan_draft.py`) and resumes it straight to
+      the review gate rather than paying for a synthesis pass
 
 ### Epic 6 — Polish
 
-- [ ] Re-evaluate the built-in question bank after dogfooding:
-      identify which questions consistently add useful planning
-      context, then remove or combine low-value prompts so the
-      default interview stays short
-- [ ] Preset interplay verified (preset with plan_mode → interview);
-      batch creation explicitly skips with a notice
-- [ ] Empty/edge handling: zero-question config, brief-only fast path
-      ("just synthesize from the brief"), giant answers
-- [ ] CHANGELOG + CLAUDE.md architecture-section updates
-- [ ] Update this doc's status / trim to a pointer once in progress
+- [x] Add directed feedback at the plan review gate: `f` opens a multi-line
+      instruction editor and `Ctrl+S` asks the planning agent to revise the
+      current draft. The revision prompt carries the plan and full interview
+      transcript, runs in the feature workdir with repository-inspection tools
+      constrained to read-only access, and requires the complete structured
+      plan back rather than a prose report. A valid result replaces only the
+      staged draft and returns to the review gate for inspection before accept;
+      a failed or malformed result preserves both the prior plan and the user's
+      instruction for retry. Esc keeps the plan unchanged, and a result that
+      arrives after the user dismisses the loading frame is discarded rather
+      than applied late. Visual proof:
+      `docs/screenshots/plan-mode-directed-feedback/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-directed-feedback.txt`
+- [x] Add an optional isolated investigation pass after plan generation.
+      From the review gate, let the user identify questions or plan sections
+      that need more research, then delegate that work through the selected
+      harness's subagent mechanism (Claude subagents, the Codex equivalent, or
+      a separate ephemeral headless run when no native mechanism is exposed).
+      Give each investigator a focused prompt and read-only repository access
+      in its own context window, return only its findings to the planning
+      workflow, and merge those findings into the draft for user review. This
+      keeps codebase exploration from consuming the larger planning or
+      implementation session's context window — `i` at the review gate now
+      opens a multi-line research-focus editor; blank-line-separated focuses
+      (capped at four) each run through a fresh read-only headless invocation
+      using the interview's selected harness. A separate restricted invocation
+      receives only the validated, size-bounded findings and merges them into
+      the complete draft, so provider tool traces and exploration context never
+      enter the planning or implementation session. This portable isolated-run
+      fallback is used instead of assuming provider-specific subagent APIs.
+      Failed or dismissed passes preserve the current plan (and failures keep
+      the research request for retry); late results cannot overwrite it.
+      Visual proof: `docs/screenshots/plan-mode-isolated-investigation/`,
+      regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-isolated-investigation.txt`
+- [x] Replace the ambiguous AI-consent labels everywhere they appear
+      (dialog, status footer, help, and screenshots): `a` should say
+      "ask AI follow-ups" because it generates more questions;
+      `Ctrl+F` should say "draft plan now" because it skips every
+      remaining question and generates the plan from answers already
+      collected. Keep the no-token `Enter` action explicit as
+      "review raw plan." The consent dialog now spells out the behavioral
+      and token-cost difference between all three actions, and the compact
+      footers use those same labels. The two adaptive-interview screenshots
+      were regenerated from the updated UI.
+- [x] Re-evaluate the built-in question bank after dogfooding:
+      reduced the default from seven questions to five by combining
+      users/entry-points with workflow/UI changes and combining
+      data/persistence with external integrations. Scope, risks/unknowns,
+      and definition of done remain separate because each consistently
+      contributes a distinct planning decision. The surviving question
+      IDs remain stable; projects that override either retired ID still
+      get that configured question appended as a project-specific prompt
+- [x] Preset interplay verified (preset with plan_mode → interview);
+      batch creation explicitly skips with a notice — an end-to-end
+      feature-creation regression applies a plan-mode preset and proves the
+      launch is deferred into `PlanInterview`, while the batch settings dialog
+      tells users that plan interviews are skipped for batch creation (with a
+      render test keeping the notice visible). Visual proof:
+      `docs/screenshots/plan-mode-preset-batch/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-mode-preset-batch.txt`
+- [x] Empty/edge handling: zero-question config, brief-only fast path
+      ("just synthesize from the brief"), giant answers — opting out of the
+      built-in bank with no configured replacements now has explicit regression
+      coverage, and `Ctrl+F` from the required brief is covered end to end as a
+      direct synthesis path with no question or adaptive round. Briefs and
+      answers larger than 12,000 Unicode characters are preserved losslessly in
+      the draft/transcript and raw-plan fallback, while each field is bounded
+      with an explicit truncation marker at the model-prompt boundary so pasted
+      logs or documents cannot consume an unbounded headless context. Visual
+      proof of the zero-question and brief-only flow:
+      `docs/screenshots/plan-mode-edge-handling/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-edge-handling.txt`
+- [x] CHANGELOG + CLAUDE.md architecture-section updates
+- [x] Update this doc's status / trim to a pointer once in progress — status is
+      now complete and the backlog index points to the shipped workflow. This
+      document remains as the design/implementation record because it captures
+      the settled decisions, fallback semantics, and reproducible visual proof;
+      the user-facing workflow and keys live in `README.md`
+
+### Post-ship follow-ups
+
+- [x] Route dashboard and in-session one-line summaries through the
+      harness-agnostic headless runner using the feature's configured agent,
+      rather than hardcoding Claude for every feature. Visual proof:
+      `docs/screenshots/harness-aware-session-summary/`, regenerable via
+      `scripts/dev/screenshot/scenarios/harness-aware-session-summary.txt`
 
 ## Open questions
 
-Only one remains; the rest were resolved on 2026-07-13 (decisions
-recorded inline in the design sections above):
+None. The original design questions are recorded below with their resolutions.
 
-- **Pi headless support:** does pi expose a usable non-interactive
-  mode? Not installed on the dev box to verify. Until confirmed, pi
-  features run their interview through the fallback order
-  (claude → codex → opencode → static-only) via the runtime probe.
+### Resolved
 
-### Resolved (2026-07-13)
+- **Pi headless support** → resolved 2026-08-06 from the official CLI
+  contract: `-p` consumes piped stdin and exits, `--no-session` keeps calls
+  ephemeral, `--no-tools` disables all tools, and
+  `--tools read,grep,find,ls` provides the read-only investigation surface.
+  AMF also disables discovered extensions, skills, prompt templates, and
+  context files and ignores project-local config for these runs. The runtime
+  availability probe requires every relied-on flag, preserving the former
+  fallback behavior for older Pi installations.
 
 - **Cross-restart resume** → persist drafts to SQLite; resume/discard
   offered on re-entry (see UX flow; lands with Epic 5).
@@ -491,7 +705,7 @@ recorded inline in the design sections above):
   gitignore only if AMF created the file (see handoff section).
 - **Headless flags** → pinned against installed CLIs (see AI
   plumbing); re-verify at implementation.
-- **Question budget UX** → yes: dedicated "synthesize now" /
+- **Question budget UX** → yes: dedicated "draft plan now" /
   "finish early" key from any phase (Epic 1).
 - **Non-worktree feature collisions** → fine by design (one workdir =
   one plan file); unit test added to Epic 1.

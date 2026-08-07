@@ -7,7 +7,7 @@ use super::sync::pane_shows_thinking_hint;
 use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
-use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
+use crate::extension::{ExtensionConfig, FeaturePreset, HookConfig, HookPrompt, LifecycleHooks};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::sync::{
@@ -2711,6 +2711,70 @@ fn create_feature_with_plan_mode_defers_launch_into_interview() {
 }
 
 #[test]
+fn plan_mode_preset_defers_feature_launch_into_interview() {
+    let repo = TempDir::new().unwrap();
+    let now = Utc::now();
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![Project {
+            id: "proj-1".into(),
+            name: "my-project".into(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: vec![],
+        extra: HashMap::new(),
+    };
+    let mut state = CreateFeatureState::new(
+        "my-project".into(),
+        repo.path().to_path_buf(),
+        Vec::new(),
+        true,
+    );
+    state.step = CreateFeatureStep::SelectPreset;
+    state.feature_presets = vec![FeaturePreset {
+        name: "Plan first".into(),
+        plan_mode: true,
+        ..Default::default()
+    }];
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::CreatingFeature(state);
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+    match &mut app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert!(state.plan_mode, "the preset must enable plan mode");
+            state.branch = "preset-planned-feature".into();
+            state.step = CreateFeatureStep::SessionName;
+        }
+        _ => panic!("expected the preset to return to feature creation"),
+    }
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+
+    assert!(app.store.projects[0].features.is_empty());
+    match &app.mode {
+        AppMode::PlanInterview(interview) => {
+            assert_eq!(interview.feature_name, "preset-planned-feature");
+            assert_eq!(interview.phase, PlanInterviewPhase::Brief);
+            assert!(interview.pending_launch.as_ref().unwrap().plan_mode);
+        }
+        _ => panic!("expected a plan-mode preset to open the interview"),
+    }
+}
+
+#[test]
 fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
     let repo = TempDir::new().unwrap();
     let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
@@ -2757,9 +2821,326 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
     assert_eq!(app.store.projects[0].features.len(), 1);
 }
 
+/// An app sitting on the selected feature with no interview running — the
+/// starting point for the on-demand trigger, which plans a feature that
+/// already exists rather than deferring a launch.
+fn app_on_selected_feature() -> (App, tempfile::NamedTempFile, TempDir) {
+    let repo = TempDir::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+    (app, store_file, repo)
+}
+
+#[test]
+fn on_demand_plan_interview_plans_the_selected_feature_without_a_launch() {
+    let (mut app, _store_file, repo) = app_on_selected_feature();
+
+    crate::handlers::handle_normal_key(&mut app, ke(KeyCode::Char('P'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.feature_name, "my-feat");
+            // Keyed by the feature's id, so the accepted transcript is filed
+            // where a later re-run on this feature will look for it.
+            assert_eq!(state.interview_key, "feat-1");
+            assert_eq!(state.workdir, repo.path());
+            assert!(state.pending_launch.is_none());
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+}
+
+#[test]
+fn accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir() {
+    let (mut app, _store_file, repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+    force_plan_interview_raw_fallback(&mut app);
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.brief = "Tighten the sidebar".into();
+        state.synthesis_requested = true;
+        state.phase = PlanInterviewPhase::Done;
+    } else {
+        panic!("expected plan interview mode");
+    }
+    app.continue_plan_interview_after_done().unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    let plan = std::fs::read_to_string(repo.path().join(".claude/plan.md")).unwrap();
+    assert!(plan.contains("Tighten the sidebar"));
+    // Writing the file is not enough on its own: without the instruction block
+    // the agent is never told the plan exists, and without the flag a restart
+    // would stop injecting it.
+    assert!(app.store.projects[0].features[0].plan_mode);
+    let instructions = std::fs::read_to_string(repo.path().join("CLAUDE.local.md")).unwrap();
+    assert!(instructions.contains(".claude/plan.md"));
+}
+
+/// `app_on_selected_feature`, but the feature's agent session is live — the
+/// case the accepted plan has somewhere to hand off to. Permissive tmux
+/// expectations: these tests care about the handoff decision, not the call
+/// sequence entering an already-running session makes.
+fn app_on_running_selected_feature() -> (App, tempfile::NamedTempFile, TempDir) {
+    let repo = TempDir::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active);
+    store.projects[0].features[0]
+        .sessions
+        .push(make_session("Claude 1", None));
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| true);
+    tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+    (app, store_file, repo)
+}
+
+/// Drive an on-demand interview to an accepted raw-fallback plan, which is the
+/// point the live-session handoff is decided.
+fn accept_on_demand_plan_for_test(app: &mut App, brief: &str) {
+    app.start_plan_interview_for_selected_feature();
+    force_plan_interview_raw_fallback(app);
+
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    state.brief = brief.into();
+    state.synthesis_requested = true;
+    state.phase = PlanInterviewPhase::Done;
+
+    app.continue_plan_interview_after_done().unwrap();
+    crate::handlers::handle_plan_interview_key(app, ke(KeyCode::Enter)).unwrap();
+}
+
+/// A running agent read its instruction file once, at startup, so a plan
+/// written underneath it goes unnoticed until something says so.
+#[test]
+fn accepting_an_on_demand_plan_offers_the_kickoff_to_a_running_session() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::KickoffHandoff);
+            let target = state.kickoff_handoff.as_ref().unwrap();
+            assert_eq!(target.session_label, "Claude 1");
+            assert_eq!(target.session_id, "session-Claude 1");
+            assert_eq!(target.plan_path, repo.path().join(".claude/plan.md"));
+        }
+        _ => panic!("expected the handoff prompt"),
+    }
+    // The offer comes after the accept has fully landed, so declining it can
+    // never cost the plan.
+    assert!(
+        std::fs::read_to_string(repo.path().join(".claude/plan.md"))
+            .unwrap()
+            .contains("Tighten the sidebar")
+    );
+    assert!(app.store.projects[0].features[0].plan_mode);
+}
+
+#[test]
+fn declining_the_kickoff_handoff_leaves_the_running_session_alone() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+    );
+}
+
+#[test]
+fn accepting_the_kickoff_handoff_seeds_the_running_sessions_composer() {
+    let (mut app, _store_file, _repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+
+    // Seeded, never submitted: the session may be mid-task, so when the prompt
+    // lands stays the user's call.
+    match &app.mode {
+        AppMode::Compose(state) => {
+            let seed = state.editor.text();
+            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("decisions are settled"));
+            assert_eq!(state.view.feature_name, "my-feat");
+        }
+        _ => panic!("expected the live session's composer to be seeded"),
+    }
+}
+
+/// The handoff is only offered against a session tmux still has. AMF's status
+/// is reconciled every few seconds, so a session killed outside AMF still reads
+/// as running until the next sync — trusting the flag alone would offer to type
+/// into nothing.
+#[test]
+fn a_feature_marked_active_without_a_tmux_session_gets_no_handoff_offer() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| false);
+    app.tmux = Box::new(tmux);
+
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+    );
+}
+
+/// A live tmux session is not a live agent: the terminal window alone keeps the
+/// session up after the harness exits, so the session-level check passes while
+/// there is nothing left to hand the plan to.
+#[test]
+fn a_feature_whose_agent_window_exited_gets_no_handoff_offer() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| false);
+    app.tmux = Box::new(tmux);
+
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+    );
+}
+
+/// With several harnesses configured, declaration order is the wrong tiebreak:
+/// the first one may be long dead while a later one is doing the work.
+#[test]
+fn the_handoff_targets_the_harness_that_is_actually_running() {
+    let (mut app, _store_file, _repo) = app_on_running_selected_feature();
+    app.store.projects[0].features[0]
+        .sessions
+        .push(make_session("Claude 2", None));
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists()
+        .returning(|_, window| window == "Claude 2");
+    tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+    app.tmux = Box::new(tmux);
+
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            let target = state.kickoff_handoff.as_ref().unwrap();
+            assert_eq!(target.session_label, "Claude 2");
+        }
+        _ => panic!("expected the handoff prompt"),
+    }
+}
+
+/// The offer sits on screen for as long as the user takes to answer it, and the
+/// harness can exit in that window. Entering it then would recreate the session
+/// — a far bigger action than the one being offered.
+#[test]
+fn a_harness_that_exits_while_the_offer_is_up_is_not_reopened() {
+    let (mut app, _store_file, repo) = app_on_running_selected_feature();
+    accept_on_demand_plan_for_test(&mut app, "Tighten the sidebar");
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| false);
+    app.tmux = Box::new(tmux);
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    let message = app.message.as_deref().unwrap();
+    assert!(message.contains(&repo.path().join(".claude/plan.md").display().to_string()));
+    assert!(message.contains("no longer running"));
+}
+
+#[test]
+fn aborting_an_on_demand_interview_has_no_feature_to_cancel() {
+    let (mut app, _store_file, repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
+
+    // `n` cancels feature creation, which an on-demand interview never started;
+    // the dialog does not offer it, so it must not exit the interview either.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+    // Leaving is non-destructive: the feature keeps whatever plan it had.
+    assert!(!repo.path().join(".claude/plan.md").exists());
+    assert!(!app.store.projects[0].features[0].plan_mode);
+    assert_eq!(app.store.projects[0].features.len(), 1);
+}
+
+#[test]
+fn command_picker_offers_the_plan_interview_only_with_a_feature_in_hand() {
+    let (mut app, _store_file, _repo) = app_on_selected_feature();
+
+    app.open_command_picker(None);
+    let offered_on_feature = matches!(&app.mode, AppMode::CommandPicker(state)
+        if state.commands.iter().any(|entry| entry.name == "plan-interview"));
+    assert!(offered_on_feature);
+
+    // A project row has no workdir to plan against.
+    app.mode = AppMode::Normal;
+    app.selection = Selection::Project(0);
+    app.open_command_picker(None);
+    let offered_on_project = matches!(&app.mode, AppMode::CommandPicker(state)
+        if state.commands.iter().any(|entry| entry.name == "plan-interview"));
+    assert!(!offered_on_project);
+}
+
 /// Common setup for the `poll_plan_interview_ai_bg` tests below: a feature
 /// launch deferred into a plan interview, exactly like the abort test above.
 fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir) {
+    plan_interview_app(None)
+}
+
+/// `app_with_deferred_plan_interview` plus a real SQLite database, so the
+/// draft-persistence path writes and reads actual rows. The extra `TempDir`
+/// holds the database file and must outlive the app.
+fn app_with_deferred_plan_interview_and_db() -> (App, tempfile::NamedTempFile, TempDir, TempDir) {
+    let db_dir = TempDir::new().unwrap();
+    let (app, store_file, repo) = plan_interview_app(Some(&db_dir.path().join("amf.db")));
+    (app, store_file, repo, db_dir)
+}
+
+fn plan_interview_app(
+    db_path: Option<&std::path::Path>,
+) -> (App, tempfile::NamedTempFile, TempDir) {
     let repo = TempDir::new().unwrap();
     let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
     // Permissive rather than strict-sequence expectations: these tests care
@@ -2777,6 +3158,9 @@ fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir)
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     let store_file = NamedTempFile::new().unwrap();
     app.store_path = store_file.path().to_path_buf();
+    if let Some(db_path) = db_path {
+        app.db = Some(crate::db::AmfDb::open(db_path).unwrap());
+    }
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".into(),
         branch: "planned-feature".into(),
@@ -2843,6 +3227,257 @@ fn begin_plan_critique_for_test(app: &mut App) -> std::sync::mpsc::Sender<anyhow
     let (tx, rx) = std::sync::mpsc::channel();
     app.plan_interview_critique_bg = Some(rx);
     tx
+}
+
+/// Drop straight into an in-flight directed revision without launching a real
+/// harness. The production path builds the same state immediately before it
+/// spawns the read-only worker.
+fn begin_directed_plan_revision_for_test(
+    app: &mut App,
+) -> std::sync::mpsc::Sender<anyhow::Result<String>> {
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    assert!(state.begin_directed_feedback());
+    state.editor = crate::editor::TextEditor::new(
+        "Inspect the router and add the concrete files to Tasks.".into(),
+    );
+    assert!(state.begin_directed_feedback_loading(650));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_directed_feedback_bg = Some(rx);
+    tx
+}
+
+/// Drop straight into an in-flight isolated investigation without launching
+/// real read-only or merge harnesses.
+fn begin_plan_investigation_for_test(
+    app: &mut App,
+) -> std::sync::mpsc::Sender<anyhow::Result<crate::plan_interview::PlanInvestigationOutcome>> {
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    assert!(state.begin_investigation());
+    state.editor = crate::editor::TextEditor::new(
+        "Trace the session launch boundary and identify its tests.".into(),
+    );
+    assert!(state.begin_investigation_loading(1_200));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_investigation_bg = Some(rx);
+    tx
+}
+
+/// A merge result in which every investigator completed.
+fn investigation_outcome(
+    merge_response: String,
+) -> crate::plan_interview::PlanInvestigationOutcome {
+    crate::plan_interview::PlanInvestigationOutcome {
+        merge_response,
+        failed_focuses: Vec::new(),
+    }
+}
+
+#[test]
+fn directed_plan_feedback_replaces_the_draft_then_returns_to_review() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_directed_plan_revision_for_test(&mut app);
+    let revised = original.replace("Implement the feature", "Update src/handlers/router.rs");
+    tx.send(Ok(revised.clone())).unwrap();
+
+    assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(app.plan_interview_directed_feedback_bg.is_none());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Plan revised from your feedback; review the changes")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(revised.as_str())
+    ));
+}
+
+#[test]
+fn unusable_directed_feedback_preserves_the_instruction_and_plan_for_retry() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_directed_plan_revision_for_test(&mut app);
+    tx.send(Ok("I inspected the repository and have suggestions.".into()))
+        .unwrap();
+
+    assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::DirectedFeedback
+                && state.editor.text().contains("Inspect the router")
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Directed revision returned no usable plan; your instruction is preserved")
+    );
+}
+
+#[test]
+fn dismissing_directed_feedback_discards_its_late_revision() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_directed_plan_revision_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review
+    ));
+
+    let revised = original.replace("Implement the feature", "Update src/handlers/router.rs");
+    tx.send(Ok(revised)).unwrap();
+    assert!(app.poll_plan_interview_directed_feedback_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
+}
+
+#[test]
+fn isolated_investigation_merges_findings_then_returns_to_review() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_plan_investigation_for_test(&mut app);
+    let revised = original.replace("Implement the feature", "Update src/app/feature_ops.rs");
+    tx.send(Ok(investigation_outcome(revised.clone()))).unwrap();
+
+    assert!(app.poll_plan_interview_investigation_bg());
+    assert!(app.plan_interview_investigation_bg.is_none());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Investigation findings merged into the draft; review the changes")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(revised.as_str())
+    ));
+}
+
+#[test]
+fn partly_failed_isolated_investigation_still_merges_what_completed() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_plan_investigation_for_test(&mut app);
+    let revised = original.replace("Implement the feature", "Update src/app/feature_ops.rs");
+    tx.send(Ok(crate::plan_interview::PlanInvestigationOutcome {
+        merge_response: revised.clone(),
+        failed_focuses: vec!["Trace the notification hooks.".into()],
+    }))
+    .unwrap();
+
+    assert!(app.poll_plan_interview_investigation_bg());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Investigation merged with 1 focus(es) unresearched; review the changes")
+    );
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(revised.as_str())
+    ));
+}
+
+#[test]
+fn pasting_into_the_investigation_focus_editor_inserts_text() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        assert!(state.begin_investigation());
+    }
+
+    crate::handlers::handle_paste(&mut app, "Trace the session launch boundary.").unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Investigation
+                && state.editor.text() == "Trace the session launch boundary."
+                && state.edit_sync_to_cursor
+    ));
+}
+
+#[test]
+fn failed_isolated_investigation_preserves_focus_and_plan_for_retry() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_plan_investigation_for_test(&mut app);
+    tx.send(Err(anyhow::anyhow!("investigator failed")))
+        .unwrap();
+
+    assert!(app.poll_plan_interview_investigation_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Investigation
+                && state.editor.text().contains("Trace the session launch boundary")
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Isolated investigation failed; your research request is preserved")
+    );
+}
+
+#[test]
+fn dismissing_isolated_investigation_discards_its_late_revision() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let original = synthesized_plan_response();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(original.clone());
+    }
+
+    let tx = begin_plan_investigation_for_test(&mut app);
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review
+    ));
+
+    let revised = original.replace("Implement the feature", "Update src/app/feature_ops.rs");
+    tx.send(Ok(investigation_outcome(revised))).unwrap();
+    assert!(app.poll_plan_interview_investigation_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(original.as_str())
+    ));
 }
 
 #[test]
@@ -3141,6 +3776,38 @@ fn plan_interview_done_without_ai_consent_uses_raw_fallback_without_headless_wor
 }
 
 #[test]
+fn ctrl_f_from_the_brief_is_a_brief_only_synthesis_fast_path() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    force_plan_interview_raw_fallback(&mut app);
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.questions.clear();
+        state.answers.clear();
+        state.editor = crate::editor::TextEditor::new("Plan directly from this brief.".into());
+    } else {
+        panic!("expected plan interview mode");
+    }
+
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert!(app.plan_interview_ai_bg.is_none());
+    assert!(app.plan_interview_synthesis_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesis_requested
+                && state.questions.is_empty()
+                && state.synthesized_plan.as_deref()
+                    == Some("# Plan: planned-feature\n\n## Feature brief\n\nPlan directly from this brief.\n")
+    ));
+}
+
+#[test]
 fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
@@ -3176,7 +3843,6 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
 
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
-    assert!(matches!(app.mode, AppMode::Normal));
     assert_eq!(
         std::fs::read_to_string(workdir.join(".claude/plan.md")).unwrap(),
         synthesized_plan_response()
@@ -3187,17 +3853,34 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
             .iter()
             .any(|f| f.name == "planned-feature" && !f.pending_worktree_script)
     );
+    // Accepting lands in the launched session's composer with an editable
+    // kickoff prompt — seeded, never submitted.
+    match &app.mode {
+        AppMode::Compose(state) => {
+            let seed = state.editor.text();
+            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("decisions are settled"));
+            assert_eq!(state.view.feature_name, "planned-feature");
+        }
+        _ => panic!("expected the composer to be seeded"),
+    }
 }
 
 #[test]
 fn poll_plan_interview_synthesis_bg_uses_raw_fallback_for_incomplete_markdown() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
 
-    let workdir = match &mut app.mode {
+    let (workdir, first_question) = match &mut app.mode {
         AppMode::PlanInterview(state) => {
             state.brief = "Fallback brief".into();
+            // One answered question and the rest skipped: the fallback must
+            // carry the answer and drop every question the user passed over.
+            state.answers[0] = Some("Answered this one".into());
             state.begin_synthesis(300);
-            state.pending_launch.as_ref().unwrap().workdir.clone()
+            (
+                state.pending_launch.as_ref().unwrap().workdir.clone(),
+                state.questions[0].text.clone(),
+            )
         }
         _ => panic!("expected plan interview mode"),
     };
@@ -3215,6 +3898,8 @@ fn poll_plan_interview_synthesis_bg_uses_raw_fallback_for_incomplete_markdown() 
     };
     assert!(plan.contains("## Feature brief\n\nFallback brief"));
     assert!(plan.contains("## Q&A"));
+    assert!(plan.contains(&format!("### {first_question}\n\nAnswered this one")));
+    assert!(!plan.contains("_Skipped._"));
     assert!(!workdir.join(".claude/plan.md").exists());
     assert!(
         app.debug_log
@@ -3678,6 +4363,525 @@ fn poll_plan_interview_ai_bg_treats_a_dropped_worker_as_round_exhaustion() {
         app.mode,
         AppMode::PlanInterview(ref state) if state.phase == PlanInterviewPhase::Review
     ));
+}
+
+/// The key under which a feature-creation interview's draft is filed, before
+/// the feature (and its id) exists.
+const PENDING_INTERVIEW_KEY: &str = "pending:my-project/planned-feature";
+
+/// Walk the brief and the first question, so there is something worth resuming.
+fn answer_two_plan_interview_steps(app: &mut App) {
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Persist my answers.".into());
+    }
+    crate::handlers::handle_plan_interview_key(app, ke(KeyCode::Enter)).unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Only the TUI.".into());
+    }
+    crate::handlers::handle_plan_interview_key(app, ke(KeyCode::Enter)).unwrap();
+}
+
+#[test]
+fn plan_interview_answers_are_saved_as_a_resumable_draft() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    answer_two_plan_interview_steps(&mut app);
+
+    let draft = app
+        .db
+        .as_ref()
+        .unwrap()
+        .plan_interview_draft(PENDING_INTERVIEW_KEY)
+        .unwrap()
+        .expect("answers must be saved as they are given");
+    assert_eq!(draft.brief, "Persist my answers.");
+    assert_eq!(draft.feature_name, "planned-feature");
+    assert_eq!(draft.answer_for("scope"), Some("Only the TUI."));
+    assert!(draft.plan.is_none());
+}
+
+/// The point of the draft: abandoning the interview and coming back to create
+/// the same feature must not cost the user their answers.
+#[test]
+fn re_entering_an_abandoned_plan_interview_offers_to_resume_it() {
+    let (mut app, _store_file, repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    answer_two_plan_interview_steps(&mut app);
+
+    // Abandon: abort, then cancel the feature entirely.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+
+    app.finish_feature_launch(PreparedFeatureLaunch {
+        project_name: "my-project".into(),
+        branch: "planned-feature".into(),
+        workdir: repo.path().join(".worktrees/planned-feature"),
+        is_worktree: true,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: true,
+        agent: AgentKind::Claude,
+        create_terminal: false,
+        session_name: "Claude 1".into(),
+        enable_chrome: false,
+        remote_control: false,
+        steering_enabled: false,
+        hook_succeeded: None,
+        startup_prompt: None,
+    })
+    .unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::ResumePrompt);
+            assert_eq!(state.interview_key, PENDING_INTERVIEW_KEY);
+            // Nothing is restored until the user chooses to resume.
+            assert!(state.brief.is_empty());
+        }
+        _ => panic!("expected the resume prompt for the saved draft"),
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+            assert_eq!(state.brief, "Persist my answers.");
+            assert_eq!(state.answers[0].as_deref(), Some("Only the TUI."));
+            // Resumed at the first question still unanswered.
+            assert_eq!(state.question_index, 1);
+        }
+        _ => panic!("resuming must restore the saved interview"),
+    }
+}
+
+#[test]
+fn discarding_the_offered_draft_deletes_the_saved_row() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    answer_two_plan_interview_steps(&mut app);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        let draft = app
+            .db
+            .as_ref()
+            .unwrap()
+            .plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .unwrap();
+        state.offer_resume(draft);
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .is_none(),
+        "discarding must remove the stored draft, not just hide it"
+    );
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+            assert!(state.brief.is_empty());
+        }
+        _ => panic!("discarding must start the interview over"),
+    }
+}
+
+/// On accept the transcript moves off the pending key and onto the feature the
+/// launch just created — that id is where a later re-run looks for it.
+#[test]
+fn accepting_a_plan_files_the_transcript_under_the_created_feature_id() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    force_plan_interview_raw_fallback(&mut app);
+    answer_two_plan_interview_steps(&mut app);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis("# Plan: planned-feature\n".into());
+    }
+
+    app.complete_plan_interview().unwrap();
+
+    let db = app.db.as_ref().unwrap();
+    assert!(
+        db.plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .is_none(),
+        "the accepted draft must not be offered for resume again"
+    );
+    let feature_id = app.store.projects[0]
+        .features
+        .iter()
+        .find(|feature| feature.name == "planned-feature")
+        .map(|feature| feature.id.clone())
+        .expect("accept launches the feature");
+    let transcript = db
+        .plan_interview_final(&feature_id)
+        .unwrap()
+        .expect("accept must save the transcript under the feature's id");
+    assert_eq!(
+        transcript.plan.as_deref(),
+        Some("# Plan: planned-feature\n")
+    );
+    assert_eq!(transcript.answer_for("scope"), Some("Only the TUI."));
+}
+
+/// `plan_interviews.feature_id` has no foreign key, so deletion is explicit.
+/// Both keys a feature's interviews can live under have to be cleared.
+#[test]
+fn deleting_a_feature_drops_its_stored_interviews() {
+    let (mut app, _store_file, _repo, _db_dir) = app_with_deferred_plan_interview_and_db();
+    force_plan_interview_raw_fallback(&mut app);
+    answer_two_plan_interview_steps(&mut app);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis("# Plan: planned-feature\n".into());
+    }
+    app.complete_plan_interview().unwrap();
+
+    let feature_id = app.store.projects[0]
+        .features
+        .iter()
+        .find(|feature| feature.name == "planned-feature")
+        .map(|feature| feature.id.clone())
+        .unwrap();
+    // A second, abandoned interview for the same feature name still sits on the
+    // pending key; deletion has to reach that too.
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&crate::db::plan_interviews::PlanInterviewRecord {
+            feature_id: PENDING_INTERVIEW_KEY.into(),
+            feature_name: "planned-feature".into(),
+            brief: "Abandoned second pass.".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    app.delete_plan_interviews_for_deleted_feature(
+        "my-project",
+        "planned-feature",
+        &Some(feature_id.clone()),
+    );
+
+    let db = app.db.as_ref().unwrap();
+    assert!(db.plan_interview_final(&feature_id).unwrap().is_none());
+    assert!(db.plan_interview_draft(&feature_id).unwrap().is_none());
+    assert!(
+        db.plan_interview_draft(PENDING_INTERVIEW_KEY)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// `app_on_selected_feature` plus a real SQLite database, so the re-run path
+/// reads an actual stored transcript. The extra `TempDir` holds the database
+/// file and must outlive the app.
+fn app_on_selected_feature_with_db() -> (App, tempfile::NamedTempFile, TempDir, TempDir) {
+    let db_dir = TempDir::new().unwrap();
+    let (mut app, store_file, repo) = app_on_selected_feature();
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    (app, store_file, repo, db_dir)
+}
+
+/// The transcript a previously accepted plan leaves behind for `feat-1`: one
+/// built-in question the current bank still asks, and one AI follow-up it
+/// cannot contain.
+fn save_accepted_transcript(app: &App) {
+    use crate::db::plan_interviews::{PlanInterviewRecord, PlanInterviewStage};
+    use crate::plan_interview::{PlanQuestionKind, QuestionSource};
+
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            stage: PlanInterviewStage::Final,
+            feature_name: "my-feat".into(),
+            brief: "Tighten the sidebar.".into(),
+            questions: vec![
+                crate::plan_interview::PlanQuestion {
+                    id: "scope".into(),
+                    text: "What is in scope?".into(),
+                    kind: PlanQuestionKind::FreeText,
+                    source: QuestionSource::Builtin,
+                    optional: true,
+                },
+                crate::plan_interview::PlanQuestion {
+                    id: "cache-invalidation".into(),
+                    text: "When is the preview invalidated?".into(),
+                    kind: PlanQuestionKind::FreeText,
+                    source: QuestionSource::Ai { round: 1 },
+                    optional: true,
+                },
+            ],
+            answers: vec![Some("Sidebar only.".into()), Some("On every save.".into())],
+            plan: Some("# Plan: my-feat\n".into()),
+            ai_rounds_completed: 1,
+            ..Default::default()
+        })
+        .unwrap();
+}
+
+/// The point of the re-run: planning a feature again starts from the answers
+/// behind the plan already accepted for it, not from a blank interview.
+#[test]
+fn re_running_the_interview_pre_fills_the_accepted_answers() {
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+
+    app.start_plan_interview_for_selected_feature();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+            assert_eq!(state.brief, "Tighten the sidebar.");
+            // The brief is in the editor too, so Enter keeps it.
+            assert_eq!(state.editor.text(), "Tighten the sidebar.");
+            let scope = state
+                .questions
+                .iter()
+                .position(|question| question.id == "scope")
+                .expect("the built-in bank still asks about scope");
+            assert_eq!(state.answers[scope].as_deref(), Some("Sidebar only."));
+            // The previous run's AI question is not in the current bank, so it is
+            // carried onto the end with the answer it collected.
+            let ai = state
+                .questions
+                .iter()
+                .position(|question| question.id == "cache-invalidation")
+                .expect("a paid-for AI question must not be dropped on a re-run");
+            assert_eq!(state.answers[ai].as_deref(), Some("On every save."));
+            // Adaptive rounds are not carried: the re-run gets its own opt-in
+            // and its own budget.
+            assert_eq!(state.ai_rounds_completed, 0);
+            assert!(!state.ai_followups_opted_in);
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("pre-filled")
+    );
+}
+
+/// Per-question keep/change: Enter keeps the pre-filled answer, typing changes
+/// it, and Ctrl+R puts the previous one back.
+#[test]
+fn a_re_run_keeps_changes_or_restores_each_answer() {
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.start_plan_interview_for_selected_feature();
+
+    // Brief: pre-filled and reported as kept, and Enter carries it forward.
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+        }
+        _ => panic!("expected plan interview mode"),
+    }
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    // First question is "scope", pre-filled from the transcript.
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+            assert_eq!(state.questions[state.question_index].id, "scope");
+            assert_eq!(state.editor.text(), "Sidebar only.");
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+        }
+        _ => panic!("expected the first question"),
+    }
+
+    // Typing is a change, and the previous answer stays restorable.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('!'))).unwrap();
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.editor.text(), "Sidebar only.!");
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Changed));
+        }
+        _ => panic!("expected the first question"),
+    }
+
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.editor.text(), "Sidebar only.");
+            assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+        }
+        _ => panic!("expected the first question"),
+    }
+    assert!(app.message.is_none());
+
+    // Enter records the kept answer and moves on.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.answers[0].as_deref(), Some("Sidebar only."));
+            assert_eq!(state.question_index, 1);
+            // The next built-in question was never answered before, so there is
+            // nothing to keep and nothing to restore.
+            assert_eq!(state.prior_answer_state(), None);
+        }
+        _ => panic!("expected the second question"),
+    }
+
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("No previous answer")
+    );
+}
+
+/// Clearing a pre-filled answer skips the question, which is how a re-run drops
+/// an answer that no longer applies.
+#[test]
+fn clearing_a_pre_filled_answer_records_it_as_skipped() {
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.start_plan_interview_for_selected_feature();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new(String::new());
+        assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Cleared));
+    } else {
+        panic!("expected the first question");
+    }
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => assert_eq!(state.answers[0], None),
+        _ => panic!("expected the second question"),
+    }
+}
+
+/// A stale draft and an accepted transcript can both exist for one feature.
+/// Discarding the draft must not also throw away the accepted answers it was
+/// revising.
+#[test]
+fn discarding_a_draft_on_a_re_run_falls_back_to_the_accepted_answers() {
+    use crate::db::plan_interviews::PlanInterviewRecord;
+
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            feature_name: "my-feat".into(),
+            brief: "Abandoned second pass.".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    app.start_plan_interview_for_selected_feature();
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::ResumePrompt)
+    );
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.phase, PlanInterviewPhase::Brief);
+            assert_eq!(state.brief, "Tighten the sidebar.");
+            assert_eq!(state.answers[0].as_deref(), Some("Sidebar only."));
+        }
+        _ => panic!("discarding must fall back to the accepted transcript"),
+    }
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .plan_interview_draft("feat-1")
+            .unwrap()
+            .is_none()
+    );
+    // The transcript is not the draft: discarding must leave it alone.
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .plan_interview_final("feat-1")
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// Resuming a draft on a re-run takes the draft's answers, which are newer than
+/// the accepted transcript's.
+#[test]
+fn resuming_a_draft_on_a_re_run_wins_over_the_accepted_answers() {
+    use crate::db::plan_interviews::PlanInterviewRecord;
+    use crate::plan_interview::{PlanQuestionKind, QuestionSource};
+
+    let (mut app, _store_file, _repo, _db_dir) = app_on_selected_feature_with_db();
+    save_accepted_transcript(&app);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_plan_interview(&PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            feature_name: "my-feat".into(),
+            brief: "Second pass.".into(),
+            questions: vec![crate::plan_interview::PlanQuestion {
+                id: "scope".into(),
+                text: "What is in scope?".into(),
+                kind: PlanQuestionKind::FreeText,
+                source: QuestionSource::Builtin,
+                optional: true,
+            }],
+            answers: vec![Some("Sidebar and header.".into())],
+            ..Default::default()
+        })
+        .unwrap();
+
+    app.start_plan_interview_for_selected_feature();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('r'))).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.brief, "Second pass.");
+            assert_eq!(state.answers[0].as_deref(), Some("Sidebar and header."));
+            // The accepted answer is still what Ctrl+R restores.
+            assert_eq!(
+                state.prior_answers.get("scope").map(String::as_str),
+                Some("Sidebar only.")
+            );
+        }
+        _ => panic!("expected the resumed draft"),
+    }
+}
+
+/// Persistence is a convenience layered over an in-memory flow; without a
+/// database the interview still has to work end to end.
+#[test]
+fn plan_interview_runs_without_a_database() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    assert!(app.db.is_none());
+
+    answer_two_plan_interview_steps(&mut app);
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.brief, "Persist my answers.");
+            assert_eq!(state.answers[0].as_deref(), Some("Only the TUI."));
+        }
+        _ => panic!("expected the interview to advance normally without a DB"),
+    }
 }
 
 #[test]
@@ -6526,6 +7730,18 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
         !workdir.path().join(".codex").join("config.toml").exists(),
         "repo-root codex feature should not write unsupported project-local config"
     );
+    let screenshot_skill = workdir
+        .path()
+        .join(".agents/skills/amf-screenshot/SKILL.md");
+    let screenshot_skill = std::fs::read_to_string(screenshot_skill)
+        .expect("Codex features should get the AMF screenshot skill");
+    assert!(
+        screenshot_skill.contains("name: amf-screenshot")
+            && screenshot_skill.contains("scripts/dev/screenshot/amf-capture.sh")
+            && !screenshot_skill.contains("allowed-tools:")
+            && !screenshot_skill.contains("Artifact tool"),
+        "Codex should get its native screenshot workflow, got: {screenshot_skill}"
+    );
 
     let second = TempDir::new().unwrap();
     call_ensure_hooks_for(&second, VibeMode::Vibe, AgentKind::Codex, true);
@@ -6630,6 +7846,13 @@ fn cleanup_codex_hooks_removes_helper_script() {
     assert!(
         !codex_dir.join("config.toml").exists(),
         "cleanup should not leave behind unsupported project-local config"
+    );
+    assert!(
+        !workdir
+            .path()
+            .join(".agents/skills/amf-screenshot")
+            .exists(),
+        "cleanup should remove the managed Codex screenshot skill"
     );
 }
 
@@ -10603,6 +11826,37 @@ fn enter_ai_review_for_feature(app: &mut App) {
         std::path::PathBuf::from("/tmp/test-workdir"),
         pr,
     ));
+}
+
+#[test]
+fn ai_review_model_picker_opens_for_pi() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(std::path::PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        state.harness = Some(AgentKind::Pi);
+    }
+
+    app.start_ai_pr_review();
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            // Pi's headless CLI takes `--model`, so it must get the picker
+            // rather than being force-skipped to the harness default.
+            assert!(!state.model_picked);
+            let pick = state
+                .model_pick
+                .as_ref()
+                .expect("Pi should open the model picker");
+            assert_eq!(pick.rows, vec![ModelPickRow::Default, ModelPickRow::Custom]);
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+    assert!(app.ai_review_bg.is_none(), "review should not have started");
 }
 
 #[test]
@@ -16338,6 +17592,425 @@ fn viewer_state(app: &App) -> &DiffViewerState {
         AppMode::DiffViewer(state) => state,
         _ => panic!("not in the diff viewer"),
     }
+}
+
+/// A 30-line file with line 15 rewritten, hydrated with the blobs context
+/// expansion reads from — the same fixture `crate::diff`'s expansion tests use,
+/// built here so the viewer can be driven end to end.
+#[cfg(test)]
+fn expandable_diff_file() -> crate::diff::DiffFile {
+    let old: String = (1..=30).map(|i| format!("l{i}\n")).collect();
+    let new = old.replace("l15\n", "l15 changed\n");
+    let mut file = crate::diff::parse_unified_diff(
+        "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -12,7 +12,7 @@
+ l12
+ l13
+ l14
+-l15
++l15 changed
+ l16
+ l17
+ l18
+",
+    )
+    .unwrap()
+    .pop()
+    .unwrap();
+    file.old_content = Some(old);
+    file.new_content = Some(new);
+    file
+}
+
+/// Install a final-review viewer over a single expandable file.
+#[cfg(test)]
+fn enter_review_with_expandable_file(app: &mut App) {
+    enter_review_with_paths(app, &["src/lib.rs"]);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files = vec![expandable_diff_file()];
+    }
+}
+
+#[test]
+fn expanding_context_widens_the_hunk_and_records_the_level() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    let before = viewer_state(&app).files[0].hunks[0].old_lines;
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+
+    app.diff_viewer_expand_context();
+
+    assert_eq!(app.diff_viewer_context_level(), Some(10));
+    let state = viewer_state(&app);
+    assert!(state.files[0].hunks[0].old_lines > before);
+    assert_eq!(state.context_expansion.get("src/lib.rs").copied(), Some(10));
+    assert_eq!(app.message.as_deref(), Some("Context: 10 lines"));
+}
+
+#[test]
+fn the_context_ladder_tops_out_at_the_whole_file_and_returns_to_the_default() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    for _ in 0..4 {
+        app.diff_viewer_expand_context();
+    }
+    assert_eq!(app.diff_viewer_context_level(), Some(usize::MAX));
+    assert_eq!(viewer_state(&app).files[0].hunks[0].old_lines, 30);
+
+    // Already at the top: the level holds and the reviewer is told why.
+    app.diff_viewer_expand_context();
+    assert_eq!(app.diff_viewer_context_level(), Some(usize::MAX));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Already showing the whole file")
+    );
+
+    for _ in 0..4 {
+        app.diff_viewer_collapse_context();
+    }
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+    // Back at the default, the per-file entry is dropped rather than pinned.
+    assert!(viewer_state(&app).context_expansion.is_empty());
+    assert_eq!(viewer_state(&app).files[0].hunks[0].old_lines, 7);
+}
+
+#[test]
+fn whole_file_toggle_jumps_both_ways() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    app.diff_viewer_toggle_whole_file_context();
+    assert_eq!(app.diff_viewer_context_level(), Some(usize::MAX));
+
+    app.diff_viewer_toggle_whole_file_context();
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+}
+
+#[test]
+fn expanding_context_keeps_the_line_cursor_on_the_same_diff_line() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    // Park the cursor on the removed line and start a range selection there.
+    let removed = viewer_state(&app).files[0]
+        .addressable_lines()
+        .iter()
+        .position(|loc| loc.old_line == Some(15) && loc.new_line.is_none())
+        .unwrap();
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(removed);
+        state.comment_anchor = Some(removed);
+    }
+
+    app.diff_viewer_expand_context();
+
+    // The index moved (7 context lines were prepended) but it still points at
+    // the same line, which is what a comment would anchor to.
+    let state = viewer_state(&app);
+    let cursor = state.comment_cursor.unwrap();
+    assert_ne!(cursor, removed);
+    assert_eq!(
+        state.files[0].addressable_lines()[cursor],
+        crate::diff::DiffLineLocation {
+            old_line: Some(15),
+            new_line: None
+        }
+    );
+    assert_eq!(state.comment_anchor, Some(cursor));
+    assert!(state.cursor_sync_to_view);
+}
+
+#[test]
+fn expanding_context_raises_the_patch_scroll_bound() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    app.diff_viewer_scroll_patch_bottom();
+    let before = viewer_state(&app).patch_scroll;
+
+    app.diff_viewer_toggle_whole_file_context();
+    app.diff_viewer_scroll_patch_bottom();
+
+    // The scroll ceiling is derived from the rendered hunks, not the raw
+    // `patch` string, so the expanded rows are actually reachable.
+    assert!(
+        viewer_state(&app).patch_scroll > before,
+        "expanded content must be scrollable"
+    );
+}
+
+/// The index of the whole-file-only context line `l1`, which narrowing the
+/// context back to the default hides again.
+#[cfg(test)]
+fn whole_file_only_line(app: &App) -> usize {
+    viewer_state(app).files[0]
+        .addressable_lines()
+        .iter()
+        .position(|loc| loc.old_line == Some(1))
+        .expect("the whole file starts at old line 1")
+}
+
+#[test]
+fn narrowing_context_refuses_while_the_selected_range_would_be_hidden() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_toggle_whole_file_context();
+
+    // A range selection whose start only exists at whole-file context.
+    let top = whole_file_only_line(&app);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(top + 4);
+        state.comment_anchor = Some(top);
+    }
+
+    app.diff_viewer_toggle_whole_file_context();
+
+    // Refused outright: dropping an endpoint would silently re-point a comment
+    // made afterwards at lines the reviewer never selected.
+    assert_eq!(app.diff_viewer_context_level(), Some(usize::MAX));
+    let state = viewer_state(&app);
+    assert_eq!(state.comment_cursor, Some(top + 4));
+    assert_eq!(state.comment_anchor, Some(top));
+    assert_eq!(
+        app.message.as_deref(),
+        Some(
+            "Selected lines would be hidden at that context level — clear the selection (Esc) first"
+        )
+    );
+}
+
+#[test]
+fn narrowing_context_keeps_a_selection_that_stays_visible() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_toggle_whole_file_context();
+
+    // The changed line survives at any context level, so the range travels.
+    let changed = viewer_state(&app).files[0]
+        .addressable_lines()
+        .iter()
+        .position(|loc| loc.old_line == Some(15) && loc.new_line.is_none())
+        .unwrap();
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(changed);
+        state.comment_anchor = Some(changed);
+    }
+
+    app.diff_viewer_toggle_whole_file_context();
+
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+    let state = viewer_state(&app);
+    let cursor = state.comment_cursor.unwrap();
+    assert_eq!(
+        state.files[0].addressable_lines()[cursor],
+        crate::diff::DiffLineLocation {
+            old_line: Some(15),
+            new_line: None
+        }
+    );
+    assert_eq!(state.comment_anchor, Some(cursor));
+}
+
+#[test]
+fn narrowing_context_moves_a_hidden_cursor_to_the_nearest_line_and_reports_it() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_toggle_whole_file_context();
+
+    let top = whole_file_only_line(&app);
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(top);
+        state.comment_anchor = None;
+    }
+
+    app.diff_viewer_toggle_whole_file_context();
+
+    // No selection to protect, so the change goes ahead — but the cursor lands
+    // on the nearest line still rendered (old line 12, the hunk's first
+    // context line) rather than silently snapping to index 0 of a file whose
+    // first rendered line has moved.
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+    let state = viewer_state(&app);
+    let cursor = state.comment_cursor.unwrap();
+    assert_eq!(
+        state.files[0].addressable_lines()[cursor],
+        crate::diff::DiffLineLocation {
+            old_line: Some(12),
+            new_line: Some(12)
+        }
+    );
+    assert!(state.cursor_sync_to_view);
+    let message = app.message.clone().unwrap();
+    assert!(
+        message.contains("cursor moved to line 12"),
+        "the move must be reported: {message}"
+    );
+}
+
+#[test]
+fn narrowing_context_clamps_the_patch_scroll_into_the_shorter_patch() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    app.diff_viewer_toggle_whole_file_context();
+    app.diff_viewer_scroll_patch_bottom();
+    let expanded_scroll = viewer_state(&app).patch_scroll;
+
+    app.diff_viewer_toggle_whole_file_context();
+
+    // The patch is short again; leaving the old offset would render a blank
+    // panel until the reviewer scrolled back up.
+    let max_scroll = app.diff_viewer_patch_line_count().saturating_sub(1);
+    let scroll = viewer_state(&app).patch_scroll;
+    assert!(
+        scroll <= max_scroll,
+        "scroll {scroll} is past the new last line {max_scroll}"
+    );
+    assert!(
+        expanded_scroll > max_scroll,
+        "the test must actually start out of range: {expanded_scroll} vs {max_scroll}"
+    );
+}
+
+#[test]
+fn context_expansion_survives_a_diff_reload() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_expand_context();
+
+    // A refresh replaces `files` with freshly parsed (unexpanded) hunks.
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files = vec![expandable_diff_file()];
+        assert_eq!(state.files[0].hunks[0].old_lines, 7);
+        state.reapply_context_expansion();
+    }
+
+    let state = viewer_state(&app);
+    assert_eq!(state.files[0].hunks[0].old_lines, 21);
+    assert_eq!(state.context_expansion.get("src/lib.rs").copied(), Some(10));
+}
+
+#[test]
+fn context_expansion_is_dropped_for_a_file_that_left_the_changeset() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+    app.diff_viewer_expand_context();
+
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files.clear();
+        state.reapply_context_expansion();
+        assert!(state.context_expansion.is_empty());
+    }
+}
+
+#[test]
+fn toggling_ignore_whitespace_flips_the_flag_and_reloads() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_expandable_file(&mut app);
+
+    app.diff_viewer_toggle_ignore_whitespace();
+
+    // `-w` changes what git emits, so the toggle must go through the loader
+    // rather than just re-rendering what's already in memory.
+    assert!(
+        matches!(&app.mode, AppMode::DiffViewerLoading(s) if s.ignore_whitespace),
+        "toggle should flip the flag and enter the loading state"
+    );
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Ignoring whitespace-only changes (git diff -w)")
+    );
+}
+
+#[test]
+fn a_file_with_no_surrounding_context_reports_why_instead_of_no_opping() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    // `enter_review_with_paths` builds hunk-less, blob-less files — exactly the
+    // added/binary shape that can't be expanded.
+    enter_review_with_paths(&mut app, &["src/new.rs"]);
+
+    app.diff_viewer_expand_context();
+
+    assert_eq!(app.diff_viewer_context_level(), Some(3));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no surrounding context"),
+        "got {:?}",
+        app.message
+    );
 }
 
 #[test]

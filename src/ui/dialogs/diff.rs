@@ -16,7 +16,7 @@ use crate::{
         DiffPickerState, DiffScope, DiffViewerFocus, DiffViewerLayout, DiffViewerState,
         ReviewDecision, SummaryItem,
     },
-    diff::{DiffFile, DiffFileStatus, DiffLine, DiffLineKind, DiffLineLocation},
+    diff::{DiffFile, DiffFileStatus, DiffHunk, DiffLine, DiffLineKind, DiffLineLocation},
     editor::VimMode,
     highlight,
     theme::Theme,
@@ -202,6 +202,180 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     if state.review_history.is_some() {
         draw_review_history_modal(frame, state, theme);
     }
+    // Drawn last so it sits on top of anything else the reviewer left open.
+    if state.help_open {
+        draw_review_help_modal(frame, state, theme);
+    }
+}
+
+/// The review key surface, grouped by what the reviewer is trying to do. This
+/// is the `?` overlay's content: the two footer rows can only ever show the
+/// keys that apply right now, so the full set needs somewhere to live.
+///
+/// An empty key column is a continuation line for the entry above it.
+const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Verdicts",
+        &[
+            ("a", "Approve the current file"),
+            ("r", "Needs revision — opens the feedback editor"),
+            ("s", "Skip the current file (no verdict)"),
+            ("u", "Jump to the next file with no verdict"),
+            ("U", "Undo the last verdict and go back to that file"),
+        ],
+    ),
+    (
+        "Comments",
+        &[
+            ("c", "Toggle the line cursor (see \"Line cursor\" below)"),
+            ("m", "File comment — an observation that does not reject"),
+            ("M", "Resolve / reopen this file's comment"),
+            ("f", "General feedback for the whole review"),
+            ("{ / }", "Previous / next comment, across every file"),
+            ("Ctrl+E", "Cycle severity while an editor is open"),
+            ("", "(blocker / suggestion / nit / question / praise)"),
+            ("Tab", "Submit an open editor  ·  Esc cancels it"),
+        ],
+    ),
+    (
+        "Line cursor (press c first)",
+        &[
+            ("j / k", "Move the cursor a line at a time"),
+            ("[ / ]", "Jump to the previous / next hunk"),
+            ("v", "Start a range selection; v again clears it"),
+            ("Enter", "Comment on the cursored line or selected span"),
+            ("S", "Suggest a replacement for the line / span"),
+            ("x", "Apply the cursored suggestion to the worktree"),
+            ("R", "Resolve / reopen the cursored thread"),
+            ("a / d", "Accept / dismiss the AI draft under the cursor"),
+            ("Tab", "Jump to the next AI draft in this file"),
+            ("E", "Open this file at this line in $EDITOR"),
+            ("Esc / c", "Leave cursor mode"),
+        ],
+    ),
+    (
+        "Moving around",
+        &[
+            ("n / p", "Next / previous file"),
+            ("j / k", "Scroll the patch, or walk file-tree rows"),
+            ("g / G", "Jump to the top / bottom of the focused panel"),
+            ("Tab", "Move focus between the file list and the patch"),
+            ("PgUp / PgDn", "Scroll the patch a screen at a time"),
+            ("h / l", "Collapse-or-out / expand-or-in (file list)"),
+            ("z / Z", "Fold the cursored directory / whole tree (file list)"),
+            ("/", "Search this file's diff; n / N cycle matches"),
+            ("F", "Cycle the file-list filter"),
+            ("", "(all / undecided / rejected / blockers / …)"),
+        ],
+    ),
+    (
+        "Reading the diff",
+        &[
+            ("v", "Unified / side-by-side layout"),
+            ("+ / -", "Widen / narrow the context around each hunk"),
+            ("*", "Toggle straight to whole-file context and back"),
+            ("W", "Toggle ignore-whitespace (git diff -w)"),
+            ("e", "Expand / collapse the developer notes panel"),
+            ("", "(while expanded, j / k scroll the note)"),
+            ("i", "Install or repair this file's syntax parser"),
+            ("E", "Open this file in $EDITOR"),
+            ("b", "Diff against a different base ref"),
+        ],
+    ),
+    (
+        "Context and AI passes",
+        &[
+            ("w", "Generate a walkthrough for a noteless file (tokens)"),
+            ("A", "AI co-review pass over this file (tokens)"),
+            ("O", "Whole-changeset overview / risk summary (tokens)"),
+            ("I", "Diff since the last review round (local, free)"),
+            ("H", "Review-round timeline and history browser"),
+        ],
+    ),
+    (
+        "Finishing",
+        &[
+            ("t", "Fix target: the live agent pane / a dedicated session"),
+            ("X", "Also apply remaining suggestions when finishing"),
+            ("q", "Review summary, then finish"),
+            ("", "(writes feedback, may post to the PR, dispatches fixes)"),
+            ("Esc", "Pause — leave the review with all progress kept"),
+        ],
+    ),
+];
+
+/// A scrollable, read-only listing of every review-mode key (`?`). Takes full
+/// key precedence while open (`handle_diff_viewer_key`), like the other review
+/// modals. Groups mirror the dashboard help overlay's shape so the two read the
+/// same way.
+fn draw_review_help_modal(frame: &mut Frame, state: &mut DiffViewerState, theme: &Theme) {
+    let area = centered_rect(72, 84, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Final Review — Keys ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(inner);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (section, binds) in REVIEW_HELP_SECTIONS {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            format!("  {section}"),
+            Style::default()
+                .fg(theme.primary.to_color())
+                .add_modifier(Modifier::BOLD),
+        )));
+        for (key, desc) in *binds {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {key:>14}"),
+                    Style::default()
+                        .fg(theme.warning.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+            ]));
+        }
+    }
+
+    state.help_rendered_lines = lines.len();
+    state.help_view_height = rows[0].height as usize;
+    let scroll = state
+        .help_scroll
+        .min(lines.len().saturating_sub(rows[0].height as usize));
+
+    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), rows[0]);
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    let hint = Line::from(vec![
+        key("j"),
+        Span::raw("/"),
+        key("k"),
+        Span::raw(" scroll  "),
+        key("g"),
+        Span::raw("/"),
+        key("G"),
+        Span::raw(" top/bottom  "),
+        key("?"),
+        Span::raw("/"),
+        key("q"),
+        Span::raw("/"),
+        key("Esc"),
+        Span::raw(" close"),
+    ]);
+    frame.render_widget(Paragraph::new(hint), rows[1]);
 }
 
 /// Read-only review-round timeline (`H`). `Current` is generated from the
@@ -2056,16 +2230,40 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme
         .files
         .get(state.selected_file)
         .and_then(|file| highlight::language_install_state_for_path(Path::new(&file.path)));
+    let context_level = state
+        .files
+        .get(state.selected_file)
+        .filter(|file| file.can_expand_context())
+        .map(|file| {
+            state
+                .context_expansion
+                .get(&file.path)
+                .copied()
+                .unwrap_or(crate::diff::DIFF_DEFAULT_CONTEXT)
+        });
     let footer = Paragraph::new(diff_footer_lines(
         focus,
         layout,
         new_file_selected,
         syntax_status,
         matches!(&state.scope, DiffScope::CurrentChanges),
+        context_level,
+        state.ignore_whitespace,
         theme,
     ))
     .wrap(Wrap { trim: false });
     frame.render_widget(footer, area);
+}
+
+/// Whether the `E $EDITOR` hint earns its footer slot for the selected file.
+/// Shared by the cursor and non-cursor footers so the two can't drift: a
+/// deleted or binary file is still selectable (and, in cursor mode, still has
+/// addressable removed lines), but `E` on it can only report why it won't open.
+fn editor_hint_applies(state: &DiffViewerState) -> bool {
+    state
+        .files
+        .get(state.selected_file)
+        .is_some_and(|file| file.can_open_in_editor())
 }
 
 fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
@@ -2136,6 +2334,9 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             }
             None => format!(" line cursor @ {} ", cursor + 1),
         };
+        // Cursor mode inverts the non-cursor footer's shape — here the first
+        // line is the short one and the key row is what wraps — so the help
+        // hint rides on the position label instead of leading the key row.
         let mut first_spans = vec![
             Span::styled(
                 position_label,
@@ -2147,6 +2348,8 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                 format!("({comment_count} comment(s) on this file)  "),
                 Style::default().fg(theme.info.to_color()),
             ),
+            key("?"),
+            Span::raw(" keys  "),
         ];
         // Surface a committed search so its shadowing of n/N is discoverable.
         if !state.editing_search && !state.search_query.trim().is_empty() {
@@ -2171,7 +2374,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             first_spans.push(Span::raw(" clear"));
         }
         let first = Line::from(first_spans);
-        let second = Line::from(vec![
+        let mut second_spans = vec![
             key(" j"),
             Span::raw("/"),
             key("k"),
@@ -2194,6 +2397,19 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             Span::raw(" apply suggestion  "),
             key("R"),
             Span::raw(" resolve/reopen  "),
+        ];
+        // Same gating as the non-cursor footer: a deleted or binary file has
+        // nothing for an editor to open, even though its removed lines stay
+        // addressable and so can still be cursored.
+        if editor_hint_applies(state) {
+            second_spans.extend([key("E"), Span::raw(" $EDITOR  ")]);
+        }
+        // Same gating as the non-cursor footer: cross-file comment navigation
+        // only earns its slot once there is a comment somewhere to jump to.
+        if state.line_comments.values().any(|cs| !cs.is_empty()) {
+            second_spans.extend([key("{"), Span::raw("/"), key("}"), Span::raw(" comment  ")]);
+        }
+        second_spans.extend([
             key("n"),
             Span::raw("/"),
             key("p"),
@@ -2205,6 +2421,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             key("q"),
             Span::raw(" finish"),
         ]);
+        let second = Line::from(second_spans);
 
         // When the cursor sits on a commented line, peek the comment body in a
         // bordered box above the hints so the reviewer can read what they wrote
@@ -2343,8 +2560,14 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
     second_line.push(key("Esc"));
     second_line.push(Span::raw(" pause (keep progress)"));
 
+    // `?` leads the row rather than joining the second one: the first line is
+    // long enough to wrap into both footer rows on a narrow terminal, clipping
+    // the second, and the pointer to the full key list is the one hint that
+    // must never be the thing that falls off.
     let mut first_line = vec![
-        key(" a"),
+        key(" ?"),
+        Span::raw(" keys  "),
+        key("a"),
         Span::raw(" approve  "),
         key("r"),
         Span::raw(" reject  "),
@@ -2396,6 +2619,15 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         key("p"),
         Span::raw(" file  "),
     ]);
+    // Cross-file comment navigation only means something once something has
+    // been commented on, so it stays out of an otherwise dense footer until then.
+    if state.line_comments.values().any(|cs| !cs.is_empty()) {
+        first_line.extend([key("{"), Span::raw("/"), key("}"), Span::raw(" comment  ")]);
+    }
+    // Likewise the undo hint: shown only while there's a verdict to take back.
+    if !state.verdict_undo.is_empty() {
+        first_line.extend([key("U"), Span::raw(" undo verdict  ")]);
+    }
     // Tree folding only means something once the changeset spans directories.
     if state.files.iter().any(|file| file.path.contains('/')) {
         first_line.extend([key("z"), Span::raw("/"), key("Z"), Span::raw(" fold  ")]);
@@ -2410,6 +2642,12 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         key("Tab"),
         Span::raw(" focus  "),
     ]);
+    // Opening in `$EDITOR` needs a file that exists on disk with text in it, so
+    // it stays hidden for a deletion or a binary blob rather than advertising a
+    // key that can only report why it can't work.
+    if editor_hint_applies(state) {
+        first_line.extend([key("E"), Span::raw(" $EDITOR  ")]);
+    }
     let layout_label = match effective_layout(state) {
         DiffViewerLayout::Unified => "unified",
         DiffViewerLayout::SideBySide => "side-by-side",
@@ -2425,6 +2663,45 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         first_line.push(key("v"));
         first_line.push(Span::raw(format!(" layout:{layout_label}")));
     }
+
+    // Context expansion only means something for a file with hunks to widen —
+    // an added/deleted/binary file already shows everything it can.
+    if let Some(file) = state.files.get(state.selected_file)
+        && file.can_expand_context()
+    {
+        let level = state
+            .context_expansion
+            .get(&file.path)
+            .copied()
+            .unwrap_or(crate::diff::DIFF_DEFAULT_CONTEXT);
+        first_line.push(Span::raw("  "));
+        first_line.push(key("+"));
+        first_line.push(Span::raw("/"));
+        first_line.push(key("-"));
+        first_line.push(Span::styled(
+            format!(" context:{}", crate::app::context_level_label(level)),
+            Style::default().fg(if level == crate::diff::DIFF_DEFAULT_CONTEXT {
+                theme.text_muted.to_color()
+            } else {
+                theme.info.to_color()
+            }),
+        ));
+    }
+
+    first_line.push(Span::raw("  "));
+    first_line.push(key("W"));
+    first_line.push(Span::styled(
+        if state.ignore_whitespace {
+            " ws: ignored"
+        } else {
+            " ws: shown"
+        },
+        Style::default().fg(if state.ignore_whitespace {
+            theme.info.to_color()
+        } else {
+            theme.text_muted.to_color()
+        }),
+    ));
 
     // Offer the on-demand walkthrough only when the current file has no
     // developer note (the case where the notes panel would otherwise be empty).
@@ -2638,6 +2915,7 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
     frame.render_widget(Paragraph::new(Line::from(hint_spans)), rows[1]);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn diff_footer_lines(
     focus: &str,
     layout: &str,
@@ -2647,6 +2925,8 @@ fn diff_footer_lines(
         highlight::HighlightInstallState,
     )>,
     can_change_base: bool,
+    context_level: Option<usize>,
+    ignore_whitespace: bool,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut primary = vec![
@@ -2706,6 +2986,36 @@ fn diff_footer_lines(
         Span::styled("r", Style::default().fg(theme.warning.to_color())),
         Span::raw(" refresh  "),
     ]);
+    if let Some(level) = context_level {
+        secondary.push(Span::styled(
+            "+/-",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        secondary.push(Span::styled(
+            format!(" context:{}  ", crate::app::context_level_label(level)),
+            Style::default().fg(if level == crate::diff::DIFF_DEFAULT_CONTEXT {
+                theme.text_muted.to_color()
+            } else {
+                theme.info.to_color()
+            }),
+        ));
+    }
+    secondary.push(Span::styled(
+        "W",
+        Style::default().fg(theme.warning.to_color()),
+    ));
+    secondary.push(Span::styled(
+        if ignore_whitespace {
+            " ws: ignored  "
+        } else {
+            " ws: shown  "
+        },
+        Style::default().fg(if ignore_whitespace {
+            theme.info.to_color()
+        } else {
+            theme.text_muted.to_color()
+        }),
+    ));
     if can_change_base {
         secondary.push(Span::styled(
             "b",
@@ -2797,7 +3107,9 @@ fn patch_lines(
 
         let mut old_line = hunk.old_start;
         let mut new_line = hunk.new_start;
-        for diff_line in &hunk.lines {
+        // Which tokens changed within each paired removed/added line.
+        let intra = hunk_intra_line_ranges(hunk);
+        for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
             match diff_line.kind {
                 DiffLineKind::Context => {
                     let loc = DiffLineLocation {
@@ -2839,11 +3151,18 @@ fn patch_lines(
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         None,
-                        diff_chunks(
+                        diff_chunks_emphasized(
                             &diff_line.text,
                             removed_row_style(theme),
                             theme,
                             highlighted_line(highlights.old.as_ref(), old_line),
+                            intra[line_idx]
+                                .clone()
+                                .map(|ranges| IntraLineEmphasis {
+                                    ranges,
+                                    style: removed_emphasis_style(theme),
+                                })
+                                .as_ref(),
                         ),
                         removed_row_style(theme),
                         number_width,
@@ -2865,11 +3184,20 @@ fn patch_lines(
                     lines.extend(wrap_gutter_line(
                         None,
                         Some(new_line),
-                        diff_chunks(
+                        diff_chunks_emphasized(
                             &diff_line.text,
                             added_style,
                             theme,
                             highlighted_line(highlights.new.as_ref(), new_line),
+                            // A brand-new file has no counterpart lines, so its
+                            // rows never carry emphasis.
+                            intra[line_idx]
+                                .clone()
+                                .map(|ranges| IntraLineEmphasis {
+                                    ranges,
+                                    style: added_emphasis_style(theme),
+                                })
+                                .as_ref(),
                         ),
                         added_style,
                         number_width,
@@ -3163,6 +3491,14 @@ fn side_by_side_rows(
         && right_number.is_some()
         && left_style.bg != Some(base_bg)
         && right_style.bg != Some(base_bg);
+    // A row showing a removal beside its replacement is exactly the pair a
+    // word-level diff describes, so derive the emphasis here rather than
+    // threading it through yet another parameter.
+    let intra = if paired_change_row {
+        crate::worddiff::word_diff_cached(line_content(&left), line_content(&right))
+    } else {
+        None
+    };
     let left_wrapped = if left_number.is_none() && left.is_empty() {
         vec![plain_chunks(
             &hatch_fill(text_width, 0),
@@ -3170,7 +3506,19 @@ fn side_by_side_rows(
         )]
     } else {
         wrap_chunks(
-            &diff_chunks(&left, left_style, theme, left_highlight),
+            &diff_chunks_emphasized(
+                &left,
+                left_style,
+                theme,
+                left_highlight,
+                intra
+                    .as_ref()
+                    .map(|diff| IntraLineEmphasis {
+                        ranges: diff.old.clone(),
+                        style: removed_emphasis_style(theme),
+                    })
+                    .as_ref(),
+            ),
             text_width,
             left_style,
         )
@@ -3182,7 +3530,19 @@ fn side_by_side_rows(
         )]
     } else {
         wrap_chunks(
-            &diff_chunks(&right, right_style, theme, right_highlight),
+            &diff_chunks_emphasized(
+                &right,
+                right_style,
+                theme,
+                right_highlight,
+                intra
+                    .as_ref()
+                    .map(|diff| IntraLineEmphasis {
+                        ranges: diff.new.clone(),
+                        style: added_emphasis_style(theme),
+                    })
+                    .as_ref(),
+            ),
             text_width,
             right_style,
         )
@@ -3429,6 +3789,20 @@ fn diff_chunks(
     theme: &Theme,
     highlighted_line: Option<&highlight::HighlightedLine>,
 ) -> Vec<StyledChunk> {
+    diff_chunks_emphasized(text, row_style, theme, highlighted_line, None)
+}
+
+/// As `diff_chunks`, but additionally brightens the byte ranges in `emphasis`
+/// (offsets into the line's content, prefix excluded) — the tokens a
+/// word-level diff found actually changed. Only the background is touched, so
+/// syntax highlighting shows through unchanged.
+fn diff_chunks_emphasized(
+    text: &str,
+    row_style: Style,
+    theme: &Theme,
+    highlighted_line: Option<&highlight::HighlightedLine>,
+    emphasis: Option<&IntraLineEmphasis>,
+) -> Vec<StyledChunk> {
     if text.is_empty() {
         return Vec::new();
     }
@@ -3450,10 +3824,80 @@ fn diff_chunks(
     }
 
     if !content.is_empty() {
-        append_highlighted_content(&mut chunks, content, row_style, theme, highlighted_line);
+        let mut content_chunks = Vec::new();
+        append_highlighted_content(
+            &mut content_chunks,
+            content,
+            row_style,
+            theme,
+            highlighted_line,
+        );
+        if let Some(emphasis) = emphasis {
+            content_chunks =
+                apply_intra_line_emphasis(content_chunks, &emphasis.ranges, emphasis.style);
+        }
+        chunks.extend(content_chunks);
     }
 
     chunks
+}
+
+/// The changed byte ranges of one line plus the style to mark them with.
+struct IntraLineEmphasis {
+    ranges: Vec<std::ops::Range<usize>>,
+    style: Style,
+}
+
+/// Split `chunks` at every emphasis boundary and patch `style` onto the parts
+/// that fall inside a changed range. `chunks` must cover the line's content
+/// contiguously from offset 0, which is what `append_highlighted_content`
+/// guarantees.
+fn apply_intra_line_emphasis(
+    chunks: Vec<StyledChunk>,
+    ranges: &[std::ops::Range<usize>],
+    style: Style,
+) -> Vec<StyledChunk> {
+    if ranges.is_empty() {
+        return chunks;
+    }
+    let mut rebuilt: Vec<StyledChunk> = Vec::with_capacity(chunks.len());
+    let mut offset = 0usize;
+    for chunk in chunks.iter() {
+        let chunk_start = offset;
+        offset += chunk.text.len();
+        // Cut points inside this chunk where emphasis starts or stops.
+        let mut cuts: Vec<usize> = vec![0, chunk.text.len()];
+        for range in ranges {
+            for edge in [range.start, range.end] {
+                if edge > chunk_start && edge < offset {
+                    cuts.push(edge - chunk_start);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let (from, to) = (pair[0], pair[1]);
+            let Some(text) = chunk.text.get(from..to) else {
+                // A cut landed mid-character: keep the chunk whole rather than
+                // slicing a UTF-8 boundary.
+                continue;
+            };
+            let absolute = chunk_start + from;
+            let emphasized = ranges
+                .iter()
+                .any(|range| absolute >= range.start && absolute < range.end);
+            rebuilt.push(StyledChunk {
+                text: text.to_string(),
+                style: if emphasized {
+                    chunk.style.patch(style)
+                } else {
+                    chunk.style
+                },
+            });
+        }
+    }
+    rebuilt
 }
 
 fn append_highlighted_content(
@@ -3737,6 +4181,79 @@ fn added_row_style(theme: &Theme) -> Style {
     ))
 }
 
+/// Background for the tokens a word-level diff found changed: the row's own
+/// hue, blended harder so the changed part reads as "more added" / "more
+/// removed" rather than as a different kind of thing. Only the background is
+/// set, so the syntax-highlight foreground survives.
+fn added_emphasis_style(theme: &Theme) -> Style {
+    Style::default().bg(blend_color(
+        popup_base_bg(theme),
+        theme.success.to_color(),
+        0.62,
+    ))
+}
+
+fn removed_emphasis_style(theme: &Theme) -> Style {
+    Style::default().bg(blend_color(
+        popup_base_bg(theme),
+        theme.danger.to_color(),
+        0.58,
+    ))
+}
+
+/// Word-level emphasis for every line of a hunk, indexed the same as
+/// `hunk.lines`.
+///
+/// Consecutive removed lines followed by consecutive added lines form a change
+/// block; within it the i-th removal pairs with the i-th addition, which is how
+/// git lays out a rewritten run and therefore what the reviewer reads as "this
+/// line became that line". Unpaired leftovers (a block that removes 3 and adds
+/// 1) get no emphasis — there is no counterpart to diff against.
+///
+/// Runs on every frame, so the per-pair token diff comes from
+/// `worddiff::word_diff_cached` rather than being recomputed: only the (cheap)
+/// walk over the hunk's lines is repeated.
+fn hunk_intra_line_ranges(hunk: &DiffHunk) -> Vec<Option<Vec<std::ops::Range<usize>>>> {
+    let mut out: Vec<Option<Vec<std::ops::Range<usize>>>> = vec![None; hunk.lines.len()];
+    let mut idx = 0usize;
+    while idx < hunk.lines.len() {
+        if !matches!(hunk.lines[idx].kind, DiffLineKind::Removed) {
+            idx += 1;
+            continue;
+        }
+        let removed_start = idx;
+        while idx < hunk.lines.len() && matches!(hunk.lines[idx].kind, DiffLineKind::Removed) {
+            idx += 1;
+        }
+        let added_start = idx;
+        while idx < hunk.lines.len() && matches!(hunk.lines[idx].kind, DiffLineKind::Added) {
+            idx += 1;
+        }
+
+        let removed = removed_start..added_start;
+        let added = added_start..idx;
+        for (old_idx, new_idx) in removed.zip(added) {
+            let old_text = line_content(&hunk.lines[old_idx].text);
+            let new_text = line_content(&hunk.lines[new_idx].text);
+            if let Some(diff) = crate::worddiff::word_diff_cached(old_text, new_text) {
+                out[old_idx] = Some(diff.old.clone());
+                out[new_idx] = Some(diff.new.clone());
+            }
+        }
+    }
+    out
+}
+
+/// A diff line's text with its leading `+`/`-`/space prefix removed, matching
+/// the offsets `diff_chunks_emphasized` measures emphasis ranges against.
+fn line_content(text: &str) -> &str {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some('+' | '-' | ' ') => chars.as_str(),
+        _ => text,
+    }
+}
+
 fn removed_row_style(theme: &Theme) -> Style {
     Style::default().fg(theme.text.to_color()).bg(blend_color(
         popup_base_bg(theme),
@@ -3915,6 +4432,133 @@ mod tests {
             .collect::<String>()
     }
 
+    fn changed_pair_hunk(old: &str, new: &str) -> DiffHunk {
+        DiffHunk {
+            header: "@@ -1 +1 @@".into(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec![
+                DiffLine {
+                    kind: DiffLineKind::Removed,
+                    text: format!("-{old}"),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: format!("+{new}"),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn intra_line_ranges_pair_a_removal_with_its_replacement() {
+        let hunk = changed_pair_hunk("let x = foo(1);", "let x = foo(2);");
+        let ranges = hunk_intra_line_ranges(&hunk);
+
+        // Index 0 is the removal, index 1 its paired addition.
+        let old = ranges[0].as_ref().expect("removal has emphasis");
+        let new = ranges[1].as_ref().expect("addition has emphasis");
+        assert_eq!(&"let x = foo(1);"[old[0].clone()], "1");
+        assert_eq!(&"let x = foo(2);"[new[0].clone()], "2");
+    }
+
+    #[test]
+    fn intra_line_ranges_skip_unpaired_and_context_lines() {
+        // Two removals, one addition: only the first pair has a counterpart.
+        let hunk = DiffHunk {
+            header: "@@ -1,3 +1,2 @@".into(),
+            old_start: 1,
+            old_lines: 3,
+            new_start: 1,
+            new_lines: 2,
+            lines: vec![
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    text: " unchanged".into(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Removed,
+                    text: "-value = 1;".into(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Removed,
+                    text: "-dropped();".into(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "+value = 2;".into(),
+                },
+            ],
+        };
+        let ranges = hunk_intra_line_ranges(&hunk);
+
+        assert!(ranges[0].is_none(), "context lines are never emphasised");
+        assert!(ranges[1].is_some(), "first removal pairs with the addition");
+        assert!(ranges[2].is_none(), "second removal has no counterpart");
+        assert!(ranges[3].is_some());
+    }
+
+    #[test]
+    fn emphasis_splits_chunks_without_losing_or_reordering_text() {
+        let theme = Theme::default();
+        let row = added_row_style(&theme);
+        let emphasis = IntraLineEmphasis {
+            // Two disjoint runs inside "abcdef": "bc" and "e".
+            ranges: Vec::from([1..3, 4..5]),
+            style: added_emphasis_style(&theme),
+        };
+        let chunks = diff_chunks_emphasized("+abcdef", row, &theme, None, Some(&emphasis));
+
+        let text: String = chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(text, "+abcdef", "no text may be lost or reordered");
+
+        // Only the emphasised slices carry the brighter background; the rest
+        // keeps the plain row background.
+        let emphasised: String = chunks
+            .iter()
+            .filter(|c| c.style.bg == added_emphasis_style(&theme).bg)
+            .map(|c| c.text.as_str())
+            .collect();
+        assert_eq!(emphasised, "bce");
+    }
+
+    #[test]
+    fn emphasis_offsets_are_measured_past_the_diff_prefix() {
+        let theme = Theme::default();
+        // Offsets are into the *content*, not the raw line — starting a range
+        // at 0 must highlight `a`, never the `+` prefix.
+        let emphasis = IntraLineEmphasis {
+            ranges: Vec::from([0..3, 5..6]),
+            style: added_emphasis_style(&theme),
+        };
+        let chunks = diff_chunks_emphasized(
+            "+abcdef",
+            added_row_style(&theme),
+            &theme,
+            None,
+            Some(&emphasis),
+        );
+
+        let emphasised: String = chunks
+            .iter()
+            .filter(|c| c.style.bg == added_emphasis_style(&theme).bg)
+            .map(|c| c.text.as_str())
+            .collect();
+        assert_eq!(emphasised, "abcf");
+    }
+
+    #[test]
+    fn diff_footer_shows_the_ignore_whitespace_state() {
+        let theme = Theme::default();
+        let shown = diff_footer_lines("files", "unified", false, None, true, None, false, &theme);
+        assert!(line_text(&shown[1]).contains("ws: shown"));
+
+        let ignored = diff_footer_lines("files", "unified", false, None, true, None, true, &theme);
+        assert!(line_text(&ignored[1]).contains("ws: ignored"));
+    }
+
     #[test]
     fn diff_footer_prioritizes_syntax_install_hint() {
         let theme = Theme::default();
@@ -3927,6 +4571,8 @@ mod tests {
                 highlight::HighlightInstallState::Available,
             )),
             true,
+            None,
+            false,
             &theme,
         );
 
@@ -4205,6 +4851,90 @@ index 0000000..1111111
     }
 
     #[test]
+    fn help_modal_renders_grouped_keys_and_records_its_scroll_extent() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut state, _) = single_added_line_review_state();
+        state.help_open = true;
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_diff_viewer(frame, &mut state, &Theme::default()))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Final Review"));
+        assert!(rendered.contains("Verdicts"));
+        assert!(rendered.contains("Approve the current file"));
+        assert!(rendered.contains("Line cursor"));
+
+        // The overlay is taller than its viewport, and the renderer has to
+        // report both so `G` can clamp to the real bottom.
+        assert!(state.help_rendered_lines > state.help_view_height);
+        assert!(state.help_view_height > 0);
+    }
+
+    /// Structural guard on the help table: a section that renders as a bare
+    /// heading, or a continuation line with nothing above it to continue, is a
+    /// rendering bug that only shows up on screen.
+    #[test]
+    fn help_sections_are_non_empty_and_uniquely_titled() {
+        let mut titles = std::collections::HashSet::new();
+        for (title, binds) in REVIEW_HELP_SECTIONS {
+            assert!(titles.insert(*title), "duplicate help section: {title}");
+            assert!(!binds.is_empty(), "empty help section: {title}");
+            // A blank key column is a continuation line, so it must follow a
+            // real binding rather than lead a section.
+            assert!(
+                !binds[0].0.is_empty(),
+                "section {title} starts with a continuation line"
+            );
+            for (_, desc) in *binds {
+                assert!(!desc.is_empty(), "empty help description in {title}");
+            }
+        }
+    }
+
+    #[test]
+    fn review_footer_always_advertises_the_help_key() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut state, _) = single_added_line_review_state();
+
+        // Both footer shapes — the cursor-off hints and the cursor-mode hints —
+        // point at `?`, since it's the only way to see the keys they omit. The
+        // narrow width is the case that matters: the dense key row wraps into
+        // both footer rows there, so a hint on the wrong line is clipped away.
+        for width in [200u16, 90] {
+            for cursor in [None, Some(0)] {
+                state.comment_cursor = cursor;
+                let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+                terminal
+                    .draw(|frame| draw_diff_viewer(frame, &mut state, &Theme::default()))
+                    .unwrap();
+                let rendered = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    rendered.contains("? keys"),
+                    "footer missing the help hint (width: {width}, cursor: {cursor:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn cursor_comment_preview_surfaces_only_when_cursor_lands_on_a_comment() {
         let (mut state, loc) = single_added_line_review_state();
 
@@ -4265,6 +4995,51 @@ index 0000000..1111111
         );
         // 20 body lines (+ severity header) clamp to 6 visible + 2 border rows.
         assert_eq!(cursor_comment_preview_rows(&state), 8);
+    }
+
+    #[test]
+    fn editor_hint_hides_for_a_deleted_file_in_both_footers() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        fn footer_text(state: &mut DiffViewerState) -> String {
+            let backend = TestBackend::new(200, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| draw_diff_viewer(frame, state, &Theme::default()))
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        }
+
+        let (mut state, _) = single_added_line_review_state();
+        // A live file advertises `E` whether or not the line cursor is up.
+        assert!(footer_text(&mut state).contains("$EDITOR"));
+        state.comment_cursor = Some(0);
+        assert!(footer_text(&mut state).contains("$EDITOR"));
+
+        // A deletion keeps its removed lines addressable, so the cursor can
+        // still sit on one — but there is nothing on disk for `E` to open.
+        state.files[0].status = DiffFileStatus::Deleted;
+        state.files[0].hunks[0].lines[0] = crate::diff::DiffLine {
+            kind: crate::diff::DiffLineKind::Removed,
+            text: "-x".to_string(),
+        };
+        assert!(!state.files[0].addressable_lines().is_empty());
+        assert!(!footer_text(&mut state).contains("$EDITOR"));
+        state.comment_cursor = None;
+        assert!(!footer_text(&mut state).contains("$EDITOR"));
+
+        // Same for a binary blob, which has nothing an editor can show.
+        state.files[0].status = DiffFileStatus::Modified;
+        state.files[0].is_binary = true;
+        assert!(!footer_text(&mut state).contains("$EDITOR"));
+        state.comment_cursor = Some(0);
+        assert!(!footer_text(&mut state).contains("$EDITOR"));
     }
 
     #[test]

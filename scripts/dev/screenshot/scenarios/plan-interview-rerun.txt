@@ -1,0 +1,73 @@
+# plan-interview-rerun: proves the Epic 5 re-run flow.
+#
+# Runs the plan interview a SECOND time on a feature that already has an
+# accepted plan, so every question arrives pre-filled with the answer
+# behind that plan: Enter keeps it, typing changes it, and Ctrl+R
+# restores it.
+#
+# Requires --seed with a create-project payload and --seed-feature with a
+# create-feature payload for the same project, PLUS a `final`-stage row
+# in the scratch database's `plan_interviews` table keyed by the seeded
+# feature's id -- that row is the "previously accepted interview" the
+# re-run reads. Writing it needs a real accept, which runs a real
+# headless synthesis call, so the capture inserts the row directly
+# instead (see docs/screenshots/plan-mode-rerun/README.md for the exact
+# python3 sqlite3 snippet). The opening `wait` is that insertion window:
+# the seeds have already been applied by the time the scenario starts, so
+# the feature id exists to key the row on.
+#
+# Deliberately aborts before accepting, for the same reason the
+# on-demand scenario does: accepting spends tokens and is covered by unit
+# tests instead.
+
+wait:25000
+
+# Move the selection down onto the feature row -- the interview plans one
+# feature's workdir.
+key:j
+wait:400
+
+# 'P' opens the interview. THE FRAME: the brief is already filled in with
+# the brief from the accepted interview, and the footer says the previous
+# answers were pre-filled.
+key:P
+wait:900
+shot:rerun-brief-pre-filled
+
+# Enter keeps the pre-filled brief and moves to the first question, which
+# arrives carrying its previously accepted answer and the
+# "Previous answer pre-filled" note.
+key:Enter
+wait:700
+shot:rerun-question-kept
+
+# Typing changes the answer. The note switches to
+# "Changed from the previous interview -- Ctrl+R restores it".
+text: Also fade the last line.
+wait:500
+shot:rerun-question-changed
+
+# Ctrl+R puts the previously accepted answer back verbatim.
+key:C-r
+wait:500
+shot:rerun-question-restored
+
+# Enter records the kept answer. The next built-in question was never
+# answered before, so it arrives empty with no note and nothing to
+# restore.
+key:Enter
+wait:600
+shot:rerun-question-without-history
+
+# Ctrl+R here has nothing to restore and says so rather than appearing to
+# do nothing.
+key:C-r
+wait:500
+shot:rerun-nothing-to-restore
+
+# Aborting is non-destructive: the feature keeps the plan it already had.
+key:Escape
+wait:400
+key:y
+wait:700
+shot:rerun-dashboard-unchanged

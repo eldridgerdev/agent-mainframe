@@ -58,13 +58,21 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                 && !state.abort_confirmation
                 && (state.phase == crate::app::PlanInterviewPhase::Brief
                     || state.phase == crate::app::PlanInterviewPhase::Editing
+                    || state.phase == crate::app::PlanInterviewPhase::DirectedFeedback
+                    || state.phase == crate::app::PlanInterviewPhase::Investigation
                     || matches!(
                         state.current_question().map(|question| &question.kind),
                         Some(crate::plan_interview::PlanQuestionKind::FreeText)
                     ))
             {
                 let outcome = state.editor.insert_str(text);
-                if state.phase == crate::app::PlanInterviewPhase::Editing && outcome.text_changed {
+                if matches!(
+                    state.phase,
+                    crate::app::PlanInterviewPhase::Editing
+                        | crate::app::PlanInterviewPhase::DirectedFeedback
+                        | crate::app::PlanInterviewPhase::Investigation
+                ) && outcome.text_changed
+                {
                     state.edit_sync_to_cursor = true;
                 }
             }

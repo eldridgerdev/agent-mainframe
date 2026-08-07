@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
@@ -791,13 +792,14 @@ impl App {
             if !state.review {
                 return;
             }
-            if let Some(file) = state.files.get(state.selected_file) {
+            if let Some(path) = state.files.get(state.selected_file).map(|f| f.path.clone()) {
+                state.push_verdict_undo(&path, Some(&ReviewDecision::Approve));
                 state
                     .decisions
-                    .insert(file.path.clone(), ReviewDecision::Approve);
+                    .insert(path.clone(), ReviewDecision::Approve);
                 // An explicit verdict wins over (and sticks against) a
                 // rejection auto-set by a line comment.
-                state.auto_rejected.remove(&file.path);
+                state.auto_rejected.remove(&path);
             }
         }
         self.diff_review_advance();
@@ -810,12 +812,13 @@ impl App {
             if !state.review {
                 return;
             }
-            if let Some(file) = state.files.get(state.selected_file) {
-                state.decisions.remove(&file.path);
+            if let Some(path) = state.files.get(state.selected_file).map(|f| f.path.clone()) {
+                state.push_verdict_undo(&path, None);
+                state.decisions.remove(&path);
                 // An explicit skip clears a comment-implied rejection. A later
                 // comment mutation on the file re-defaults it — a fresh signal
                 // on a file with no verdict.
-                state.auto_rejected.remove(&file.path);
+                state.auto_rejected.remove(&path);
             }
         }
         self.diff_review_advance();
@@ -1941,6 +1944,57 @@ impl App {
         }
     }
 
+    /// Open the review-mode key-help overlay (`?`). Review-only: the plain diff
+    /// viewer's key surface still fits in its footer. Always reopens at the top
+    /// so `?` lands on the same first screen every time.
+    pub fn open_review_help(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode
+            && state.review
+        {
+            state.help_open = true;
+            state.help_scroll = 0;
+        }
+    }
+
+    pub fn close_review_help(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.help_open = false;
+        }
+    }
+
+    /// Max scroll offset for the help overlay, in the visual lines the renderer
+    /// last reported. Mirrors `changeset_overview_max_scroll`.
+    fn review_help_max_scroll(state: &DiffViewerState) -> usize {
+        state
+            .help_rendered_lines
+            .saturating_sub(state.help_view_height)
+    }
+
+    pub fn review_help_scroll_down(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let max = Self::review_help_max_scroll(state);
+            state.help_scroll = (state.help_scroll + amount).min(max);
+        }
+    }
+
+    pub fn review_help_scroll_up(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.help_scroll = state.help_scroll.saturating_sub(amount);
+        }
+    }
+
+    pub fn review_help_scroll_top(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.help_scroll = 0;
+        }
+    }
+
+    pub fn review_help_scroll_bottom(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.help_scroll = Self::review_help_max_scroll(state);
+        }
+    }
+
     /// Accept the AI draft comment under the line cursor, promoting it to a
     /// permanent human comment. Returns `true` if a draft was accepted (so the
     /// key handler can stop), `false` if the cursored line carries no draft.
@@ -2107,6 +2161,241 @@ impl App {
         }
     }
 
+    /// Every line comment across the *visible* files as `(file index, first
+    /// covered line index)` pairs, in file order and then in diff-line order —
+    /// the itinerary `{` / `}` walk. Also reports how many comments had no
+    /// anchor to park on, so an all-lost file can say why it went nowhere.
+    ///
+    /// `addressable_lines()` is only computed for files that actually carry a
+    /// comment, so a large changeset with a handful of annotations stays cheap.
+    fn review_comment_stops(state: &DiffViewerState) -> (Vec<(usize, usize)>, usize) {
+        let mut stops: Vec<(usize, usize)> = Vec::new();
+        let mut lost = 0usize;
+        for file_idx in state.visible_file_indices() {
+            let Some(file) = state.files.get(file_idx) else {
+                continue;
+            };
+            let Some(comments) = state.line_comments.get(&file.path) else {
+                continue;
+            };
+            if comments.is_empty() {
+                continue;
+            }
+            let locs = file.addressable_lines();
+            let mut indices: Vec<usize> = Vec::new();
+            for comment in comments {
+                // A comment whose anchor no longer resolves (moved code, a
+                // reload) has no line to put the cursor on — count it rather
+                // than pretending it isn't there.
+                match comment.covered_indices(&locs) {
+                    Some(range) => indices.push(*range.start()),
+                    None => lost += 1,
+                }
+            }
+            indices.sort_unstable();
+            indices.dedup();
+            stops.extend(indices.into_iter().map(|idx| (file_idx, idx)));
+        }
+        (stops, lost)
+    }
+
+    /// Move the line cursor to the next (`dir >= 0`) or previous comment
+    /// anywhere in the review, wrapping at either end. Unlike `Tab` — which
+    /// cycles the AI's *drafts* within the current file — this walks every
+    /// comment (draft or kept) across every visible file, so a reviewer can
+    /// sweep their whole annotation set before finishing without re-finding
+    /// each file by hand.
+    pub fn diff_review_jump_comment(&mut self, dir: isize) {
+        let message = match &mut self.mode {
+            AppMode::DiffViewer(state) if state.review => {
+                let (stops, lost) = Self::review_comment_stops(state);
+                if stops.is_empty() {
+                    Some(if lost > 0 {
+                        format!("No comment anchors to jump to ({lost} lost their anchor)")
+                    } else {
+                        "No comments in this review yet".to_string()
+                    })
+                } else {
+                    let sel = state.selected_file;
+                    // With the cursor off, forward starts before the current file's
+                    // first comment and backward after its last, so the first press
+                    // lands inside the file the reviewer is already looking at.
+                    let cursor = state.comment_cursor.map(|c| c as isize);
+                    let target_pos = if dir >= 0 {
+                        let from = cursor.unwrap_or(-1);
+                        stops
+                            .iter()
+                            .position(|&(f, i)| f > sel || (f == sel && (i as isize) > from))
+                            .unwrap_or(0)
+                    } else {
+                        let from = cursor.unwrap_or(isize::MAX);
+                        stops
+                            .iter()
+                            .rposition(|&(f, i)| f < sel || (f == sel && (i as isize) < from))
+                            .unwrap_or(stops.len() - 1)
+                    };
+                    let (file_idx, line_idx) = stops[target_pos];
+                    if state.selected_file != file_idx {
+                        state.selected_file = file_idx;
+                        state.on_file_changed();
+                    }
+                    // Set after `on_file_changed` (which would otherwise reset the
+                    // cursor to line 0), and unconditionally, so jumping to a
+                    // comment also turns the cursor on when it was off.
+                    state.comment_cursor = Some(line_idx);
+                    state.comment_anchor = None;
+                    state.cursor_sync_to_view = true;
+
+                    let anchor = state
+                        .files
+                        .get(file_idx)
+                        .and_then(|file| {
+                            let locs = file.addressable_lines();
+                            let comment =
+                                state.line_comments.get(&file.path)?.iter().find(|c| {
+                                    c.covered_indices(&locs)
+                                        .is_some_and(|range| range.contains(&line_idx))
+                                })?;
+                            Some(comment_anchor_label(&file.path, comment))
+                        })
+                        .unwrap_or_default();
+                    let lost_note = if lost > 0 {
+                        format!(" ({lost} anchor-lost skipped)")
+                    } else {
+                        String::new()
+                    };
+                    Some(format!(
+                        "Comment {}/{} — {anchor}{lost_note}",
+                        target_pos + 1,
+                        stops.len()
+                    ))
+                }
+            }
+            _ => None,
+        };
+        if let Some(message) = message {
+            self.message = Some(message);
+        }
+    }
+
+    /// Open the current file in `$VISUAL`/`$EDITOR`, at the cursored line when
+    /// the line cursor is active. Only resolves and validates the target here —
+    /// the actual suspend/run/restore is the main loop's job, since it owns the
+    /// terminal state (`PendingEditorOpen`).
+    pub fn diff_review_open_in_editor(&mut self) {
+        let resolved = match &self.mode {
+            AppMode::DiffViewer(state) => {
+                let Some(file) = state.files.get(state.selected_file) else {
+                    self.message = Some("No file to open".to_string());
+                    return;
+                };
+                // A deletion has no file on disk, and a binary one has nothing
+                // an editor can usefully show — say so rather than failing on
+                // the filesystem check with a vaguer message.
+                if matches!(file.status, crate::diff::DiffFileStatus::Deleted) {
+                    self.message = Some(format!("{} was deleted — nothing to open", file.path));
+                    return;
+                }
+                if file.is_binary {
+                    self.message = Some(format!("{} is binary — nothing to edit", file.path));
+                    return;
+                }
+                match guarded_worktree_file(&state.workdir, &file.path) {
+                    Ok(path) => Ok(PendingEditorOpen {
+                        path,
+                        workdir: state.workdir.clone(),
+                        line: editor_target_line(file, state.comment_cursor),
+                        display: file.path.clone(),
+                    }),
+                    Err(reason) => Err(format!("Cannot open {}: {reason}", file.path)),
+                }
+            }
+            _ => return,
+        };
+        match resolved {
+            Ok(request) => self.pending_editor = Some(request),
+            Err(message) => self.message = Some(message),
+        }
+    }
+
+    /// Undo the most recent explicit verdict (`a` / `s` / a typed rejection),
+    /// restoring the file's previous decision — including whether it was one
+    /// the line-comment rule had set implicitly — and returning the selection
+    /// to that file, since the verdict keys advance away from it. Comments,
+    /// suggestions and general feedback are untouched: only verdicts are undone.
+    pub fn diff_review_undo_verdict(&mut self) {
+        // `(message, whether anything actually changed)` — "nothing to undo"
+        // still reports, but must not rewrite the progress file.
+        let outcome: Option<(String, bool)> = match &mut self.mode {
+            AppMode::DiffViewer(state) if state.review => match state.verdict_undo.pop() {
+                None => Some(("No verdict to undo".to_string(), false)),
+                Some(entry) => {
+                    match entry.previous.clone() {
+                        Some(decision) => {
+                            state.decisions.insert(entry.path.clone(), decision);
+                        }
+                        None => {
+                            state.decisions.remove(&entry.path);
+                        }
+                    }
+                    if entry.previous_auto_rejected {
+                        state.auto_rejected.insert(entry.path.clone());
+                    } else {
+                        state.auto_rejected.remove(&entry.path);
+                    }
+                    let restored = match &entry.previous {
+                        None => "no verdict",
+                        Some(ReviewDecision::Approve) => "approved",
+                        Some(ReviewDecision::Reject { .. }) => "needs revision",
+                    };
+                    match state.files.iter().position(|f| f.path == entry.path) {
+                        Some(idx) => {
+                            if state.selected_file != idx {
+                                state.selected_file = idx;
+                                state.on_file_changed();
+                            } else {
+                                state.reveal_selected_file();
+                            }
+                            // Restoring a verdict can push the file back out of the
+                            // active filter; say so rather than leaving the reviewer
+                            // wondering why the list didn't move.
+                            let hidden = !state.visible_file_indices().contains(&idx);
+                            let filter_note = if hidden {
+                                format!(" (hidden by the {} filter)", state.file_filter.label())
+                            } else {
+                                String::new()
+                            };
+                            Some((
+                                format!(
+                                    "Undid verdict on {} — {restored}{filter_note}",
+                                    entry.path
+                                ),
+                                true,
+                            ))
+                        }
+                        // The file left the changeset since the verdict was set (a
+                        // refresh, a base-ref change). The decision is still worth
+                        // restoring; there is just nowhere to navigate to.
+                        None => Some((
+                            format!(
+                                "Undid verdict on {} — {restored} (no longer in the diff)",
+                                entry.path
+                            ),
+                            true,
+                        )),
+                    }
+                }
+            },
+            _ => None,
+        };
+        if let Some((message, changed)) = outcome {
+            self.message = Some(message);
+            if changed {
+                self.persist_review_progress();
+            }
+        }
+    }
+
     /// Begin entering rejection feedback for the current file, pre-filling any
     /// feedback already recorded for it.
     pub fn diff_review_start_feedback(&mut self) {
@@ -2269,14 +2558,13 @@ impl App {
             }
             let feedback = state.feedback_editor.text().trim().to_string();
             let severity = state.comment_severity;
-            if let Some(file) = state.files.get(state.selected_file) {
-                state.decisions.insert(
-                    file.path.clone(),
-                    ReviewDecision::Reject { feedback, severity },
-                );
+            if let Some(path) = state.files.get(state.selected_file).map(|f| f.path.clone()) {
+                let decision = ReviewDecision::Reject { feedback, severity };
+                state.push_verdict_undo(&path, Some(&decision));
+                state.decisions.insert(path.clone(), decision);
                 // The reviewer typed this rejection themselves: it is explicit
                 // now and no longer tracks the file's comments.
-                state.auto_rejected.remove(&file.path);
+                state.auto_rejected.remove(&path);
             }
             state.feedback_editing = false;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
@@ -3192,12 +3480,14 @@ impl App {
             // review (best-effort; the local file is the source of truth either
             // way).
             let pr_note = if post_to_pr {
+                let postable = pr_postable_lines(&files);
                 self.post_final_review_to_pr(
                     &workdir,
                     &rejected,
                     &file_comment_sections,
                     &line_comment_sections,
                     &general_feedback,
+                    &postable,
                 )
             } else {
                 String::new()
@@ -3402,6 +3692,7 @@ impl App {
         file_comment_sections: &[(String, FileComment)],
         line_comment_sections: &[(String, Vec<LineComment>)],
         general_feedback: &str,
+        postable: &HashMap<String, HashSet<crate::diff::DiffLineLocation>>,
     ) -> String {
         use crate::github::{GhCli, PrResolution};
 
@@ -3410,6 +3701,7 @@ impl App {
             file_comment_sections,
             line_comment_sections,
             general_feedback,
+            postable,
         );
         let pr = match GhCli::resolve_pr(workdir) {
             Ok(PrResolution::Found(pr)) => pr,
@@ -3649,6 +3941,146 @@ fn guarded_worktree_file(workdir: &Path, relative: &str) -> std::result::Result<
     Ok(path)
 }
 
+/// The 1-based line in the file *on disk* that the editor should open at.
+///
+/// The cursor indexes `addressable_lines()`, which includes removed lines that
+/// no longer exist in the working copy. For one of those, land on the nearest
+/// surviving line above (else below) so the editor still arrives at the change
+/// instead of the top of the file. With the cursor off, this resolves to the
+/// first line of the first hunk.
+fn editor_target_line(file: &crate::diff::DiffFile, cursor: Option<usize>) -> Option<usize> {
+    let locations = file.addressable_lines();
+    if locations.is_empty() {
+        return None;
+    }
+    let start = cursor.unwrap_or(0).min(locations.len() - 1);
+    if let Some(line) = locations[start].new_line {
+        return Some(line);
+    }
+    locations[..start]
+        .iter()
+        .rev()
+        .find_map(|location| location.new_line)
+        .or_else(|| {
+            locations[start + 1..]
+                .iter()
+                .find_map(|location| location.new_line)
+        })
+}
+
+/// GUI editors fork and return immediately unless told to block, which would
+/// drop the reviewer back into a redrawn TUI with the file still open
+/// elsewhere. Only editors that actually accept `--wait` are listed.
+fn editor_needs_wait(stem: &str) -> bool {
+    matches!(
+        stem,
+        "code"
+            | "code-insiders"
+            | "codium"
+            | "vscodium"
+            | "cursor"
+            | "windsurf"
+            | "subl"
+            | "sublime_text"
+            | "zed"
+    )
+}
+
+/// Build the `(program, args)` to run for an `$EDITOR` value, placing the
+/// cursor on `line` where the editor is known to support it.
+///
+/// `editor` is split on whitespace so a value carrying its own flags
+/// (`code --wait`, `emacsclient -nw`) works; full shell quoting is deliberately
+/// not emulated. An editor we don't recognise is opened at the top of the file
+/// rather than guessing a flag it would read as a second filename.
+fn editor_invocation(
+    editor: &str,
+    path: &str,
+    line: Option<usize>,
+) -> Option<(String, Vec<String>)> {
+    let mut parts = editor.split_whitespace();
+    let program = parts.next()?.to_string();
+    let mut args: Vec<String> = parts.map(str::to_string).collect();
+
+    let stem = Path::new(&program)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if editor_needs_wait(&stem) && !args.iter().any(|arg| arg == "--wait" || arg == "-w") {
+        args.push("--wait".to_string());
+    }
+
+    match line {
+        // `+N file` — the convention vi and its descendants share.
+        Some(line)
+            if matches!(
+                stem.as_str(),
+                "vi" | "vim"
+                    | "nvim"
+                    | "view"
+                    | "gvim"
+                    | "mvim"
+                    | "nano"
+                    | "pico"
+                    | "emacs"
+                    | "emacsclient"
+                    | "joe"
+                    | "jed"
+                    | "mg"
+                    | "ne"
+                    | "kak"
+                    | "micro"
+            ) =>
+        {
+            args.push(format!("+{line}"));
+            args.push(path.to_string());
+        }
+        // VS Code and its forks need an explicit --goto.
+        Some(line)
+            if matches!(
+                stem.as_str(),
+                "code" | "code-insiders" | "codium" | "vscodium" | "cursor" | "windsurf"
+            ) =>
+        {
+            args.push("--goto".to_string());
+            args.push(format!("{path}:{line}"));
+        }
+        // `file:line` as a single argument.
+        Some(line)
+            if matches!(
+                stem.as_str(),
+                "hx" | "helix" | "subl" | "sublime_text" | "zed"
+            ) =>
+        {
+            args.push(format!("{path}:{line}"));
+        }
+        _ => args.push(path.to_string()),
+    }
+
+    Some((program, args))
+}
+
+/// Resolve the editor to run: `$VISUAL`, then `$EDITOR`, then `vi` — the
+/// standard precedence, so AMF honours whatever the reviewer's shell already
+/// configures. Blank values are ignored rather than treated as a program name.
+pub fn resolve_editor_command(
+    path: &str,
+    line: Option<usize>,
+) -> std::result::Result<(String, Vec<String>), String> {
+    let configured = ["VISUAL", "EDITOR"]
+        .iter()
+        .find_map(|name| match std::env::var(name) {
+            Ok(value) if !value.trim().is_empty() => Some(value),
+            _ => None,
+        })
+        .unwrap_or_else(|| "vi".to_string());
+
+    editor_invocation(&configured, path, line)
+        .ok_or_else(|| format!("$EDITOR ({configured}) is not a runnable command"))
+}
+
 /// Apply a set of suggestions for one file in a single write. The whole-file
 /// equality check is the dirty-file guard; bottom-up replacements keep the
 /// original line coordinates valid when earlier suggestions add/remove lines.
@@ -3749,7 +4181,7 @@ fn apply_suggestions_to_file(
 /// (case-insensitive substring), ascending. Empty for a blank query. Matches
 /// against `addressable_line_texts()` (diff prefix stripped) so a query hits the
 /// same content regardless of whether the line was added, removed or context.
-fn compute_search_matches(file: &crate::diff::DiffFile, query: &str) -> Vec<usize> {
+pub(crate) fn compute_search_matches(file: &crate::diff::DiffFile, query: &str) -> Vec<usize> {
     if query.trim().is_empty() {
         return Vec::new();
     }
@@ -3921,6 +4353,35 @@ fn severity_review_event(
     }
 }
 
+/// The diff lines GitHub will accept an inline review comment on, per file:
+/// the ones in the diff git actually produced. `DiffFile::patch` preserves that
+/// verbatim no matter how far the reviewer expanded the *rendered* context
+/// (`hunks_with_context` rewrites `hunks` only), so re-parsing it recovers the
+/// real boundary. This matters because `create_review` posts every inline
+/// comment in one batch — a single anchor outside the PR's diff would reject
+/// the whole review, losing the comments that were postable.
+///
+/// A file whose patch can't be re-parsed is left out of the map entirely, which
+/// callers read as "unrestricted" — the pre-expansion behaviour.
+fn pr_postable_lines(
+    files: &[crate::diff::DiffFile],
+) -> HashMap<String, HashSet<crate::diff::DiffLineLocation>> {
+    let mut out = HashMap::new();
+    for file in files {
+        let Ok(parsed) = crate::diff::parse_unified_diff(&file.patch) else {
+            continue;
+        };
+        let Some(original) = parsed.first() else {
+            continue;
+        };
+        out.insert(
+            file.path.clone(),
+            original.addressable_lines().into_iter().collect(),
+        );
+    }
+    out
+}
+
 /// Assemble a GitHub PR review from a finished final review. Line comments
 /// become inline review comments — anchored to the current file line
 /// (`RIGHT`) or, for a deletion-only line, the base file line (`LEFT`).
@@ -3928,13 +4389,15 @@ fn severity_review_event(
 /// have a file — they become `subject_type: file` comments instead of being
 /// dumped into the summary body (GitHub's batch review endpoint can't carry
 /// those, so the caller posts them as separate `create_file_comment` calls).
-/// The summary body carries only the general feedback. Returns `(body,
-/// comments, file_comments)`.
+/// The summary body carries only the general feedback. `postable` bounds which
+/// lines may be commented on inline (see `pr_postable_lines`); a path with no
+/// entry is unrestricted. Returns `(body, comments, file_comments)`.
 fn build_pr_review(
     rejected: &[(String, String, Severity)],
     file_comment_sections: &[(String, FileComment)],
     line_comment_sections: &[(String, Vec<LineComment>)],
     general_feedback: &str,
+    postable: &HashMap<String, HashSet<crate::diff::DiffLineLocation>>,
 ) -> (
     String,
     Vec<crate::github::PrReviewComment>,
@@ -3942,6 +4405,10 @@ fn build_pr_review(
 ) {
     let mut comments = Vec::new();
     for (path, file_comments) in line_comment_sections {
+        let allowed = postable.get(path);
+        let in_diff = |loc: &crate::diff::DiffLineLocation| {
+            allowed.is_none_or(|allowed| allowed.contains(loc))
+        };
         for comment in file_comments {
             // A comment we couldn't re-anchor holds a stale line number; posting
             // it inline would pin it to the wrong line. Omit it — the local
@@ -3949,14 +4416,21 @@ fn build_pr_review(
             if comment.anchor_lost {
                 continue;
             }
+            // Likewise for a line the reviewer only reached by expanding the
+            // rendered context: it's valid local feedback, but GitHub rejects
+            // an inline comment outside the PR's own diff.
+            if !in_diff(&comment.location) {
+                continue;
+            }
             let Some((line, side)) = pr_line_side(&comment.location) else {
                 continue;
             };
             // For a span, anchor the start with GitHub's start_line/start_side.
             // Drop the range (post as a single-line comment at the end) if the
-            // start can't be mapped to a line/side.
+            // start can't be mapped to a line/side — or falls outside the diff.
             let (start_line, start_side) = comment
                 .start
+                .filter(|s| in_diff(s))
                 .and_then(|s| pr_line_side(&s))
                 .map(|(l, sd)| (Some(l), Some(sd)))
                 .unwrap_or((None, None));
@@ -4655,11 +5129,13 @@ mod tests {
     use super::{
         CHECK_OUTPUT_MAX_CHARS, anchor_file_path, apply_suggestions_to_file, archive_review_notes,
         build_pr_review, build_walkthrough_prompt, comment_anchor_label, compose_feedback_log,
-        compute_search_matches, load_review_notes, parse_agent_responses, parse_co_review_output,
-        parse_review_history_rounds, parse_review_notes, reanchor_file_comments,
-        severity_review_event, split_overflow_review_notes, split_overflow_rounds,
-        truncate_check_output,
+        compute_search_matches, editor_invocation, editor_target_line, load_review_notes,
+        parse_agent_responses, parse_co_review_output, parse_review_history_rounds,
+        parse_review_notes, pr_postable_lines, reanchor_file_comments, severity_review_event,
+        split_overflow_review_notes, split_overflow_rounds, truncate_check_output,
     };
+    use std::collections::{HashMap, HashSet};
+
     use crate::app::state::DiffViewerState;
     use crate::app::{CommentAnchorContext, FileComment, LineComment, Severity};
     use crate::diff::{
@@ -4894,8 +5370,13 @@ mod tests {
                 line_comment(None, Some(7), "why delete this?"),
             ],
         )];
-        let (body, comments, file_comments) =
-            build_pr_review(&rejected, &[], &line_comments, "overall LGTM-ish");
+        let (body, comments, file_comments) = build_pr_review(
+            &rejected,
+            &[],
+            &line_comments,
+            "overall LGTM-ish",
+            &HashMap::new(),
+        );
 
         // Inline comments: an added/current line posts on RIGHT, a deletion-only
         // line on LEFT.
@@ -4926,10 +5407,115 @@ mod tests {
             "src/c.rs".to_string(),
             vec![line_comment(Some(3), None, "nit")],
         )];
-        let (body, comments, file_comments) = build_pr_review(&[], &[], &line_comments, "");
+        let (body, comments, file_comments) =
+            build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         assert!(body.is_empty());
         assert_eq!(comments.len(), 1);
         assert!(file_comments.is_empty());
+    }
+
+    #[test]
+    fn pr_review_skips_a_comment_on_a_line_outside_the_prs_diff() {
+        // Expanding the rendered context lets the reviewer comment on a line
+        // git's own diff never emitted. GitHub rejects an inline comment there,
+        // and `create_review` posts the batch atomically — so it must be
+        // dropped rather than allowed to sink the whole review.
+        let line_comments = vec![(
+            "src/c.rs".to_string(),
+            vec![
+                line_comment(Some(3), None, "in the diff"),
+                line_comment(Some(90), None, "only visible after expanding"),
+            ],
+        )];
+        let postable: HashMap<String, HashSet<crate::diff::DiffLineLocation>> = [(
+            "src/c.rs".to_string(),
+            HashSet::from([crate::diff::DiffLineLocation {
+                old_line: None,
+                new_line: Some(3),
+            }]),
+        )]
+        .into_iter()
+        .collect();
+
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &postable);
+
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].line, 3);
+        // With no entry for the path the map imposes no restriction, which is
+        // the pre-expansion behaviour.
+        let (_, unrestricted, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
+        assert_eq!(unrestricted.len(), 2);
+    }
+
+    #[test]
+    fn pr_review_drops_a_range_whose_start_is_outside_the_prs_diff() {
+        let line_comments = vec![(
+            "src/c.rs".to_string(),
+            vec![ranged_comment(10, 14, "this whole block")],
+        )];
+        // The end is in the diff but the start was only revealed by expansion:
+        // post it as a single-line comment rather than an invalid span.
+        let postable: HashMap<String, HashSet<crate::diff::DiffLineLocation>> = [(
+            "src/c.rs".to_string(),
+            HashSet::from([crate::diff::DiffLineLocation {
+                old_line: None,
+                new_line: Some(14),
+            }]),
+        )]
+        .into_iter()
+        .collect();
+
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &postable);
+
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].line, 14);
+        assert_eq!(comments[0].start_line, None);
+        assert_eq!(comments[0].start_side, None);
+    }
+
+    #[test]
+    fn pr_postable_lines_tracks_the_original_patch_not_the_expanded_hunks() {
+        let old: String = (1..=30).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l15\n", "l15 changed\n");
+        let mut file = crate::diff::parse_unified_diff(
+            "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -12,7 +12,7 @@
+ l12
+ l13
+ l14
+-l15
++l15 changed
+ l16
+ l17
+ l18
+",
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        file.old_content = Some(old);
+        file.new_content = Some(new);
+
+        // Expansion rewrites `hunks` but deliberately leaves `patch` alone, so
+        // the postable set still describes git's real diff.
+        file.hunks = file.hunks_with_context(usize::MAX).unwrap();
+        assert_eq!(file.addressable_lines().len(), 31);
+
+        let postable = pr_postable_lines(std::slice::from_ref(&file));
+        let allowed = &postable["a.rs"];
+        assert_eq!(allowed.len(), 8);
+        assert!(allowed.contains(&crate::diff::DiffLineLocation {
+            old_line: Some(12),
+            new_line: Some(12)
+        }));
+        assert!(!allowed.contains(&crate::diff::DiffLineLocation {
+            old_line: Some(1),
+            new_line: Some(1)
+        }));
     }
 
     #[test]
@@ -4938,7 +5524,7 @@ mod tests {
             "src/c.rs".to_string(),
             vec![ranged_comment(10, 14, "this whole block")],
         )];
-        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].line, 14);
         assert_eq!(comments[0].side, "RIGHT");
@@ -4952,7 +5538,7 @@ mod tests {
             "src/c.rs".to_string(),
             vec![line_comment(Some(5), None, "nit")],
         )];
-        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         assert_eq!(comments[0].start_line, None);
         assert_eq!(comments[0].start_side, None);
     }
@@ -4962,7 +5548,7 @@ mod tests {
         let mut comment = line_comment(Some(5), None, "use a guard");
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
-        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         assert_eq!(comments.len(), 1);
         // The comment body leads with the conventional-comments severity tag.
         assert_eq!(
@@ -4976,7 +5562,7 @@ mod tests {
         let mut comment = line_comment(Some(5), None, "");
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
-        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &[], &line_comments, "", &HashMap::new());
         // Even a suggestion-only comment carries its severity tag.
         assert_eq!(
             comments[0].body,
@@ -5021,7 +5607,7 @@ mod tests {
     fn feedback_file_comment_tags_whole_file_rejection_with_severity() {
         // A whole-file rejection's file-level comment carries its severity tag.
         let rejected = vec![("a.rs".to_string(), "fix".to_string(), Severity::Blocker)];
-        let (_, _, file_comments) = build_pr_review(&rejected, &[], &[], "");
+        let (_, _, file_comments) = build_pr_review(&rejected, &[], &[], "", &HashMap::new());
         assert_eq!(file_comments.len(), 1);
         assert_eq!(file_comments[0].path, "a.rs");
         assert_eq!(file_comments[0].body, "**[blocker]** fix");
@@ -5038,7 +5624,8 @@ mod tests {
                 carried: false,
             },
         )];
-        let (body, inline, file_comments) = build_pr_review(&[], &comments, &[], "");
+        let (body, inline, file_comments) =
+            build_pr_review(&[], &comments, &[], "", &HashMap::new());
         assert!(body.is_empty());
         assert!(inline.is_empty());
         assert_eq!(file_comments.len(), 1);
@@ -5867,8 +6454,108 @@ index 1111111..2222222 100644
 
         // A stale line number must never be posted inline on the PR.
         let sections = vec![("src/foo.rs".to_string(), vec![comment])];
-        let (body, comments, _) = build_pr_review(&[], &[], &sections, "");
+        let (body, comments, _) = build_pr_review(&[], &[], &sections, "", &HashMap::new());
         assert!(comments.is_empty(), "lost anchor must not post inline");
         assert!(!body.contains("src/foo.rs:42"));
+    }
+
+    /// Addressable lines: 0 context(new 1), 1 removed(new None), 2 added(new 2),
+    /// 3 added(new 3), 4 context(new 4).
+    fn editor_line_file() -> DiffFile {
+        parse_unified_diff(
+            "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1,3 +1,4 @@
+ fn alpha() {}
+-fn beta() {}
++fn beta_two() {}
++fn gamma_alpha() {}
+ fn delta() {}
+",
+        )
+        .unwrap()
+        .remove(0)
+    }
+
+    #[test]
+    fn editor_target_line_uses_the_cursored_lines_current_side_number() {
+        let file = editor_line_file();
+        assert_eq!(editor_target_line(&file, Some(2)), Some(2));
+        assert_eq!(editor_target_line(&file, Some(3)), Some(3));
+        assert_eq!(editor_target_line(&file, Some(4)), Some(4));
+    }
+
+    #[test]
+    fn editor_target_line_falls_back_to_the_nearest_surviving_line() {
+        let file = editor_line_file();
+        // Index 1 is a removal: it has no line in the file on disk, so the
+        // editor should land on the surviving line just above it.
+        assert_eq!(editor_target_line(&file, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn editor_target_line_without_a_cursor_lands_on_the_first_hunk() {
+        let file = editor_line_file();
+        assert_eq!(editor_target_line(&file, None), Some(1));
+    }
+
+    #[test]
+    fn editor_target_line_is_none_when_there_is_nothing_addressable() {
+        let mut file = editor_line_file();
+        file.hunks.clear();
+        assert_eq!(editor_target_line(&file, None), None);
+        assert_eq!(editor_target_line(&file, Some(3)), None);
+    }
+
+    #[test]
+    fn editor_invocation_uses_the_plus_flag_for_vi_style_editors() {
+        let (program, args) = editor_invocation("nvim", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(program, "nvim");
+        assert_eq!(args, vec!["+42".to_string(), "src/a.rs".to_string()]);
+    }
+
+    #[test]
+    fn editor_invocation_keeps_flags_baked_into_the_env_var() {
+        let (program, args) = editor_invocation("emacsclient -nw", "src/a.rs", Some(7)).unwrap();
+        assert_eq!(program, "emacsclient");
+        assert_eq!(args, vec!["-nw", "+7", "src/a.rs"]);
+    }
+
+    #[test]
+    fn editor_invocation_makes_vscode_block_and_goto() {
+        let (program, args) = editor_invocation("code", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(program, "code");
+        assert_eq!(args, vec!["--wait", "--goto", "src/a.rs:42"]);
+
+        // An explicit --wait must not be duplicated.
+        let (_, args) = editor_invocation("code --wait", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(args, vec!["--wait", "--goto", "src/a.rs:42"]);
+    }
+
+    #[test]
+    fn editor_invocation_uses_path_suffix_syntax_where_that_is_the_convention() {
+        let (_, args) = editor_invocation("hx", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(args, vec!["src/a.rs:42"]);
+    }
+
+    #[test]
+    fn editor_invocation_opens_an_unknown_editor_at_the_top_rather_than_guessing() {
+        // A flag an editor doesn't understand would be read as a second
+        // filename, silently opening an empty buffer called `+42`.
+        let (program, args) = editor_invocation("my-editor", "src/a.rs", Some(42)).unwrap();
+        assert_eq!(program, "my-editor");
+        assert_eq!(args, vec!["src/a.rs"]);
+    }
+
+    #[test]
+    fn editor_invocation_handles_an_absolute_path_and_no_line() {
+        let (program, args) = editor_invocation("/usr/bin/vim", "src/a.rs", None).unwrap();
+        assert_eq!(program, "/usr/bin/vim");
+        assert_eq!(args, vec!["src/a.rs"]);
+
+        assert!(editor_invocation("   ", "src/a.rs", Some(1)).is_none());
     }
 }

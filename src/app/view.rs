@@ -331,7 +331,7 @@ impl App {
         let viewport_cols = self.viewport_cols;
         let content_rows = self.viewport_total_rows.saturating_sub(1);
         if viewport_cols == 0 || content_rows == 0 {
-            self.message = Some("Sizing unavailable".into());
+            self.push_toast_warning("Sizing unavailable");
             return Ok(());
         }
 
@@ -358,7 +358,7 @@ impl App {
         std::thread::sleep(std::time::Duration::from_millis(50));
         self.tmux
             .resize_pane(&session, &window, content_cols, content_rows)?;
-        self.message = Some("Repainted agent pane".into());
+        self.push_toast_success("Repainted agent pane");
         Ok(())
     }
 

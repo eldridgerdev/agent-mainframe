@@ -44,6 +44,12 @@ struct HeadlessCommand {
 /// re-loosened by repo-controlled config.
 const OPENCODE_RESTRICTED_PERMISSION: &str = r#"{"*":"deny"}"#;
 
+/// Read-only tool policy for user-directed plan revisions. The wildcard keeps
+/// every unlisted tool (including edit, bash, web, and subagents) denied while
+/// the four repository-inspection tools are explicitly enabled.
+const OPENCODE_READ_ONLY_PERMISSION: &str =
+    r#"{"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow"}"#;
+
 /// Long flags `command_for(Codex)` relies on. Older Codex releases reject
 /// some of these with an argument-parse error, so headless availability must
 /// probe `codex exec --help` for each — `codex --version` succeeding is not
@@ -54,6 +60,24 @@ const CODEX_EXEC_REQUIRED_FLAGS: [&str; 5] = [
     "--skip-git-repo-check",
     "--color",
     "--json",
+];
+
+/// Long flags the Pi plan-interview commands rely on. Pi's headless mode was
+/// originally left out of interview selection because its non-interactive and
+/// permission contracts had not been verified. Requiring every flag used by
+/// the restricted and read-only commands keeps older releases on the existing
+/// fallback path instead of launching them with a weaker safety boundary.
+const PI_HEADLESS_REQUIRED_FLAGS: [&str; 10] = [
+    "--print",
+    "--no-session",
+    "--no-tools",
+    "--tools",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-context-files",
+    "--no-approve",
+    "--model",
 ];
 
 /// A flag a headless CLI must advertise in `--help` for structured progress
@@ -134,18 +158,16 @@ impl HeadlessRunner {
     }
 
     /// `model`, when set, is passed as an explicit `--model <name>` (the
-    /// flag name/format every harness but Pi shares) so a caller — e.g. PR
+    /// flag name/format every harness shares) so a caller — e.g. PR
     /// Triage's AI review — can pick a model independent of whatever the
-    /// feature's interactive session runs. Pi's headless model flag isn't
-    /// verified (mirrors `check_available`'s existing Pi caution), so a
-    /// requested model is silently not applied there rather than guessed at.
+    /// feature's interactive session runs.
     ///
-    /// `restricted`, when true, forces Claude and Opencode into a no-tools
+    /// `restricted`, when true, forces Claude, Opencode, and Pi into a no-tools
     /// invocation that repo-controlled config (settings files, hooks,
     /// plugins, MCP servers) cannot loosen — for callers whose prompt
     /// carries all the context it needs and expects a plain text answer, not
     /// a repo-exploring agent run. Codex is always sandboxed read-only
-    /// already; Pi is untouched.
+    /// already.
     pub fn run(
         harness: &AgentKind,
         workdir: &Path,
@@ -154,6 +176,21 @@ impl HeadlessRunner {
         restricted: bool,
     ) -> Result<String> {
         let spec = command_for(harness, restricted);
+        run_command(harness, &spec, workdir, prompt, model)
+    }
+
+    /// Run a repository-aware pass with tools constrained to read-only access.
+    /// This is intentionally separate from `run(..., restricted: true)`: most
+    /// interview work receives all context in its prompt and needs no tools,
+    /// while directed plan feedback may explicitly ask the agent to locate or
+    /// verify code before revising the draft.
+    pub fn run_read_only(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> Result<String> {
+        let spec = read_only_command_for(harness)?;
         run_command(harness, &spec, workdir, prompt, model)
     }
 
@@ -176,16 +213,18 @@ impl HeadlessRunner {
 
     /// Pick the engine for a plan interview.
     ///
-    /// Prefer the feature's harness when `check_available` passes — i.e. its
-    /// CLI is installed and responds, and for Codex the flags the headless
-    /// command needs are advertised by `codex exec --help` — then fall back
-    /// in a stable order. This does not exercise a real headless run, so a
+    /// Prefer the feature's harness when the interview-specific availability
+    /// check passes — i.e. its CLI is installed and responds, with required
+    /// command and safety flags verified for Codex and Pi — then fall back in
+    /// a stable order. This does not exercise a real headless run, so a
     /// harness that is installed but misconfigured (e.g. not authenticated)
-    /// can still be picked ahead of a working fallback. Pi is deliberately
-    /// excluded until its headless contract is verified; a Pi feature can
-    /// still be implemented by Pi while another harness powers discovery.
+    /// can still be picked ahead of a working fallback. Pi is selected only
+    /// when its CLI advertises the complete restricted/read-only flag set;
+    /// older Pi releases retain the stable fallback behavior.
     pub fn select_for_interview(preferred: &AgentKind) -> Option<AgentKind> {
-        select_interview_harness_with(preferred, |harness| Self::check_available(harness).is_ok())
+        select_interview_harness_with(preferred, |harness| {
+            check_interview_available(harness).is_ok()
+        })
     }
 }
 
@@ -269,17 +308,63 @@ fn missing_codex_exec_flags(exec_help: &str) -> Vec<&'static str> {
         .collect()
 }
 
+fn check_pi_headless_available() -> Result<()> {
+    crate::pi::PiLauncher::check_available()?;
+    let output = Command::new("pi")
+        .arg("--help")
+        .output()
+        .context("pi CLI not found - is Pi installed?")?;
+    if !output.status.success() {
+        anyhow::bail!("installed Pi CLI could not describe its headless mode");
+    }
+    let mut help = String::from_utf8_lossy(&output.stdout).into_owned();
+    help.push_str(&String::from_utf8_lossy(&output.stderr));
+    let missing = missing_pi_headless_flags(&help);
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "installed Pi CLI is too old for safe plan interviews (lacks {}) - upgrade Pi",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn check_interview_available(harness: &AgentKind) -> Result<()> {
+    match harness {
+        AgentKind::Pi => check_pi_headless_available(),
+        _ => HeadlessRunner::check_available(harness),
+    }
+}
+
+fn missing_pi_headless_flags(help: &str) -> Vec<&'static str> {
+    PI_HEADLESS_REQUIRED_FLAGS
+        .iter()
+        .copied()
+        .filter(|flag| !help_advertises_flag(help, flag))
+        .collect()
+}
+
+/// Match a complete long-option name rather than a substring: `--models`
+/// must not satisfy the `--model` requirement on an older Pi release.
+fn help_advertises_flag(help: &str, flag: &str) -> bool {
+    help.match_indices(flag).any(|(start, _)| {
+        help[start + flag.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !matches!(next, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_'))
+    })
+}
+
 /// Exhaustive so introducing a new `AgentKind` forces an explicit decision
 /// on whether its headless contract is trusted for interviews.
 fn supports_headless_interview(harness: &AgentKind) -> bool {
     match harness {
-        AgentKind::Claude | AgentKind::Codex | AgentKind::Opencode => true,
-        AgentKind::Pi => false,
+        AgentKind::Claude | AgentKind::Codex | AgentKind::Opencode | AgentKind::Pi => true,
     }
 }
 
 fn interview_candidates(preferred: &AgentKind) -> Vec<AgentKind> {
-    let mut candidates = Vec::with_capacity(3);
+    let mut candidates = Vec::with_capacity(4);
     if supports_headless_interview(preferred) {
         candidates.push(preferred.clone());
     }
@@ -300,12 +385,10 @@ fn select_interview_harness_with(
         .find(|harness| is_available(harness))
 }
 
-/// Harnesses whose headless CLI accepts `--model <name>`. Pi's headless model
-/// support isn't verified, so it's excluded rather than guessed at.
+/// Harnesses whose headless CLI accepts `--model <name>`.
 fn supports_model_flag(harness: &AgentKind) -> bool {
     match harness {
-        AgentKind::Claude | AgentKind::Codex | AgentKind::Opencode => true,
-        AgentKind::Pi => false,
+        AgentKind::Claude | AgentKind::Codex | AgentKind::Opencode | AgentKind::Pi => true,
     }
 }
 
@@ -915,12 +998,77 @@ fn command_for(harness: &AgentKind, restricted: bool) -> HeadlessCommand {
                 envs,
             }
         }
-        AgentKind::Pi => HeadlessCommand {
-            binary: "pi".into(),
-            args: vec!["-p"],
+        AgentKind::Pi => {
+            let mut args = vec!["-p", "--no-session"];
+            if restricted {
+                // --no-tools covers built-in, extension, and custom tools on
+                // current Pi releases. Disable all discovered prompt/code
+                // resources as a second boundary, and ignore project-local
+                // configuration so a repository cannot weaken the run.
+                args.extend([
+                    "--no-tools",
+                    "--no-extensions",
+                    "--no-skills",
+                    "--no-prompt-templates",
+                    "--no-context-files",
+                    "--no-approve",
+                ]);
+            }
+            HeadlessCommand {
+                binary: "pi".into(),
+                args,
+                trailing: vec![],
+                envs: vec![],
+            }
+        }
+    }
+}
+
+/// Commands used when the model must investigate a repository without being
+/// able to alter it.
+fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
+    match harness {
+        AgentKind::Claude => Ok(HeadlessCommand {
+            binary: crate::claude::ClaudeLauncher::resolve_binary(),
+            args: vec![
+                "-p",
+                "--output-format",
+                "text",
+                "--safe-mode",
+                "--tools",
+                "Read,Glob,Grep",
+                "--permission-mode",
+                "dontAsk",
+                "--no-session-persistence",
+            ],
             trailing: vec![],
             envs: vec![],
-        },
+        }),
+        // Codex's ordinary headless command is already an ephemeral read-only
+        // sandbox, so the same command is the investigation contract.
+        AgentKind::Codex => Ok(command_for(harness, false)),
+        AgentKind::Opencode => Ok(HeadlessCommand {
+            binary: "opencode".into(),
+            args: vec!["run", "--pure"],
+            trailing: vec![],
+            envs: vec![("OPENCODE_PERMISSION", OPENCODE_READ_ONLY_PERMISSION)],
+        }),
+        AgentKind::Pi => Ok(HeadlessCommand {
+            binary: "pi".into(),
+            args: vec![
+                "-p",
+                "--no-session",
+                "--tools",
+                "read,grep,find,ls",
+                "--no-extensions",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-context-files",
+                "--no-approve",
+            ],
+            trailing: vec![],
+            envs: vec![],
+        }),
     }
 }
 
@@ -964,7 +1112,7 @@ mod tests {
             command_for(&AgentKind::Pi, false),
             HeadlessCommand {
                 binary: "pi".into(),
-                args: vec!["-p"],
+                args: vec!["-p", "--no-session"],
                 trailing: vec![],
                 envs: vec![],
             }
@@ -972,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn restricted_claude_and_opencode_deny_repo_configurable_tool_access() {
+    fn restricted_harnesses_deny_repo_configurable_tool_access() {
         let claude = command_for(&AgentKind::Claude, true);
         assert!(claude.args.contains(&"--safe-mode"));
         let tools_idx = claude
@@ -994,6 +1142,57 @@ mod tests {
             command_for(&AgentKind::Codex, true),
             command_for(&AgentKind::Codex, false)
         );
+
+        let pi = command_for(&AgentKind::Pi, true);
+        for flag in [
+            "--no-tools",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-context-files",
+            "--no-approve",
+        ] {
+            assert!(pi.args.contains(&flag), "restricted Pi lacks {flag}");
+        }
+    }
+
+    #[test]
+    fn read_only_commands_allow_inspection_without_edit_or_shell_tools() {
+        let claude = read_only_command_for(&AgentKind::Claude).unwrap();
+        assert!(claude.args.contains(&"--safe-mode"));
+        let tools_idx = claude
+            .args
+            .iter()
+            .position(|arg| *arg == "--tools")
+            .unwrap();
+        assert_eq!(claude.args[tools_idx + 1], "Read,Glob,Grep");
+        assert!(claude.args.contains(&"dontAsk"));
+
+        let codex = read_only_command_for(&AgentKind::Codex).unwrap();
+        let sandbox_idx = codex
+            .args
+            .iter()
+            .position(|arg| *arg == "--sandbox")
+            .unwrap();
+        assert_eq!(codex.args[sandbox_idx + 1], "read-only");
+
+        let opencode = read_only_command_for(&AgentKind::Opencode).unwrap();
+        assert!(opencode.args.contains(&"--pure"));
+        assert_eq!(
+            opencode.envs,
+            [("OPENCODE_PERMISSION", OPENCODE_READ_ONLY_PERMISSION)]
+        );
+
+        let pi = read_only_command_for(&AgentKind::Pi).unwrap();
+        let tools_idx = pi.args.iter().position(|arg| *arg == "--tools").unwrap();
+        assert_eq!(pi.args[tools_idx + 1], "read,grep,find,ls");
+        assert!(
+            !pi.args
+                .iter()
+                .any(|arg| matches!(*arg, "bash" | "edit" | "write"))
+        );
+        assert!(pi.args.contains(&"--no-extensions"));
+        assert!(pi.args.contains(&"--no-approve"));
     }
 
     #[test]
@@ -1038,7 +1237,7 @@ mod tests {
         assert!(supports_model_flag(&AgentKind::Claude));
         assert!(supports_model_flag(&AgentKind::Codex));
         assert!(supports_model_flag(&AgentKind::Opencode));
-        assert!(!supports_model_flag(&AgentKind::Pi));
+        assert!(supports_model_flag(&AgentKind::Pi));
     }
 
     #[test]
@@ -1109,16 +1308,16 @@ mod tests {
         );
         assert_eq!(
             assemble_jsonl_args(&AgentKind::Pi, &command_for(&AgentKind::Pi, false), None),
-            ["-p", "--mode", "json"]
+            ["-p", "--no-session", "--mode", "json"]
         );
     }
 
     #[test]
-    fn assemble_args_omits_model_flag_for_pi() {
+    fn assemble_args_applies_model_flag_for_pi() {
         let spec = command_for(&AgentKind::Pi, false);
         assert_eq!(
             assemble_args(&AgentKind::Pi, &spec, Some("some-model")),
-            ["-p"]
+            ["-p", "--no-session", "--model", "some-model"]
         );
     }
 
@@ -1142,6 +1341,45 @@ mod tests {
             missing_codex_exec_flags(old_help),
             ["--ephemeral", "--skip-git-repo-check", "--json"]
         );
+    }
+
+    #[test]
+    fn pi_flag_probe_reports_only_missing_required_flags() {
+        let full_help = PI_HEADLESS_REQUIRED_FLAGS.join("\n");
+        assert!(missing_pi_headless_flags(&full_help).is_empty());
+
+        let old_help = "Options:\n  --print\n  --no-session\n  --model";
+        assert_eq!(
+            missing_pi_headless_flags(old_help),
+            [
+                "--no-tools",
+                "--tools",
+                "--no-extensions",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-context-files",
+                "--no-approve",
+            ]
+        );
+
+        let ambiguous_help = "Options:\n  --models <patterns>\n  --no-tools";
+        assert!(!help_advertises_flag(ambiguous_help, "--model"));
+        assert!(help_advertises_flag(ambiguous_help, "--no-tools"));
+    }
+
+    #[test]
+    fn pi_required_flags_cover_every_interview_command_flag() {
+        for spec in [
+            command_for(&AgentKind::Pi, true),
+            read_only_command_for(&AgentKind::Pi).unwrap(),
+        ] {
+            for arg in spec.args.iter().filter(|arg| arg.starts_with("--")) {
+                assert!(
+                    PI_HEADLESS_REQUIRED_FLAGS.contains(arg),
+                    "Pi interview command passes {arg} but availability never checks it"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1413,10 +1651,15 @@ mod tests {
     }
 
     #[test]
-    fn interview_candidates_skip_unverified_pi_headless_mode() {
+    fn interview_candidates_prefer_verified_pi_headless_mode() {
         assert_eq!(
             interview_candidates(&AgentKind::Pi),
-            [AgentKind::Claude, AgentKind::Codex, AgentKind::Opencode]
+            [
+                AgentKind::Pi,
+                AgentKind::Claude,
+                AgentKind::Codex,
+                AgentKind::Opencode
+            ]
         );
     }
 

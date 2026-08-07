@@ -1006,6 +1006,7 @@ impl Theme {
         }
     }
 
+    #[allow(dead_code)] // canonical full theme list, exercised by round-trip tests
     pub fn list() -> Vec<ThemeName> {
         vec![
             ThemeName::Default,

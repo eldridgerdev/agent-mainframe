@@ -313,23 +313,41 @@ Create-project and batch-feature templates, examples, and the JSON response form
 
 When plan mode is enabled during feature creation, AMF collects a required
 feature brief followed by optional built-in discovery questions before the
-agent launches. After those questions, AMF offers optional AI-adaptive
-follow-ups and clearly warns that they use agent tokens. No headless AI call
-runs unless you explicitly opt in. An opted-in flow synthesizes the collected
-interview into a structured implementation plan before launch; unavailable or
-invalid synthesis falls back to the raw interview plan. Every completed flow
-stops at a rendered review gate; AMF does not write the plan or launch the
-feature until you explicitly accept it.
+agent launches. After those questions, AMF offers two distinct AI actions:
+
+- **Ask AI follow-up questions (`a`)** generates another round of questions
+  tailored to the answers and repository. You answer those questions before
+  AMF drafts the plan.
+- **Draft the plan now (`Ctrl+F`)** stops the interview immediately, skips
+  every remaining built-in and AI follow-up question, and drafts the plan from
+  the answers already collected.
+
+Both actions use agent tokens. Pressing `Enter` or `Ctrl+S` at the optional AI
+prompt uses no agent tokens and opens a raw interview plan for review instead.
+An unavailable or invalid AI draft also falls back to that raw plan. Every
+completed flow stops at a rendered review gate; AMF does not write the plan or
+launch the feature until you explicitly accept it.
+
+Press `P` on a feature (or run the `plan-interview` command) to run the
+interview again later. A re-run starts from the answers behind the plan you
+last accepted: each question arrives pre-filled, `Enter` keeps that answer,
+typing changes it, and `Ctrl+R` restores it if you change your mind. A
+multiple-choice answer is pre-filled only while it is still one of the
+question's options, so editing `plan_questions` between runs drops the stale
+choice instead of carrying it into the new plan. The
+previous run's AI follow-up questions are asked again with their answers, but
+adaptive rounds are not: a re-run gets its own opt-in and its own round budget.
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Save the current answer or selection; at the AI prompt, finish without AI |
-| `a` | At the optional AI prompt, opt in to adaptive follow-ups that use agent tokens |
+| `Enter` | Save the current answer or selection; at the optional AI prompt, skip AI and review the raw interview plan |
+| `a` | At the optional AI prompt, use AI to generate more interview questions; answer them before AMF drafts the plan |
 | `Alt+Enter` | Insert a newline in a free-text answer |
 | `j` / `k` / `↑` / `↓` | Navigate select-option answers |
 | `Ctrl+B` | Return to the previous question |
-| `Ctrl+S` | Skip an optional question or decline AI follow-ups |
-| `Ctrl+F` | Synthesize now with the answers so far (uses agent tokens, but skips remaining adaptive rounds) |
+| `Ctrl+S` | Skip an optional question; at the optional AI prompt, skip AI and review the raw interview plan |
+| `Ctrl+R` | On a re-run, restore the previous interview's answer to this question |
+| `Ctrl+F` | Stop asking questions and use AI to draft the plan now from the answers already collected |
 | `Esc` | Cancel, then choose whether to launch without a plan or cancel the feature |
 
 At the plan review gate:
@@ -338,10 +356,23 @@ At the plan review gate:
 | --- | --- |
 | `j` / `k` / `PgUp` / `PgDn` | Scroll the rendered plan |
 | `e` | Edit the raw plan markdown |
+| `a` | Ask an agent to review the draft, or reopen its existing review |
+| `f` | Give a repository-aware revision instruction (uses agent tokens) |
+| `i` | Research up to four blank-line-separated focuses in isolated read-only contexts, then merge only their findings into the draft (uses agent tokens) |
 | `r` | Regenerate the plan (uses agent tokens when a headless harness is available) |
 | `Enter` | Accept the reviewed plan, write it, and launch the feature |
-| `Ctrl+S` | Save a raw-markdown edit and return to the rendered preview |
+| `Ctrl+S` | Save an edit, submit direct feedback, or start the isolated investigation shown on screen |
 | `Esc` | Discard a raw-markdown edit, or open abort confirmation from the preview |
+
+If you accept a re-run's plan while the feature's agent session is still
+running, AMF offers to hand the plan to it. An agent reads its instruction file
+once, at startup, so a session that was already running would otherwise never
+learn the plan changed:
+
+| Key | Action |
+| --- | --- |
+| `y` | Open the running session with a kickoff prompt pointing at the new plan (seeded in the composer, not sent) |
+| `n` / `Esc` | Leave the running session alone; the plan is already written either way |
 
 ### Viewing Mode (Embedded tmux)
 
@@ -664,9 +695,12 @@ from feature totals.
   alternative agent, including injected AMF-friendly themes and local
   plugins.
 - Pi is supported as a fourth harness for dedicated agent sessions,
-  with the same embedded view and composer. Pi sessions launch the
-  plain `pi` CLI: vibe-mode permission flags, diff-review hooks, and
-  usage meters do not apply to Pi.
+  with the same embedded view and composer. A current Pi installation can
+  also power Pi features' plan interviews; AMF uses ephemeral no-tools calls
+  for drafting and a read-only tool allowlist for repository investigation,
+  falling back to another installed harness when those CLI flags are missing.
+  Interactive Pi sessions launch the plain `pi` CLI: vibe-mode permission
+  flags, diff-review hooks, and usage meters do not apply to Pi.
 
 ## Configuration
 
@@ -733,7 +767,7 @@ Nvim when creating sessions.
 | `description` | string? | Secondary text shown in the session picker. |
 | `command` | string? | Shell command to run when the session starts. |
 | `icon` | string? | ASCII icon shown for the custom session. |
-| `icon_nerd` | string? | Nerd Font icon shown when `nerd_font` is enabled. |
+| `icon_nerd` | string? | Nerd Font glyph shown when `nerd_font` is enabled. The config wizard includes a visual chooser; bundled names such as `nf-md-server` are also accepted. |
 | `on_stop` | string? | Shell command to run when the session is stopped or removed. Runs via `sh -c` in the feature's workdir with `AMF_SESSION_ID` and `AMF_STATUS_DIR` set. Fire-and-forget (non-blocking). |
 | `autolaunch` | bool? | Start this session automatically when a feature starts. |
 | `pre_check` | string? | Command to run before launch; non-zero exit blocks session startup and shows the command output. |

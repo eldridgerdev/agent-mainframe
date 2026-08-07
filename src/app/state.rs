@@ -1,16 +1,17 @@
 use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
 use super::PromptAnalysis;
+use crate::db::plan_interviews::{PlanInterviewRecord, PlanInterviewStage};
 use crate::editor::TextEditor;
 use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
 };
-use crate::plan_interview::{PlanQuestion, PlanQuestionKind};
+use crate::plan_interview::{PlanQuestion, PlanQuestionKind, QuestionSource};
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 use crate::worktree::WorktreeInfo;
@@ -185,6 +186,23 @@ pub struct AwaitingReviewFix {
     /// the agent has actually started (and finished) working — not on
     /// whatever idle/thinking state happened to precede the dispatch.
     pub started_thinking: bool,
+}
+
+/// A request to suspend the TUI and hand the terminal to `$VISUAL`/`$EDITOR`.
+/// Raised by the review viewer (`E`) and drained by the main loop, which owns
+/// the terminal's raw-mode/alternate-screen state — the app layer can resolve
+/// *what* to open but must not tear the screen down underneath itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingEditorOpen {
+    /// Absolute path to the file, already validated as a regular file inside
+    /// the worktree.
+    pub path: PathBuf,
+    /// Directory the editor is spawned in.
+    pub workdir: PathBuf,
+    /// 1-based line to place the cursor on, when the editor understands one.
+    pub line: Option<usize>,
+    /// Worktree-relative path, for the message shown after the editor exits.
+    pub display: String,
 }
 
 pub enum RenameReturnTo {
@@ -972,7 +990,52 @@ pub struct DiffViewerState {
     /// than a file. The selected file (and therefore the patch panel) is left
     /// alone, so collapsing a tree never changes what's being diffed.
     pub tree_cursor_dir: Option<String>,
+    /// When true the diff is loaded with `git diff -w`, so lines that differ
+    /// only in whitespace don't show as changes. Toggling re-runs the loader
+    /// (it changes what git emits, not just how it's drawn), so it survives via
+    /// the same reload path as a base-ref change.
+    pub ignore_whitespace: bool,
+    /// File path -> how many context lines that file's hunks are currently
+    /// rendered with (`usize::MAX` = the whole file). An absent entry is git's
+    /// `--unified=3` default. Applied by rewriting the file's hunks, so every
+    /// consumer — `addressable_lines()`, the renderers, comment anchors —
+    /// agrees on what the reviewer is looking at. View state only: re-applied
+    /// after a reload, never written to the progress file.
+    pub context_expansion: std::collections::HashMap<String, usize>,
+    /// Undo stack for explicit verdicts (approve / skip / typed rejection), most
+    /// recent last. Session-only: an undo is a correction of the key you just
+    /// pressed, so it deliberately doesn't survive a pause/resume the way the
+    /// verdicts themselves do.
+    pub verdict_undo: Vec<VerdictUndo>,
+    /// True while the review-mode `?` help overlay is shown. The review key
+    /// surface outgrew what two footer rows can teach, so the overlay lists it
+    /// grouped by task. Read-only and takes full key precedence while open,
+    /// mirroring `changeset_overview_open`.
+    pub help_open: bool,
+    pub help_scroll: usize,
+    /// Rendered line count / viewport height of the help overlay at the last
+    /// draw, mirroring `changeset_overview_rendered_lines` /
+    /// `changeset_overview_view_height` so scroll clamps to the real bottom.
+    pub help_rendered_lines: usize,
+    pub help_view_height: usize,
 }
+
+/// One entry on the verdict undo stack: everything needed to put a file's
+/// verdict back exactly as it was before the reviewer's last `a` / `s` / `r`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerdictUndo {
+    pub path: String,
+    /// The file's verdict before the undone action. `None` when it had none
+    /// (undecided or previously skipped).
+    pub previous: Option<ReviewDecision>,
+    /// Whether that previous verdict was one the line-comment rule had set
+    /// implicitly, so undoing restores the implicit/explicit distinction too.
+    pub previous_auto_rejected: bool,
+}
+
+/// How many verdicts back `U` can walk. A bound only so a very long review
+/// can't grow the stack without limit; deep undo is not the point.
+pub const VERDICT_UNDO_LIMIT: usize = 50;
 
 impl DiffViewerState {
     pub fn new(from_view: ViewState, workdir: PathBuf) -> Self {
@@ -1049,6 +1112,13 @@ impl DiffViewerState {
             review_history: None,
             collapsed_dirs: std::collections::BTreeSet::new(),
             tree_cursor_dir: None,
+            ignore_whitespace: false,
+            context_expansion: std::collections::HashMap::new(),
+            verdict_undo: Vec::new(),
+            help_open: false,
+            help_scroll: 0,
+            help_rendered_lines: 0,
+            help_view_height: 0,
         }
     }
 
@@ -1065,6 +1135,28 @@ impl DiffViewerState {
     /// Reset the per-file view state after the selected file changes (patch /
     /// notes scroll, and the line-comment cursor). Centralizes what several
     /// navigation paths previously duplicated.
+    /// Re-apply the reviewer's per-file context expansion to a freshly loaded
+    /// diff. Expansion is a view preference rather than part of the diff, so a
+    /// refresh (or a base-ref change) must not silently collapse what was
+    /// expanded. Files that dropped out of the changeset — or can no longer be
+    /// expanded against the new blobs — fall back to the default and lose their
+    /// entry.
+    pub fn reapply_context_expansion(&mut self) {
+        if self.context_expansion.is_empty() {
+            return;
+        }
+        let levels = std::mem::take(&mut self.context_expansion);
+        for file in self.files.iter_mut() {
+            let Some(&level) = levels.get(&file.path) else {
+                continue;
+            };
+            if let Some(hunks) = file.hunks_with_context(level) {
+                file.hunks = hunks;
+                self.context_expansion.insert(file.path.clone(), level);
+            }
+        }
+    }
+
     pub fn on_file_changed(&mut self) {
         self.patch_scroll = 0;
         self.notes_scroll = 0;
@@ -1082,6 +1174,31 @@ impl DiffViewerState {
         // know the tree can be folded.
         self.tree_cursor_dir = None;
         self.reveal_selected_file();
+    }
+
+    /// Record `path`'s current verdict on the undo stack before an explicit
+    /// verdict replaces it, so `U` can put it back exactly — including whether
+    /// the rejection being replaced was one the line-comment rule had set
+    /// implicitly. A press that changes nothing isn't recorded: re-approving an
+    /// already-approved file would otherwise leave a `U` that does nothing
+    /// visible.
+    pub fn push_verdict_undo(&mut self, path: &str, next: Option<&ReviewDecision>) {
+        let previous = self.decisions.get(path).cloned();
+        let previous_auto_rejected = self.auto_rejected.contains(path);
+        // Every verdict path also drops the file from `auto_rejected`, so an
+        // implicit rejection is a real change even when the verdict compares
+        // equal.
+        if previous.as_ref() == next && !previous_auto_rejected {
+            return;
+        }
+        if self.verdict_undo.len() >= VERDICT_UNDO_LIMIT {
+            self.verdict_undo.remove(0);
+        }
+        self.verdict_undo.push(VerdictUndo {
+            path: path.to_string(),
+            previous,
+            previous_auto_rejected,
+        });
     }
 
     /// Whether the file at `path` carries a `Blocker`-severity signal: either a
@@ -3069,6 +3186,7 @@ pub struct ConfigWizardState {
     pub editing_index: Option<usize>,
     pub field_values: Vec<String>,
     pub field_editor: Option<ConfigWizardFieldEditor>,
+    pub icon_picker: Option<ConfigWizardIconPicker>,
     pub field_toggles: Vec<bool>,
     pub agent_toggles: Vec<bool>,
     pub agent_toggles_dirty: bool,
@@ -3081,6 +3199,11 @@ pub struct ConfigWizardState {
     pub project_repo: Option<PathBuf>,
     pub project_name: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConfigWizardIconPicker {
+    pub selected: usize,
 }
 
 pub struct ConfigWizardFieldEditor {
@@ -3118,10 +3241,90 @@ impl SummaryState {
     }
 }
 
+pub enum ThemePickerEntry {
+    Theme(crate::theme::ThemeName),
+    Group {
+        label: &'static str,
+        themes: Vec<crate::theme::ThemeName>,
+    },
+}
+
+impl ThemePickerEntry {
+    /// The theme this entry previews when highlighted: itself for a single
+    /// theme, or the first member for a group (a representative peek).
+    pub fn preview_theme(&self) -> Option<crate::theme::ThemeName> {
+        match self {
+            ThemePickerEntry::Theme(name) => Some(*name),
+            ThemePickerEntry::Group { themes, .. } => themes.first().copied(),
+        }
+    }
+
+    /// The full set of top-level entries, with subtype-heavy families
+    /// (Catppuccin, Gruvbox Material) collapsed into groups so they don't
+    /// clog the single-level list.
+    pub fn build() -> Vec<Self> {
+        use crate::theme::ThemeName::*;
+
+        vec![
+            ThemePickerEntry::Theme(Default),
+            ThemePickerEntry::Theme(Amf),
+            ThemePickerEntry::Theme(Dracula),
+            ThemePickerEntry::Theme(Nord),
+            ThemePickerEntry::Theme(GruvboxDark),
+            ThemePickerEntry::Theme(GruvboxLight),
+            ThemePickerEntry::Group {
+                label: "Catppuccin",
+                themes: vec![
+                    CatppuccinLatte,
+                    CatppuccinFrappe,
+                    CatppuccinMacchiato,
+                    CatppuccinMocha,
+                ],
+            },
+            ThemePickerEntry::Group {
+                label: "Gruvbox Material",
+                themes: vec![
+                    GruvboxMaterialDarkHard,
+                    GruvboxMaterialDarkMedium,
+                    GruvboxMaterialDarkSoft,
+                    GruvboxMaterialLightHard,
+                    GruvboxMaterialLightMedium,
+                    GruvboxMaterialLightSoft,
+                    GruvboxMaterialMixDarkHard,
+                    GruvboxMaterialMixDarkMedium,
+                    GruvboxMaterialMixDarkSoft,
+                    GruvboxMaterialMixLightHard,
+                    GruvboxMaterialMixLightMedium,
+                    GruvboxMaterialMixLightSoft,
+                    GruvboxMaterialOriginalDarkHard,
+                    GruvboxMaterialOriginalDarkMedium,
+                    GruvboxMaterialOriginalDarkSoft,
+                    GruvboxMaterialOriginalLightHard,
+                    GruvboxMaterialOriginalLightMedium,
+                    GruvboxMaterialOriginalLightSoft,
+                ],
+            },
+        ]
+    }
+}
+
+/// Second-screen state for a group entry drilled into from the top-level
+/// list; `None` means the picker is showing the top-level list.
+pub struct ThemePickerGroupState {
+    pub label: &'static str,
+    pub themes: Vec<crate::theme::ThemeName>,
+    pub selected: usize,
+}
+
 pub struct ThemePickerState {
     pub selected: usize,
-    pub themes: Vec<crate::theme::ThemeName>,
+    pub entries: Vec<ThemePickerEntry>,
     pub original_theme: crate::theme::ThemeName,
+    /// The theme currently rendered on screen (live preview). Drilling into
+    /// a group lands on this theme when it's a member, so where `Enter` puts
+    /// the cursor always matches what the user is already looking at.
+    pub previewed: crate::theme::ThemeName,
+    pub group: Option<ThemePickerGroupState>,
 }
 
 pub struct SyntaxLanguageRow {
@@ -3661,6 +3864,9 @@ pub struct PreparedFeatureLaunch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanInterviewPhase {
+    /// A saved draft for this interview was found on entry and the user must
+    /// choose to resume or discard it before any questions are shown.
+    ResumePrompt,
     Brief,
     StaticQuestions,
     /// The static question flow is complete and the user must explicitly
@@ -3677,11 +3883,26 @@ pub enum PlanInterviewPhase {
     Review,
     /// The proposed plan is open as raw markdown in the shared text editor.
     Editing,
+    /// The user is composing a free-form instruction for the planning agent.
+    DirectedFeedback,
+    /// A repository-aware, read-only revision from that instruction is in flight.
+    DirectedFeedbackLoading,
+    /// The user is identifying one or more plan questions that need a focused,
+    /// context-isolated repository investigation.
+    Investigation,
+    /// Fresh read-only investigator contexts are gathering findings, after
+    /// which a separate no-tools planning context merges them into the draft.
+    InvestigationLoading,
     /// A background headless call is reviewing the draft plan.
     CritiqueLoading,
     /// An agent's advisory review of the draft plan is on screen. The plan
     /// itself is untouched unless the user asks for a revision from here.
     Critique,
+    /// An on-demand plan was accepted for a feature whose agent session is
+    /// already running, and the user is choosing whether to hand the kickoff
+    /// prompt to that live session. The plan is already written by this point,
+    /// so both answers are safe — only the handoff is in question.
+    KickoffHandoff,
     /// Transient question-flow completion used while app-level code decides
     /// whether to run another adaptive round, synthesize, or use the fallback.
     Done,
@@ -3693,13 +3914,45 @@ pub enum PlanInterviewAdvanceError {
     AnswerRequired,
 }
 
-/// In-memory state for the static-question interview delivered in Epic 1.
+/// The live agent session an accepted on-demand plan can be handed off to.
 ///
-/// Draft persistence and AI-generated phases are intentionally layered onto
-/// this state in later epics. `pending_launch` is optional so the same state
-/// can also support on-demand interviews for existing features.
+/// Identified by session **id** rather than by index: the accept saves the
+/// store before the prompt is answered, and resolving the id again at send time
+/// means a store that moved underneath cannot seed the wrong session's composer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanKickoffTarget {
+    pub session_id: String,
+    /// The session's display label, so the prompt can name what it will type into.
+    pub session_label: String,
+    /// Where the plan was just written, shown alongside the offer and reused as
+    /// the confirmation message when the handoff is declined.
+    pub plan_path: PathBuf,
+}
+
+/// How the step on screen compares with the same step's answer in the feature's
+/// last accepted interview. Only meaningful on a re-run, which pre-fills those
+/// answers so keeping one is the default and changing it is deliberate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorAnswerState {
+    /// Still the previously accepted answer, verbatim.
+    Kept,
+    /// Edited this run; the previous answer is still restorable.
+    Changed,
+    /// Emptied this run, which records as a skip unless it is restored.
+    Cleared,
+}
+
+/// In-memory state for one plan-mode discovery interview.
+///
+/// `pending_launch` is optional so the same state can also support on-demand
+/// interviews for existing features.
 pub struct PlanInterviewState {
     pub feature_name: String,
+    /// The key this interview's draft and transcript are filed under in the
+    /// `plan_interviews` table: the feature's id for an on-demand interview,
+    /// or [`crate::plan_interview::pending_interview_key`] while the feature it
+    /// plans does not exist yet.
+    pub interview_key: String,
     pub phase: PlanInterviewPhase,
     pub questions: Vec<PlanQuestion>,
     pub question_index: usize,
@@ -3707,6 +3960,10 @@ pub struct PlanInterviewState {
     pub answers: Vec<Option<String>>,
     pub editor: TextEditor,
     pub selected_option: usize,
+    /// Where the accepted plan is written (`<workdir>/.claude/plan.md`). Held
+    /// separately from `pending_launch` because an on-demand interview has an
+    /// existing feature's workdir and no launch at all.
+    pub workdir: PathBuf,
     pub pending_launch: Option<PreparedFeatureLaunch>,
     pub abort_confirmation: bool,
     /// The feature's configured agent, preferred as the AI-adaptive
@@ -3730,7 +3987,7 @@ pub struct PlanInterviewState {
     /// Set when the user finishes early or declines the token-use prompt so
     /// the `Done` transition skips any remaining AI rounds.
     pub skip_ai_rounds: bool,
-    /// Set by the explicit "synthesize now" action. This permits the final
+    /// Set by the explicit "draft plan now" action. This permits the final
     /// headless pass without opting into adaptive rounds while preserving the
     /// consent screen's guarantee that ordinary completion spends no tokens.
     pub synthesis_requested: bool,
@@ -3759,6 +4016,15 @@ pub struct PlanInterviewState {
     pub review_rendered_lines: Vec<ratatui::text::Line<'static>>,
     pub edit_scroll_offset: usize,
     pub edit_sync_to_cursor: bool,
+    /// Start time and prompt-size estimate for a directed revision. The
+    /// instruction itself remains in `editor` while loading so a failed call
+    /// can return it intact for retrying or adjustment.
+    pub directed_feedback_started_at: Option<std::time::Instant>,
+    pub directed_feedback_token_estimate: usize,
+    /// Start time and aggregate prompt-size estimate for the isolated
+    /// investigation plus its separate no-tools merge pass.
+    pub investigation_started_at: Option<std::time::Instant>,
+    pub investigation_token_estimate: usize,
     /// An agent's advisory review of the plan currently at the review gate.
     /// Cleared whenever the plan changes, since the findings describe the
     /// draft they were written against.
@@ -3780,6 +4046,24 @@ pub struct PlanInterviewState {
     pub plan_revision: u64,
     /// The `plan_revision` the in-flight or displayed review describes.
     pub critique_plan_revision: Option<u64>,
+    /// A saved draft found on entry, held while the user decides whether to
+    /// resume or discard it. Taken by [`Self::resume_from_draft`]; dropped by
+    /// [`Self::discard_draft`].
+    pub resume_draft: Option<PlanInterviewRecord>,
+    /// The brief from the feature's last accepted interview, pre-filled as this
+    /// run's starting point. `None` unless this is a re-run of a feature that
+    /// has an accepted transcript.
+    pub prior_brief: Option<String>,
+    /// Answers from that transcript, keyed by question id — the stable slug
+    /// that survives a config change to the question bank. Kept after
+    /// pre-filling so each question can say whether its answer is still the
+    /// previous one ([`Self::prior_answer_state`]) and
+    /// [`Self::restore_prior_answer`] can put it back.
+    pub prior_answers: HashMap<String, String>,
+    /// The live session an accepted on-demand plan is being offered to. Only
+    /// set in [`PlanInterviewPhase::KickoffHandoff`], which is only reached
+    /// after the plan file is already on disk.
+    pub kickoff_handoff: Option<PlanKickoffTarget>,
 }
 
 impl PlanInterviewState {
@@ -3788,11 +4072,33 @@ impl PlanInterviewState {
         questions: Vec<PlanQuestion>,
     ) -> Self {
         let feature_name = pending_launch.branch.clone();
-        Self::new(feature_name, questions, Some(pending_launch))
+        let interview_key = crate::plan_interview::pending_interview_key(
+            &pending_launch.project_name,
+            &feature_name,
+        );
+        Self::new(feature_name, interview_key, questions, Some(pending_launch))
+    }
+
+    /// An on-demand interview for a feature that already exists: no launch to
+    /// defer, and the plan is written into the workdir the feature is already
+    /// checked out in. Keyed by the feature's id, which is where an accepted
+    /// transcript is filed, so a re-run finds the previous one.
+    pub fn for_feature(
+        feature_name: String,
+        feature_id: String,
+        questions: Vec<PlanQuestion>,
+        workdir: PathBuf,
+        agent: AgentKind,
+    ) -> Self {
+        let mut state = Self::new(feature_name, feature_id, questions, None);
+        state.workdir = workdir;
+        state.preferred_harness = agent;
+        state
     }
 
     pub fn new(
         feature_name: String,
+        interview_key: String,
         questions: Vec<PlanQuestion>,
         pending_launch: Option<PreparedFeatureLaunch>,
     ) -> Self {
@@ -3801,8 +4107,13 @@ impl PlanInterviewState {
             .as_ref()
             .map(|prepared| prepared.agent.clone())
             .unwrap_or_default();
+        let workdir = pending_launch
+            .as_ref()
+            .map(|prepared| prepared.workdir.clone())
+            .unwrap_or_default();
         Self {
             feature_name,
+            interview_key,
             phase: PlanInterviewPhase::Brief,
             questions,
             question_index: 0,
@@ -3810,6 +4121,7 @@ impl PlanInterviewState {
             answers: vec![None; answer_count],
             editor: TextEditor::new(String::new()),
             selected_option: 0,
+            workdir,
             pending_launch,
             abort_confirmation: false,
             preferred_harness,
@@ -3829,6 +4141,10 @@ impl PlanInterviewState {
             review_rendered_lines: Vec::new(),
             edit_scroll_offset: 0,
             edit_sync_to_cursor: false,
+            directed_feedback_started_at: None,
+            directed_feedback_token_estimate: 0,
+            investigation_started_at: None,
+            investigation_token_estimate: 0,
             critique: None,
             critique_started_at: None,
             critique_token_estimate: 0,
@@ -3838,6 +4154,306 @@ impl PlanInterviewState {
             revision_critique: None,
             plan_revision: 0,
             critique_plan_revision: None,
+            resume_draft: None,
+            prior_brief: None,
+            prior_answers: HashMap::new(),
+            kickoff_handoff: None,
+        }
+    }
+
+    /// Ask whether the accepted plan should be handed to the feature's already
+    /// running agent session.
+    ///
+    /// Only reached from an accepted on-demand interview: a feature-creation
+    /// interview seeds the session it just launched without asking, and an
+    /// on-demand accept with no live session has nothing to hand off to.
+    pub fn offer_kickoff_handoff(&mut self, target: PlanKickoffTarget) {
+        self.kickoff_handoff = Some(target);
+        self.phase = PlanInterviewPhase::KickoffHandoff;
+    }
+
+    /// The directory headless interview calls run in and gather repo context
+    /// from. Falls back to the process's cwd only when the interview was built
+    /// without a workdir, which outside tests means neither a launch nor a
+    /// feature was available to take one from.
+    pub fn context_workdir(&self) -> PathBuf {
+        if self.workdir.as_os_str().is_empty() {
+            std::env::current_dir().unwrap_or_default()
+        } else {
+            self.workdir.clone()
+        }
+    }
+
+    /// Hold a saved draft and ask the user whether to resume it, before any
+    /// question is shown. Called on interview entry only, so the answers the
+    /// draft would restore cannot overwrite answers given in this session.
+    pub fn offer_resume(&mut self, draft: PlanInterviewRecord) {
+        self.resume_draft = Some(draft);
+        self.phase = PlanInterviewPhase::ResumePrompt;
+    }
+
+    /// Restore the held draft's brief, answers, and spent AI rounds, then land
+    /// on the first question still unanswered.
+    ///
+    /// Answers are matched by question id, not position: the built-in bank and
+    /// the project's `plan_questions` config may both have changed since the
+    /// draft was saved, so anything the current bank no longer asks is dropped
+    /// rather than mapped onto the wrong question. Stored AI-generated questions
+    /// are appended instead, since those rounds were paid for and the current
+    /// bank cannot contain them.
+    pub fn resume_from_draft(&mut self) -> bool {
+        let Some(draft) = self.resume_draft.take() else {
+            return false;
+        };
+
+        self.brief = draft.brief.clone();
+        self.adopt_recorded_answers(&draft);
+
+        self.ai_rounds_completed = draft.ai_rounds_completed;
+        // Rounds only run after an explicit opt-in, so a draft that spent one
+        // carries that consent forward rather than re-asking for it.
+        self.ai_followups_opted_in = draft.ai_rounds_completed > 0;
+
+        // A draft abandoned at the review gate already has a paid-for plan.
+        // Resume there rather than walking the questions again and synthesizing
+        // a second time.
+        if let Some(plan) = draft.plan {
+            self.synthesized_plan = Some(plan);
+            self.synthesis_attempted = true;
+            self.phase = PlanInterviewPhase::Review;
+            return true;
+        }
+
+        match self
+            .answers
+            .iter()
+            .position(|answer| answer.as_deref().unwrap_or_default().trim().is_empty())
+        {
+            Some(index) => {
+                self.phase = PlanInterviewPhase::StaticQuestions;
+                self.question_index = index;
+                self.load_current_answer();
+            }
+            // Every question already has an answer, so there is nothing to
+            // resume *into*; go straight to the choice that follows them.
+            None if self.ai_followups_opted_in => self.phase = PlanInterviewPhase::Done,
+            None => self.phase = PlanInterviewPhase::AiConsent,
+        }
+        true
+    }
+
+    /// Fill this interview's answers from a stored record, matching by question
+    /// **id** rather than position: the built-in bank and the project's
+    /// `plan_questions` config may both have changed since the record was
+    /// written, so anything the current bank no longer asks is dropped rather
+    /// than mapped onto the wrong question. The record's AI-generated questions
+    /// are appended instead of dropped — those rounds were paid for and the
+    /// current bank cannot contain them.
+    ///
+    /// Matching by id is not enough on its own for a select question: config can
+    /// rewrite the same id's options, leaving a stored answer that names a choice
+    /// the question no longer offers. Such an answer is dropped rather than
+    /// pre-filled, because it is unselectable in the UI and would otherwise reach
+    /// the AI rounds and synthesis attached to the current question text.
+    fn adopt_recorded_answers(&mut self, record: &PlanInterviewRecord) {
+        self.answers = self
+            .questions
+            .iter()
+            .map(|question| {
+                record
+                    .answer_for(&question.id)
+                    .filter(|answer| question.accepts_answer(answer))
+                    .map(str::to_string)
+            })
+            .collect();
+
+        let known: HashSet<&str> = self.questions.iter().map(|q| q.id.as_str()).collect();
+        let carried: Vec<(PlanQuestion, Option<String>)> = record
+            .questions
+            .iter()
+            .enumerate()
+            .filter(|(_, question)| {
+                matches!(question.source, QuestionSource::Ai { .. })
+                    && !known.contains(question.id.as_str())
+            })
+            .map(|(index, question)| {
+                (
+                    question.clone(),
+                    record.answers.get(index).cloned().flatten(),
+                )
+            })
+            .collect();
+        for (question, answer) in carried {
+            self.questions.push(question);
+            self.answers.push(answer);
+        }
+    }
+
+    /// Adopt the feature's last accepted interview as this run's starting point,
+    /// so a re-run asks the same questions with the previous answers already in
+    /// place: `Enter` keeps one, typing changes it, and
+    /// [`Self::restore_prior_answer`] puts a changed one back.
+    ///
+    /// Returns whether anything was pre-filled, so the caller can say so rather
+    /// than announcing a re-run that restored nothing.
+    ///
+    /// Spent AI rounds are deliberately *not* carried over: this is a new
+    /// interview, so it gets its own consent step and its own round budget. The
+    /// previous run's AI questions are still asked again (with their answers),
+    /// since what the user told the interviewer about this feature is exactly
+    /// the context the re-run should start from.
+    pub fn apply_previous_transcript(&mut self, record: &PlanInterviewRecord) -> bool {
+        self.adopt_recorded_answers(record);
+        self.prior_brief = (!record.brief.trim().is_empty()).then(|| record.brief.clone());
+        // Read back off the adopted answers rather than the record, so carried AI
+        // questions are covered and answers the current bank rejected are not
+        // remembered as the baseline: the keep/change note would call an untouched
+        // question "changed", and `Ctrl+R` would offer to restore a value that
+        // cannot be selected.
+        self.prior_answers = self
+            .questions
+            .iter()
+            .zip(self.answers.iter())
+            .filter_map(|(question, answer)| {
+                answer.clone().map(|answer| (question.id.clone(), answer))
+            })
+            .collect();
+
+        self.brief = self.prior_brief.clone().unwrap_or_default();
+        self.editor = TextEditor::new(self.brief.clone());
+        self.prior_brief.is_some() || !self.prior_answers.is_empty()
+    }
+
+    /// Whether a previously accepted interview was pre-filled into this run.
+    pub fn has_prior_answers(&self) -> bool {
+        self.prior_brief.is_some() || !self.prior_answers.is_empty()
+    }
+
+    /// Drop the held draft and start the interview over. The caller deletes the
+    /// stored row.
+    ///
+    /// Resets the collected brief and answers rather than only the held record:
+    /// "discard and start over" has to mean the interview begins from its
+    /// baseline, whatever the state held when the draft was offered. On a re-run
+    /// that baseline is the previously accepted transcript, not a blank
+    /// interview — discarding a stale draft must not also throw away the
+    /// accepted answers it was revising.
+    pub fn discard_draft(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::ResumePrompt {
+            return false;
+        }
+        self.resume_draft = None;
+        self.brief = self.prior_brief.clone().unwrap_or_default();
+        let baseline = self
+            .questions
+            .iter()
+            .map(|question| self.prior_answers.get(&question.id).cloned())
+            .collect();
+        self.answers = baseline;
+        self.question_index = 0;
+        self.selected_option = 0;
+        self.phase = PlanInterviewPhase::Brief;
+        self.editor = TextEditor::new(self.brief.clone());
+        true
+    }
+
+    /// How the step on screen compares with the previously accepted answer for
+    /// it, or `None` when there is no previous answer to compare against.
+    pub fn prior_answer_state(&self) -> Option<PriorAnswerState> {
+        let (prior, current) = match self.phase {
+            PlanInterviewPhase::Brief => (self.prior_brief.as_deref()?, self.editor.text()),
+            PlanInterviewPhase::StaticQuestions => {
+                let question = self.questions.get(self.question_index)?;
+                let prior = self.prior_answers.get(&question.id)?.as_str();
+                match &question.kind {
+                    PlanQuestionKind::FreeText => (prior, self.editor.text()),
+                    PlanQuestionKind::Select(options) => (
+                        prior,
+                        options
+                            .get(self.selected_option)
+                            .map(String::as_str)
+                            .unwrap_or_default(),
+                    ),
+                }
+            }
+            _ => return None,
+        };
+
+        Some(if current.trim() == prior.trim() {
+            PriorAnswerState::Kept
+        } else if current.trim().is_empty() {
+            PriorAnswerState::Cleared
+        } else {
+            PriorAnswerState::Changed
+        })
+    }
+
+    /// Put the previously accepted answer for the current step back, undoing an
+    /// edit made this run. Returns false when there is nothing stored for this
+    /// step, so the caller can say so rather than appearing to do nothing.
+    pub fn restore_prior_answer(&mut self) -> bool {
+        match self.phase {
+            PlanInterviewPhase::Brief => {
+                let Some(brief) = self.prior_brief.clone() else {
+                    return false;
+                };
+                self.editor = TextEditor::new(brief);
+                true
+            }
+            PlanInterviewPhase::StaticQuestions => {
+                let Some((id, kind)) = self
+                    .questions
+                    .get(self.question_index)
+                    .map(|question| (question.id.clone(), question.kind.clone()))
+                else {
+                    return false;
+                };
+                let Some(prior) = self.prior_answers.get(&id).cloned() else {
+                    return false;
+                };
+                match &kind {
+                    PlanQuestionKind::FreeText => {
+                        self.editor = TextEditor::new(prior);
+                        true
+                    }
+                    // Adoption keeps only answers the question still offers, so
+                    // this normally finds one. The lookup stays defensive: an
+                    // answer with nothing to select is reported as "nothing
+                    // restored" rather than moving the highlight to option 0.
+                    PlanQuestionKind::Select(options) => {
+                        match options.iter().position(|option| *option == prior) {
+                            Some(index) => {
+                                self.selected_option = index;
+                                true
+                            }
+                            None => false,
+                        }
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Snapshot the interview as a draft record for persistence.
+    ///
+    /// Deliberately a plain snapshot of what has been collected: the caller
+    /// decides when a save is worth making, and re-saving the same state is
+    /// harmless because the row is keyed by `(feature_id, stage)`.
+    pub fn to_draft_record(&self) -> PlanInterviewRecord {
+        PlanInterviewRecord {
+            feature_id: self.interview_key.clone(),
+            stage: PlanInterviewStage::Draft,
+            feature_name: self.feature_name.clone(),
+            brief: self.brief.clone(),
+            questions: self.questions.clone(),
+            answers: self.answers.clone(),
+            // A draft holds the plan only once one has been generated, so
+            // resuming after synthesis does not silently re-spend those tokens.
+            plan: self.synthesized_plan.clone(),
+            ai_rounds_completed: self.ai_rounds_completed,
+            created_at: String::new(),
+            updated_at: String::new(),
         }
     }
 
@@ -3871,6 +4487,114 @@ impl PlanInterviewState {
             self.mark_plan_changed();
         }
         self.phase = PlanInterviewPhase::Review;
+    }
+
+    /// Open a blank multi-line instruction editor from the review gate.
+    pub fn begin_directed_feedback(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Review || self.synthesized_plan.is_none() {
+            return false;
+        }
+        self.editor = TextEditor::new(String::new());
+        self.edit_scroll_offset = 0;
+        self.edit_sync_to_cursor = true;
+        self.phase = PlanInterviewPhase::DirectedFeedback;
+        true
+    }
+
+    /// Freeze the directed-feedback editor while a read-only agent pass runs.
+    pub fn begin_directed_feedback_loading(&mut self, token_estimate: usize) -> bool {
+        if self.phase != PlanInterviewPhase::DirectedFeedback
+            || self.synthesized_plan.is_none()
+            || self.editor.text().trim().is_empty()
+        {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::DirectedFeedbackLoading;
+        self.directed_feedback_started_at = Some(std::time::Instant::now());
+        self.directed_feedback_token_estimate = token_estimate;
+        true
+    }
+
+    /// Return to the instruction editor after a failed revision, preserving
+    /// what the user wrote so retrying does not require retyping it.
+    pub fn fail_directed_feedback(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::DirectedFeedbackLoading {
+            return false;
+        }
+        self.directed_feedback_started_at = None;
+        self.phase = PlanInterviewPhase::DirectedFeedback;
+        true
+    }
+
+    /// Leave directed feedback without changing the draft plan.
+    pub fn cancel_directed_feedback(&mut self) -> bool {
+        if !matches!(
+            self.phase,
+            PlanInterviewPhase::DirectedFeedback | PlanInterviewPhase::DirectedFeedbackLoading
+        ) {
+            return false;
+        }
+        self.directed_feedback_started_at = None;
+        self.phase = PlanInterviewPhase::Review;
+        true
+    }
+
+    /// Open a blank editor for research questions or plan sections that need
+    /// repository evidence before the plan is accepted.
+    pub fn begin_investigation(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Review || self.synthesized_plan.is_none() {
+            return false;
+        }
+        self.editor = TextEditor::new(String::new());
+        self.edit_scroll_offset = 0;
+        self.edit_sync_to_cursor = true;
+        self.phase = PlanInterviewPhase::Investigation;
+        true
+    }
+
+    /// Freeze the research-focus editor while isolated investigators and the
+    /// final no-tools merge pass run in the background.
+    pub fn begin_investigation_loading(&mut self, token_estimate: usize) -> bool {
+        if self.phase != PlanInterviewPhase::Investigation
+            || self.synthesized_plan.is_none()
+            || self.editor.text().trim().is_empty()
+        {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::InvestigationLoading;
+        self.investigation_started_at = Some(std::time::Instant::now());
+        self.investigation_token_estimate = token_estimate;
+        true
+    }
+
+    /// Return to the research-focus editor after any investigator or merge
+    /// failure, preserving the request so the user can retry or narrow it.
+    pub fn fail_investigation(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::InvestigationLoading {
+            return false;
+        }
+        self.investigation_started_at = None;
+        self.phase = PlanInterviewPhase::Investigation;
+        true
+    }
+
+    /// Leave the optional investigation without changing the draft plan.
+    pub fn cancel_investigation(&mut self) -> bool {
+        if !matches!(
+            self.phase,
+            PlanInterviewPhase::Investigation | PlanInterviewPhase::InvestigationLoading
+        ) {
+            return false;
+        }
+        self.investigation_started_at = None;
+        self.phase = PlanInterviewPhase::Review;
+        true
+    }
+
+    /// Apply the context-isolated merge result and return to the review gate.
+    pub fn apply_investigation_revision(&mut self, plan: String) {
+        self.investigation_started_at = None;
+        self.apply_synthesis(plan);
     }
 
     /// Move into the agent-review loading phase. Returns false outside the
@@ -4131,12 +4855,21 @@ impl PlanInterviewState {
                 self.skip_ai_rounds = true;
                 self.phase = PlanInterviewPhase::Done;
             }
-            PlanInterviewPhase::AiLoading
+            // The resume choice has its own dedicated keys; Enter must not fall
+            // through to a question flow whose answers are not loaded yet. The
+            // handoff prompt is past acceptance entirely.
+            PlanInterviewPhase::ResumePrompt
+            | PlanInterviewPhase::AiLoading
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::DirectedFeedback
+            | PlanInterviewPhase::DirectedFeedbackLoading
+            | PlanInterviewPhase::Investigation
+            | PlanInterviewPhase::InvestigationLoading
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
+            | PlanInterviewPhase::KickoffHandoff
             | PlanInterviewPhase::Done => {}
         }
         Ok(())
@@ -4201,13 +4934,21 @@ impl PlanInterviewState {
             }
             // Loading is a transient App-driven state; there is nothing to
             // navigate back to until it resolves. The review-gate phases have
-            // their own dedicated navigation.
-            PlanInterviewPhase::AiLoading
+            // their own dedicated navigation, the resume choice is the first
+            // screen of the interview, and the handoff prompt comes after an
+            // accept that already wrote the plan.
+            PlanInterviewPhase::ResumePrompt
+            | PlanInterviewPhase::AiLoading
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::DirectedFeedback
+            | PlanInterviewPhase::DirectedFeedbackLoading
+            | PlanInterviewPhase::Investigation
+            | PlanInterviewPhase::InvestigationLoading
             | PlanInterviewPhase::CritiqueLoading
-            | PlanInterviewPhase::Critique => false,
+            | PlanInterviewPhase::Critique
+            | PlanInterviewPhase::KickoffHandoff => false,
         }
     }
 
@@ -4224,13 +4965,21 @@ impl PlanInterviewState {
             PlanInterviewPhase::StaticQuestions => self.save_current_draft(),
             PlanInterviewPhase::AiConsent => {}
             // Do not overlap paid calls or mutate a retryable completed
-            // synthesis. The UI does not advertise this action while loading.
-            PlanInterviewPhase::AiLoading
+            // synthesis. The UI does not advertise this action while loading,
+            // nor at the resume choice, which has no brief to synthesize yet,
+            // nor at the handoff prompt, whose plan is already accepted.
+            PlanInterviewPhase::ResumePrompt
+            | PlanInterviewPhase::AiLoading
             | PlanInterviewPhase::SynthesisLoading
             | PlanInterviewPhase::Review
             | PlanInterviewPhase::Editing
+            | PlanInterviewPhase::DirectedFeedback
+            | PlanInterviewPhase::DirectedFeedbackLoading
+            | PlanInterviewPhase::Investigation
+            | PlanInterviewPhase::InvestigationLoading
             | PlanInterviewPhase::CritiqueLoading
             | PlanInterviewPhase::Critique
+            | PlanInterviewPhase::KickoffHandoff
             | PlanInterviewPhase::Done => return Ok(()),
         }
         self.ai_round_started_at = None;
@@ -4480,6 +5229,7 @@ mod tests {
     fn plan_interview_requires_a_brief_before_questions() {
         let mut state = PlanInterviewState::new(
             "feature".into(),
+            "feat-1".into(),
             crate::plan_interview::builtin_questions(),
             None,
         );
@@ -4502,6 +5252,7 @@ mod tests {
     fn plan_interview_retains_answers_when_navigating_back() {
         let mut state = PlanInterviewState::new(
             "feature".into(),
+            "feat-1".into(),
             crate::plan_interview::builtin_questions(),
             None,
         );
@@ -4524,6 +5275,7 @@ mod tests {
     fn plan_interview_skip_and_finish_early_preserve_progress() {
         let mut state = PlanInterviewState::new(
             "feature".into(),
+            "feat-1".into(),
             crate::plan_interview::builtin_questions(),
             None,
         );
@@ -4543,7 +5295,8 @@ mod tests {
 
     #[test]
     fn plan_interview_finish_early_skips_remaining_ai_rounds() {
-        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
         state.editor = TextEditor::new("A useful feature".into());
         state.finish_early().unwrap();
 
@@ -4558,7 +5311,7 @@ mod tests {
             .into_iter()
             .take(1)
             .collect();
-        let mut state = PlanInterviewState::new("feature".into(), questions, None);
+        let mut state = PlanInterviewState::new("feature".into(), "feat-1".into(), questions, None);
         state.editor = TextEditor::new("A useful feature".into());
         state.advance().unwrap();
 
@@ -4576,7 +5329,8 @@ mod tests {
 
     #[test]
     fn plan_interview_ai_consent_can_be_declined_without_opt_in() {
-        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
         state.editor = TextEditor::new("A useful feature".into());
         state.advance().unwrap();
 
@@ -4592,7 +5346,8 @@ mod tests {
 
     #[test]
     fn plan_interview_begin_ai_round_enters_loading_with_metadata() {
-        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
 
         state.begin_ai_round(1200);
 
@@ -4604,7 +5359,8 @@ mod tests {
 
     #[test]
     fn plan_interview_synthesis_is_cached_and_opens_review() {
-        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
 
         state.begin_synthesis(900);
 
@@ -4623,7 +5379,8 @@ mod tests {
 
     #[test]
     fn plan_interview_plan_edits_are_staged_until_saved() {
-        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
         state.apply_synthesis("# Plan: original\n".into());
 
         assert!(state.begin_plan_edit());
@@ -4641,7 +5398,8 @@ mod tests {
 
     #[test]
     fn plan_interview_plan_edit_can_be_discarded_and_cannot_save_empty() {
-        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
         state.apply_synthesis("# Plan: original\n".into());
 
         assert!(state.begin_plan_edit());
@@ -4657,8 +5415,76 @@ mod tests {
     }
 
     #[test]
+    fn directed_feedback_preserves_the_plan_and_retryable_instruction() {
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
+        state.apply_synthesis("# Plan: original\n".into());
+
+        assert!(state.begin_directed_feedback());
+        assert_eq!(state.phase, PlanInterviewPhase::DirectedFeedback);
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+        assert!(!state.begin_directed_feedback_loading(100));
+
+        state.editor = TextEditor::new("Inspect the router and add exact paths.".into());
+        assert!(state.begin_directed_feedback_loading(700));
+        assert_eq!(state.phase, PlanInterviewPhase::DirectedFeedbackLoading);
+        assert!(state.directed_feedback_started_at.is_some());
+        assert_eq!(state.directed_feedback_token_estimate, 700);
+
+        assert!(state.fail_directed_feedback());
+        assert_eq!(state.phase, PlanInterviewPhase::DirectedFeedback);
+        assert_eq!(
+            state.editor.text(),
+            "Inspect the router and add exact paths."
+        );
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+
+        assert!(state.cancel_directed_feedback());
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+    }
+
+    #[test]
+    fn isolated_investigation_preserves_the_plan_and_retryable_focus() {
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
+        state.apply_synthesis("# Plan: original\n".into());
+
+        assert!(state.begin_investigation());
+        assert_eq!(state.phase, PlanInterviewPhase::Investigation);
+        assert!(!state.begin_investigation_loading(100));
+
+        state.editor = TextEditor::new("Trace the session launch boundary.".into());
+        assert!(state.begin_investigation_loading(1_200));
+        assert_eq!(state.phase, PlanInterviewPhase::InvestigationLoading);
+        assert!(state.investigation_started_at.is_some());
+        assert_eq!(state.investigation_token_estimate, 1_200);
+
+        assert!(state.fail_investigation());
+        assert_eq!(state.phase, PlanInterviewPhase::Investigation);
+        assert_eq!(state.editor.text(), "Trace the session launch boundary.");
+        assert_eq!(
+            state.synthesized_plan.as_deref(),
+            Some("# Plan: original\n")
+        );
+
+        assert!(state.cancel_investigation());
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
+    }
+
+    #[test]
     fn plan_interview_finish_early_does_not_overlap_in_flight_ai_work() {
-        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
         state.begin_ai_round(500);
 
         state.finish_early().unwrap();
@@ -4670,7 +5496,8 @@ mod tests {
 
     #[test]
     fn plan_interview_apply_ai_round_with_no_questions_returns_to_done() {
-        let mut state = PlanInterviewState::new("feature".into(), Vec::new(), None);
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), Vec::new(), None);
         state.begin_ai_round(500);
 
         state.apply_ai_round(1, Vec::new());
@@ -4684,7 +5511,7 @@ mod tests {
     fn plan_interview_apply_ai_round_appends_questions_and_resumes_at_first_new_one() {
         let existing = crate::plan_interview::builtin_questions();
         let existing_count = existing.len();
-        let mut state = PlanInterviewState::new("feature".into(), existing, None);
+        let mut state = PlanInterviewState::new("feature".into(), "feat-1".into(), existing, None);
         state.answers = vec![Some("answered".into()); existing_count];
         state.begin_ai_round(800);
 
@@ -4716,7 +5543,8 @@ mod tests {
             source: crate::plan_interview::QuestionSource::Template,
             optional: false,
         };
-        let mut state = PlanInterviewState::new("feature".into(), vec![question], None);
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
         state.editor = TextEditor::new("A useful feature".into());
         state.advance().unwrap();
 
@@ -4729,5 +5557,325 @@ mod tests {
         assert_eq!(state.selected_option, 1);
         state.select_next_option();
         assert_eq!(state.selected_option, 0);
+    }
+
+    /// A record whose select answer names an option the question no longer
+    /// offers — the config was edited between runs.
+    fn record_with_retired_select_answer() -> crate::db::plan_interviews::PlanInterviewRecord {
+        crate::db::plan_interviews::PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            feature_name: "feature".into(),
+            brief: "Tighten the sidebar.".into(),
+            questions: vec![PlanQuestion {
+                id: "surface".into(),
+                text: "Where should this appear?".into(),
+                kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Overlay".into()]),
+                source: crate::plan_interview::QuestionSource::Template,
+                optional: true,
+            }],
+            answers: vec![Some("Overlay".into())],
+            ..Default::default()
+        }
+    }
+
+    /// The current bank asks the same question id with rewritten options.
+    fn state_with_rewritten_select_options() -> PlanInterviewState {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: true,
+        };
+        PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None)
+    }
+
+    /// Matching by id alone would pre-fill an answer that is not one of the
+    /// current options: unselectable in the UI, but still handed to the AI rounds
+    /// and synthesis as this question's answer if the user never visits it.
+    #[test]
+    fn a_re_run_drops_a_select_answer_the_options_no_longer_offer() {
+        let mut state = state_with_rewritten_select_options();
+
+        assert!(state.apply_previous_transcript(&record_with_retired_select_answer()));
+
+        assert_eq!(state.answers[0], None);
+        assert!(!state.prior_answers.contains_key("surface"));
+        // The brief still pre-fills, so the re-run is not blanked wholesale.
+        assert_eq!(state.brief, "Tighten the sidebar.");
+
+        // Nothing was pre-filled for this question, so it reports neither kept
+        // nor changed, and there is nothing for Ctrl+R to put back.
+        state.phase = PlanInterviewPhase::StaticQuestions;
+        state.load_current_answer();
+        assert_eq!(state.prior_answer_state(), None);
+        assert!(!state.restore_prior_answer());
+
+        // Finishing without ever visiting the question — the path that would
+        // otherwise carry the stale answer straight into synthesis.
+        state.phase = PlanInterviewPhase::Brief;
+        state.editor = TextEditor::new(state.brief.clone());
+        state.finish_early().unwrap();
+        assert_eq!(state.phase, PlanInterviewPhase::Done);
+        assert!(state.answers.iter().all(Option::is_none));
+    }
+
+    /// Same guard on the resume path: a draft is matched back by id too.
+    #[test]
+    fn resuming_a_draft_drops_a_select_answer_the_options_no_longer_offer() {
+        let mut state = state_with_rewritten_select_options();
+        state.offer_resume(record_with_retired_select_answer());
+
+        assert!(state.resume_from_draft());
+
+        assert_eq!(state.answers[0], None);
+        // The question is unanswered again, so the resume lands on it.
+        assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+        assert_eq!(state.question_index, 0);
+        assert_eq!(state.selected_option, 0);
+    }
+
+    /// A select answer the rewritten options still contain is pre-filled, and on
+    /// a different index than it had before.
+    #[test]
+    fn a_re_run_keeps_a_select_answer_the_options_still_offer() {
+        let mut state = state_with_rewritten_select_options();
+        let mut record = record_with_retired_select_answer();
+        record.answers = vec![Some("Session".into())];
+
+        assert!(state.apply_previous_transcript(&record));
+
+        assert_eq!(state.answers[0].as_deref(), Some("Session"));
+        state.phase = PlanInterviewPhase::StaticQuestions;
+        state.load_current_answer();
+        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
+    }
+
+    /// A draft saved for a feature-creation interview is keyed by project and
+    /// branch, because the feature it plans has no id until the accept.
+    #[test]
+    fn feature_creation_interview_is_keyed_by_project_and_branch() {
+        let state = PlanInterviewState::for_feature_creation(
+            prepared_launch("my-project", "planned-feature"),
+            Vec::new(),
+        );
+
+        assert_eq!(state.interview_key, "pending:my-project/planned-feature");
+        assert_eq!(state.feature_name, "planned-feature");
+    }
+
+    fn prepared_launch(project_name: &str, branch: &str) -> PreparedFeatureLaunch {
+        PreparedFeatureLaunch {
+            project_name: project_name.into(),
+            branch: branch.into(),
+            workdir: PathBuf::from("/tmp/does-not-matter"),
+            is_worktree: false,
+            mode: VibeMode::default(),
+            review: false,
+            plan_mode: true,
+            agent: AgentKind::Claude,
+            create_terminal: false,
+            session_name: "Claude 1".into(),
+            enable_chrome: false,
+            remote_control: false,
+            steering_enabled: false,
+            hook_succeeded: None,
+            startup_prompt: None,
+        }
+    }
+
+    fn saved_draft(
+        questions: Vec<PlanQuestion>,
+        answers: Vec<Option<String>>,
+    ) -> PlanInterviewRecord {
+        PlanInterviewRecord {
+            feature_id: "feat-1".into(),
+            stage: PlanInterviewStage::Draft,
+            feature_name: "feature".into(),
+            brief: "Ship the interview.".into(),
+            questions,
+            answers,
+            plan: None,
+            ai_rounds_completed: 0,
+            created_at: String::new(),
+            updated_at: "2026-07-30 12:00:00".into(),
+        }
+    }
+
+    fn template_question(id: &str) -> PlanQuestion {
+        PlanQuestion {
+            id: id.into(),
+            text: format!("Question {id}?"),
+            kind: PlanQuestionKind::FreeText,
+            source: QuestionSource::Template,
+            optional: true,
+        }
+    }
+
+    #[test]
+    fn resuming_a_draft_restores_answers_and_lands_on_the_first_unanswered() {
+        let questions = vec![
+            template_question("scope"),
+            template_question("risks"),
+            template_question("done"),
+        ];
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), questions.clone(), None);
+        state.offer_resume(saved_draft(
+            questions,
+            vec![
+                Some("Just the TUI.".into()),
+                None,
+                Some("Tests pass.".into()),
+            ],
+        ));
+        assert_eq!(state.phase, PlanInterviewPhase::ResumePrompt);
+
+        assert!(state.resume_from_draft());
+
+        assert_eq!(state.brief, "Ship the interview.");
+        assert_eq!(state.answers[0].as_deref(), Some("Just the TUI."));
+        assert_eq!(state.answers[2].as_deref(), Some("Tests pass."));
+        assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+        // The gap, not the end of the answered run: resuming should not make the
+        // user walk back to the question they actually stopped at.
+        assert_eq!(state.question_index, 1);
+        assert!(state.editor.text().is_empty());
+        assert!(state.resume_draft.is_none());
+    }
+
+    /// The question bank is config-driven and can change between runs, so
+    /// answers are matched by id rather than carried over positionally.
+    #[test]
+    fn resuming_matches_answers_by_id_when_the_bank_changed() {
+        let stored = vec![template_question("removed"), template_question("scope")];
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            "feat-1".into(),
+            vec![template_question("scope"), template_question("added")],
+            None,
+        );
+        state.offer_resume(saved_draft(
+            stored,
+            vec![Some("Gone.".into()), Some("Just the TUI.".into())],
+        ));
+
+        assert!(state.resume_from_draft());
+
+        // "scope" keeps its answer despite having moved from index 1 to index 0;
+        // the dropped question's answer is not smeared onto "added".
+        assert_eq!(state.answers[0].as_deref(), Some("Just the TUI."));
+        assert_eq!(state.answers[1], None);
+        assert_eq!(state.question_index, 1);
+    }
+
+    /// AI-generated questions cost tokens and cannot be in the current bank, so
+    /// a resume carries them (and the rounds they came from) rather than
+    /// re-earning them.
+    #[test]
+    fn resuming_carries_ai_questions_and_spent_rounds() {
+        let ai_question = PlanQuestion {
+            id: "concurrency".into(),
+            text: "How do concurrent interviews interact?".into(),
+            kind: PlanQuestionKind::FreeText,
+            source: QuestionSource::Ai { round: 1 },
+            optional: true,
+        };
+        let mut stored = saved_draft(
+            vec![template_question("scope"), ai_question.clone()],
+            vec![Some("Just the TUI.".into()), None],
+        );
+        stored.ai_rounds_completed = 1;
+
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            "feat-1".into(),
+            vec![template_question("scope")],
+            None,
+        );
+        state.offer_resume(stored);
+
+        assert!(state.resume_from_draft());
+
+        assert_eq!(state.questions.len(), 2);
+        assert_eq!(state.questions[1], ai_question);
+        assert_eq!(state.ai_rounds_completed, 1);
+        // A spent round implies the consent it required, so the interview does
+        // not ask for it a second time.
+        assert!(state.ai_followups_opted_in);
+        assert_eq!(state.question_index, 1);
+    }
+
+    /// A draft abandoned at the review gate already paid for its plan.
+    #[test]
+    fn resuming_a_draft_with_a_plan_reopens_the_review_gate() {
+        let questions = vec![template_question("scope")];
+        let mut stored = saved_draft(questions.clone(), vec![Some("Just the TUI.".into())]);
+        stored.plan = Some("# Plan: feature\n".into());
+
+        let mut state = PlanInterviewState::new("feature".into(), "feat-1".into(), questions, None);
+        state.offer_resume(stored);
+
+        assert!(state.resume_from_draft());
+
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
+        assert_eq!(state.synthesized_plan.as_deref(), Some("# Plan: feature\n"));
+        // Nothing should re-synthesize a plan the user already has on screen.
+        assert!(state.synthesis_attempted);
+    }
+
+    #[test]
+    fn a_fully_answered_draft_resumes_at_the_choice_after_the_questions() {
+        let questions = vec![template_question("scope")];
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), questions.clone(), None);
+        state.offer_resume(saved_draft(questions, vec![Some("Just the TUI.".into())]));
+
+        assert!(state.resume_from_draft());
+
+        assert_eq!(state.phase, PlanInterviewPhase::AiConsent);
+    }
+
+    #[test]
+    fn discarding_a_draft_starts_from_a_blank_brief() {
+        let questions = vec![template_question("scope")];
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), questions.clone(), None);
+        state.offer_resume(saved_draft(questions, vec![Some("Just the TUI.".into())]));
+
+        assert!(state.discard_draft());
+
+        assert_eq!(state.phase, PlanInterviewPhase::Brief);
+        assert!(state.brief.is_empty());
+        assert_eq!(state.answers, vec![None]);
+        assert!(state.editor.text().is_empty());
+        assert!(state.resume_draft.is_none());
+        // Only reachable from the resume choice.
+        assert!(!state.discard_draft());
+    }
+
+    #[test]
+    fn draft_snapshot_carries_the_interview_key_and_collected_answers() {
+        let questions = vec![template_question("scope"), template_question("risks")];
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            "pending:my-project/planned-feature".into(),
+            questions,
+            None,
+        );
+        state.editor = TextEditor::new("Ship it.".into());
+        state.advance().unwrap();
+        state.editor = TextEditor::new("Just the TUI.".into());
+        state.advance().unwrap();
+
+        let record = state.to_draft_record();
+
+        assert_eq!(record.feature_id, "pending:my-project/planned-feature");
+        assert_eq!(record.stage, PlanInterviewStage::Draft);
+        assert_eq!(record.brief, "Ship it.");
+        assert_eq!(record.answers[0].as_deref(), Some("Just the TUI."));
+        assert_eq!(record.answers[1], None);
+        assert!(record.plan.is_none());
     }
 }

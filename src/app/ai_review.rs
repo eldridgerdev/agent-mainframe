@@ -920,16 +920,6 @@ impl App {
             return;
         };
         if !model_picked {
-            // Pi's headless model flag isn't verified (see `HeadlessRunner`),
-            // so a picker that can't do anything for it would just be
-            // friction — skip straight to "default" for that harness.
-            if harness == AgentKind::Pi {
-                if let AppMode::AiReview(state) = &mut self.mode {
-                    state.model_picked = true;
-                }
-                self.begin_ai_pr_review();
-                return;
-            }
             let rows = model_pick_rows(&harness);
             let configured = self.config.review_model_for(ReviewAction::PrReview);
             let preset_match = configured.as_ref().and_then(|configured| {
@@ -1079,7 +1069,7 @@ impl App {
 
     /// Apply a harness that has already passed its availability check, reset
     /// any model state belonging to the previous harness, and advance to the
-    /// rebuilt model step (or directly to the run for Pi).
+    /// rebuilt model step.
     fn accept_ai_review_harness_pick(&mut self, chosen: AgentKind, harness_changed: bool) {
         if let AppMode::AiReview(state) = &mut self.mode {
             state.harness = Some(chosen.clone());
@@ -1092,7 +1082,7 @@ impl App {
             "AI reviews will run with {}",
             chosen.display_name()
         ));
-        if harness_changed && chosen != AgentKind::Pi {
+        if harness_changed {
             if let AppMode::AiReview(state) = &mut self.mode {
                 state.model_pick = Some(AiModelPickState {
                     rows: model_pick_rows(&chosen),
@@ -1961,6 +1951,13 @@ mod tests {
         assert!(claude.contains(&ModelPickRow::Preset("sonnet")));
         let codex = model_pick_rows(&AgentKind::Codex);
         assert!(!codex.iter().any(|r| matches!(r, ModelPickRow::Preset(_))));
+        // Pi accepts `--model` (see `HeadlessRunner::supports_model_flag`), so
+        // it gets the same Default/Custom picker as the other unenumerable
+        // harnesses rather than being skipped.
+        assert_eq!(
+            model_pick_rows(&AgentKind::Pi),
+            vec![ModelPickRow::Default, ModelPickRow::Custom]
+        );
     }
 
     #[test]

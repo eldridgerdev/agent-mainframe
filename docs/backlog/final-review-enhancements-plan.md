@@ -7,18 +7,26 @@
   re-review, the "fixes ready — re-review?" notification, local application of
   suggestion blocks, the **finish summary screen**, a **Cost** batch, the
   high-priority **close / pause without finishing** viewer item, and the
-  **`v` layout toggle** fix, the **review-round timeline/history browser**, and
-  the **hierarchical file tree + shorter Developer Notes panel**
+  **`v` layout toggle** fix, the **review-round timeline/history browser**,
+  the **hierarchical file tree + shorter Developer Notes panel**,
+  **expandable context around hunks**, **word-level intra-line diff
+  highlighting + the ignore-whitespace toggle**, and **global comment
+  navigation + undo last verdict**
   have shipped — that closes out every item in the Loop group. The Cost batch
   makes
   bounded headless passes honor `review_model`, caps
   `final-review-feedback.md` with an archive file, and batches REVIEW MODE's
   note instruction per turn. Per-action model overrides (a `review_models`
   map keyed by `ReviewAction`) and bounded live review notes with a
-  reviewer-visible archive have since shipped too. The rest of the
-  viewer-ergonomics, AI co-review,
-  and workflow items are not yet started. One Cost follow-up remains:
-  measuring the most token-efficient way to dispatch review fixes.
+  reviewer-visible archive have since shipped too, as have `$EDITOR` at the
+  cursored line and the `?` help overlay. The remaining
+  viewer-ergonomics items are mouse support and a newly-found footer bug (the
+  review footer's second hint row is silently clipped by the first row's
+  wrapping); the AI co-review
+  and workflow items are not yet started. Three Cost follow-ups remain:
+  cumulative final-review workflow accounting, best-effort attribution of
+  review-note generation cost, and measuring the most token-efficient way to
+  dispatch review fixes.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -874,6 +882,22 @@ Cost:
       context while allowing a current note to override its archived
       predecessor. Archiving writes history before truncating the live
       file, and setup adds both note files to `.claude/.gitignore`.
+- [ ] Show cumulative token usage and estimated cost for the final-review
+      workflow at the end of the review session. Snapshot usage when the review
+      starts, accumulate the deltas from reviewer-triggered headless work
+      (walkthroughs, co-review, changeset overview, and similar actions), and
+      surface the total on the finish summary / completed-review screen. Keep
+      the accounting across pause/resume, break it down by action and token
+      class where the harness exposes that data, and clearly label missing or
+      estimated provider costs rather than silently treating them as zero.
+- [ ] Attribute token usage and cost to review-note generation as accurately as
+      the available harness data allows, and include it as a separate line in
+      the final-review cost breakdown. `.claude/review-notes.md` is normally
+      written as part of a larger agent turn rather than by an isolated model
+      call, so avoid false precision: use exact per-call usage if a harness can
+      expose it; otherwise record the turn-level delta when notes are created or
+      updated and label that value as an estimate / upper bound. Preserve enough
+      metadata to distinguish initial note generation from later note updates.
 - [ ] Investigate and implement the most token-efficient strategy for
       dispatching review comments to fixing agents. Benchmark at least four
       shapes on small, medium, and very large review rounds: one fresh agent per
@@ -996,11 +1020,196 @@ Viewer:
       `.claude/final-review-progress.json`). Navigation/collapse ops live in
       `src/app/diff.rs`, key dispatch in `src/handlers/diff.rs`, rendering
       (including `dir_row_summary`) in `src/ui/dialogs/diff.rs`.
-- [ ] Expand context around hunks (old/new content already loaded)
-- [ ] Word-level intra-line diff highlighting + ignore-whitespace toggle
-- [ ] Global comment navigation across files + undo last verdict
-- [ ] Open at cursored line in `$EDITOR`
-- [ ] `?` help overlay for review mode
+- [x] Expand context around hunks — press `+`/`=` to widen the context around
+      every hunk in the current file and `-`/`_` to narrow it, walking a ladder
+      of 3 (git's default) → 10 → 25 → 50 → whole file; `*` toggles straight
+      between the whole file and the default. `DiffFile::hunks_with_context`
+      (`src/diff.rs`) rebuilds the file's hunks at a given context by recovering
+      the runs of added/removed lines from the current hunks and re-drawing the
+      surrounding context out of `old_content`/`new_content`, merging hunks
+      whose regions meet exactly as git does at a wider `--unified`. Because
+      expansion only ever *adds* context, the recovered runs are identical at
+      any starting level, so the operation is idempotent and the viewer can step
+      up and down without keeping a pristine copy of the parsed hunks. Applied
+      by rewriting `state.files[i].hunks` in place, which is what keeps the
+      blast radius small: `addressable_lines()`, both renderers, comment
+      anchors, suggestions and search all read the hunks, so they need no
+      changes and can't drift from what's on screen. Comment anchors are line
+      numbers and survive untouched; the line cursor, range-selection anchor and
+      search matches are *indices* into `addressable_lines()`, so
+      `set_diff_context` (`src/app/diff.rs`) captures their `DiffLineLocation`s
+      before the rewrite and re-finds them after, leaving the reviewer parked on
+      the same line. `file.patch` is deliberately left alone — it feeds the
+      review fingerprint (`save_review_snapshot`) and the bounded headless
+      prompts, so expansion must not inflate token cost or make every file look
+      "changed since last review" — which meant the unified scroll ceiling had
+      to stop being `patch.lines().count()`; `unified_line_count` now derives it
+      from the prologue plus the rendered hunks (an identical value until
+      expansion). Level is per file and per session, re-applied after a refresh
+      or base-ref change via `DiffViewerState::reapply_context_expansion` so a
+      reload doesn't silently collapse the view, and dropped for files that
+      leave the changeset. Expansion refuses rather than guesses when the blobs
+      no longer match the patch, and an added/deleted/binary file (which has no
+      second blob, and already shows every line) reports why instead of being a
+      silent no-op. Both footers show `context:<n|file>`, and the keys work in
+      the plain diff viewer and while the line cursor is active — the moment
+      you most want the enclosing function in view. One knock-on had to be
+      closed: expansion makes lines commentable that git's own diff never
+      emitted, and GitHub rejects an inline review comment outside the PR's
+      diff — fatally, since `create_review` posts the batch atomically, so a
+      single such anchor would have sunk the whole review. `pr_postable_lines`
+      (`src/app/review.rs`) re-parses each file's untouched `patch` to recover
+      the real boundary, and `build_pr_review` now skips an out-of-diff comment
+      (and degrades a range whose start is out-of-diff to a single-line
+      comment) the same way it already skips an anchor-lost one. Those comments
+      still reach `.claude/final-review-feedback.md` and the fixing agent — only
+      inline PR posting is withheld.
+- [x] Word-level intra-line diff highlighting + ignore-whitespace toggle — two
+      halves of "make a changed line readable at a glance". **Word diff:** a new
+      self-contained `src/worddiff.rs` tokenizes each line into identifier runs,
+      whitespace runs and single punctuation characters, runs an LCS over the
+      tokens, and returns the byte ranges that actually changed on each side.
+      The renderer pairs the i-th removal in a change block with the i-th
+      addition — how git lays out a rewritten run, and what the reviewer reads
+      as "this line became that line" — via `hunk_intra_line_ranges`
+      (`src/ui/dialogs/diff.rs`); unpaired leftovers (a block removing 3 and
+      adding 1) get nothing, since there is no counterpart to diff against.
+      Emphasis is applied as a *background* blend of the row's own hue
+      (`added_emphasis_style` / `removed_emphasis_style`), so the existing
+      syntax-highlight foreground shows through untouched: chunks are split at
+      each range boundary by `apply_intra_line_emphasis` after
+      `append_highlighted_content` has already coloured them. Deliberately
+      declines in the cases where marking tokens is noise rather than signal —
+      either side empty or identical, a line over `MAX_TOKENS` (a minified or
+      generated line, which is also where the O(n·m) matrix would hurt), a
+      whitespace-only run, or a pair below `MIN_SIMILARITY` shared bytes, where
+      the two lines are a wholesale rewrite and the row's add/remove colour
+      already says everything. Wired into both renderers: the unified one
+      precomputes per-hunk pairings, while `side_by_side_rows` derives it in
+      place from the `paired_change_row` flag it already computed — no new
+      parameters on an already-12-argument function. **Ignore whitespace:** `W`
+      toggles `git diff -w` (`--ignore-all-space`) in the final review and the
+      plain viewer; both footers show `ws: shown` / `ws: ignored`. This changes
+      what git *emits* rather than how it is drawn, so it re-runs the loader
+      through the same reload path a base-ref change uses — which also
+      re-applies context expansion and re-anchors comments for free.
+      `with_whitespace_flag` splices the flag into each `git diff` argument list
+      (`src/diff.rs`), so the default invocation is byte-for-byte what it always
+      was; `load_snapshot` / `load_commit_snapshot` gained the flag as an
+      explicit parameter rather than a hidden default.
+- [x] Global comment navigation across files + undo last verdict — two
+      independent gaps in moving around a finished-ish review. **Comment
+      navigation:** `Tab` only ever cycled AI *drafts* within the current file,
+      so there was no way to sweep every annotation before finishing without
+      re-finding each file by hand. `}` / `{` now move the line cursor to the
+      next / previous comment (draft or kept) anywhere in the review, wrapping
+      at either end, and work both at the top level and with the cursor already
+      active. `review_comment_stops` (`src/app/review.rs`) builds the itinerary
+      as `(file index, first covered line index)` pairs over
+      `visible_file_indices()` — so the active `F` filter narrows the walk the
+      same way it narrows `n`/`p` — in file order and then diff-line order,
+      computing `addressable_lines()` only for files that actually carry a
+      comment. With the cursor off, forward starts *before* the current file's
+      first comment and backward *after* its last, so the first press lands
+      inside the file already on screen rather than skipping past it; the cursor
+      is then set unconditionally (after `on_file_changed`, which would
+      otherwise reset it to line 0), so jumping also turns the cursor on. An
+      anchor-lost comment has no line to park on, so it's skipped and counted —
+      the message reads `Comment 3/7 — src/foo.rs:42 (1 anchor-lost skipped)`
+      rather than the jump silently going nowhere. **Undo:** `U` takes back the
+      last explicit verdict (`a`, `s`, or a typed `r` rejection) and returns the
+      selection to that file, since all three advance away from it — an
+      accidental `a` previously meant hunting the file down in the list again.
+      `push_verdict_undo` (`src/app/state.rs`) records the file's prior
+      `ReviewDecision` *and* whether it was in `auto_rejected`, so undoing a
+      verdict that overrode a comment-implied rejection restores the
+      implicit/explicit distinction rather than pinning it as explicit. A press
+      that changes nothing (re-approving an approved file) isn't recorded, so
+      `U` is never a silent no-op. It's a stack (`VERDICT_UNDO_LIMIT` = 50), so
+      repeated presses walk back through successive verdicts; it is deliberately
+      session-only — an undo corrects the key you just pressed, so unlike the
+      verdicts themselves it doesn't survive a pause/resume. Restoring a verdict
+      can push the file back out of the active filter, and the message says so.
+      Both footers gained hints, each shown only once it means something (`{`/`}`
+      once the review has a comment, `U` once there's a verdict to take back).
+      `diff_review_jump_comment` / `diff_review_undo_verdict` in
+      `src/app/review.rs`; key dispatch in `src/handlers/diff.rs`.
+- [x] Open at cursored line in `$EDITOR` — press `E` in Final Review to suspend
+      the TUI and open the current file in `$VISUAL` / `$EDITOR` (falling back
+      to `vi`), placing the cursor on the line under the review cursor. With the
+      cursor off it opens at the first hunk instead, so the key is useful before
+      entering cursor mode. Because the cursor indexes `addressable_lines()`,
+      which includes removed lines that no longer exist in the working copy, a
+      cursor parked on a deletion lands on the nearest surviving line above it
+      (else below) rather than at the top of the file — `editor_target_line`
+      in `src/app/review.rs`. The target file is validated through the existing
+      `guarded_worktree_file` (regular file, inside the worktree, not a
+      symlink); a deleted or binary file reports why instead of being a silent
+      no-op, and the footer hint is hidden for those files rather than
+      advertising a key that can only explain itself.
+      Line-number syntax is per editor (`editor_invocation`): `+N file` for the
+      vi family / nano / emacs / kak / micro, `--goto path:N` (plus an implied
+      `--wait`, since a GUI editor that forks would return straight to a
+      redrawn TUI) for VS Code and its forks, `path:N` for helix / sublime /
+      zed, and — deliberately — plain `path` for an editor AMF doesn't
+      recognise, since an unsupported flag would be read as a second filename
+      and open an empty buffer called `+42`. An `$EDITOR` carrying its own
+      flags (`emacsclient -nw`) is preserved.
+      Resolution happens in the app layer, but the suspend/run/restore is the
+      main loop's (`run_pending_editor`, `src/main.rs`), which owns raw mode
+      and the alternate screen — the app hands over a `PendingEditorOpen`
+      (`src/app/state.rs`) and the loop drains it. Teardown/restore mirrors
+      `main`'s setup exactly, so the editor sees the terminal it would have
+      had if AMF were never started, and the screen is always restored before
+      any error is reported. On return, the file's size/mtime is compared
+      against a fingerprint taken before handing over; if the reviewer actually
+      changed something, the diff is reloaded through the ordinary
+      `refresh_diff_viewer` path — which re-anchors comments for free — rather
+      than leaving stale hunks under the existing annotations.
+- [x] `?` help overlay for review mode — press `?` in Final Review (at the top
+      level or with the line cursor active) for a scrollable, read-only listing
+      of the whole review key surface, grouped by what the reviewer is doing:
+      Verdicts, Comments, Line cursor, Moving around, Reading the diff, Context
+      and AI passes, and Finishing. It reuses the modal shape the review already
+      has — `centered_rect` + `draw_modal_overlay`, `j`/`k`, PageUp/PageDown and
+      `g`/`G` to scroll, `?`/`q`/`Esc` to close — and takes full key precedence
+      while open (checked first in `handle_diff_viewer_key`, before the history,
+      overview, interdiff and summary modals), so a key pressed to dismiss it
+      can never also approve a file or start the finish flow. Content lives in
+      one `REVIEW_HELP_SECTIONS` table (`src/ui/dialogs/diff.rs`) next to the
+      footer it backfills, and the passes that cost tokens (`w`, `A`, `O`) are
+      labeled as such while `I` is explicitly marked local and free.
+      Discoverability drove one non-obvious placement: the `? keys` footer hint
+      leads the review footer's *first* line rather than joining the second,
+      because that first line is dense enough to wrap into both footer rows on a
+      narrow terminal and clip the second — and in cursor mode, where the two
+      lines swap roles, it rides on the short position-label line instead. A
+      render test asserts the hint survives at both 200 and 90 columns, with and
+      without the cursor. Scroll clamps to the real rendered height via
+      `help_rendered_lines` / `help_view_height`, recorded by the renderer each
+      frame exactly like the changeset-overview modal, and reopening always
+      lands back at the top. Review-only: the plain diff viewer's key surface
+      still fits in its own footer, so `?` there is inert.
+      `open_review_help` / `review_help_scroll_*` in `src/app/review.rs`.
+- [ ] The review footer's second hint row is clipped on ordinary terminals —
+      found while capturing the `?` overlay above. `draw_review_footer` renders
+      two `Line`s into a 2-row area with `Wrap { trim: false }`, but the first
+      line (verdicts, comments, navigation, layout, whitespace, walkthrough, AI
+      review, overview, history, undecided count) is long enough to wrap into
+      *both* rows on its own at 160 columns, so the second line — `j/k scroll`,
+      `b base ref`, `F filter`, `t target`, `X apply-at-finish`, `q finish`,
+      `Esc pause` — is silently dropped and never drawn. Those are exactly the
+      round-level keys a reviewer needs and the hardest to guess. The `?`
+      overlay makes them discoverable, but the footer itself is still lying by
+      omission, and the drop is width-dependent so it can't be reasoned about
+      from the code. Options worth weighing: measure the wrapped height and
+      grow the footer to fit (it already grows for the feedback editor and the
+      comment peek box), prioritise the hints and drop the least important ones
+      explicitly rather than by accident, or split the two rows into
+      independently-rendered areas so neither can eat the other. Any fix wants
+      a render test at a few widths, since the bug is invisible at the width
+      the existing tests use. See
+      `docs/screenshots/final-review-help-overlay/01-review-footer-help-hint.png`.
 - [ ] Mouse support in the diff viewer (file list, patch scroll,
       comment cursor)
 

@@ -131,12 +131,16 @@ impl App {
             .map(|file| file.path.clone());
         let selected_index = state.selected_file;
         let snapshot = match &state.scope {
-            DiffScope::CurrentChanges => {
-                crate::diff::load_snapshot(&state.workdir, state.override_base_ref.as_deref())
-            }
-            DiffScope::Commit(commit) => {
-                crate::diff::load_commit_snapshot(&state.workdir, &commit.hash)
-            }
+            DiffScope::CurrentChanges => crate::diff::load_snapshot(
+                &state.workdir,
+                state.override_base_ref.as_deref(),
+                state.ignore_whitespace,
+            ),
+            DiffScope::Commit(commit) => crate::diff::load_commit_snapshot(
+                &state.workdir,
+                &commit.hash,
+                state.ignore_whitespace,
+            ),
         };
         match snapshot {
             Ok(snapshot) => {
@@ -149,6 +153,7 @@ impl App {
                     .and_then(|path| state.files.iter().position(|file| file.path == path))
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
                 state.patch_scroll = 0;
+                state.reapply_context_expansion();
                 if state.review {
                     state.review_notes = crate::app::review::load_review_notes(&state.workdir);
                 }
@@ -507,6 +512,231 @@ impl App {
         }
     }
 
+    /// Toggle `git diff -w`. This changes what git *emits*, not just how it's
+    /// drawn, so it reloads the snapshot through the same path a base-ref
+    /// change uses — which also re-applies context expansion and re-anchors
+    /// comments.
+    pub fn diff_viewer_toggle_ignore_whitespace(&mut self) {
+        let enabled = match &mut self.mode {
+            AppMode::DiffViewer(state) => {
+                state.ignore_whitespace = !state.ignore_whitespace;
+                state.ignore_whitespace
+            }
+            _ => return,
+        };
+        self.message = Some(if enabled {
+            "Ignoring whitespace-only changes (git diff -w)".to_string()
+        } else {
+            "Showing whitespace changes".to_string()
+        });
+        self.refresh_diff_viewer();
+    }
+
+    /// Context lines currently rendered around the selected file's hunks.
+    /// `None` when no file is selected (or the viewer isn't open).
+    pub fn diff_viewer_context_level(&self) -> Option<usize> {
+        let AppMode::DiffViewer(state) = &self.mode else {
+            return None;
+        };
+        let file = state.files.get(state.selected_file)?;
+        Some(
+            state
+                .context_expansion
+                .get(&file.path)
+                .copied()
+                .unwrap_or(crate::diff::DIFF_DEFAULT_CONTEXT),
+        )
+    }
+
+    /// Show more context around the selected file's hunks, one ladder step at a
+    /// time up to the whole file.
+    pub fn diff_viewer_expand_context(&mut self) {
+        self.step_diff_context(1);
+    }
+
+    /// Show less context, back down to git's default.
+    pub fn diff_viewer_collapse_context(&mut self) {
+        self.step_diff_context(-1);
+    }
+
+    /// Jump straight between the whole file and the default context.
+    pub fn diff_viewer_toggle_whole_file_context(&mut self) {
+        let next = match self.diff_viewer_context_level() {
+            None => return,
+            Some(usize::MAX) => crate::diff::DIFF_DEFAULT_CONTEXT,
+            Some(_) => usize::MAX,
+        };
+        self.set_diff_context(next);
+    }
+
+    fn step_diff_context(&mut self, delta: isize) {
+        let Some(current) = self.diff_viewer_context_level() else {
+            return;
+        };
+        let index = CONTEXT_STEPS
+            .iter()
+            .position(|&step| step == current)
+            // A level that isn't on the ladder can only come from a future
+            // caller; step from the nearest rung at or above it.
+            .or_else(|| CONTEXT_STEPS.iter().position(|&step| step >= current))
+            .unwrap_or(0);
+        let Some(next) = index
+            .checked_add_signed(delta)
+            .and_then(|next| CONTEXT_STEPS.get(next))
+        else {
+            self.message = Some(if delta < 0 {
+                "Already showing the default 3 lines of context".to_string()
+            } else {
+                "Already showing the whole file".to_string()
+            });
+            return;
+        };
+        self.set_diff_context(*next);
+    }
+
+    /// Re-render the selected file's hunks with `level` lines of context
+    /// (`usize::MAX` = the whole file), keeping the line cursor and any range
+    /// selection parked on the same diff lines.
+    ///
+    /// Narrowing the context drops lines, so a cursor or selection endpoint can
+    /// point at a line the rebuilt hunks no longer show. Rather than let a later
+    /// comment attach somewhere the reviewer never pointed at, a live range
+    /// selection blocks the change outright and a lone cursor is moved to the
+    /// nearest surviving line and reported.
+    fn set_diff_context(&mut self, level: usize) {
+        let mut message = None;
+        let mut rebuilt_hunks = false;
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let idx = state.selected_file;
+            let rebuilt = match state.files.get(idx) {
+                None => None,
+                Some(file) if !file.can_expand_context() => {
+                    message = Some(format!(
+                        "{} has no surrounding context to show — the diff already covers it",
+                        file.path
+                    ));
+                    None
+                }
+                Some(file) => match file.hunks_with_context(level) {
+                    Some(hunks) => {
+                        // Comment anchors are line numbers and survive
+                        // untouched; the cursor and selection anchor are
+                        // indices into `addressable_lines()`, which expansion
+                        // renumbers, so resolve them to locations and re-find
+                        // them in the hunks we're about to install.
+                        let locs = file.addressable_lines();
+                        let next_locs = crate::diff::addressable_lines_in(&hunks);
+                        let cursor_loc = state.comment_cursor.and_then(|i| locs.get(i).copied());
+                        let anchor_loc = state.comment_anchor.and_then(|i| locs.get(i).copied());
+                        let survives = |loc: Option<crate::diff::DiffLineLocation>| {
+                            loc.is_some_and(|loc| next_locs.contains(&loc))
+                        };
+
+                        if state.comment_anchor.is_some()
+                            && !(survives(cursor_loc) && survives(anchor_loc))
+                        {
+                            // Both ends of a range have to land on the lines the
+                            // reviewer picked, or the range means something else.
+                            message = Some(
+                                "Selected lines would be hidden at that context level — clear the selection (Esc) first".to_string(),
+                            );
+                            None
+                        } else {
+                            let cursor = match (state.comment_cursor, cursor_loc) {
+                                (None, _) => CursorPlacement::Inactive,
+                                (Some(_), Some(loc)) => {
+                                    match next_locs.iter().position(|candidate| *candidate == loc) {
+                                        Some(index) => CursorPlacement::Kept(index),
+                                        None => match nearest_location(&next_locs, loc) {
+                                            Some((index, landed)) => {
+                                                CursorPlacement::Moved(index, landed)
+                                            }
+                                            None => CursorPlacement::Inactive,
+                                        },
+                                    }
+                                }
+                                // A stale index: nothing to preserve, so park on
+                                // the first line still rendered.
+                                (Some(_), None) => next_locs
+                                    .first()
+                                    .map(|loc| CursorPlacement::Moved(0, *loc))
+                                    .unwrap_or(CursorPlacement::Inactive),
+                            };
+                            let anchor =
+                                anchor_loc.and_then(|loc| next_locs.iter().position(|c| *c == loc));
+                            Some((file.path.clone(), hunks, cursor, anchor))
+                        }
+                    }
+                    None => {
+                        message = Some(format!(
+                            "Can't change context for {} — its diff no longer matches the file's contents",
+                            file.path
+                        ));
+                        None
+                    }
+                },
+            };
+
+            if let Some((path, hunks, cursor, anchor)) = rebuilt {
+                state.files[idx].hunks = hunks;
+                rebuilt_hunks = true;
+                if level == crate::diff::DIFF_DEFAULT_CONTEXT {
+                    state.context_expansion.remove(&path);
+                } else {
+                    state.context_expansion.insert(path, level);
+                }
+
+                let mut moved_to = None;
+                match cursor {
+                    CursorPlacement::Inactive => state.comment_cursor = None,
+                    CursorPlacement::Kept(index) => {
+                        state.comment_cursor = Some(index);
+                        state.cursor_sync_to_view = true;
+                    }
+                    CursorPlacement::Moved(index, landed) => {
+                        state.comment_cursor = Some(index);
+                        state.cursor_sync_to_view = true;
+                        moved_to = Some(landed);
+                    }
+                }
+                if state.comment_anchor.is_some() {
+                    state.comment_anchor = anchor;
+                }
+                // Search matches are indices too — recompute them against the
+                // rebuilt hunks rather than leaving stale rows highlighted.
+                if !state.search_query.is_empty() {
+                    let matches = crate::app::review::compute_search_matches(
+                        &state.files[idx],
+                        &state.search_query,
+                    );
+                    state.search_match_pos = state
+                        .comment_cursor
+                        .and_then(|cursor| matches.iter().position(|&m| m == cursor));
+                    state.search_matches = matches;
+                }
+                message = Some(match moved_to {
+                    Some(landed) => format!(
+                        "{} — cursor moved to {}, its line is no longer shown",
+                        context_level_message(level),
+                        describe_location(landed)
+                    ),
+                    None => context_level_message(level),
+                });
+            }
+        }
+        // The rebuilt hunks may render shorter than the ones they replaced, so a
+        // viewport parked near the old bottom would show blank rows.
+        if rebuilt_hunks {
+            let max_scroll = self.diff_viewer_patch_line_count().saturating_sub(1);
+            if let AppMode::DiffViewer(state) = &mut self.mode {
+                state.patch_scroll = state.patch_scroll.min(max_scroll);
+            }
+        }
+        if message.is_some() {
+            self.message = message;
+        }
+    }
+
     pub fn diff_viewer_focus(&self) -> Option<DiffViewerFocus> {
         match &self.mode {
             AppMode::DiffViewer(state) => Some(state.focus.clone()),
@@ -595,7 +825,7 @@ impl App {
         Some((view, workdir))
     }
 
-    fn diff_viewer_patch_line_count(&self) -> usize {
+    pub(crate) fn diff_viewer_patch_line_count(&self) -> usize {
         match &self.mode {
             AppMode::DiffViewer(state) => state
                 .files
@@ -628,6 +858,76 @@ impl App {
                 .unwrap_or(0),
             _ => 0,
         }
+    }
+}
+
+/// The context ladder the expand/collapse keys walk: git's default up to the
+/// whole file.
+const CONTEXT_STEPS: [usize; 5] = [crate::diff::DIFF_DEFAULT_CONTEXT, 10, 25, 50, usize::MAX];
+
+/// Where the review line cursor ends up after the hunks are rebuilt at a new
+/// context level.
+enum CursorPlacement {
+    /// No cursor was active (or nothing is addressable any more).
+    Inactive,
+    /// The same diff line, at its new index.
+    Kept(usize),
+    /// Its line is gone; parked on this index, showing that location.
+    Moved(usize, crate::diff::DiffLineLocation),
+}
+
+/// The rendered line closest to `target` for when `target` itself is no longer
+/// rendered. Distance is measured on whichever side both locations name, so a
+/// dropped context line falls back to its nearest neighbour in either file.
+fn nearest_location(
+    locs: &[crate::diff::DiffLineLocation],
+    target: crate::diff::DiffLineLocation,
+) -> Option<(usize, crate::diff::DiffLineLocation)> {
+    locs.iter()
+        .enumerate()
+        .filter_map(|(index, loc)| location_distance(*loc, target).map(|d| (d, index, *loc)))
+        .min_by_key(|&(distance, index, _)| (distance, index))
+        .map(|(_, index, loc)| (index, loc))
+}
+
+fn location_distance(
+    a: crate::diff::DiffLineLocation,
+    b: crate::diff::DiffLineLocation,
+) -> Option<usize> {
+    let old = a.old_line.zip(b.old_line).map(|(x, y)| x.abs_diff(y));
+    let new = a.new_line.zip(b.new_line).map(|(x, y)| x.abs_diff(y));
+    match (old, new) {
+        (Some(old), Some(new)) => Some(old.min(new)),
+        (Some(distance), None) | (None, Some(distance)) => Some(distance),
+        (None, None) => None,
+    }
+}
+
+/// How a diff line reads in a status message: its current-file number when it
+/// has one, else the base-file number of a removed line.
+fn describe_location(loc: crate::diff::DiffLineLocation) -> String {
+    match (loc.new_line, loc.old_line) {
+        (Some(new), _) => format!("line {new}"),
+        (None, Some(old)) => format!("base line {old}"),
+        (None, None) => "the first diff line".to_string(),
+    }
+}
+
+fn context_level_message(level: usize) -> String {
+    match level {
+        usize::MAX => "Showing the whole file".to_string(),
+        crate::diff::DIFF_DEFAULT_CONTEXT => {
+            format!("Context: {level} lines (default)")
+        }
+        _ => format!("Context: {level} lines"),
+    }
+}
+
+/// Short label for the footer, e.g. `context:10` / `context:file`.
+pub(crate) fn context_level_label(level: usize) -> String {
+    match level {
+        usize::MAX => "file".to_string(),
+        _ => level.to_string(),
     }
 }
 
@@ -672,9 +972,30 @@ fn side_by_side_line_count(file: &crate::diff::DiffFile) -> usize {
     count
 }
 
+fn unified_line_count(file: &crate::diff::DiffFile) -> usize {
+    if file.is_binary || file.hunks.is_empty() {
+        return file.patch.lines().count();
+    }
+    // The unified renderer emits the prologue verbatim, then one row per hunk
+    // header and hunk line — identical to the raw patch's line count until
+    // context expansion rewrites the hunks, which `file.patch` deliberately
+    // doesn't track (it feeds the review fingerprint and the headless prompts).
+    let prologue = file
+        .patch
+        .lines()
+        .take_while(|line| !line.starts_with("@@ "))
+        .count();
+    prologue
+        + file
+            .hunks
+            .iter()
+            .map(|hunk| 1 + hunk.lines.len())
+            .sum::<usize>()
+}
+
 fn diff_patch_line_count(file: &crate::diff::DiffFile, layout: DiffViewerLayout) -> usize {
     match layout {
-        DiffViewerLayout::Unified => file.patch.lines().count(),
+        DiffViewerLayout::Unified => unified_line_count(file),
         DiffViewerLayout::SideBySide => side_by_side_line_count(file),
     }
 }

@@ -79,6 +79,7 @@ pub use self::setup::load_config;
 pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;
 pub(crate) use config_wizard::agent_toggles_to_allowed;
+pub(crate) use diff::context_level_label;
 pub(crate) use session_ops::session_kind_for_agent;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};
@@ -277,6 +278,7 @@ pub enum LocalCommand {
     OpenDebugLog,
     RefreshNotifications,
     CheckPendingDiffReview,
+    PlanInterview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -457,9 +459,9 @@ pub struct AppConfig {
     /// for every review action listed on [`ReviewAction`], independent of
     /// whatever model the feature's own interactive session runs. Format
     /// depends on the harness running the review (a bare name/alias for
-    /// Claude/Codex, `provider/model` for Opencode; not applied for Pi, whose
-    /// headless model flag isn't verified). `None` (default) passes no
-    /// explicit model, so the harness's own default model applies. Overridden
+    /// Claude/Codex/Pi, `provider/model` for Opencode). `None` (default)
+    /// passes no explicit model, so the harness's own default model applies.
+    /// Overridden
     /// per-action by `review_models`; see [`AppConfig::review_model_for`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_model: Option<String>,
@@ -734,6 +736,16 @@ pub struct App {
     /// so a late review can never be mistaken for a synthesis result and
     /// overwrite the plan it was only meant to comment on.
     pub plan_interview_critique_bg: Option<Receiver<Result<String>>>,
+    /// Receiver for a user-directed plan revision. This pass is separate from
+    /// synthesis and critique because it may inspect the feature workdir with
+    /// read-only tools and is only valid for its dedicated loading phase.
+    pub plan_interview_directed_feedback_bg: Option<Receiver<Result<String>>>,
+    /// Receiver for the optional context-isolated investigation workflow. Its
+    /// worker runs one fresh read-only context per focus, then a separate
+    /// no-tools merge context, and returns the proposed revised plan alongside
+    /// the focuses whose investigator failed.
+    pub plan_interview_investigation_bg:
+        Option<Receiver<Result<crate::plan_interview::PlanInvestigationOutcome>>>,
     /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
@@ -804,6 +816,10 @@ pub struct App {
     /// once that session is observed thinking-then-idle, at which point a
     /// "fixes ready — re-review?" notification is raised.
     pub awaiting_review_fixes: HashMap<String, AwaitingReviewFix>,
+    /// A file the reviewer asked to open in `$VISUAL`/`$EDITOR`. Set by the
+    /// review viewer and drained by the main loop, which suspends the TUI,
+    /// runs the editor, and restores the screen.
+    pub pending_editor: Option<PendingEditorOpen>,
     pub ipc_tool_sessions: std::collections::HashSet<String>,
     /// Feature-session IDs currently reported as thinking by hook/plugin IPC.
     /// Unlike `ipc_thinking_sessions`, this distinguishes agent windows that
@@ -1008,7 +1024,11 @@ impl App {
             // while plan-interview AI work runs in the background.
             AppMode::PlanInterview(state) => matches!(
                 state.phase,
-                PlanInterviewPhase::AiLoading | PlanInterviewPhase::SynthesisLoading
+                PlanInterviewPhase::AiLoading
+                    | PlanInterviewPhase::SynthesisLoading
+                    | PlanInterviewPhase::CritiqueLoading
+                    | PlanInterviewPhase::DirectedFeedbackLoading
+                    | PlanInterviewPhase::InvestigationLoading
             ),
             _ => false,
         };
@@ -2137,6 +2157,8 @@ impl App {
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
+            plan_interview_directed_feedback_bg: None,
+            plan_interview_investigation_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
@@ -2155,6 +2177,7 @@ impl App {
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             awaiting_review_fixes: HashMap::new(),
+            pending_editor: None,
             ipc_tool_sessions: std::collections::HashSet::new(),
             ipc_thinking_feature_sessions: std::collections::HashSet::new(),
             ipc_tool_feature_sessions: std::collections::HashSet::new(),
@@ -2351,6 +2374,8 @@ impl App {
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
+            plan_interview_directed_feedback_bg: None,
+            plan_interview_investigation_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
@@ -2369,6 +2394,7 @@ impl App {
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             awaiting_review_fixes: HashMap::new(),
+            pending_editor: None,
             ipc_tool_sessions: std::collections::HashSet::new(),
             ipc_thinking_feature_sessions: std::collections::HashSet::new(),
             ipc_tool_feature_sessions: std::collections::HashSet::new(),
@@ -3065,16 +3091,43 @@ impl App {
     }
 
     pub fn start_theme_picker(&mut self) {
-        let themes = crate::theme::Theme::list();
-        let selected = themes
-            .iter()
-            .position(|t| *t == self.config.theme)
-            .unwrap_or(0);
+        let entries = ThemePickerEntry::build();
         let original_theme = self.config.theme;
+
+        // If the active theme lives inside a group, land directly on its
+        // second screen with that theme pre-selected instead of forcing the
+        // user to drill back in.
+        let mut selected = 0;
+        let mut group = None;
+        for (i, entry) in entries.iter().enumerate() {
+            match entry {
+                ThemePickerEntry::Theme(name) if *name == original_theme => {
+                    selected = i;
+                    break;
+                }
+                ThemePickerEntry::Group { label, themes } if themes.contains(&original_theme) => {
+                    selected = i;
+                    let group_selected = themes
+                        .iter()
+                        .position(|t| *t == original_theme)
+                        .unwrap_or(0);
+                    group = Some(ThemePickerGroupState {
+                        label,
+                        themes: themes.clone(),
+                        selected: group_selected,
+                    });
+                    break;
+                }
+                _ => {}
+            }
+        }
+
         self.mode = AppMode::ThemePicker(ThemePickerState {
             selected,
-            themes,
+            entries,
             original_theme,
+            previewed: original_theme,
+            group,
         });
     }
 

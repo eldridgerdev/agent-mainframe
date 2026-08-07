@@ -51,6 +51,24 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // The review key-help overlay is read-only and captures every key while
+    // open, so a key pressed to dismiss it can never also act on the review
+    // underneath. `?` toggles, matching the dashboard's help overlay.
+    let help_open = matches!(&app.mode, AppMode::DiffViewer(state) if state.help_open);
+    if help_open {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => app.close_review_help(),
+            KeyCode::Char('j') | KeyCode::Down => app.review_help_scroll_down(PATCH_SCROLL_STEP),
+            KeyCode::Char('k') | KeyCode::Up => app.review_help_scroll_up(PATCH_SCROLL_STEP),
+            KeyCode::PageDown => app.review_help_scroll_down(PATCH_PAGE_STEP),
+            KeyCode::PageUp => app.review_help_scroll_up(PATCH_PAGE_STEP),
+            KeyCode::Home | KeyCode::Char('g') => app.review_help_scroll_top(),
+            KeyCode::End | KeyCode::Char('G') => app.review_help_scroll_bottom(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // The review timeline/history browser is read-only and captures every key
     // while open. Horizontal navigation changes rounds; vertical navigation
     // scrolls the selected round's independently rendered markdown body.
@@ -288,6 +306,16 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.diff_review_jump_next_draft();
                     return Ok(());
                 }
+                // Tab stays drafts-in-this-file; `{`/`}` walk every comment in
+                // the review, so the cursor can sweep the whole annotation set.
+                KeyCode::Char('}') => {
+                    app.diff_review_jump_comment(1);
+                    return Ok(());
+                }
+                KeyCode::Char('{') => {
+                    app.diff_review_jump_comment(-1);
+                    return Ok(());
+                }
                 KeyCode::Enter | KeyCode::Char('C') => {
                     app.diff_review_start_line_comment();
                     return Ok(());
@@ -302,6 +330,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
                 KeyCode::Char('R') => {
                     app.diff_review_toggle_resolved();
+                    return Ok(());
+                }
+                KeyCode::Char('E') => {
+                    app.diff_review_open_in_editor();
                     return Ok(());
                 }
                 KeyCode::Esc if app.diff_search_active() => {
@@ -319,12 +351,25 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         match code {
+            // Reached from the line cursor too: the cursor-active block above
+            // doesn't claim `?`, so the overlay is one key away from anywhere in
+            // the review that isn't already a text input or a modal.
+            KeyCode::Char('?') => {
+                app.open_review_help();
+                return Ok(());
+            }
             KeyCode::Char('H') => {
                 app.open_review_history();
                 return Ok(());
             }
             KeyCode::Char('c') => {
                 app.diff_review_toggle_line_cursor();
+                return Ok(());
+            }
+            // Without the cursor active this still opens the file, just at the
+            // first hunk rather than a chosen line.
+            KeyCode::Char('E') => {
+                app.diff_review_open_in_editor();
                 return Ok(());
             }
             KeyCode::Char(']') => {
@@ -337,6 +382,24 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             KeyCode::Char('b') => {
                 app.diff_viewer_start_base_ref_edit();
+                return Ok(());
+            }
+            // Widen / narrow the context around each hunk, so the enclosing
+            // function or match arm can be read without leaving the review.
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                app.diff_viewer_expand_context();
+                return Ok(());
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                app.diff_viewer_collapse_context();
+                return Ok(());
+            }
+            KeyCode::Char('*') => {
+                app.diff_viewer_toggle_whole_file_context();
+                return Ok(());
+            }
+            KeyCode::Char('W') => {
+                app.diff_viewer_toggle_ignore_whitespace();
                 return Ok(());
             }
             KeyCode::Char('e') => {
@@ -411,6 +474,18 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.diff_review_jump_next_undecided();
                 return Ok(());
             }
+            KeyCode::Char('U') => {
+                app.diff_review_undo_verdict();
+                return Ok(());
+            }
+            KeyCode::Char('}') => {
+                app.diff_review_jump_comment(1);
+                return Ok(());
+            }
+            KeyCode::Char('{') => {
+                app.diff_review_jump_comment(-1);
+                return Ok(());
+            }
             KeyCode::Char('F') => {
                 app.diff_review_cycle_file_filter();
                 return Ok(());
@@ -453,6 +528,18 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('i') => {
             app.open_syntax_language_picker_for_selected_diff_file();
+        }
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            app.diff_viewer_expand_context();
+        }
+        KeyCode::Char('-') | KeyCode::Char('_') => {
+            app.diff_viewer_collapse_context();
+        }
+        KeyCode::Char('*') => {
+            app.diff_viewer_toggle_whole_file_context();
+        }
+        KeyCode::Char('W') => {
+            app.diff_viewer_toggle_ignore_whitespace();
         }
         // In the file list, j/k walk *tree rows* (directories included); n/p and
         // the verdict-advance paths still move file-to-file.
@@ -747,6 +834,126 @@ index 1111111..2222222 100644
  fn delta() {}
 ";
 
+    fn help_open(app: &App) -> bool {
+        matches!(&app.mode, AppMode::DiffViewer(state) if state.help_open)
+    }
+
+    #[test]
+    fn question_mark_toggles_the_review_help_overlay() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        assert!(help_open(&app));
+
+        // `?` closes it again, like the dashboard overlay.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        assert!(!help_open(&app));
+    }
+
+    #[test]
+    fn help_overlay_opens_and_closes_with_the_line_cursor_active() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_patch(dir.path(), SEARCH_PATCH);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        let cursor_before = match &app.mode {
+            AppMode::DiffViewer(state) => state.comment_cursor,
+            _ => unreachable!(),
+        };
+        assert!(cursor_before.is_some());
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        assert!(help_open(&app));
+
+        // Esc closes the overlay without also unwinding cursor mode underneath.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        assert!(!help_open(&app));
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.comment_cursor, cursor_before),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn help_overlay_swallows_review_keys_while_open() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        // `a` would approve, `n` would advance, `q` would start the finish flow.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.help_open);
+                assert!(state.decisions.is_empty());
+                assert_eq!(state.selected_file, 0);
+            }
+            _ => unreachable!(),
+        }
+
+        // `q` closes the overlay rather than opening the pre-finish summary.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.help_open);
+                assert!(!state.summary_open);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn help_overlay_scroll_clamps_to_the_rendered_body() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+
+        // Stand in for what the renderer records each frame.
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.help_rendered_lines = 40;
+            state.help_view_height = 10;
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('G'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.help_scroll, 30),
+            _ => unreachable!(),
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.help_scroll, 30),
+            _ => unreachable!(),
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('g'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.help_scroll, 0),
+            _ => unreachable!(),
+        }
+
+        // Reopening always lands back at the top.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('G'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.help_scroll, 0),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn question_mark_is_inert_in_the_plain_diff_viewer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.review = false;
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        assert!(!help_open(&app));
+    }
+
     #[test]
     fn history_navigation_loads_archive_only_after_live_rounds() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -830,6 +1037,78 @@ oldest
             ),
             _ => panic!("not in review"),
         }
+    }
+
+    /// A review app whose file carries the blobs context expansion needs: a
+    /// 30-line file with line 15 rewritten.
+    fn make_review_app_with_expandable_file(workdir: &Path) -> App {
+        let old: String = (1..=30).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l15\n", "l15 changed\n");
+        let mut app = make_review_app_with_patch(
+            workdir,
+            "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -12,7 +12,7 @@
+ l12
+ l13
+ l14
+-l15
++l15 changed
+ l16
+ l17
+ l18
+",
+        );
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[0].old_content = Some(old);
+            state.files[0].new_content = Some(new);
+        }
+        app
+    }
+
+    fn context_hunk_len(app: &App) -> usize {
+        match &app.mode {
+            AppMode::DiffViewer(state) => state.files[0].hunks[0].old_lines,
+            _ => panic!("not in the diff viewer"),
+        }
+    }
+
+    #[test]
+    fn plus_and_minus_step_the_context_in_final_review() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_expandable_file(dir.path());
+        assert_eq!(context_hunk_len(&app), 7);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('+'))).unwrap();
+        assert_eq!(context_hunk_len(&app), 21);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('-'))).unwrap();
+        assert_eq!(context_hunk_len(&app), 7);
+
+        // `*` jumps straight to the whole file and back.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('*'))).unwrap();
+        assert_eq!(context_hunk_len(&app), 30);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('*'))).unwrap();
+        assert_eq!(context_hunk_len(&app), 7);
+    }
+
+    #[test]
+    fn context_keys_still_work_with_the_line_cursor_active() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_expandable_file(dir.path());
+
+        // `c` activates the cursor; the cursor-mode block must not swallow the
+        // context keys, since widening context is most useful while reading a
+        // specific line.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.comment_cursor.is_some()));
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('='))).unwrap();
+        assert_eq!(context_hunk_len(&app), 21);
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.comment_cursor.is_some()));
     }
 
     #[test]
@@ -917,6 +1196,91 @@ oldest
         assert_eq!(selected(&app), 0);
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap();
         assert_eq!(selected(&app), 1);
+    }
+
+    /// A review over `SEARCH_PATCH` whose `a.rs` also exists on disk, since
+    /// opening in `$EDITOR` validates the file in the worktree before asking
+    /// the main loop to suspend.
+    fn make_editor_review_app(workdir: &Path) -> App {
+        std::fs::write(
+            workdir.join("a.rs"),
+            "fn alpha() {}\nfn beta_two() {}\nfn gamma_alpha() {}\nfn delta() {}\n",
+        )
+        .unwrap();
+        make_review_app_with_patch(workdir, SEARCH_PATCH)
+    }
+
+    #[test]
+    fn e_requests_the_editor_at_the_cursored_line() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_editor_review_app(dir.path());
+
+        // Park the cursor on `fn gamma_alpha() {}` — addressable index 3,
+        // new-side line 3.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            assert!(state.comment_cursor.is_some(), "expected cursor mode");
+            state.comment_cursor = Some(3);
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('E'))).unwrap();
+
+        let request = app.pending_editor.as_ref().expect("editor request");
+        assert_eq!(request.path, dir.path().join("a.rs"));
+        assert_eq!(request.workdir, dir.path());
+        assert_eq!(request.line, Some(3));
+        assert_eq!(request.display, "a.rs");
+    }
+
+    #[test]
+    fn e_without_the_line_cursor_opens_at_the_first_hunk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_editor_review_app(dir.path());
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('E'))).unwrap();
+
+        let request = app.pending_editor.as_ref().expect("editor request");
+        assert_eq!(request.line, Some(1));
+    }
+
+    #[test]
+    fn e_reports_instead_of_opening_a_file_with_nothing_on_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_editor_review_app(dir.path());
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[0].status = DiffFileStatus::Deleted;
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('E'))).unwrap();
+
+        assert!(
+            app.pending_editor.is_none(),
+            "a deleted file must not suspend the TUI"
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.contains("deleted")),
+            "expected an explanation, got {:?}",
+            app.message
+        );
+    }
+
+    #[test]
+    fn e_reports_when_the_file_is_missing_from_the_worktree() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_editor_review_app(dir.path());
+        std::fs::remove_file(dir.path().join("a.rs")).unwrap();
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('E'))).unwrap();
+
+        assert!(app.pending_editor.is_none());
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("Cannot open a.rs")),
+            "expected a resolution failure, got {:?}",
+            app.message
+        );
     }
 
     #[test]
@@ -1356,7 +1720,7 @@ oldest
         run_git(workdir, &["checkout", "-q", "-b", "feature"]);
         std::fs::write(workdir.join("a.rs"), "ctx\nadded line\n").unwrap();
 
-        let snapshot = crate::diff::load_snapshot(workdir, None).unwrap();
+        let snapshot = crate::diff::load_snapshot(workdir, None, false).unwrap();
         let mut app = make_review_app(workdir, &["a.rs"]);
         if let AppMode::DiffViewer(state) = &mut app.mode {
             state.files = snapshot.files;
@@ -3036,5 +3400,200 @@ oldest
             state.selected_file, 0,
             "folding must not change the previewed file outside review mode either"
         );
+    }
+
+    /// Two files, each with the same shape: addressable lines are
+    /// 0 context, 1 removed, 2 added, 3 context.
+    const TWO_FILE_PATCH: &str = "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1,3 +1,3 @@
+ fn alpha() {}
+-fn beta() {}
++fn beta_two() {}
+ fn delta() {}
+diff --git a/b.rs b/b.rs
+index 3333333..4444444 100644
+--- a/b.rs
++++ b/b.rs
+@@ -1,3 +1,3 @@
+ fn one() {}
+-fn two() {}
++fn two_prime() {}
+ fn three() {}
+";
+
+    /// A review over `TWO_FILE_PATCH` with one kept comment on the added line
+    /// (addressable index 2) of each file.
+    fn make_review_app_with_comments(workdir: &Path) -> App {
+        let mut app = make_review_app(workdir, &["a.rs"]);
+        let files = crate::diff::parse_unified_diff(TWO_FILE_PATCH).unwrap();
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files = files;
+            for path in ["a.rs", "b.rs"] {
+                state.line_comments.insert(
+                    path.to_string(),
+                    vec![crate::app::LineComment {
+                        location: crate::diff::DiffLineLocation {
+                            old_line: None,
+                            new_line: Some(2),
+                        },
+                        start: None,
+                        text: format!("note on {path}"),
+                        draft: false,
+                        suggestion: None,
+                        severity: crate::app::Severity::default(),
+                        anchor_context: None,
+                        start_anchor_context: None,
+                        anchor_lost: false,
+                        resolved: false,
+                        carried: false,
+                    }],
+                );
+            }
+        }
+        app
+    }
+
+    fn cursor_position(app: &App) -> (usize, Option<usize>) {
+        match &app.mode {
+            AppMode::DiffViewer(state) => (state.selected_file, state.comment_cursor),
+            _ => panic!("left the diff viewer"),
+        }
+    }
+
+    #[test]
+    fn brace_keys_walk_comments_across_files_and_wrap() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_comments(dir.path());
+
+        // With the cursor off, `}` activates it on the current file's comment.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('}'))).unwrap();
+        assert_eq!(cursor_position(&app), (0, Some(2)));
+        // Then across the file boundary — Tab could never leave a.rs.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('}'))).unwrap();
+        assert_eq!(cursor_position(&app), (1, Some(2)));
+        // And wraps back to the first comment in the review.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('}'))).unwrap();
+        assert_eq!(cursor_position(&app), (0, Some(2)));
+        // Backward from the first comment wraps to the last.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('{'))).unwrap();
+        assert_eq!(cursor_position(&app), (1, Some(2)));
+    }
+
+    #[test]
+    fn brace_keys_report_when_the_review_has_no_comments() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_patch(dir.path(), SEARCH_PATCH);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('}'))).unwrap();
+        assert_eq!(cursor_position(&app), (0, None));
+        assert_eq!(
+            app.message.as_deref(),
+            Some("No comments in this review yet")
+        );
+    }
+
+    #[test]
+    fn undo_restores_the_previous_verdict_and_returns_to_the_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        // Approve a.rs: the verdict lands and the selection advances to b.rs.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert_eq!(state.selected_file, 1);
+                assert!(state.decisions.contains_key("a.rs"));
+            }
+            _ => panic!("left the diff viewer"),
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('U'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.decisions.contains_key("a.rs"));
+                assert_eq!(
+                    state.selected_file, 0,
+                    "undo must land back on the file whose verdict it took back"
+                );
+                assert!(state.verdict_undo.is_empty());
+            }
+            _ => panic!("left the diff viewer"),
+        }
+
+        // Nothing left to undo.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('U'))).unwrap();
+        assert_eq!(app.message.as_deref(), Some("No verdict to undo"));
+    }
+
+    #[test]
+    fn undo_walks_back_through_successive_verdicts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // a.rs
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('s'))).unwrap(); // skip b.rs
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('U'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('U'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.decisions.is_empty(), "both verdicts undone");
+                assert_eq!(state.selected_file, 0);
+            }
+            _ => panic!("left the diff viewer"),
+        }
+    }
+
+    #[test]
+    fn undo_restores_a_comment_implied_rejection_as_implicit() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        // a.rs is rejected implicitly by a line comment (see
+        // `diff_review_sync_auto_reject`), not by a typed rejection.
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.decisions.insert(
+                "a.rs".to_string(),
+                crate::app::ReviewDecision::Reject {
+                    feedback: String::new(),
+                    severity: crate::app::Severity::default(),
+                },
+            );
+            state.auto_rejected.insert("a.rs".to_string());
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('U'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(matches!(
+                    state.decisions.get("a.rs"),
+                    Some(crate::app::ReviewDecision::Reject { .. })
+                ));
+                assert!(
+                    state.auto_rejected.contains("a.rs"),
+                    "undo must restore the implicit/explicit distinction, not just the verdict"
+                );
+            }
+            _ => panic!("left the diff viewer"),
+        }
+    }
+
+    #[test]
+    fn repeating_an_identical_verdict_does_not_stack_a_no_op_undo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        // Two approvals of the only file: the second changes nothing, so it must
+        // not leave a `U` that appears to do something.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert_eq!(state.verdict_undo.len(), 1),
+            _ => panic!("left the diff viewer"),
+        }
     }
 }

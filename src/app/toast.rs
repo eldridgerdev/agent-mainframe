@@ -72,6 +72,24 @@ impl App {
         self.push_toast(msg, ToastKind::Error);
     }
 
+    /// Move the shared status message into an expiring toast.
+    ///
+    /// Most modes render `message` in their own status or validation area,
+    /// but pane view has no persistent AMF status line. Consuming it here
+    /// keeps pane feedback visible without leaving text over the harness.
+    pub fn promote_message_to_toast(&mut self) {
+        let Some(message) = self.message.take() else {
+            return;
+        };
+
+        let kind = if message.starts_with("Error:") || message.starts_with("Clipboard error:") {
+            ToastKind::Error
+        } else {
+            ToastKind::Success
+        };
+        self.push_toast(message, kind);
+    }
+
     /// Remove expired toasts. Returns true if any were removed (caller sets force_redraw).
     pub fn tick_toasts(&mut self) -> bool {
         let before = self.toasts.len();

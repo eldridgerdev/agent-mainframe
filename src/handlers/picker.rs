@@ -112,6 +112,11 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                                     app.mode = AppMode::Viewing(view);
                                 }
                             }
+                            crate::app::LocalCommand::PlanInterview => {
+                                // The interview owns the whole screen, so it
+                                // deliberately does not return to `from_view`.
+                                app.start_plan_interview_for_selected_feature();
+                            }
                         },
                         CommandAction::CodexLiveDemo(debug_command) => {
                             if let Some(session_id) =

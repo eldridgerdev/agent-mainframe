@@ -362,6 +362,16 @@ impl AmfDb {
         learning::update_session(&self.conn, session)
     }
 
+    /// Persist the harness / level the user picked mid-session.
+    pub fn set_learning_session_settings(
+        &self,
+        session_id: &str,
+        harness: &crate::project::AgentKind,
+        level: learning::LearningLevel,
+    ) -> Result<()> {
+        learning::set_session_settings(&self.conn, session_id, harness, level)
+    }
+
     pub fn set_learning_onboarding_seen(&self, session_id: &str) -> Result<()> {
         learning::set_onboarding_seen(&self.conn, session_id)
     }

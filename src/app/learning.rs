@@ -22,7 +22,7 @@ use anyhow::Result;
 
 use crate::app::{
     App, AppMode, BrowseScope, LearningAnchor, LearningFocus, LearningLevel, LearningListEntry,
-    LearningListGroup, LearningQa, LearningViewState, Selection,
+    LearningListGroup, LearningQa, LearningQaIntent, LearningViewState, Selection,
 };
 use crate::diff::{DiffFile, DiffLineLocation};
 use crate::project::AgentKind;
@@ -123,6 +123,7 @@ impl LearningViewState {
             answer_rendered_width: 0,
             answer_rendered_lines: Vec::new(),
             harness,
+            harness_picker: None,
             level,
             session_id,
             help_open: false,
@@ -824,6 +825,598 @@ pub fn selection_text(state: &LearningViewState) -> String {
     }
 }
 
+// ── prompt building ──────────────────────────────────────────
+
+/// Lines of surrounding file shown either side of the selection. Enough for
+/// the agent to see what the selection sits inside without carrying a whole
+/// large file into a no-tools prompt.
+const CONTEXT_WINDOW_LINES: usize = 80;
+
+/// Hard cap on the surrounding-context block.
+const MAX_CONTEXT_LINES: usize = 400;
+
+/// Hard cap on the quoted selection. A whole-file anchor on a big file would
+/// otherwise blow the prompt up on its own.
+const MAX_SELECTION_LINES: usize = 400;
+
+/// How many ancestors of a follow-up are carried into its prompt. Deeper
+/// ancestors are dropped oldest-first, which bounds prompt growth at the cost
+/// of context a later question might have depended on (see the plan's
+/// "follow-up threading grows prompts").
+pub const MAX_FOLLOW_UP_DEPTH: usize = 3;
+
+/// One earlier turn carried into a follow-up prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentTurn {
+    pub question: String,
+    pub answer: String,
+}
+
+/// Everything a prompt needs to know about where a question came from. Built
+/// from the overlay state, but a plain value so the builders stay pure and
+/// testable.
+#[derive(Debug, Clone)]
+pub struct LearningPromptContext {
+    pub project_name: String,
+    pub feature_name: String,
+    /// Repo-relative path, `None` for the project anchor.
+    pub file_path: Option<String>,
+    pub anchor: LearningAnchor,
+    /// The text the anchor covers.
+    pub selection_text: String,
+    /// The whole file the selection came from, for surrounding context.
+    pub file_lines: Vec<String>,
+    /// 1-based line the selection starts at, when it has one.
+    pub selection_start_line: Option<usize>,
+    pub question: String,
+    pub intent: LearningQaIntent,
+    pub level: LearningLevel,
+    /// Oldest first. Trimmed to [`MAX_FOLLOW_UP_DEPTH`] by the builder.
+    pub ancestors: Vec<ParentTurn>,
+}
+
+/// Build the prompt for one question.
+///
+/// Structure is fixed: who and where, then what they're looking at, then any
+/// earlier turns, then the question, then the instructions selected by intent
+/// and level. Instructions come last so they're the freshest thing the model
+/// reads.
+pub fn build_prompt(ctx: &LearningPromptContext) -> String {
+    let mut out = String::new();
+
+    out.push_str("You are helping someone read a codebase they did not write.\n\n");
+    out.push_str(&format!("Project: {}\n", ctx.project_name));
+    out.push_str(&format!("Branch / feature: {}\n", ctx.feature_name));
+    if let Some(path) = &ctx.file_path {
+        out.push_str(&format!("File: {path}\n"));
+    }
+    out.push_str(&format!(
+        "They are looking at: {}\n\n",
+        ctx.anchor.describe(ctx.file_path.as_deref())
+    ));
+
+    if matches!(ctx.anchor, LearningAnchor::Project) {
+        out.push_str(
+            "Their question is about the project as a whole, not about one file.\n\n",
+        );
+    } else if !ctx.selection_text.trim().is_empty() {
+        out.push_str("--- The code they are asking about ---\n");
+        out.push_str(&numbered_block(
+            &ctx.selection_text,
+            ctx.selection_start_line.unwrap_or(1),
+            MAX_SELECTION_LINES,
+        ));
+        out.push_str("\n\n");
+    }
+
+    if let Some(context) = surrounding_context(ctx) {
+        out.push_str(&context);
+        out.push_str("\n\n");
+    }
+
+    let ancestors = trimmed_ancestors(&ctx.ancestors);
+    if !ancestors.is_empty() {
+        out.push_str("--- Earlier in this conversation ---\n");
+        for turn in ancestors {
+            out.push_str(&format!("They asked: {}\n", turn.question.trim()));
+            out.push_str(&format!("You answered: {}\n\n", turn.answer.trim()));
+        }
+    }
+
+    out.push_str("--- Their question ---\n");
+    out.push_str(ctx.question.trim());
+    out.push_str("\n\n");
+
+    out.push_str(intent_instructions(ctx.intent));
+    out.push('\n');
+    out.push_str(level_instructions(ctx.level));
+    out
+}
+
+/// What the answer is for. This is the only place intent changes anything
+/// about the run.
+pub fn intent_instructions(intent: LearningQaIntent) -> &'static str {
+    match intent {
+        LearningQaIntent::Explain => {
+            "Explain what this code does and why it is written this way. \
+             Answer the question they actually asked. \
+             Do not propose changes, rewrites, or improvements — they asked to \
+             understand this code, not to change it. If something looks wrong, \
+             you may say so in one sentence, but do not turn the answer into a \
+             proposal.\n"
+        }
+        LearningQaIntent::Action => {
+            "Propose the smallest concrete change that satisfies their request. \
+             Begin your answer with a single line that is an imperative summary \
+             of the change, under 80 characters, with no markdown formatting and \
+             no trailing period — it is used verbatim as the title of a work \
+             item. Then explain what to change, where, and why it is worth \
+             changing. Do not make the change yourself; describe it.\n"
+        }
+    }
+}
+
+/// How much the answer may assume. Prompt wording only — it changes no tools,
+/// no model, and nothing about which files are visible.
+pub fn level_instructions(level: LearningLevel) -> &'static str {
+    match level {
+        LearningLevel::Newcomer => {
+            "Write for someone who has never seen this codebase and may be new \
+             to the language. Define every technical term the first time you use \
+             it. Prefer short paragraphs and concrete examples over abstraction. \
+             Do not assume they know this project's own vocabulary. No question \
+             is too basic — answer it plainly rather than commenting on how basic \
+             it is. Finish with a section headed \"Where to look next\" listing \
+             specific files or symbols and one line on why each is worth \
+             reading.\n"
+        }
+        LearningLevel::Familiar => {
+            "Write for someone comfortable in this language who is new only to \
+             this codebase. Be dense and skip the basics: no glossary, no \
+             definitions of standard language features, and no \"where to look \
+             next\" section.\n"
+        }
+    }
+}
+
+/// The most recent [`MAX_FOLLOW_UP_DEPTH`] turns, oldest first.
+fn trimmed_ancestors(ancestors: &[ParentTurn]) -> &[ParentTurn] {
+    let start = ancestors.len().saturating_sub(MAX_FOLLOW_UP_DEPTH);
+    &ancestors[start..]
+}
+
+/// The file around the selection, line-numbered. Skipped when the anchor is
+/// the whole file (the selection *is* the file) or the project.
+fn surrounding_context(ctx: &LearningPromptContext) -> Option<String> {
+    if ctx.file_lines.is_empty() {
+        return None;
+    }
+    if matches!(
+        ctx.anchor,
+        LearningAnchor::Project | LearningAnchor::File
+    ) {
+        return None;
+    }
+    let path = ctx.file_path.as_deref().unwrap_or("the file");
+    let selection_start = ctx.selection_start_line.unwrap_or(1).max(1);
+    let first = selection_start.saturating_sub(CONTEXT_WINDOW_LINES).max(1);
+    let selection_lines = ctx.selection_text.lines().count().max(1);
+    let last = (selection_start + selection_lines + CONTEXT_WINDOW_LINES)
+        .min(ctx.file_lines.len())
+        .min(first + MAX_CONTEXT_LINES);
+    if last < first {
+        return None;
+    }
+    let block: Vec<String> = ctx.file_lines[first - 1..last].to_vec();
+    Some(format!(
+        "--- Surrounding context: {path}, lines {first}-{last} ---\n{}",
+        numbered_block(&block.join("\n"), first, MAX_CONTEXT_LINES)
+    ))
+}
+
+/// Line-numbered text, truncated with an explicit marker so the model can tell
+/// truncation from the real end of a file.
+fn numbered_block(text: &str, start_line: usize, max_lines: usize) -> String {
+    let mut out = String::new();
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, line) in lines.iter().take(max_lines).enumerate() {
+        out.push_str(&format!("{:>6} | {line}\n", start_line + i));
+    }
+    if lines.len() > max_lines {
+        out.push_str(&format!(
+            "       … {} more lines not shown\n",
+            lines.len() - max_lines
+        ));
+    }
+    // Trailing newline is added by the caller's separator.
+    out.pop();
+    out
+}
+
+impl App {
+    /// Assemble the prompt context for a question asked right now, against the
+    /// overlay's current anchor.
+    pub fn learning_prompt_context(
+        &self,
+        question: &str,
+        intent: LearningQaIntent,
+        ancestors: Vec<ParentTurn>,
+    ) -> Option<LearningPromptContext> {
+        let AppMode::Learning(state) = &self.mode else {
+            return None;
+        };
+        let selection_start_line = match state.anchor {
+            LearningAnchor::Lines { start, .. } => Some(start),
+            LearningAnchor::Hunk { .. } => match anchor_for_cursor(state) {
+                LearningAnchor::Lines { start, .. } => Some(start),
+                _ => None,
+            },
+            _ => Some(1),
+        };
+        Some(LearningPromptContext {
+            project_name: state.project_name.clone(),
+            feature_name: state.feature_name.clone(),
+            file_path: match state.anchor {
+                LearningAnchor::Project => None,
+                _ => state.content_path.clone(),
+            },
+            anchor: state.anchor,
+            selection_text: selection_text(state),
+            file_lines: state.content.clone(),
+            selection_start_line,
+            question: question.to_string(),
+            intent,
+            level: state.level,
+            ancestors,
+        })
+    }
+}
+
+// ── asking (headless, non-blocking) ──────────────────────────
+
+/// A finished headless run, delivered back to the UI thread.
+pub struct LearningAnswer {
+    /// `learning_qa.id` the answer belongs to.
+    pub qa_id: String,
+    /// `Ok(answer)` or a message phrased as what to do about it.
+    pub result: Result<String, String>,
+}
+
+impl App {
+    /// Enqueue a question against the overlay's current anchor and return
+    /// immediately. The run happens on its own thread; the row shows "queued"
+    /// then "thinking…" until [`App::poll_learning_answers_bg`] files the
+    /// answer. Several questions may be in flight at once.
+    ///
+    /// Returns the new row's id.
+    pub fn learning_ask(
+        &mut self,
+        question: &str,
+        intent: LearningQaIntent,
+        parent_qa_id: Option<String>,
+    ) -> Option<String> {
+        let question = question.trim().to_string();
+        if question.is_empty() {
+            return None;
+        }
+        let ancestors = self.learning_ancestor_turns(parent_qa_id.as_deref());
+        let ctx = self.learning_prompt_context(&question, intent, ancestors)?;
+
+        let AppMode::Learning(state) = &mut self.mode else {
+            return None;
+        };
+        let (line_start, _) = state.anchor.line_range();
+        let _ = line_start;
+        let qa = LearningQa {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: state.session_id.clone(),
+            parent_qa_id,
+            file_path: ctx.file_path.clone(),
+            anchor: state.anchor,
+            selection_text: ctx.selection_text.clone(),
+            question: question.clone(),
+            intent,
+            level: state.level,
+            answer: None,
+            harness: state.harness.clone(),
+            run_mode: crate::app::LearningRunMode::NoTools,
+            status: crate::app::LearningQaStatus::Pending,
+            error: None,
+            todo_id: None,
+            spawned_session_id: None,
+            created_at: crate::db::learning::now_timestamp(),
+            updated_at: crate::db::learning::now_timestamp(),
+        };
+        let qa_id = qa.id.clone();
+        let harness = qa.harness.clone();
+        let workdir = state.workdir.clone();
+        state.qa.push(qa.clone());
+        // Show the newest question, so an answer that takes a while is visibly
+        // *this* question's answer.
+        state.selected_qa = state.qa.len() - 1;
+
+        self.persist_learning_qa(&qa);
+        self.spawn_learning_run(
+            &qa_id,
+            harness,
+            workdir,
+            build_prompt(&ctx),
+            crate::app::LearningRunMode::NoTools,
+        );
+        Some(qa_id)
+    }
+
+    /// Start the headless run for an existing row and mark it running.
+    pub fn spawn_learning_run(
+        &mut self,
+        qa_id: &str,
+        harness: AgentKind,
+        workdir: PathBuf,
+        prompt: String,
+        run_mode: crate::app::LearningRunMode,
+    ) {
+        let tx = self.learning_answer_tx.clone();
+        let id = qa_id.to_string();
+        self.log_info(
+            "learning",
+            format!(
+                "asking {} ({}) about {} chars of context",
+                harness.display_name(),
+                run_mode.as_str(),
+                prompt.len()
+            ),
+        );
+        // Tests drive the same channel by hand (see `deliver`). Launching a
+        // real agent CLI from a unit test would be slow, flaky, and would spend
+        // the developer's tokens, so the row still transitions to Running but
+        // no process is started.
+        if cfg!(test) {
+            self.set_learning_qa_status(qa_id, crate::app::LearningQaStatus::Running, None);
+            return;
+        }
+        std::thread::spawn(move || {
+            let result = match run_mode {
+                crate::app::LearningRunMode::NoTools => {
+                    crate::headless::HeadlessRunner::run(&harness, &workdir, &prompt, None, true)
+                }
+                crate::app::LearningRunMode::DeepDive => {
+                    crate::headless::HeadlessRunner::run_read_only(
+                        &harness, &workdir, &prompt, None,
+                    )
+                }
+            };
+            let _ = tx.send(LearningAnswer {
+                qa_id: id,
+                result: result.map_err(|e| headless_failure_message(&harness, &e)),
+            });
+        });
+        self.set_learning_qa_status(qa_id, crate::app::LearningQaStatus::Running, None);
+    }
+
+    /// Drain finished answers. Called from the main loop beside the other
+    /// `poll_*_bg` calls; returns true when something changed and the UI
+    /// should redraw.
+    pub fn poll_learning_answers_bg(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(answer) = self.learning_answer_rx.try_recv() {
+            changed = true;
+            match answer.result {
+                Ok(text) => {
+                    let text = text.trim().to_string();
+                    if let AppMode::Learning(state) = &mut self.mode
+                        && let Some(row) = state.qa.iter_mut().find(|r| r.id == answer.qa_id)
+                    {
+                        row.answer = Some(text);
+                        row.status = crate::app::LearningQaStatus::Answered;
+                        row.error = None;
+                        row.updated_at = crate::db::learning::now_timestamp();
+                    }
+                }
+                Err(message) => {
+                    self.log_error("learning", format!("question failed: {message}"));
+                    if let AppMode::Learning(state) = &mut self.mode
+                        && let Some(row) = state.qa.iter_mut().find(|r| r.id == answer.qa_id)
+                    {
+                        row.status = crate::app::LearningQaStatus::Failed;
+                        row.error = Some(message);
+                        row.updated_at = crate::db::learning::now_timestamp();
+                    }
+                }
+            }
+            self.persist_learning_qa_by_id(&answer.qa_id);
+        }
+        changed
+    }
+
+    /// The chain of earlier turns leading to `parent_qa_id`, oldest first.
+    /// Only answered rows are carried — an unanswered parent has no context to
+    /// give.
+    fn learning_ancestor_turns(&self, parent_qa_id: Option<&str>) -> Vec<ParentTurn> {
+        let AppMode::Learning(state) = &self.mode else {
+            return Vec::new();
+        };
+        let mut chain = Vec::new();
+        let mut current = parent_qa_id.map(str::to_string);
+        // Bounded by the row count, so a cycle in the data can't hang the UI.
+        for _ in 0..state.qa.len() {
+            let Some(id) = current.take() else { break };
+            let Some(row) = state.qa.iter().find(|r| r.id == id) else {
+                break;
+            };
+            if let Some(answer) = &row.answer {
+                chain.push(ParentTurn {
+                    question: row.question.clone(),
+                    answer: answer.clone(),
+                });
+            }
+            current = row.parent_qa_id.clone();
+        }
+        chain.reverse();
+        chain
+    }
+
+    fn set_learning_qa_status(
+        &mut self,
+        qa_id: &str,
+        status: crate::app::LearningQaStatus,
+        error: Option<String>,
+    ) {
+        if let AppMode::Learning(state) = &mut self.mode
+            && let Some(row) = state.qa.iter_mut().find(|r| r.id == qa_id)
+        {
+            row.status = status;
+            row.error = error;
+            row.updated_at = crate::db::learning::now_timestamp();
+        }
+        self.persist_learning_qa_by_id(qa_id);
+    }
+
+    fn persist_learning_qa_by_id(&mut self, qa_id: &str) {
+        let row = match &self.mode {
+            AppMode::Learning(state) => state.qa.iter().find(|r| r.id == qa_id).cloned(),
+            _ => None,
+        };
+        if let Some(row) = row {
+            self.persist_learning_qa(&row);
+        }
+    }
+
+    /// Write a row through to the DB when there is one. History surviving a
+    /// restart is a nice-to-have here, not a precondition, so a failure is
+    /// logged and the in-memory row carries on.
+    pub fn persist_learning_qa(&mut self, qa: &LearningQa) {
+        if qa.session_id.is_empty() {
+            return;
+        }
+        let Some(db) = self.db.as_ref() else { return };
+        if let Err(e) = db.upsert_learning_qa(qa) {
+            self.log_warn(
+                "learning",
+                format!("couldn't save this question: {e} (it still works in this session)"),
+            );
+        }
+    }
+}
+
+// ── session settings (level, harness) ────────────────────────
+
+impl App {
+    /// Flip between newcomer and familiar answers. Applies to later questions
+    /// only — an answer already on screen is never rewritten under the user.
+    pub fn learning_toggle_level(&mut self) {
+        let Some((session_id, harness, level)) = (match &mut self.mode {
+            AppMode::Learning(state) => {
+                state.level = state.level.toggled();
+                Some((
+                    state.session_id.clone(),
+                    state.harness.clone(),
+                    state.level,
+                ))
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+        self.persist_learning_settings(&session_id, &harness, level);
+    }
+
+    /// Open the harness picker, pre-selected on the harness in use.
+    pub fn learning_open_harness_picker(&mut self) {
+        let harnesses = if self.store.available_harnesses.is_empty() {
+            let AppMode::Learning(state) = &self.mode else {
+                return;
+            };
+            vec![state.harness.clone()]
+        } else {
+            self.store.available_harnesses.clone()
+        };
+        if let AppMode::Learning(state) = &mut self.mode {
+            let selected = harnesses
+                .iter()
+                .position(|h| *h == state.harness)
+                .unwrap_or(0);
+            state.harness_picker = Some(crate::app::LearningHarnessPicker {
+                harnesses,
+                selected,
+            });
+        }
+    }
+
+    pub fn learning_harness_picker_move(&mut self, delta: isize) {
+        if let AppMode::Learning(state) = &mut self.mode
+            && let Some(picker) = &mut state.harness_picker
+        {
+            let len = picker.harnesses.len();
+            if len == 0 {
+                return;
+            }
+            let next = (picker.selected as isize + delta).rem_euclid(len as isize) as usize;
+            picker.selected = next;
+        }
+    }
+
+    /// Accept the highlighted harness. Applies to later questions; anything
+    /// already in flight finishes on the harness that started it.
+    pub fn learning_harness_picker_confirm(&mut self) {
+        let Some((session_id, harness, level)) = (match &mut self.mode {
+            AppMode::Learning(state) => {
+                let picked = state
+                    .harness_picker
+                    .as_ref()
+                    .and_then(|p| p.harnesses.get(p.selected).cloned());
+                state.harness_picker = None;
+                picked.map(|harness| {
+                    state.harness = harness.clone();
+                    (state.session_id.clone(), harness, state.level)
+                })
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+        self.persist_learning_settings(&session_id, &harness, level);
+    }
+
+    pub fn learning_close_harness_picker(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.harness_picker = None;
+        }
+    }
+
+    fn persist_learning_settings(
+        &mut self,
+        session_id: &str,
+        harness: &AgentKind,
+        level: LearningLevel,
+    ) {
+        if session_id.is_empty() {
+            return;
+        }
+        let Some(db) = self.db.as_ref() else { return };
+        if let Err(e) = db.set_learning_session_settings(session_id, harness, level) {
+            self.log_warn(
+                "learning",
+                format!("couldn't save your Learning Mode settings: {e}"),
+            );
+        }
+    }
+}
+
+/// Turn a headless failure into something a newcomer can act on. The common
+/// case by far is "that CLI isn't installed", which has a specific fix.
+fn headless_failure_message(harness: &AgentKind, err: &anyhow::Error) -> String {
+    let raw = err.to_string();
+    let name = harness.display_name();
+    if raw.contains("not found") || raw.contains("No such file") {
+        format!(
+            "{name} isn't installed or isn't on your PATH, so it couldn't answer. \
+             Press A on the dashboard to set up a harness, or switch harness here."
+        )
+    } else {
+        format!("{name} couldn't answer: {raw}. Try again, or switch harness here.")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1101,6 +1694,421 @@ mod tests {
         assert_eq!(load_file_lines(&path).unwrap(), vec!["one", "two"]);
     }
 
+    // ── prompt builders ──────────────────────────────────────
+
+    fn sample_context() -> LearningPromptContext {
+        LearningPromptContext {
+            project_name: "my-project".to_string(),
+            feature_name: "learning-mode".to_string(),
+            file_path: Some("src/app/learning.rs".to_string()),
+            anchor: LearningAnchor::Lines { start: 3, end: 4 },
+            selection_text: "let x = 1;\nlet y = 2;".to_string(),
+            file_lines: (1..=10).map(|i| format!("line {i}")).collect(),
+            selection_start_line: Some(3),
+            question: "What does this do?".to_string(),
+            intent: LearningQaIntent::Explain,
+            level: LearningLevel::Newcomer,
+            ancestors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn every_prompt_carries_identity_path_numbered_selection_and_context() {
+        let prompt = build_prompt(&sample_context());
+
+        assert!(prompt.contains("Project: my-project"), "{prompt}");
+        assert!(prompt.contains("Branch / feature: learning-mode"), "{prompt}");
+        assert!(prompt.contains("File: src/app/learning.rs"), "{prompt}");
+        assert!(
+            prompt.contains("lines 3-4 of src/app/learning.rs"),
+            "{prompt}"
+        );
+        // The selection is numbered from its real line, not from 1.
+        assert!(prompt.contains("     3 | let x = 1;"), "{prompt}");
+        assert!(prompt.contains("     4 | let y = 2;"), "{prompt}");
+        assert!(prompt.contains("Surrounding context"), "{prompt}");
+        assert!(prompt.contains("What does this do?"), "{prompt}");
+    }
+
+    #[test]
+    fn the_explain_template_never_asks_for_a_change() {
+        let prompt = build_prompt(&sample_context());
+        assert!(prompt.contains("Do not propose changes"), "{prompt}");
+        assert!(
+            !prompt.contains("smallest concrete change"),
+            "explain must not carry the action instruction: {prompt}"
+        );
+        assert!(!prompt.contains("imperative summary"), "{prompt}");
+    }
+
+    #[test]
+    fn the_action_template_asks_for_a_usable_one_line_title() {
+        let mut ctx = sample_context();
+        ctx.intent = LearningQaIntent::Action;
+        let prompt = build_prompt(&ctx);
+        assert!(prompt.contains("smallest concrete change"), "{prompt}");
+        assert!(prompt.contains("imperative summary"), "{prompt}");
+        assert!(prompt.contains("title of a work item"), "{prompt}");
+        assert!(!prompt.contains("Do not propose changes"), "{prompt}");
+    }
+
+    #[test]
+    fn the_newcomer_overlay_is_present_by_default_and_absent_when_familiar() {
+        let newcomer = build_prompt(&sample_context());
+        assert!(newcomer.contains("Define every technical term"), "{newcomer}");
+        assert!(newcomer.contains("Where to look next"), "{newcomer}");
+        assert!(newcomer.contains("No question is too basic"), "{newcomer}");
+
+        let mut ctx = sample_context();
+        ctx.level = LearningLevel::Familiar;
+        let familiar = build_prompt(&ctx);
+        assert!(!familiar.contains("Define every technical term"), "{familiar}");
+        assert!(
+            !familiar.contains("Finish with a section headed"),
+            "{familiar}"
+        );
+        assert!(familiar.contains("Be dense and skip the basics"), "{familiar}");
+    }
+
+    #[test]
+    fn a_follow_up_carries_its_parent_exactly_once() {
+        let mut ctx = sample_context();
+        ctx.question = "What's a trait?".to_string();
+        ctx.ancestors = vec![ParentTurn {
+            question: "What does this do?".to_string(),
+            answer: "It implements a trait.".to_string(),
+        }];
+        let prompt = build_prompt(&ctx);
+
+        assert!(prompt.contains("Earlier in this conversation"), "{prompt}");
+        assert_eq!(
+            prompt.matches("It implements a trait.").count(),
+            1,
+            "parent answer should appear once: {prompt}"
+        );
+        assert_eq!(
+            prompt.matches("They asked: What does this do?").count(),
+            1,
+            "{prompt}"
+        );
+        assert!(prompt.contains("What's a trait?"), "{prompt}");
+    }
+
+    #[test]
+    fn follow_up_context_is_capped_at_the_configured_depth() {
+        let mut ctx = sample_context();
+        ctx.ancestors = (1..=6)
+            .map(|i| ParentTurn {
+                question: format!("question {i}"),
+                answer: format!("answer {i}"),
+            })
+            .collect();
+        let prompt = build_prompt(&ctx);
+
+        // The oldest ancestors are trimmed; the most recent survive.
+        assert!(!prompt.contains("answer 1"), "{prompt}");
+        assert!(!prompt.contains("answer 3"), "{prompt}");
+        assert!(prompt.contains("answer 4"), "{prompt}");
+        assert!(prompt.contains("answer 6"), "{prompt}");
+        assert_eq!(prompt.matches("They asked:").count(), MAX_FOLLOW_UP_DEPTH);
+    }
+
+    #[test]
+    fn the_project_anchor_prompt_has_no_file_or_selection() {
+        let mut ctx = sample_context();
+        ctx.anchor = LearningAnchor::Project;
+        ctx.file_path = None;
+        ctx.selection_text = String::new();
+        ctx.question = "Give me a tour of this project.".to_string();
+        let prompt = build_prompt(&ctx);
+
+        assert!(prompt.contains("this whole project"), "{prompt}");
+        assert!(!prompt.contains("File: "), "{prompt}");
+        assert!(!prompt.contains("Surrounding context"), "{prompt}");
+        assert!(
+            prompt.contains("about the project as a whole"),
+            "{prompt}"
+        );
+    }
+
+    /// A whole-file anchor already carries the file, so repeating it as
+    /// "surrounding context" would double the prompt for no gain.
+    #[test]
+    fn a_whole_file_anchor_does_not_repeat_the_file_as_context() {
+        let mut ctx = sample_context();
+        ctx.anchor = LearningAnchor::File;
+        assert!(!build_prompt(&ctx).contains("Surrounding context"));
+    }
+
+    #[test]
+    fn oversized_selections_are_truncated_with_a_marker() {
+        let mut ctx = sample_context();
+        let long: Vec<String> = (1..=(MAX_SELECTION_LINES + 50))
+            .map(|i| format!("line {i}"))
+            .collect();
+        ctx.selection_text = long.join("\n");
+        let prompt = build_prompt(&ctx);
+        assert!(prompt.contains("50 more lines not shown"), "{prompt}");
+    }
+
+    #[test]
+    fn prompt_context_comes_from_the_live_anchor() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+        while learning(&app).content_path.as_deref() != Some("src/main.rs") {
+            app.learning_select_next_entry();
+        }
+        app.learning_cursor_move(0);
+
+        let ctx = app
+            .learning_prompt_context("What is this?", LearningQaIntent::Explain, Vec::new())
+            .unwrap();
+        assert_eq!(ctx.file_path.as_deref(), Some("src/main.rs"));
+        assert_eq!(ctx.project_name, "my-project");
+        assert_eq!(ctx.level, LearningLevel::Newcomer);
+        assert!(!ctx.file_lines.is_empty());
+    }
+
+    // ── asking, level, harness ───────────────────────────────
+
+    /// Deliver an answer the way a finished thread would, without running a
+    /// real harness.
+    fn deliver(app: &mut App, qa_id: &str, result: Result<String, String>) {
+        app.learning_answer_tx
+            .send(LearningAnswer {
+                qa_id: qa_id.to_string(),
+                result,
+            })
+            .unwrap();
+        assert!(app.poll_learning_answers_bg());
+    }
+
+    fn opened_app() -> (TempDir, App) {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+        while learning(&app).content_path.as_deref() != Some("src/main.rs") {
+            app.learning_select_next_entry();
+        }
+        (repo, app)
+    }
+
+    #[test]
+    fn asking_enqueues_a_row_and_returns_control_immediately() {
+        let (_repo, mut app) = opened_app();
+
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        let state = learning(&app);
+        assert_eq!(state.qa.len(), 1);
+        let row = &state.qa[0];
+        assert_eq!(row.id, id);
+        assert_eq!(row.question, "What does this do?");
+        assert_eq!(row.intent, LearningQaIntent::Explain);
+        assert_eq!(row.level, LearningLevel::Newcomer);
+        assert_eq!(row.file_path.as_deref(), Some("src/main.rs"));
+        assert_eq!(row.run_mode, crate::app::LearningRunMode::NoTools);
+        // Queued or already running — either way the user is not blocked.
+        assert!(row.status.is_in_flight());
+        assert_eq!(state.in_flight_count(), 1);
+        // The overlay is still fully interactive.
+        assert!(!state.entries.is_empty());
+    }
+
+    #[test]
+    fn an_empty_question_is_not_enqueued() {
+        let (_repo, mut app) = opened_app();
+        assert!(
+            app.learning_ask("   ", LearningQaIntent::Explain, None)
+                .is_none()
+        );
+        assert!(learning(&app).qa.is_empty());
+    }
+
+    #[test]
+    fn answers_land_on_their_own_row_and_clear_the_in_flight_count() {
+        let (_repo, mut app) = opened_app();
+        let first = app
+            .learning_ask("Question one", LearningQaIntent::Explain, None)
+            .unwrap();
+        let second = app
+            .learning_ask("Question two", LearningQaIntent::Action, None)
+            .unwrap();
+        assert_eq!(learning(&app).in_flight_count(), 2);
+
+        // Out of order, as real runs finish.
+        deliver(&mut app, &second, Ok("Second answer".to_string()));
+        let state = learning(&app);
+        assert_eq!(state.in_flight_count(), 1);
+        assert_eq!(
+            state.qa.iter().find(|r| r.id == second).unwrap().answer,
+            Some("Second answer".to_string())
+        );
+        assert!(
+            state
+                .qa
+                .iter()
+                .find(|r| r.id == first)
+                .unwrap()
+                .answer
+                .is_none()
+        );
+
+        deliver(&mut app, &first, Ok("First answer".to_string()));
+        assert_eq!(learning(&app).in_flight_count(), 0);
+    }
+
+    #[test]
+    fn a_failed_run_keeps_the_row_and_says_what_to_do() {
+        let (_repo, mut app) = opened_app();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        deliver(
+            &mut app,
+            &id,
+            Err("Claude isn't installed or isn't on your PATH".to_string()),
+        );
+
+        let row = &learning(&app).qa[0];
+        assert_eq!(row.status, crate::app::LearningQaStatus::Failed);
+        assert!(row.error.as_deref().unwrap().contains("isn't installed"));
+        assert!(row.answer.is_none(), "the question survives for a retry");
+    }
+
+    #[test]
+    fn a_missing_cli_failure_points_at_the_harness_wizard() {
+        let msg = headless_failure_message(
+            &AgentKind::Claude,
+            &anyhow::anyhow!("claude CLI not found"),
+        );
+        assert!(msg.contains("Press A"), "{msg}");
+        assert!(msg.contains("Claude"), "{msg}");
+    }
+
+    #[test]
+    fn a_follow_up_inherits_the_anchor_and_carries_the_parent_forward() {
+        let (_repo, mut app) = opened_app();
+        let parent = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &parent, Ok("It calls ok().".to_string()));
+
+        let child = app
+            .learning_ask(
+                "What's a function?",
+                LearningQaIntent::Explain,
+                Some(parent.clone()),
+            )
+            .unwrap();
+
+        let state = learning(&app);
+        let row = state.qa.iter().find(|r| r.id == child).unwrap();
+        assert_eq!(row.parent_qa_id.as_deref(), Some(parent.as_str()));
+        assert_eq!(row.file_path.as_deref(), Some("src/main.rs"));
+
+        // The prompt the follow-up would have been built with carries the
+        // parent turn.
+        let ancestors = app.learning_ancestor_turns(Some(&parent));
+        assert_eq!(ancestors.len(), 1);
+        assert_eq!(ancestors[0].answer, "It calls ok().");
+    }
+
+    /// An unanswered parent has nothing to contribute, so it isn't carried.
+    #[test]
+    fn unanswered_ancestors_are_skipped() {
+        let (_repo, mut app) = opened_app();
+        let parent = app
+            .learning_ask("Pending question", LearningQaIntent::Explain, None)
+            .unwrap();
+        assert!(app.learning_ancestor_turns(Some(&parent)).is_empty());
+    }
+
+    #[test]
+    fn toggling_level_affects_later_questions_only() {
+        let (_repo, mut app) = opened_app();
+        let first = app
+            .learning_ask("Question one", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &first, Ok("An answer".to_string()));
+
+        app.learning_toggle_level();
+        assert_eq!(learning(&app).level, LearningLevel::Familiar);
+
+        let second = app
+            .learning_ask("Question two", LearningQaIntent::Explain, None)
+            .unwrap();
+        let state = learning(&app);
+        // The earlier row keeps the level it was answered at, and its text is
+        // untouched.
+        let old = state.qa.iter().find(|r| r.id == first).unwrap();
+        assert_eq!(old.level, LearningLevel::Newcomer);
+        assert_eq!(old.answer.as_deref(), Some("An answer"));
+        assert_eq!(
+            state.qa.iter().find(|r| r.id == second).unwrap().level,
+            LearningLevel::Familiar
+        );
+
+        app.learning_toggle_level();
+        assert_eq!(learning(&app).level, LearningLevel::Newcomer);
+    }
+
+    #[test]
+    fn the_harness_picker_is_optional_and_pre_selected() {
+        let repo = repo_with_branch_change();
+        let mut store = store_at(repo.path(), true);
+        store.available_harnesses = vec![AgentKind::Codex, AgentKind::Claude];
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.open_learning_mode(0, 0).unwrap();
+
+        // Pre-selected from the first available harness — no picker needed.
+        assert_eq!(learning(&app).harness, AgentKind::Codex);
+        assert!(learning(&app).harness_picker.is_none());
+
+        app.learning_open_harness_picker();
+        let picker = learning(&app).harness_picker.as_ref().unwrap();
+        assert_eq!(picker.harnesses.len(), 2);
+        assert_eq!(picker.selected, 0, "opens on the harness in use");
+
+        app.learning_harness_picker_move(1);
+        app.learning_harness_picker_confirm();
+        let state = learning(&app);
+        assert_eq!(state.harness, AgentKind::Claude);
+        assert!(state.harness_picker.is_none());
+    }
+
+    #[test]
+    fn cancelling_the_harness_picker_changes_nothing() {
+        let (_repo, mut app) = opened_app();
+        let before = learning(&app).harness.clone();
+        app.learning_open_harness_picker();
+        app.learning_harness_picker_move(1);
+        app.learning_close_harness_picker();
+        assert_eq!(learning(&app).harness, before);
+        assert!(learning(&app).harness_picker.is_none());
+    }
+
+    #[test]
+    fn questions_record_the_harness_that_answers_them() {
+        let (_repo, mut app) = opened_app();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        let expected = learning(&app).harness.clone();
+        assert_eq!(
+            learning(&app).qa.iter().find(|r| r.id == id).unwrap().harness,
+            expected
+        );
+    }
+
     // ── overlay-level behaviour ──────────────────────────────
 
     #[test]
@@ -1272,3 +2280,4 @@ mod tests {
         assert_eq!(walk_files_capped(dir.path(), 100, 0), vec!["main.py"]);
     }
 }
+

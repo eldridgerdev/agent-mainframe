@@ -138,6 +138,26 @@ pub fn update_session(conn: &Connection, session: &LearningSession) -> Result<()
     Ok(())
 }
 
+/// Persist just the two settings the overlay lets the user change mid-session,
+/// without needing the whole row in hand.
+pub fn set_session_settings(
+    conn: &Connection,
+    session_id: &str,
+    harness: &AgentKind,
+    level: LearningLevel,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE learning_sessions SET harness = ?2, level = ?3, updated_at = ?4 WHERE id = ?1",
+        params![
+            session_id,
+            agent_to_str(harness),
+            level.as_str(),
+            now_timestamp()
+        ],
+    )?;
+    Ok(())
+}
+
 /// Record that the first-open help overlay has been shown for this session.
 pub fn set_onboarding_seen(conn: &Connection, session_id: &str) -> Result<()> {
     conn.execute(

@@ -3365,6 +3365,14 @@ pub enum LearningFocus {
     Qa,
 }
 
+/// Which harness answers questions from here on. Pre-selected when the
+/// overlay opens, so this only exists while the user is actively changing it.
+#[allow(dead_code)]
+pub struct LearningHarnessPicker {
+    pub harnesses: Vec<AgentKind>,
+    pub selected: usize,
+}
+
 /// An open question prompt. The same editor serves both intents and
 /// follow-ups; the title bar shows the resolved anchor and chosen intent.
 #[allow(dead_code)]
@@ -3439,6 +3447,9 @@ pub struct LearningViewState {
     pub answer_rendered_lines: Vec<ratatui::text::Line<'static>>,
     /// Harness answering questions. Pre-selected, so the picker is optional.
     pub harness: AgentKind,
+    /// Open harness picker, if any. Lives inside the overlay rather than as
+    /// its own `AppMode` so opening it can't lose the browsing state behind it.
+    pub harness_picker: Option<LearningHarnessPicker>,
     pub level: LearningLevel,
     /// `learning_sessions.id` backing this overlay.
     pub session_id: String,

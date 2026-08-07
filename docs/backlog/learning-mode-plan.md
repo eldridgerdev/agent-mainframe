@@ -1,7 +1,8 @@
 # Learning Mode
 
-- **Status:** In progress — Epics 1 (foundations) and 2 (browsing)
-  complete; Epic 3 (asking) next.
+- **Status:** In progress — Epics 1 (foundations), 2 (browsing), and 3
+  (asking) complete; Epic 4 (surface: rendering, keys, entry point) next.
+  Learning Mode is not yet reachable from the dashboard.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -501,7 +502,7 @@ closes out.
 
 ### Epic 3 — Asking (prompts, headless execution, async queue)
 
-- [ ] Implement the prompt builders as pure functions with unit tests:
+- [x] Implement the prompt builders as pure functions with unit tests:
       explain (teach, do not propose changes), action (propose the
       smallest concrete change, lead with a one-line imperative
       summary), the `Newcomer` overlay (define terms, no assumed
@@ -512,30 +513,42 @@ closes out.
       context; that the explain template contains no change-request
       language; that the newcomer overlay is absent at `Familiar`
       level; and that a follow-up prompt contains its parent's text
-      exactly once.
-- [ ] Implement headless question submission through
+      exactly once. Done as `build_prompt` + `intent_instructions` +
+      `level_instructions`, with nine tests including ancestor trimming
+      at `MAX_FOLLOW_UP_DEPTH` and selection truncation.
+- [x] Implement headless question submission through
       `HeadlessRunner::run(..., restricted = true)` using the intent-
-      and level-selected prompt. Verify against a real file with each
-      available harness, checking that a newcomer-level explain answer
-      defines its terms and ends with a "Where to look next" section,
-      and that an action answer opens with a usable one-line title.
-- [ ] Implement the non-blocking async queue: `mpsc` +
-      `thread::spawn` per run, a `poll_learning_answers_bg()` drained
-      in `src/main.rs` alongside the existing `poll_*_bg` calls,
-      per-row status transitions (`Pending → Running →
-      Answered|Failed`) rendered live with word labels, and results
-      persisted to the DB on completion. Verify by enqueuing three
-      questions across two files with mixed intents and confirming the
-      overlay stays interactive and all three resolve independently.
-- [ ] Implement the harness picker over `store.available_harnesses`
+      and level-selected prompt. Verified end to end against a real
+      file (`src/app/learning.rs:300-312`) through the real Claude
+      no-tools path: the answer defined its Rust terms before using
+      them, walked the selection line by line, proposed no changes, and
+      closed with a "Where to look next" list. **Only Claude has been
+      run for real so far** — Codex and Opencode are installed and
+      unverified; Pi is not installed. Unit tests spawn no CLI (see the
+      `cfg!(test)` guard in `spawn_learning_run`), so the suite costs
+      nothing to run.
+- [x] Implement the non-blocking async queue: a persistent `mpsc`
+      channel on `App` (not a one-shot slot, which is what allows
+      several runs at once) plus a thread per run, with
+      `poll_learning_answers_bg()` drained in `src/main.rs` beside the
+      other `poll_*_bg` calls, per-row status transitions, and results
+      persisted on completion. Tests cover enqueue-and-return,
+      out-of-order completion, in-flight counting, and failure rows
+      that keep the question for a retry.
+- [x] Implement the harness picker over `store.available_harnesses`
       with the `preferred_agent` fallback, persisted on the learning
-      session and used by the initial run, follow-ups, and deep dive.
-      Verify the overlay works end to end without ever opening the
-      picker.
-- [ ] Implement **level toggle** (`Newcomer` ⇄ `Familiar`), persisted
+      session and used by later runs. It lives inside
+      `LearningViewState` rather than as its own `AppMode`, so opening
+      it can't lose the browsing state behind it. Tests confirm it is
+      pre-selected on the harness in use, that cancelling changes
+      nothing, and that questions record the harness that answered
+      them — the picker never has to be opened.
+- [x] Implement **level toggle** (`Newcomer` ⇄ `Familiar`), persisted
       on the learning session, applied to subsequent runs only, with
-      each Q&A row recording the level it was answered at. Verify the
-      header updates and an existing answer is not rewritten.
+      each Q&A row recording the level it was answered at
+      (`toggling_level_affects_later_questions_only` asserts the
+      earlier row keeps both its level and its answer text). The header
+      itself lands with the renderer in Epic 4.
 
 ### Epic 4 — Surface (rendering, keys, entry point, onboarding)
 
@@ -643,6 +656,15 @@ closes out.
 
 ## Open questions
 
+- **A no-tools answer invents plausible references.** The first real
+  Claude run followed the newcomer template closely but pointed "Where
+  to look next" at line numbers and symbol names that do not exist
+  (`src/app/state.rs:812`, `LearningState`, `is_git_repo`) — inevitable
+  when the agent can only see the prompt. Deep dive exists for exactly
+  this, but a newcomer is the least able to spot a confident wrong
+  reference, which also raises the stakes on the deferred
+  "make Where to look next navigable" item: a jump that fails is at
+  least an honest signal.
 - **Reading level is a prompt instruction, not a guarantee.** The
   `Newcomer` overlay asks the agent to define its terms and avoid
   assumed context, but nothing enforces it; a model may still answer in

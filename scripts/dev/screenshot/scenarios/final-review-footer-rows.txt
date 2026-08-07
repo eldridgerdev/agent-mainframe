@@ -1,0 +1,62 @@
+# final-review-footer-rows: proves the review footer's *second* hint row
+# survives at any terminal width. That row carries the round-level keys
+# (`b base ref`, `F filter`, `t target`, `q finish`, `Esc pause`), and it used
+# to be swallowed whole whenever the first row wrapped past one line — which it
+# does well before 160 columns once the conditional hints are showing.
+#
+# The scenario deliberately makes the first row as long as it ever gets
+# (general feedback set, a verdict to undo, an expandable file selected) before
+# capturing, since that is the case that clipped.
+#
+# Run the same file at several geometries to see the width dependence:
+#   ./amf-capture.sh --scenario <this file> \
+#     --seed <project.json> --seed-feature <feature.json> \
+#     --geometry 200x44 | 160x44 | 120x40 | 80x36
+
+# Down onto the seeded feature row; Enter expands it to its sessions, then
+# down again onto "Claude 1" and Enter opens that session's view.
+key:j
+wait:300
+key:Enter
+wait:500
+key:j
+wait:300
+key:Enter
+wait:4000
+
+# Leader (Ctrl+Space) then `f` triggers Final Review; the diff load is async.
+key:C-Space
+wait:400
+text:f
+wait:4000
+
+# Advance to src/auth/session.rs, then approve it -- `a` records the verdict
+# and advances onto src/auth/token.rs, the substantive file and one with a
+# developer note. Approving also earns the first row its `U undo verdict` hint.
+text:n
+wait:250
+text:n
+wait:250
+text:n
+wait:250
+text:n
+wait:600
+text:a
+wait:800
+
+# Set general feedback so `✎ note set` shows too, making the first row as long
+# as it ever gets -- the dense footer the bug hid behind. The editor is
+# multi-line, so Tab submits and Enter would only insert a newline.
+text:f
+wait:700
+text:hardening looks right; check the eviction path
+wait:400
+key:Tab
+wait:900
+shot:review-footer-both-rows
+
+# Cursor mode swaps which row is short: here the *key* row is the one that
+# wraps, so it is the second row that must grow rather than clip.
+text:c
+wait:800
+shot:cursor-footer-both-rows

@@ -317,6 +317,19 @@ are tagged.
 - **OSC 8 hyperlinks now work through AMF's managed tmux server on macOS.**
   Terminals that support hyperlinks can open links from agent sessions normally,
   including saved sessions reopened after upgrading.
+- **Final Review's footer no longer hides half its keys.** The footer has two
+  rows of hints, and the first one — verdicts, comments, navigation, layout,
+  AI passes — is long enough to wrap onto both of them, which silently pushed
+  the entire second row off the screen. That second row is where the
+  round-level keys live: `b` base ref, `F` filter, `t` fix target, `X` apply
+  suggestions at finish, `q` finish, and `Esc` pause. They were never drawn, at
+  any terminal 200 columns or narrower, and nothing indicated they were
+  missing. The footer now grows to fit the hints it actually has and draws each
+  row in its own space, so neither row can consume the other. Narrower
+  terminals were losing more than the second row — at 120 columns the first row
+  was also cut off mid-hint, and in cursor mode `c`/`Esc exit cursor` was
+  among the casualties. The hints are capped so they cannot crowd out the diff
+  on a short terminal. Nothing to configure.
 
 ### Migration
 

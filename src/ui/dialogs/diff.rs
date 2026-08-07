@@ -165,9 +165,10 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     {
         inner.height.saturating_sub(10).clamp(4, 12)
     } else if state.review {
-        // Grow to host the line-comment peek box above the two-row hints when the
-        // cursor is parked on a line that already carries a comment.
-        2 + cursor_comment_preview_rows(state)
+        // Grow to fit the hints themselves — the verdict row is dense enough to
+        // wrap past two rows on an ordinary terminal — plus the line-comment
+        // peek box when the cursor is parked on a line that carries a comment.
+        review_hint_height(state, theme, inner) + cursor_comment_preview_rows(state)
     } else {
         2
     };
@@ -2272,9 +2273,105 @@ fn editor_hint_applies(state: &DiffViewerState) -> bool {
         .is_some_and(|file| file.can_open_in_editor())
 }
 
-fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
-    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+/// Ceiling on the review footer's key hints. Both rows wrapped in full can eat
+/// a lot of vertical space on a narrow terminal, and the diff is what the
+/// reviewer is actually there to read.
+const REVIEW_HINT_MAX_ROWS: u16 = 8;
 
+/// Rows a hint line occupies when rendered with `Wrap { trim: false }` at
+/// `width`. Ratatui breaks on word boundaries, so `ceil(total / width)`
+/// undercounts; this walks the same greedy word / whitespace runs the wrapper
+/// does, which is what the footer has to be sized against.
+fn wrapped_line_height(line: &Line, width: u16) -> u16 {
+    if width == 0 {
+        return 1;
+    }
+    let width = width as usize;
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let mut rows: usize = 1;
+    let mut used: usize = 0;
+    let mut rest = text.as_str();
+    while !rest.is_empty() {
+        let whitespace = rest.starts_with(char::is_whitespace);
+        let end = rest
+            .find(|c: char| c.is_whitespace() != whitespace)
+            .unwrap_or(rest.len());
+        let (run, tail) = rest.split_at(end);
+        rest = tail;
+        let run_width = run.width();
+        if whitespace {
+            // Whitespace that runs off the edge is absorbed there rather than
+            // pushing a row of its own.
+            used = (used + run_width).min(width);
+            continue;
+        }
+        if used > 0 && used + run_width > width {
+            rows += 1;
+            used = 0;
+        }
+        if run_width > width {
+            // A word wider than the row is hard-broken across rows.
+            rows += (run_width - 1) / width;
+            used = run_width % width;
+            if used == 0 {
+                used = width;
+            }
+        } else {
+            used += run_width;
+        }
+    }
+    rows.min(u16::MAX as usize) as u16
+}
+
+/// Rows the two hint lines want at `width`, before any clamp to the space
+/// actually available.
+fn hint_rows_height(first: &Line, second: &Line, width: u16) -> u16 {
+    wrapped_line_height(first, width).saturating_add(wrapped_line_height(second, width))
+}
+
+/// Height the review footer's key hints need inside `inner`, clamped so a
+/// heavily-wrapped footer can't crowd the diff off a short terminal.
+fn review_hint_height(state: &DiffViewerState, theme: &Theme, inner: Rect) -> u16 {
+    let [first, second] = review_hint_lines(state, theme);
+    // Mirror the feedback editor's reservation: header (2) + the body's Min(8).
+    let cap = inner
+        .height
+        .saturating_sub(10)
+        .clamp(2, REVIEW_HINT_MAX_ROWS);
+    hint_rows_height(&first, &second, inner.width).clamp(2, cap)
+}
+
+/// Draw the two hint rows into sub-areas of their own. A single wrapping
+/// `Paragraph` lets a long first row consume the whole footer and silently drop
+/// the second one, taking the round-level keys (`b`, `F`, `t`, `X`, `q`, `Esc`)
+/// with it — a drop that is invisible until the terminal happens to be narrow
+/// enough. Sizing the second row first means the overflow lands on the first
+/// row's tail instead, and that row leads with `? keys`.
+fn render_hint_rows(frame: &mut Frame, area: Rect, [first, second]: [Line<'static>; 2]) {
+    if area.height <= 1 {
+        frame.render_widget(
+            Paragraph::new(vec![first, second]).wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let second_height = wrapped_line_height(&second, area.width).clamp(1, area.height - 1);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(area.height - second_height),
+            Constraint::Length(second_height),
+        ])
+        .split(area);
+    frame.render_widget(Paragraph::new(first).wrap(Wrap { trim: false }), chunks[0]);
+    frame.render_widget(Paragraph::new(second).wrap(Wrap { trim: false }), chunks[1]);
+}
+
+fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     if state.feedback_editing
         || state.editing_general
         || state.editing_line_comment
@@ -2284,6 +2381,67 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         draw_feedback_editor(frame, area, state, theme);
         return;
     }
+
+    let [first, second] = review_hint_lines(state, theme);
+
+    // When the cursor sits on a commented line, peek the comment body in a
+    // bordered box above the hints so the reviewer can read what they wrote
+    // without re-opening the editor.
+    if let Some(comment) = cursor_comment(state) {
+        let hint_rows = hint_rows_height(&first, &second, area.width)
+            .clamp(1, area.height.saturating_sub(3).max(1));
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(hint_rows)])
+            .split(area);
+        // A draft can never be resolved (only a kept comment can be), so the
+        // resolved variants only need to branch off the non-draft arms.
+        let title = match (comment.draft, comment.is_range(), comment.resolved) {
+            (true, true, _) => " AI draft on these lines (a accept · d dismiss · Enter edit) ",
+            (true, false, _) => " AI draft on this line (a accept · d dismiss · Enter edit) ",
+            (false, true, true) => " resolved thread on these lines (Enter to edit · R reopen) ",
+            (false, false, true) => " resolved thread on this line (Enter to edit · R reopen) ",
+            (false, true, false) if comment.suggestion.is_some() => {
+                " suggestion on these lines (x apply · Enter comment · S edit · R resolve) "
+            }
+            (false, false, false) if comment.suggestion.is_some() => {
+                " suggestion on this line (x apply · Enter comment · S edit · R resolve) "
+            }
+            (false, true, false) => " comment on these lines (Enter to edit · R resolve) ",
+            (false, false, false) => " comment on this line (Enter to edit · R resolve) ",
+        };
+        let box_color = if comment.draft {
+            theme.warning.to_color()
+        } else {
+            theme.info.to_color()
+        };
+        let preview = Paragraph::new(
+            cursor_comment_peek_lines(comment)
+                .into_iter()
+                .map(Line::from)
+                .collect::<Vec<_>>(),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(box_color))
+                .title(Span::styled(title, Style::default().fg(box_color))),
+        )
+        .wrap(Wrap { trim: false });
+        frame.render_widget(preview, chunks[0]);
+        render_hint_rows(frame, chunks[1], [first, second]);
+        return;
+    }
+
+    render_hint_rows(frame, area, [first, second]);
+}
+
+/// The two key-hint rows the review footer shows right now: the finish
+/// confirmation, the line cursor's bindings, or the standard verdict row.
+/// Built separately from rendering so the footer can be *sized* to them —
+/// see `review_hint_height`.
+fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 2] {
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
 
     // A pending finish confirmation overrides the normal hints: some files have
     // no verdict and the reviewer just tried to finish.
@@ -2309,11 +2467,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             key("Esc"),
             Span::raw(" keep reviewing"),
         ]);
-        frame.render_widget(
-            Paragraph::new(vec![first, second]).wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
+        return [first, second];
     }
 
     // While the line cursor is active, show its dedicated key hints instead of
@@ -2427,65 +2581,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             key("q"),
             Span::raw(" finish"),
         ]);
-        let second = Line::from(second_spans);
-
-        // When the cursor sits on a commented line, peek the comment body in a
-        // bordered box above the hints so the reviewer can read what they wrote
-        // without re-opening the editor.
-        if let Some(comment) = cursor_comment(state) {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(3), Constraint::Length(2)])
-                .split(area);
-            // A draft can never be resolved (only a kept comment can be), so the
-            // resolved variants only need to branch off the non-draft arms.
-            let title = match (comment.draft, comment.is_range(), comment.resolved) {
-                (true, true, _) => " AI draft on these lines (a accept · d dismiss · Enter edit) ",
-                (true, false, _) => " AI draft on this line (a accept · d dismiss · Enter edit) ",
-                (false, true, true) => {
-                    " resolved thread on these lines (Enter to edit · R reopen) "
-                }
-                (false, false, true) => " resolved thread on this line (Enter to edit · R reopen) ",
-                (false, true, false) if comment.suggestion.is_some() => {
-                    " suggestion on these lines (x apply · Enter comment · S edit · R resolve) "
-                }
-                (false, false, false) if comment.suggestion.is_some() => {
-                    " suggestion on this line (x apply · Enter comment · S edit · R resolve) "
-                }
-                (false, true, false) => " comment on these lines (Enter to edit · R resolve) ",
-                (false, false, false) => " comment on this line (Enter to edit · R resolve) ",
-            };
-            let box_color = if comment.draft {
-                theme.warning.to_color()
-            } else {
-                theme.info.to_color()
-            };
-            let preview = Paragraph::new(
-                cursor_comment_peek_lines(comment)
-                    .into_iter()
-                    .map(Line::from)
-                    .collect::<Vec<_>>(),
-            )
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(box_color))
-                    .title(Span::styled(title, Style::default().fg(box_color))),
-            )
-            .wrap(Wrap { trim: false });
-            frame.render_widget(preview, chunks[0]);
-            frame.render_widget(
-                Paragraph::new(vec![first, second]).wrap(Wrap { trim: false }),
-                chunks[1],
-            );
-            return;
-        }
-
-        frame.render_widget(
-            Paragraph::new(vec![first, second]).wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
+        return [first, Line::from(second_spans)];
     }
 
     let mut second_line = vec![key(" j"), Span::raw("/"), key("k"), Span::raw(" scroll  ")];
@@ -2765,8 +2861,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         ));
     }
 
-    let lines = vec![Line::from(first_line), Line::from(second_line)];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+    [Line::from(first_line), Line::from(second_line)]
 }
 
 /// Render the multi-line feedback editor (per-file rejection or general
@@ -4938,6 +5033,136 @@ index 0000000..1111111
                 );
             }
         }
+    }
+
+    /// The whole screen as one whitespace-normalized string. Rows are joined and
+    /// the panel border is blanked out, so a hint the wrapper split across two
+    /// rows still reads as the phrase it is — which a raw cell-by-cell
+    /// concatenation (trailing padding and border glyphs and all) does not.
+    fn normalized_screen(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let area = *buffer.area();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| match buffer[(x, y)].symbol() {
+                        "│" | "┃" | "║" => " ",
+                        symbol => symbol,
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The round-level keys live on the footer's *second* row, and the first row
+    /// is dense enough to wrap into two rows on its own at an ordinary terminal
+    /// width — which used to silently swallow the second row whole. The footer
+    /// now grows to fit and renders each row into its own area, so the width has
+    /// to stop mattering.
+    #[test]
+    fn review_footer_second_row_survives_every_terminal_width() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut state, loc) = single_added_line_review_state();
+        // A realistic mid-review footer: every conditional hint on the first row
+        // is showing, which is exactly when it wraps.
+        state.general_feedback = "looks close".to_string();
+        state.verdict_undo.push(crate::app::VerdictUndo {
+            path: "a.rs".to_string(),
+            previous: None,
+            previous_auto_rejected: false,
+        });
+        state.changed_since_last.insert("a.rs".to_string());
+
+        for width in [200u16, 160, 120, 100, 80] {
+            for cursor in [None, Some(0)] {
+                state.comment_cursor = cursor;
+                let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+                terminal
+                    .draw(|frame| draw_diff_viewer(frame, &mut state, &Theme::default()))
+                    .unwrap();
+                let rendered = normalized_screen(&terminal);
+
+                // The first row's pointer to the full key list, and hints that
+                // only ever appear on the second row.
+                assert!(
+                    rendered.contains("? keys"),
+                    "footer dropped the help hint (width: {width}, cursor: {cursor:?})"
+                );
+                if cursor.is_none() {
+                    for hint in ["b base ref", "F filter", "target: live", "Esc pause"] {
+                        assert!(
+                            rendered.contains(hint),
+                            "footer dropped {hint:?} (width: {width})"
+                        );
+                    }
+                } else {
+                    for hint in ["c/Esc exit cursor", "R resolve/reopen"] {
+                        assert!(
+                            rendered.contains(hint),
+                            "cursor footer dropped {hint:?} (width: {width})"
+                        );
+                    }
+                }
+            }
+        }
+
+        // The peek box must not squeeze the hints out either: with the cursor on
+        // a commented line the footer hosts both.
+        state.comment_cursor = Some(0);
+        state.line_comments.insert(
+            "a.rs".to_string(),
+            vec![crate::app::LineComment {
+                location: loc,
+                start: None,
+                text: "needs a guard".to_string(),
+                draft: false,
+                suggestion: None,
+                severity: crate::app::Severity::default(),
+                anchor_context: None,
+                start_anchor_context: None,
+                anchor_lost: false,
+                resolved: false,
+                carried: false,
+            }],
+        );
+        for width in [200u16, 120, 80] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            terminal
+                .draw(|frame| draw_diff_viewer(frame, &mut state, &Theme::default()))
+                .unwrap();
+            let rendered = normalized_screen(&terminal);
+            assert!(
+                rendered.contains("needs a guard"),
+                "peek box lost its body (width: {width})"
+            );
+            assert!(
+                rendered.contains("c/Esc exit cursor"),
+                "peek box crowded out the hint rows (width: {width})"
+            );
+        }
+    }
+
+    /// The wrapper breaks on word boundaries, so the height has to be measured
+    /// the same way — a `ceil(total / width)` estimate undercounts and puts the
+    /// footer right back to clipping a row.
+    #[test]
+    fn wrapped_line_height_counts_word_wrapping_not_raw_length() {
+        let line = Line::from("aaaa bbbb cccc");
+        assert_eq!(wrapped_line_height(&line, 14), 1);
+        // "aaaa bbbb" fits in 10; "cccc" moves down whole rather than splitting
+        // at the 10th column the way a raw division would assume.
+        assert_eq!(wrapped_line_height(&line, 10), 2);
+        assert_eq!(wrapped_line_height(&line, 5), 3);
+        // A word wider than the row is hard-broken instead of overflowing.
+        assert_eq!(wrapped_line_height(&Line::from("aaaaaaaaa"), 3), 3);
+        // Degenerate widths must still report a drawable row.
+        assert_eq!(wrapped_line_height(&Line::from(""), 20), 1);
+        assert_eq!(wrapped_line_height(&line, 0), 1);
     }
 
     #[test]

@@ -695,9 +695,12 @@ from feature totals.
   alternative agent, including injected AMF-friendly themes and local
   plugins.
 - Pi is supported as a fourth harness for dedicated agent sessions,
-  with the same embedded view and composer. Pi sessions launch the
-  plain `pi` CLI: vibe-mode permission flags, diff-review hooks, and
-  usage meters do not apply to Pi.
+  with the same embedded view and composer. A current Pi installation can
+  also power Pi features' plan interviews; AMF uses ephemeral no-tools calls
+  for drafting and a read-only tool allowlist for repository investigation,
+  falling back to another installed harness when those CLI flags are missing.
+  Interactive Pi sessions launch the plain `pi` CLI: vibe-mode permission
+  flags, diff-review hooks, and usage meters do not apply to Pi.
 
 ## Configuration
 

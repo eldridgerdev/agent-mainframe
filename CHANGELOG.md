@@ -27,6 +27,20 @@ are tagged.
   The plain diff viewer is unchanged — its own footer still covers everything
   it does.
 
+- **Pi can now power its own plan interviews.** When the installed Pi CLI
+  advertises its current safe-headless contract, AMF prefers it for Pi
+  features instead of immediately falling back to Claude, Codex, or Opencode.
+  Question generation and synthesis run without tools or repository-provided
+  resources; directed feedback and isolated investigations receive only Pi's
+  read, grep, find, and list tools. Every call is ephemeral. Older Pi versions
+  keep the existing fallback behavior and do not run with weakened isolation.
+  No migration is required.
+
+- **AI Review can pick a model when it runs on Pi.** Pi previously skipped
+  straight to its default model because AMF didn't pass `--model` to it;
+  now that it does, the model picker opens for Pi like it does for every
+  other harness, and a configured `review_model` applies to Pi runs.
+
 - **You can open the file you are reviewing in your own editor, at the line you
   are looking at.** Sometimes you need to poke around the real file before you
   can write the comment. In Final Review, `E` suspends AMF and opens the current

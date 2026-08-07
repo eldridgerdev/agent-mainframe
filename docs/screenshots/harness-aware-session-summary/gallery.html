@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness-aware session summaries — visual proof</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #151515; color: #eee; }
+    main { width: min(1240px, calc(100% - 32px)); margin: 32px auto 64px; }
+    h1 { margin-bottom: 8px; font-size: 1.6rem; }
+    .context { margin: 0 0 28px; color: #aaa; }
+    figure { margin: 0 0 28px; border: 1px solid #444; border-radius: 8px; overflow: hidden; background: #202020; }
+    .bar { padding: 8px 12px; border-bottom: 1px solid #444; color: #bbb; font: 13px ui-monospace, monospace; }
+    img { display: block; width: 100%; height: auto; }
+    figcaption { padding: 12px 14px; line-height: 1.45; color: #ddd; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Harness-aware session summaries</h1>
+    <p class="context">plan-mode branch · isolated AMF scratch instance · deterministic Codex fixture · no provider tokens used</p>
+    <figure>
+      <div class="bar">01 · Harness verification</div>
+      <img src="002-codex-harness-verified.png" alt="AMF harness manager showing Codex installed">
+      <figcaption>Codex passes AMF's real availability check and is enabled for the scratch workspace.</figcaption>
+    </figure>
+    <figure>
+      <div class="bar">02 · Selected feature</div>
+      <img src="003-codex-feature-before-summary.png" alt="AMF dashboard with a selected Codex feature">
+      <figcaption>The feature status line identifies Codex before summary generation begins.</figcaption>
+    </figure>
+    <figure>
+      <div class="bar">03 · Asynchronous generation</div>
+      <img src="004-codex-summary-generating.png" alt="AMF dashboard showing summary generation in progress">
+      <figcaption>AMF remains responsive and shows the existing non-blocking summary progress state.</figcaption>
+    </figure>
+    <figure>
+      <div class="bar">04 · Harness-aware result</div>
+      <img src="005-codex-summary-complete.png" alt="AMF dashboard showing the Codex-generated summary">
+      <figcaption>The completed feature row and status line show “Handled by Codex, not Claude,” with Codex still identified as the selected harness.</figcaption>
+    </figure>
+  </main>
+</body>
+</html>

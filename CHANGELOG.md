@@ -273,6 +273,10 @@ are tagged.
 
 ### Changed
 
+- **Session summaries now use the feature's own agent harness.** Generating a
+  one-line summary for a Codex, Opencode, or Pi feature no longer silently
+  launches Claude; Claude features continue to use Claude. No configuration or
+  migration is required.
 - **Plan mode now handles presets, empty question banks, and large answers
   predictably.** A preset that enables plan mode opens the same guided
   interview as the manual toggle, while batch creation now explains that it

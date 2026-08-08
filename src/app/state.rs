@@ -3365,6 +3365,16 @@ pub enum LearningFocus {
     Qa,
 }
 
+/// An open starter-question picker: indices into
+/// `crate::app::learning::STARTER_QUESTIONS`, filtered to the ones that make
+/// sense for the current anchor. Picking one fills the prompt so it can still
+/// be edited before it's asked.
+#[allow(dead_code)]
+pub struct LearningStarterPicker {
+    pub indices: Vec<usize>,
+    pub selected: usize,
+}
+
 /// Which harness answers questions from here on. Pre-selected when the
 /// overlay opens, so this only exists while the user is actively changing it.
 #[allow(dead_code)]
@@ -3450,6 +3460,8 @@ pub struct LearningViewState {
     /// Open harness picker, if any. Lives inside the overlay rather than as
     /// its own `AppMode` so opening it can't lose the browsing state behind it.
     pub harness_picker: Option<LearningHarnessPicker>,
+    /// Open starter-question picker, if any.
+    pub starter_picker: Option<LearningStarterPicker>,
     pub level: LearningLevel,
     /// `learning_sessions.id` backing this overlay.
     pub session_id: String,

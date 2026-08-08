@@ -561,27 +561,54 @@ closes out.
       level, harness, `read-only`, and in-flight count. Verify a
       markdown answer with headings, a list, and a fenced code block
       renders formatted and scrolls to the end.
-- [ ] Add `src/handlers/learning.rs` and wire it into the main key
+- [x] Add `src/handlers/learning.rs` and wire it into the main key
       dispatch: navigation, scope toggle, level toggle, selection keys,
       the two ask keys (explain / change), starter-question picker,
-      intent flip inside the prompt, follow-up, answer-pane scrolling,
-      harness picker, and `?` help overlay. Add handler tests in the
-      style of `src/handlers/diff.rs` covering help-overlay open/close
-      and key swallowing while it is open.
-- [ ] Implement the first-open behaviour: show the help overlay when
+      intent flip inside the prompt, answer-pane scrolling, harness
+      picker, and `?` help overlay. Dispatch is layered: help, then the
+      two pickers, then the question prompt, then the answer pane each
+      swallow every key while open, so a stray `q` can't close the
+      overlay out from under someone mid-question. Tests:
+      `the_help_overlay_opens_closes_and_swallows_keys`,
+      `q_closes_the_overlay_but_not_while_a_question_is_being_typed`,
+      `tab_submits_the_typed_question`,
+      `ctrl_e_flips_intent_without_losing_the_text`,
+      `the_starter_picker_fills_the_prompt_without_asking`,
+      `the_two_ask_keys_choose_the_intent`,
+      `tab_cycles_focus_between_the_three_panes`,
+      `selection_keys_change_what_the_question_is_about`,
+      `the_level_and_scope_keys_toggle_their_settings`,
+      `the_harness_picker_swallows_keys_while_open`. **Follow-up (`Epic
+      5`) has no key yet** — it lands with the rest of Epic 5.
+- [x] Implement the first-open behaviour: show the help overlay when
       the project's learning session has `onboarding_seen = 0`, then
-      set and persist the flag. Verify it appears once and not on the
-      second open.
+      set and persist the flag. `learning_show_onboarding_if_new` runs
+      at the end of `open_learning_mode`; a missing row or a failed
+      lookup counts as "seen", so a DB error can never make the intro
+      reappear on every open, and a project with no DB never shows it.
+      Persistence is covered by `db::learning::onboarding_flag_is_sticky`.
+      **Not yet covered:** an overlay-level test that opens twice and
+      asserts the help appears only the first time — the existing
+      overlay tests run without a DB, so that needs a DB-backed `App`
+      fixture. Worth adding in Epic 6.
 - [ ] Add the dashboard entry key `K` (verified unbound in
       `handle_normal_key`) on the selected feature/project, register it
       in `DASHBOARD_KEYBINDING_ACTIONS`, and add it to the dashboard
       help overlay list. Verify every existing dashboard binding still
       works, especially `L` (prompt library), and that `K` appears in
       the config wizard's bindable actions.
-- [ ] Implement the starter-question table and picker (anchor-aware
-      filtering, loads into the editable prompt). Unit-test that
-      project-anchor presets are offered only for the project anchor
-      and line presets only when a line/hunk range is selected.
+- [x] Implement the starter-question table and picker (anchor-aware
+      filtering, loads into the editable prompt). Nine presets in
+      `STARTER_QUESTIONS`, scoped `Project` / `File` / `Lines`; a file
+      preset still applies once a range inside that file is selected.
+      The picker opens the prompt if it isn't already open, so it is a
+      way *into* asking, and confirming loads the preset text as
+      editable — it never asks on its own. Tests:
+      `project_presets_are_offered_only_for_the_project_anchor`,
+      `line_presets_need_a_line_or_hunk_range`,
+      `file_presets_apply_to_ranges_inside_that_file`, plus the handler
+      test above. The list itself is still a guess — see the open
+      question below.
 
 ### Epic 5 — Acting on an answer
 

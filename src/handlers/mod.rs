@@ -11,6 +11,7 @@ mod fork;
 mod harness;
 mod hooks;
 mod input;
+mod learning;
 mod mouse;
 mod normal;
 mod picker;
@@ -46,6 +47,7 @@ pub use fork::handle_fork_feature_key;
 pub use harness::handle_harness_setup_key;
 pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_running_hook_key};
 pub use input::handle_paste;
+pub use learning::handle_learning_key;
 pub use mouse::handle_mouse;
 pub use normal::handle_normal_key;
 pub(crate) use normal::{
@@ -79,9 +81,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
     match &app.mode {
         AppMode::Normal => handle_normal_key(app, key),
         AppMode::Todos(_) => handle_todos_key(app, key),
-        // Learning Mode has no entry key yet; `handlers::learning` takes over
-        // here once the overlay is reachable.
-        AppMode::Learning(_) => Ok(()),
+        AppMode::Learning(_) => handle_learning_key(app, key),
         AppMode::TodoQuickCapture(_) => handle_todo_quick_capture_key(app, key),
         AppMode::TodosHostReassign(_) => handle_todos_host_reassign_key(app, key.code),
         AppMode::CreatingProject(_) => handle_create_project_key(app, key),

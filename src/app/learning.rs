@@ -124,6 +124,7 @@ impl LearningViewState {
             answer_rendered_lines: Vec::new(),
             harness,
             harness_picker: None,
+            starter_picker: None,
             level,
             session_id,
             help_open: false,
@@ -228,6 +229,7 @@ impl App {
                 .unwrap_or(0);
         }
         self.learning_load_selected_content();
+        self.learning_show_onboarding_if_new();
         Ok(())
     }
 
@@ -1298,6 +1300,393 @@ impl App {
     }
 }
 
+// ── panes, history cursor, answer view ───────────────────────
+
+impl App {
+    /// Move focus file list → content → history → file list.
+    pub fn learning_cycle_focus(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.focus = match state.focus {
+                LearningFocus::FileList => LearningFocus::Content,
+                LearningFocus::Content => LearningFocus::Qa,
+                LearningFocus::Qa => LearningFocus::FileList,
+            };
+        }
+    }
+
+    /// Move the Q&A history cursor.
+    pub fn learning_select_qa(&mut self, delta: isize) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            let len = state.qa.len();
+            if len == 0 {
+                return;
+            }
+            state.selected_qa =
+                (state.selected_qa as isize + delta).clamp(0, len as isize - 1) as usize;
+        }
+    }
+
+    /// `Enter`: what it does depends on the focused pane — expand/collapse the
+    /// orientation group or load a file, or open the selected answer.
+    pub fn learning_activate_selection(&mut self) {
+        let focus = match &self.mode {
+            AppMode::Learning(state) => state.focus,
+            _ => return,
+        };
+        match focus {
+            LearningFocus::FileList => {
+                let on_header = matches!(
+                    &self.mode,
+                    AppMode::Learning(state)
+                        if matches!(
+                            state.selected_entry(),
+                            Some(LearningListEntry::StartHereHeader)
+                        )
+                );
+                if on_header {
+                    self.learning_toggle_start_here();
+                } else {
+                    self.learning_load_selected_content();
+                    if let AppMode::Learning(state) = &mut self.mode {
+                        state.focus = LearningFocus::Content;
+                    }
+                }
+            }
+            LearningFocus::Content => {}
+            LearningFocus::Qa => self.learning_open_answer(),
+        }
+    }
+
+    /// Show the selected answer full-width as rendered markdown.
+    pub fn learning_open_answer(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            let has_answer = state
+                .qa
+                .get(state.selected_qa)
+                .is_some_and(|r| r.answer.is_some() || r.error.is_some());
+            if !has_answer {
+                return;
+            }
+            state.answer_open = true;
+            state.answer_scroll = 0;
+            // Force a re-render: the cache is keyed on width, not content.
+            state.answer_rendered_lines.clear();
+            state.answer_rendered_width = 0;
+        }
+    }
+
+    pub fn learning_close_answer(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.answer_open = false;
+            state.answer_scroll = 0;
+            state.answer_rendered_lines.clear();
+            state.answer_rendered_width = 0;
+        }
+    }
+
+    pub fn learning_answer_scroll(&mut self, delta: isize) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.answer_scroll = (state.answer_scroll as isize + delta).max(0) as usize;
+        }
+    }
+
+    pub fn learning_answer_scroll_to_top(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.answer_scroll = 0;
+        }
+    }
+
+    /// Jump past the end; `draw_markdown_document` clamps to the real bottom
+    /// once it knows how tall the rendered document is.
+    pub fn learning_answer_scroll_to_bottom(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.answer_scroll = state.answer_rendered_lines.len().max(usize::MAX / 2);
+        }
+    }
+}
+
+// ── starter questions ────────────────────────────────────────
+
+/// Which anchors a starter question makes sense for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StarterScope {
+    /// Only with the whole project selected.
+    Project,
+    /// With a file open (any anchor inside it included).
+    File,
+    /// Only with a line range or hunk selected.
+    Lines,
+}
+
+/// A preset question. The point is that a blank prompt is never the only
+/// option: a user who doesn't yet know what to ask still has a first move.
+#[derive(Debug, Clone, Copy)]
+pub struct StarterQuestion {
+    pub text: &'static str,
+    pub intent: LearningQaIntent,
+    pub scope: StarterScope,
+}
+
+/// The v1 preset list. Written for someone reading code they didn't write;
+/// see the plan's "the starter-question list is a guess".
+pub const STARTER_QUESTIONS: &[StarterQuestion] = &[
+    StarterQuestion {
+        text: "Give me a tour of this project — what is it, and where does execution start?",
+        intent: LearningQaIntent::Explain,
+        scope: StarterScope::Project,
+    },
+    StarterQuestion {
+        text: "What should I read first to understand this project, and in what order?",
+        intent: LearningQaIntent::Explain,
+        scope: StarterScope::Project,
+    },
+    StarterQuestion {
+        text: "What is this file responsible for, and what do I need to know to read it?",
+        intent: LearningQaIntent::Explain,
+        scope: StarterScope::File,
+    },
+    StarterQuestion {
+        text: "What calls into this file, and what does it call?",
+        intent: LearningQaIntent::Explain,
+        scope: StarterScope::File,
+    },
+    StarterQuestion {
+        text: "Explain this line by line.",
+        intent: LearningQaIntent::Explain,
+        scope: StarterScope::Lines,
+    },
+    StarterQuestion {
+        text: "Why is it written this way instead of the obvious way?",
+        intent: LearningQaIntent::Explain,
+        scope: StarterScope::Lines,
+    },
+    StarterQuestion {
+        text: "What would break if I deleted this?",
+        intent: LearningQaIntent::Explain,
+        scope: StarterScope::Lines,
+    },
+    StarterQuestion {
+        text: "What do the unfamiliar words here mean?",
+        intent: LearningQaIntent::Explain,
+        scope: StarterScope::Lines,
+    },
+    StarterQuestion {
+        text: "Suggest how to make this clearer without changing behaviour.",
+        intent: LearningQaIntent::Action,
+        scope: StarterScope::Lines,
+    },
+];
+
+/// Indices of the starter questions worth offering for `anchor`.
+pub fn starter_questions_for(anchor: LearningAnchor) -> Vec<usize> {
+    STARTER_QUESTIONS
+        .iter()
+        .enumerate()
+        .filter(|(_, q)| match (q.scope, anchor) {
+            (StarterScope::Project, LearningAnchor::Project) => true,
+            // A file-level question still applies when a range inside that
+            // file is selected — the file is open either way.
+            (StarterScope::File, LearningAnchor::File)
+            | (StarterScope::File, LearningAnchor::Lines { .. })
+            | (StarterScope::File, LearningAnchor::Hunk { .. }) => true,
+            (StarterScope::Lines, LearningAnchor::Lines { .. })
+            | (StarterScope::Lines, LearningAnchor::Hunk { .. }) => true,
+            _ => false,
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+// ── the question prompt ──────────────────────────────────────
+
+impl App {
+    /// Open the question prompt for `intent`, capturing the anchor as it
+    /// stands so browsing can't move it under the user.
+    pub fn learning_open_question(
+        &mut self,
+        intent: LearningQaIntent,
+        parent_qa_id: Option<String>,
+    ) {
+        let text = match &self.mode {
+            AppMode::Learning(state) => selection_text(state),
+            _ => return,
+        };
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.question = Some(crate::app::LearningQuestionEditor {
+                editor: crate::editor::TextEditor::new(String::new()),
+                intent,
+                parent_qa_id,
+                anchor: state.anchor,
+                file_path: match state.anchor {
+                    LearningAnchor::Project => None,
+                    _ => state.content_path.clone(),
+                },
+                selection_text: text,
+                scroll: 0,
+                sync_to_cursor: true,
+            });
+        }
+    }
+
+    /// Flip explain ⇄ change without losing what's been typed.
+    pub fn learning_question_toggle_intent(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode
+            && let Some(q) = &mut state.question
+        {
+            q.intent = q.intent.toggled();
+        }
+    }
+
+    pub fn learning_cancel_question(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.question = None;
+            state.starter_picker = None;
+        }
+    }
+
+    /// Ask what's in the prompt. Returns the new row's id.
+    pub fn learning_submit_question(&mut self) -> Option<String> {
+        let (text, intent, parent) = match &self.mode {
+            AppMode::Learning(state) => {
+                let q = state.question.as_ref()?;
+                (q.editor.text().to_string(), q.intent, q.parent_qa_id.clone())
+            }
+            _ => return None,
+        };
+        if text.trim().is_empty() {
+            return None;
+        }
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.question = None;
+            state.starter_picker = None;
+        }
+        self.learning_ask(&text, intent, parent)
+    }
+
+    /// Offer the presets that fit the current anchor. Opens the prompt first
+    /// if it isn't already open, so the picker is a way *into* asking.
+    pub fn learning_open_starter_picker(&mut self) {
+        let anchor = match &self.mode {
+            AppMode::Learning(state) => state
+                .question
+                .as_ref()
+                .map(|q| q.anchor)
+                .unwrap_or(state.anchor),
+            _ => return,
+        };
+        let indices = starter_questions_for(anchor);
+        if indices.is_empty() {
+            if let AppMode::Learning(state) = &mut self.mode {
+                state.error = Some(
+                    "No starter questions fit what's selected — pick a file or some lines first."
+                        .to_string(),
+                );
+            }
+            return;
+        }
+        if matches!(&self.mode, AppMode::Learning(state) if state.question.is_none()) {
+            self.learning_open_question(LearningQaIntent::Explain, None);
+        }
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.starter_picker = Some(crate::app::LearningStarterPicker {
+                indices,
+                selected: 0,
+            });
+            state.error = None;
+        }
+    }
+
+    pub fn learning_starter_picker_move(&mut self, delta: isize) {
+        if let AppMode::Learning(state) = &mut self.mode
+            && let Some(picker) = &mut state.starter_picker
+        {
+            let len = picker.indices.len();
+            if len == 0 {
+                return;
+            }
+            picker.selected = (picker.selected as isize + delta).rem_euclid(len as isize) as usize;
+        }
+    }
+
+    pub fn learning_close_starter_picker(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.starter_picker = None;
+        }
+    }
+
+    /// Load the highlighted preset into the prompt — editable, not asked.
+    pub fn learning_starter_picker_confirm(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            let picked = state
+                .starter_picker
+                .as_ref()
+                .and_then(|p| p.indices.get(p.selected).copied())
+                .and_then(|i| STARTER_QUESTIONS.get(i));
+            state.starter_picker = None;
+            if let (Some(preset), Some(q)) = (picked, &mut state.question) {
+                q.editor = crate::editor::TextEditor::new(preset.text.to_string());
+                q.intent = preset.intent;
+                q.sync_to_cursor = true;
+            }
+        }
+    }
+}
+
+// ── help / first open ────────────────────────────────────────
+
+impl App {
+    pub fn learning_open_help(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.help_open = true;
+            state.help_scroll = 0;
+        }
+    }
+
+    pub fn learning_close_help(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.help_open = false;
+            state.help_scroll = 0;
+        }
+    }
+
+    pub fn learning_help_scroll(&mut self, delta: isize) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.help_scroll = (state.help_scroll as isize + delta).max(0) as usize;
+        }
+    }
+
+    /// On the project's first visit, open the help overlay unprompted and
+    /// remember that it's been shown. A newcomer's discovery path is this
+    /// overlay, not the source.
+    fn learning_show_onboarding_if_new(&mut self) {
+        let (session_id, seen) = match &self.mode {
+            AppMode::Learning(state) => (state.session_id.clone(), state.help_open),
+            _ => return,
+        };
+        let _ = seen;
+        if session_id.is_empty() {
+            return;
+        }
+        let already_seen = self
+            .db
+            .as_ref()
+            .and_then(|db| db.learning_session_onboarding_seen(&session_id).ok())
+            .unwrap_or(true);
+        if already_seen {
+            return;
+        }
+        self.learning_open_help();
+        if let Some(db) = self.db.as_ref()
+            && let Err(e) = db.set_learning_onboarding_seen(&session_id)
+        {
+            self.log_warn(
+                "learning",
+                format!("couldn't record that the Learning Mode intro was shown: {e}"),
+            );
+        }
+    }
+}
+
 // ── session settings (level, harness) ────────────────────────
 
 impl App {
@@ -1418,7 +1807,7 @@ fn headless_failure_message(harness: &AgentKind, err: &anyhow::Error) -> String 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::app::{ProjectStatus, ProjectStore};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
@@ -1882,6 +2271,104 @@ mod tests {
             })
             .unwrap();
         assert!(app.poll_learning_answers_bg());
+    }
+
+    // ── starter questions ────────────────────────────────────
+
+    fn starters_for(anchor: LearningAnchor) -> Vec<&'static str> {
+        starter_questions_for(anchor)
+            .into_iter()
+            .map(|i| STARTER_QUESTIONS[i].text)
+            .collect()
+    }
+
+    #[test]
+    fn project_presets_are_offered_only_for_the_project_anchor() {
+        let project_only: Vec<&str> = STARTER_QUESTIONS
+            .iter()
+            .filter(|q| q.scope == StarterScope::Project)
+            .map(|q| q.text)
+            .collect();
+        assert!(!project_only.is_empty(), "the table has project presets");
+
+        let offered = starters_for(LearningAnchor::Project);
+        for text in &project_only {
+            assert!(offered.contains(text), "{text} missing at the project anchor");
+        }
+        for anchor in [
+            LearningAnchor::File,
+            LearningAnchor::Lines { start: 1, end: 3 },
+        ] {
+            let offered = starters_for(anchor);
+            for text in &project_only {
+                assert!(
+                    !offered.contains(text),
+                    "{text} should not be offered at {anchor:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn line_presets_need_a_line_or_hunk_range() {
+        let line_only: Vec<&str> = STARTER_QUESTIONS
+            .iter()
+            .filter(|q| q.scope == StarterScope::Lines)
+            .map(|q| q.text)
+            .collect();
+        assert!(!line_only.is_empty(), "the table has line presets");
+
+        for anchor in [
+            LearningAnchor::Lines { start: 4, end: 9 },
+            LearningAnchor::Hunk { index: 0 },
+        ] {
+            let offered = starters_for(anchor);
+            for text in &line_only {
+                assert!(offered.contains(text), "{text} missing at {anchor:?}");
+            }
+        }
+        for anchor in [LearningAnchor::Project, LearningAnchor::File] {
+            let offered = starters_for(anchor);
+            for text in &line_only {
+                assert!(
+                    !offered.contains(text),
+                    "{text} should not be offered at {anchor:?}"
+                );
+            }
+        }
+    }
+
+    /// A file-level question still applies once a range inside that file is
+    /// selected — the file is open either way.
+    #[test]
+    fn file_presets_apply_to_ranges_inside_that_file() {
+        let file_only: Vec<&str> = STARTER_QUESTIONS
+            .iter()
+            .filter(|q| q.scope == StarterScope::File)
+            .map(|q| q.text)
+            .collect();
+        for anchor in [
+            LearningAnchor::File,
+            LearningAnchor::Lines { start: 2, end: 2 },
+            LearningAnchor::Hunk { index: 1 },
+        ] {
+            let offered = starters_for(anchor);
+            for text in &file_only {
+                assert!(offered.contains(text), "{text} missing at {anchor:?}");
+            }
+        }
+        assert!(
+            starters_for(LearningAnchor::Project)
+                .iter()
+                .all(|t| !file_only.contains(t)),
+            "file presets need a file"
+        );
+    }
+
+    /// Shared with `crate::handlers::learning`'s tests: an overlay opened on a
+    /// real temp repo with a file loaded.
+    pub(crate) fn opened_app_for_handlers() -> (TempDir, App) {
+        opened_app()
     }
 
     fn opened_app() -> (TempDir, App) {

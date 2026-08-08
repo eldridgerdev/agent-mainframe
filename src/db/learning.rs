@@ -167,6 +167,20 @@ pub fn set_onboarding_seen(conn: &Connection, session_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether the first-open help overlay has already been shown for this
+/// session. A missing row counts as "seen" so a lookup failure can never make
+/// the intro reappear on every open.
+pub fn onboarding_seen(conn: &Connection, session_id: &str) -> Result<bool> {
+    let seen: Option<i64> = conn
+        .query_row(
+            "SELECT onboarding_seen FROM learning_sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(seen.map(|v| v != 0).unwrap_or(true))
+}
+
 /// Delete a session and (via cascade) every Q&A row under it.
 pub fn delete_session(conn: &Connection, session_id: &str) -> Result<()> {
     conn.execute(

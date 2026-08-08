@@ -372,6 +372,11 @@ impl AmfDb {
         learning::set_session_settings(&self.conn, session_id, harness, level)
     }
 
+    /// Whether the first-open help overlay has already been shown.
+    pub fn learning_session_onboarding_seen(&self, session_id: &str) -> Result<bool> {
+        learning::onboarding_seen(&self.conn, session_id)
+    }
+
     pub fn set_learning_onboarding_seen(&self, session_id: &str) -> Result<()> {
         learning::set_onboarding_seen(&self.conn, session_id)
     }

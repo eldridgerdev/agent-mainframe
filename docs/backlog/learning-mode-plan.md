@@ -702,6 +702,12 @@ closes out.
       `src/db/learning.rs` under the `## Architecture` sections, plus a
       Learning Mode section describing the explain/change split and the
       level/threading model), and `CHANGELOG.md`.
+      **`CHANGELOG.md` is done** — an `Added` block under `[Unreleased]`
+      covering `K`, the two ask keys, starter questions, the levels, the
+      non-blocking queue, per-project history, and harness choice. It
+      deliberately claims nothing from Epic 5: follow-ups, deep dive,
+      and making an answer actionable are not described, because they
+      are not built. `README.md` and `CLAUDE.md` are still open.
 - [ ] File follow-up items for the deferred work: anchor-drift
       resolution (commit SHA + snippet or fuzzy match, modeled on
       `App::reanchor_line_comments`), the alternative actionable

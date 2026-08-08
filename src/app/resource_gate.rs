@@ -202,8 +202,9 @@ impl App {
                     "'{feature_name}' created but not started: {reason}. Press c to start it."
                 );
                 self.log_warn("limits", notice.clone());
-                self.push_toast_warning(notice.clone());
-                self.message = Some(notice);
+                // Toast only. The status line would say the same thing twice,
+                // and this needs the room to wrap.
+                self.push_toast_warning(notice);
                 false
             }
         }

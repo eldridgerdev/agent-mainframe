@@ -19066,13 +19066,17 @@ fn autostart_skips_with_a_warning_instead_of_prompting() {
     // Creation paths must never raise the modal: a batch create would queue
     // one per feature and the automation API has nobody to answer them.
     assert!(matches!(app.mode, AppMode::Normal));
-    let message = app.message.as_deref().unwrap_or_default();
-    assert!(message.contains("other-feat"), "got {message:?}");
+    // Reported once, as a toast -- not also duplicated into the status line.
+    assert!(app.message.is_none(), "got {:?}", app.message);
+    let toast = app
+        .toasts
+        .last()
+        .map(|toast| toast.message.clone())
+        .unwrap_or_default();
+    assert!(toast.contains("other-feat"), "got {toast:?}");
     // Singular here on purpose: one agent, one limit.
-    assert!(
-        message.contains("1 agent already running"),
-        "got {message:?}"
-    );
+    assert!(toast.contains("1 agent already running"), "got {toast:?}");
+    assert!(toast.contains("Press c to start it"), "got {toast:?}");
 }
 
 #[test]

@@ -22,9 +22,11 @@ its limit. Creation paths deliberately never raise the confirmation dialog — a
 batch create would queue one per feature, and the automation API has nobody to
 answer them — so the feature is created, left stopped, and the reason is said
 out loud: *"'cache-eviction' created but not started: 1 agent already running
-(limit 1). Press c to start it."*
+(limit 1). Press c to start it."* The toast wraps, so the whole sentence is
+readable rather than clipped, and it is the only place the notice appears —
+the status line is not made to echo it.
 
-![Feature created but not started, with the reason in the status line](002-autostart-skipped-with-warning.png)
+![Feature created but not started, with the reason in a wrapped toast](002-autostart-skipped-with-warning.png)
 
 ## 3. The stopped feature, selected
 

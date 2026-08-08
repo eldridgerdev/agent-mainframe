@@ -1,5 +1,6 @@
 mod ai_review_cache;
 mod debug_log;
+pub mod editors;
 mod migrations;
 pub mod plan_interviews;
 mod pr_comment_triage;
@@ -250,6 +251,56 @@ impl AmfDb {
 
     pub fn delete_feature_statuses(&self, feature_id: &str) -> Result<()> {
         session_status::delete_feature(&self.conn, feature_id)
+    }
+}
+
+/// Editors AMF launched for a feature (see `db/editors.rs`), tracked so
+/// stopping the feature can reclaim them.
+impl AmfDb {
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_launched_editor(
+        &self,
+        feature_id: &str,
+        session_id: Option<&str>,
+        kind: editors::EditorKind,
+        pid: i64,
+        worktree_path: &Path,
+        dedicated: bool,
+        command: &str,
+    ) -> Result<editors::LaunchedEditor> {
+        editors::record_launch(
+            &self.conn,
+            feature_id,
+            session_id,
+            kind,
+            pid,
+            worktree_path,
+            dedicated,
+            command,
+        )
+    }
+
+    pub fn launched_editors_for_feature(
+        &self,
+        feature_id: &str,
+    ) -> Result<Vec<editors::LaunchedEditor>> {
+        editors::list_for_feature(&self.conn, feature_id)
+    }
+
+    pub fn all_launched_editors(&self) -> Result<Vec<editors::LaunchedEditor>> {
+        editors::list_all(&self.conn)
+    }
+
+    pub fn set_launched_editor_owner(&self, id: &str, pid: i64, dedicated: bool) -> Result<()> {
+        editors::set_owner(&self.conn, id, pid, dedicated)
+    }
+
+    pub fn delete_launched_editor(&self, id: &str) -> Result<()> {
+        editors::delete(&self.conn, id)
+    }
+
+    pub fn delete_launched_editors_for_feature(&self, feature_id: &str) -> Result<()> {
+        editors::delete_for_feature(&self.conn, feature_id)
     }
 }
 

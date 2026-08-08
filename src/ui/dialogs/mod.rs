@@ -5,6 +5,7 @@ mod compose;
 mod config_wizard;
 mod debug;
 mod diff;
+mod dormant;
 mod editor_view;
 mod feature;
 mod harness;
@@ -15,6 +16,7 @@ mod plan_interview;
 mod pr_review;
 mod project;
 mod prompt_library;
+mod resource_gate;
 mod review_harness;
 mod search;
 mod session;
@@ -28,6 +30,7 @@ pub use compose::draw_compose_dialog;
 pub use config_wizard::draw_config_wizard_dialog;
 pub use debug::draw_debug_log;
 pub use diff::{draw_diff_picker, draw_diff_viewer, draw_diff_viewer_loading};
+pub use dormant::draw_dormant_view;
 pub use feature::{
     draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
     draw_deleting_feature_dialog, draw_fork_feature_dialog, draw_steering_prompt_dialog,
@@ -49,6 +52,7 @@ pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use prompt_library::{
     draw_placeholder_fill, draw_prompt_editor, draw_prompt_library, draw_skill_picker,
 };
+pub use resource_gate::draw_resource_confirm_dialog;
 pub use review_harness::draw_review_harness_pick;
 pub use search::draw_search_dialog;
 pub use session::{

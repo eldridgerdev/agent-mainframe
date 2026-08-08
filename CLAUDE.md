@@ -79,6 +79,11 @@ app/
 ├── plan_interview.rs # guided discovery, AI rounds, plan review
 ├── todos.rs         # native TODOs overlay (open/close, add,
 │                    # edit, toggle, reorder, spawn agent)
+├── resource_gate.rs # pre-start agent/memory gate, pending-start
+│                    # stash + replay, autostart policy
+├── editor_ops.rs    # kill_tracked_editors(): close editors AMF
+│                    # opened, with killed/skipped report
+├── dormant.rs       # dormant detection + overlay ops
 ├── setup.rs         # ensure_notification_hooks(),
 │                    # ensure_notify_scripts(), load_config()
 ├── util.rs          # shorten_path(), slugify(),
@@ -193,6 +198,8 @@ Key dispatch per mode:
      investigation
    - `todos.rs` - native TODOs list view, delete confirm,
      and quick-capture overlay
+   - `resource_gate.rs` - pre-start agent/memory warning
+   - `dormant.rs` - dormant-features overlay
 - `centered_rect(percent_x, percent_y, area) -> Rect`
 - `ansi_to_ratatui_text(raw, cols, rows) -> Vec<Line>`
 
@@ -216,6 +223,7 @@ Key dispatch is split across focused modules:
 - `handlers/plan_interview.rs` - discovery and plan-review key handling
 - `handlers/todos.rs` - native TODOs overlay + quick-capture
   key dispatch
+- `handlers/dormant.rs` - dormant-features overlay key dispatch
 - `handlers/mouse.rs` - mouse event handling
 
 ### Feature TODOs
@@ -261,6 +269,47 @@ native (non-tmux) overlay:
   `AppMode::TodosHostReassign` — a prompt to **re-home** the list onto
   a surviving feature (`set_todo_list_host_feature`) or **delete** it.
   `Esc` keeps the list by re-homing onto the first surviving feature.
+
+### Agent Limits & Resource Health (resources/)
+
+Guards against AMF quietly exhausting host memory. Everything here
+is advisory: a tripped gate asks, it never refuses, and a missing
+signal is always "no gate" rather than a block.
+
+```text
+resources/
+├── mem.rs      # probe() -> Option<MemorySnapshot>: /proc/meminfo
+│               # narrowed by cgroup v2 limits on Linux, sysctl +
+│               # vm_stat on macOS, None everywhere else
+├── limits.rs   # LiveWindows census + active_harness_sessions();
+│               # HeadlessLease counts in-flight headless runs
+├── procs.rs    # ps-backed process list/tree, pid liveness,
+│               # SIGTERM-then-SIGKILL tree termination, VS Code
+│               # window attribution
+└── doctor.rs   # `amf doctor` checks + text/JSON rendering
+```
+
+- **Pre-start gate** (`app/resource_gate.rs`): `check_start_preconditions()`
+  combines the agent count (harness sessions across all projects +
+  headless leases, tripping at `active >= limit`) and available
+  memory into one result. `gate_start()` parks the start in
+  `AppMode::ConfirmResourceStart` with a `PendingStart`, replayed by
+  `confirm_pending_start()`. Creation paths call `autostart_allowed()`
+  instead, which warns and skips rather than prompting.
+- **Headless accounting**: `HeadlessLease` is acquired inside
+  `run_command` / `run_jsonl_command` (`headless.rs`), so every
+  `HeadlessRunner` caller is counted; poll-driven runs hold a
+  `LeasedChild` instead, so abandoning one releases the slot.
+- **Editor tracking**: `launched_editors` (`MIGRATION_017`,
+  `db/editors.rs`). VS Code launches with `--new-window` and is
+  recorded **not-owned**; a background thread then attributes the new
+  window process (new PID + worktree in argv) and only then marks it
+  `dedicated`. `app/editor_ops.rs` revalidates identity before
+  signalling and kills the process tree, returning a killed/skipped
+  report used by `do_stop_feature` and the dormant overlay.
+- **Dormancy** (`app/dormant.rs`): idle (tmux `window_activity`) **and**
+  unattended (`Feature::last_accessed`), both configurable; `z` opens
+  `AppMode::Dormant`.
 
 ### Debug Logging
 

@@ -11,7 +11,7 @@ use crate::extension::{load_global_extension_config, merge_project_extension_con
 use crate::project::{LaunchOpts, normalized_feature_name, worktree_name};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
-use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
+use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep, PendingStart};
 
 impl App {
     /// Whether Remote Control may be enabled for a launch given the current
@@ -467,6 +467,7 @@ impl App {
 
         self.mode = AppMode::Normal;
 
+        let mut started = false;
         if let Some(pi) = self
             .store
             .projects
@@ -474,12 +475,22 @@ impl App {
             .position(|p| p.name == prepared.project_name)
         {
             let fi = self.store.projects[pi].features.len().saturating_sub(1);
-            self.ensure_feature_running(pi, fi)?;
+            // A machine at the agent cap gets the feature without its agent
+            // rather than a modal in the middle of the creation flow.
+            started = self.autostart_allowed(&prepared.branch);
+            if started {
+                self.ensure_feature_running(pi, fi)?;
+            }
             self.save()?;
-            if prepared.steering_enabled {
+            if started && prepared.steering_enabled {
                 self.open_startup_steering_prompt(pi, fi)?;
                 return Ok(());
             }
+        }
+
+        if !started {
+            // `autostart_allowed` already reported why.
+            return Ok(());
         }
 
         match prepared.hook_succeeded {
@@ -966,6 +977,20 @@ impl App {
             return Ok(());
         }
 
+        // Starting a feature launches its agent harness, so it goes through
+        // the resource gate. A tripped gate parks the start in a confirmation
+        // dialog that replays `begin_start_feature` on confirm.
+        if self.gate_start(PendingStart::Feature { pi, fi }) {
+            return Ok(());
+        }
+
+        self.begin_start_feature(pi, fi)
+    }
+
+    /// Start a feature that has already cleared the resource gate: runs the
+    /// `on_start` hook (prompting first when it has a prompt) and brings the
+    /// tmux session up.
+    pub(crate) fn begin_start_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         // If on_start has a prompt, show the picker first.
         let on_start = self.active_extension.lifecycle_hooks.on_start.clone();
         if let Some(ref cfg) = on_start
@@ -1108,10 +1133,23 @@ impl App {
         // Remember that this stop was deliberate so reopening a saved agent
         // pane restarts and resumes in one keypress instead of asking whether
         // the session was lost.
-        self.user_stopped_features.insert(feature_id);
+        self.user_stopped_features.insert(feature_id.clone());
         self.clear_sidebar_state_for_session(&tmux_session);
+
+        // The tmux session is gone, but the editor AMF opened for this feature
+        // is not in tmux — and neither are the language servers under it, which
+        // are the heaviest thing the feature was holding.
+        let editor_report = if self.config.kill_editor_on_stop {
+            self.kill_tracked_editors(&feature_id)
+        } else {
+            Default::default()
+        };
+
         self.save()?;
-        self.message = Some(format!("Stopped '{}'", name));
+        self.message = Some(match editor_report.summary() {
+            Some(detail) => format!("Stopped '{}' - {}", name, detail),
+            None => format!("Stopped '{}'", name),
+        });
 
         Ok(())
     }
@@ -1299,10 +1337,16 @@ impl App {
         }
 
         self.clear_sidebar_state_for_session(&tmux_session);
-        if let Some(feature_id) = feature_id.as_deref()
-            && let Some(db) = self.db.as_ref()
-        {
-            let _ = db.delete_feature_statuses(feature_id);
+        if let Some(feature_id) = feature_id.as_deref() {
+            // The worktree is going away, so an editor still open on it is
+            // worth closing rather than leaving pointed at a deleted path.
+            if self.config.kill_editor_on_stop {
+                self.kill_tracked_editors(feature_id);
+            }
+            if let Some(db) = self.db.as_ref() {
+                let _ = db.delete_feature_statuses(feature_id);
+                let _ = db.delete_launched_editors_for_feature(feature_id);
+            }
         }
         self.delete_plan_interviews_for_deleted_feature(&project_name, &feature_name, &feature_id);
         self.store.remove_feature(&project_name, &feature_name);
@@ -1659,6 +1703,10 @@ impl App {
             .position(|p| p.name == project_name)
         {
             let fi = self.store.projects[pi].features.len().saturating_sub(1);
+            if !self.autostart_allowed(&new_branch) {
+                self.save()?;
+                return Ok(());
+            }
             self.ensure_feature_running(pi, fi)?;
             self.save()?;
         }

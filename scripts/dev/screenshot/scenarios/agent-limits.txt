@@ -1,0 +1,75 @@
+# agent-limits: proves the pre-start resource gate, the autostart
+# skip-with-warning, and the dormant-features overlay.
+#
+# Needs a config with a low limit (the point is what happens *at* the
+# limit, and a real machine rarely has four agents running during a
+# capture), so run it with --config:
+#
+#   ./amf-capture.sh --scenario <this file> \
+#     --config <config with "max_concurrent_agents": 1> \
+#     --seed <seed-project.json> --seed-feature <seed-feature-1.json> \
+#     --geometry 150x40
+#
+# --seed-feature starts the first agent, which is the one the limit is
+# then measured against.
+
+wait:2000
+shot:one-agent-running
+
+# A second feature, created while the machine is already at its limit.
+# Creation never raises the dialog -- a batch create would queue one per
+# feature, and the automation API has nobody to answer them -- so the
+# feature is created and left stopped, with a warning saying why.
+run:"$AMF_BIN" automation create-feature --file "$AMF_SHOT_SEED_2" >/dev/null
+wait:3000
+shot:autostart-skipped-with-warning
+
+# Down onto the stopped feature (features sort stopped-first here) and
+# start it by hand.
+key:j
+wait:600
+shot:cursor-on-stopped-feature
+
+# `c` starts it -- and now the gate does ask, because a person is asking.
+text:c
+wait:1500
+shot:resource-check-dialog
+
+# `n` cancels: nothing is started.
+text:n
+wait:1200
+shot:cancelled-nothing-started
+
+# `y` on the same prompt starts it anyway. The gate is advisory: it never
+# refuses, it just makes sure the decision was made on purpose.
+text:c
+wait:1200
+text:y
+wait:6000
+shot:started-anyway
+
+# Stopping a feature also reclaims the editor AMF opened for it (there is
+# none in a scratch instance, so this frame is just the ordinary stop).
+text:x
+wait:2500
+shot:stopped-again
+
+# `z` opens the dormant overlay: idle *and* unattended, with the two
+# configured thresholds named in its header. Nothing qualifies seconds
+# after a capture starts, which is the correct answer.
+text:z
+wait:1200
+shot:dormant-overlay
+
+key:Escape
+wait:600
+
+# The help overlay carries the new `z` binding, a page down from the top.
+text:?
+wait:1200
+key:PageDown
+wait:500
+shot:help-overlay-z-binding
+
+key:Escape
+wait:600

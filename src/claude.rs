@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 pub struct ClaudeLauncher;
 
@@ -167,6 +167,9 @@ impl ClaudeLauncher {
     /// runs to, and exceeding it fails the whole spawn with `E2BIG` before
     /// `claude` ever sees the request. Piping has no comparable ceiling.
     pub fn run_headless(workdir: &Path, prompt: &str) -> Result<String> {
+        // A headless summary run is a full Claude process like any other, so
+        // it counts toward the agent concurrency limit while it lasts.
+        let _lease = crate::resources::limits::HeadlessLease::acquire();
         let binary = Self::resolve_binary();
         let mut child = Command::new(&binary)
             .args(["-p", "--output-format", "text"])
@@ -217,7 +220,11 @@ impl ClaudeLauncher {
     /// single-purpose pass (a per-file walkthrough, an AI co-review) can run
     /// on a cheaper model than whatever the interactive session uses,
     /// independent of the feature's own harness/model.
-    pub fn spawn_headless(workdir: &Path, prompt: &str, model: Option<&str>) -> Result<Child> {
+    pub fn spawn_headless(
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> Result<crate::headless::LeasedChild> {
         let binary = Self::resolve_binary();
         let mut args = vec![
             "-p".to_string(),
@@ -244,7 +251,9 @@ impl ClaudeLauncher {
             });
         }
 
-        Ok(child)
+        // Wrapped so the run counts toward the agent concurrency limit for as
+        // long as the caller holds the child, however that ends.
+        Ok(crate::headless::LeasedChild::new(child))
     }
 }
 

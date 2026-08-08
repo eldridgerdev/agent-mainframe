@@ -12,6 +12,50 @@ are tagged.
 
 ### Added
 
+- **AMF now warns before it fills the machine up, instead of after.** Starting
+  an agent — a feature, or a new agent session — first checks how many agent
+  sessions are already running across every project (plus any headless review
+  or plan-interview run in flight) and how much memory the OS says is left. If
+  either is past its threshold, one dialog says which and by how much, and `y`
+  starts it anyway. It is never a refusal, and terminals, editors, and TODOs
+  sessions are neither counted nor gated. Two new settings drive it:
+  `max_concurrent_agents` (default `4`) and `low_memory_warn_mb` (default
+  `1536`); set either to `0` to turn that half off. The defaults are sized from
+  measured idle memory per harness — see "Resource guards" in the README for
+  the numbers and the reasoning. Platforms where AMF cannot read a trustworthy
+  memory figure simply run on the agent count alone.
+
+- **Stopping a feature now closes the editor AMF opened for it.** Editors were
+  the one thing a feature owned that lived outside tmux, so stopping it left
+  the window — and the language server underneath, routinely the single
+  largest process on the box — running until you noticed. AMF now opens VS Code
+  with `--new-window` and remembers which window it created, and stopping (or
+  deleting) the feature ends that window and its children. It only ever closes
+  a window it can prove it opened and can still identify; anything else is
+  reported as left alone, never guessed at. Set `kill_editor_on_stop` to
+  `false` to keep the old behavior. Note that under WSL, `code` hands off to
+  the Windows side and no local window process exists for AMF to own, so it
+  will report a skip there.
+
+- **`z` on the dashboard lists dormant features.** A feature counts as dormant
+  only when both halves hold: its agent has produced no output for
+  `dormant_idle_minutes` (default 60) *and* you have not opened it for
+  `dormant_last_accessed_hours` (default 4). Either signal alone is misleading
+  — a quiet agent may be waiting on you, and a feature you have not clicked
+  into may be mid-run. Each row shows how long it has been quiet, how long
+  since you looked at it, and whether a tracked editor is still alive, with
+  `x` stop, `e` close just the editor, `d` delete, and `Enter` to jump in.
+
+- **`amf doctor` reports what AMF is putting on this machine.** Agent sessions
+  against your limit, memory and swap, `amf-*` tmux sessions with no matching
+  feature, worktrees on disk with no matching feature, and editors still
+  running for features you stopped. `--json` emits the same findings for
+  scripting. It is advice only — it stops nothing, kills nothing, deletes
+  nothing, and always exits `0`. Under WSL it points at where swap is
+  configured while being explicit that adding swap trades an out-of-memory kill
+  for heavy paging, and that lowering `max_concurrent_agents` is the fix for
+  the cause.
+
 - **Final Review has a `?` key that shows you all of its keys.** The review
   screen has grown a lot of bindings, and the two footer rows can only ever
   show the ones that apply right now — so keys you had not used yet were

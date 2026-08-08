@@ -345,19 +345,29 @@ impl App {
             })?;
         let fi = self.store.projects[pi].features.len().saturating_sub(1);
         self.store.projects[pi].collapsed = project_collapsed;
-        self.ensure_feature_running(pi, fi)?;
+        // No caller to answer a confirmation dialog here, so a tripped gate
+        // creates the feature and leaves it stopped; `started: false` in the
+        // response says so.
+        let started = self.autostart_allowed(&request.branch);
+        if started {
+            self.ensure_feature_running(pi, fi)?;
+        }
         self.save()?;
 
-        let message = match hook_succeeded {
-            Some(true) => format!(
+        let message = match (started, hook_succeeded) {
+            (false, _) => format!(
+                "Created feature '{}' but did not start it: the machine is at its agent/memory limit",
+                request.branch
+            ),
+            (true, Some(true)) => format!(
                 "Created and started feature '{}' (hook succeeded)",
                 request.branch
             ),
-            Some(false) => format!(
+            (true, Some(false)) => format!(
                 "Created and started feature '{}' (hook failed)",
                 request.branch
             ),
-            None => format!("Created and started feature '{}'", request.branch),
+            (true, None) => format!("Created and started feature '{}'", request.branch),
         };
 
         Ok(CreateFeatureResponse::success(
@@ -365,7 +375,7 @@ impl App {
             final_workdir,
             use_worktree,
             tmux_session_name(&request.project_name, &request.branch),
-            true,
+            started,
             hook_ran,
             hook_succeeded,
             hook_prompt,
@@ -507,7 +517,19 @@ impl App {
                 .position(|f| f.name == *branch)
                 .ok_or_else(|| anyhow::anyhow!("Feature '{}' missing after creation", branch))?;
 
-            self.ensure_feature_running(pi, fi)?;
+            // Re-checked per feature: a batch big enough to blow past the cap
+            // starts what fits and leaves the rest created-but-stopped, rather
+            // than queueing a confirmation dialog for every one of them.
+            let started = self.autostart_allowed(branch);
+            if started {
+                self.ensure_feature_running(pi, fi)?;
+            }
+            if let Some(result) = response_features
+                .iter_mut()
+                .find(|result| result.name == *branch)
+            {
+                result.started = started;
+            }
             self.save()?;
         }
 

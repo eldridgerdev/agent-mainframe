@@ -226,6 +226,23 @@ amf automation create-batch-features --file docs/automation/create-batch-feature
 Create-project and batch-feature templates, examples, and the JSON response format live in
 [`docs/automation/README.md`](docs/automation/README.md).
 
+## Health Check
+
+```bash
+amf doctor          # readable report
+amf doctor --json   # same findings, structured
+```
+
+`amf doctor` reports what AMF is putting on the machine: agent sessions
+against the configured limit, available memory and swap, `amf-*` tmux
+sessions with no matching feature, worktrees on disk with no matching
+feature, and editors still running for features that were stopped. Under
+WSL it adds a note about where swap is configured.
+
+It is **advice only** — it stops nothing, kills nothing, deletes nothing,
+and always exits `0`. (Opening the database can apply a pending schema
+migration, exactly as launching AMF does.)
+
 ## Quick Start
 
 1. Launch the dashboard:
@@ -298,6 +315,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `f` | Filter by session type |
 | `y` | Toggle ready state for the selected feature |
 | `Z` | Generate a one-line summary for the selected feature |
+| `z` | Dormant features: idle *and* unattended, with per-row stop / close-editor / delete / open |
 | `T` | Open the theme picker |
 | `p` | Open the syntax parser picker |
 | `L` | Open the prompt library |
@@ -672,6 +690,35 @@ scratchpad note at the top.
 - Quick-capture from anywhere: while viewing any session,
   `Ctrl+Space` then `N` appends a TODO to the project's list.
 
+### Agent Limits and Dormant Features
+
+AMF warns before it lets the machine fill up, and helps reclaim what is
+already sitting idle. Both guards are advisory — nothing is ever refused.
+
+- **Before starting an agent**, AMF checks how many agent sessions are
+  already running (across every project, plus any headless review or plan
+  run in flight) and how much memory is available. If either trips, a
+  single dialog says which, and `y` starts it anyway. Terminals, editors,
+  and TODOs sessions are not counted and never trigger it.
+- **Creating** a feature never raises that dialog: a batch create would
+  queue one per feature, and the automation API has nobody to answer them.
+  Instead the feature is created and left stopped with a warning, and `c`
+  starts it.
+- **Stopping a feature** also closes the editor AMF opened for it, and the
+  language servers under it — usually the largest thing the feature was
+  holding. AMF only closes a window it opened itself (`--new-window`) and
+  can still identify; anything else is reported as left alone. Set
+  `kill_editor_on_stop` to `false` to switch this off. Under WSL, where
+  `code` hands off to the Windows side and no local window process exists,
+  AMF has nothing it can prove it owns and will always skip.
+- **`z` on the dashboard** lists dormant features: idle *and* unattended,
+  per the two thresholds above. Each row shows how long the agent has been
+  quiet, how long since you opened it, and whether a tracked editor is
+  still alive, with `x` stop, `e` close editor, `d` delete, `Enter` open.
+
+See [Resource guards](#resource-guards) for the tunables and how the
+defaults were chosen, and `amf doctor` for a one-shot report.
+
 ### Usage and Cost Meters
 
 Agent sessions show live token usage and estimated dollar cost on the
@@ -726,6 +773,11 @@ automatically with defaults on first run.
 | `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |
 | `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |
 | `extension` | object | `{}` | Global extension settings merged with repo-local `.amf/config.json`. |
+| `max_concurrent_agents` | number | `4` | Soft cap on agent-harness sessions running at once across all projects. Starting past it warns and asks you to confirm; it never refuses. Set to `0` to disable the check. |
+| `low_memory_warn_mb` | number | `1536` | Warn before starting an agent when the OS reports less than this much available memory (MiB). Same warn-and-confirm behavior as the cap. Set to `0` to disable; platforms with no usable memory signal skip it automatically. |
+| `kill_editor_on_stop` | bool | `true` | When stopping a feature, also kill the editor AMF launched for it and that editor's children (language servers). Editors AMF cannot prove it owns are left alone either way. |
+| `dormant_idle_minutes` | number | `60` | Half of the dormancy test: the feature's agent has been idle at least this long. |
+| `dormant_last_accessed_hours` | number | `4` | Other half: the feature was last accessed at least this long ago. A feature is dormant only when **both** hold; `0` in either key turns dormant detection off. |
 
 To customize input-request startup waiting, edit
 `~/.config/amf/config.json`:
@@ -735,6 +787,35 @@ To customize input-request startup waiting, edit
   "input_request_wait_seconds": 1.5
 }
 ```
+
+### Resource guards
+
+Agent harnesses, and especially the editors and language servers they pull
+in alongside them, are the bulk of what AMF puts on your machine. The
+defaults above are sized from idle resident memory measured on a real dev
+box (Linux/WSL2, one harness per throwaway tmux session, RSS summed over the
+process tree after it settled):
+
+| Process | Idle RSS |
+| --- | --- |
+| `claude` | ~380 MiB |
+| `codex` | ~220 MiB |
+| `opencode` | not measured — it exits without an attached terminal, so it could not be probed the same way |
+| `rust-analyzer` (per editor window, medium Rust repo) | ~1.8 GiB |
+
+So the harnesses themselves are the small half: four concurrent agents is
+roughly 1.2–1.5 GiB, which fits comfortably on a 16 GiB machine and still
+leaves room for the two or three editor windows a multi-feature session
+tends to accumulate. `max_concurrent_agents` defaults to `4` on that basis.
+`low_memory_warn_mb` defaults to `1536` because one more harness plus the
+tool subprocesses it spawns runs to roughly 700 MiB–1 GiB — warning below
+1.5 GiB available gives you the choice before the OOM killer makes it.
+
+The language servers dominate the total, which is why
+`kill_editor_on_stop` defaults to `true`: stopping a feature reclaims the
+editor window and its language server, not just the agent. Raise
+`max_concurrent_agents` if you have the RAM; both gates are advisory and
+confirming always proceeds.
 
 ### `extension` — customizations
 

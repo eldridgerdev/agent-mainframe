@@ -1486,6 +1486,27 @@ impl TmuxManager {
             .unwrap_or_default()
     }
 
+    /// `(session, window, last-activity unix seconds)` for every window on the
+    /// server, in one call.
+    ///
+    /// tmux's own `window_activity` is the cheapest honest answer to "when did
+    /// this agent last do anything": it is the time of the window's last
+    /// output, it survives AMF restarts, and it needs no pane scraping.
+    pub fn window_activity() -> Vec<(String, String, i64)> {
+        Self::command()
+            .args([
+                "list-windows",
+                "-a",
+                "-F",
+                "#{session_name}\t#{window_name}\t#{window_activity}",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| parse_window_activity(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default()
+    }
+
     /// Whether a specific window is still present in a tmux session.
     ///
     /// A live session is not a live window: any other window — the terminal, a
@@ -2065,6 +2086,21 @@ impl TmuxManager {
     }
 }
 
+/// Parse tab-separated `session\twindow\tunix-seconds` rows. Rows tmux could
+/// not fill in are dropped rather than defaulted to "now", which would make an
+/// idle window look busy.
+fn parse_window_activity(raw: &str) -> Vec<(String, String, i64)> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let session = parts.next()?.to_string();
+            let window = parts.next()?.to_string();
+            let activity = parts.next()?.trim().parse().ok()?;
+            Some((session, window, activity))
+        })
+        .collect()
+}
+
 // ── TmuxOps trait implementation ─────────────────────────────────────────────
 
 impl TmuxOps for TmuxManager {
@@ -2082,6 +2118,14 @@ impl TmuxOps for TmuxManager {
 
     fn list_sessions(&self) -> Result<Vec<String>> {
         TmuxManager::list_sessions()
+    }
+
+    fn list_windows(&self, session: &str) -> Vec<String> {
+        TmuxManager::list_windows(session)
+    }
+
+    fn window_activity(&self) -> Vec<(String, String, i64)> {
+        TmuxManager::window_activity()
     }
 
     fn create_session_with_window(

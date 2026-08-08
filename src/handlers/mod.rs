@@ -6,6 +6,7 @@ mod config_wizard;
 mod dialog;
 mod diff;
 mod diff_review;
+mod dormant;
 mod feature_creation;
 mod fork;
 mod harness;
@@ -36,11 +37,12 @@ pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
     handle_markdown_viewer_key, handle_rename_feature_key, handle_rename_session_key,
-    handle_session_config_key, handle_steering_prompt_key, handle_stopped_session_dialog_key,
-    handle_theme_picker_key,
+    handle_resource_confirm_key, handle_session_config_key, handle_steering_prompt_key,
+    handle_stopped_session_dialog_key, handle_theme_picker_key,
 };
 pub use diff::{handle_diff_picker_key, handle_diff_viewer_key, handle_review_harness_pick_key};
 pub use diff_review::handle_diff_review_key;
+pub use dormant::handle_dormant_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
 pub use harness::handle_harness_setup_key;
@@ -88,6 +90,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::CreatingBatchFeatures(_) => handle_create_batch_features_key(app, key.code),
         AppMode::DeletingProject(_) => handle_delete_project_key(app, key.code),
         AppMode::DeletingFeature(_, _) => handle_delete_feature_key(app, key.code),
+        AppMode::ConfirmResourceStart(_) => handle_resource_confirm_key(app, key.code),
+        AppMode::Dormant(_) => handle_dormant_key(app, key),
         AppMode::Viewing(_) => handle_view_key(app, key, visible_rows),
         AppMode::Help(_) => handle_help_key(app, key),
         AppMode::SteeringPrompt(_) => handle_steering_prompt_key(app, key),

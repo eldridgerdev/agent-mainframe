@@ -22,6 +22,7 @@ mod pi;
 mod plan_interview;
 mod project;
 mod prompt_library;
+mod resources;
 mod summary;
 mod theme;
 mod tmux;
@@ -81,6 +82,13 @@ struct Cli {
 enum Commands {
     /// Upgrade amf to the latest release
     Upgrade,
+    /// Report on what AMF is putting on this machine. Read-only: it never
+    /// stops a session, kills a process, or writes to the database.
+    Doctor {
+        /// Emit a structured JSON document instead of the readable report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run machine-friendly automation actions against a running AMF instance
     Automation {
         #[command(subcommand)]
@@ -171,6 +179,10 @@ fn main() -> Result<()> {
 
     if let Some(Commands::Upgrade) = cli.command {
         return upgrade::upgrade();
+    }
+
+    if let Some(Commands::Doctor { json }) = cli.command {
+        return run_doctor(json);
     }
 
     if let Some(Commands::Automation { command }) = cli.command {
@@ -478,6 +490,47 @@ fn read_json_input(file: Option<&PathBuf>) -> Result<String> {
     }
 
     Ok(payload.to_string())
+}
+
+/// `amf doctor`. Runs entirely outside the TUI, so printing to stdout is the
+/// right thing here — the no-`println!` rule is about corrupting the terminal
+/// while ratatui owns it.
+///
+/// Read-only by construction: it opens the database, reads the store and the
+/// editor records, asks tmux what exists, and probes memory. Nothing here
+/// writes, signals, or deletes.
+fn run_doctor(json: bool) -> Result<()> {
+    use resources::doctor;
+
+    let config = app::setup::load_config();
+    let db_path = project::db_path();
+    let db = db::AmfDb::open(&db_path).context("Failed to open the AMF database")?;
+    let store = db.load_store()?;
+
+    let tmux_sessions = tmux::TmuxManager::list_sessions().unwrap_or_default();
+    let live = resources::limits::LiveWindows::probe(&tmux::TmuxManager);
+    let editors = db.all_launched_editors().unwrap_or_default();
+    let worktrees = doctor::worktrees_on_disk(&store);
+
+    let report = doctor::diagnose(&doctor::Inputs {
+        config: &config,
+        store: &store,
+        live: &live,
+        tmux_sessions: &tmux_sessions,
+        memory: resources::mem::probe(),
+        is_wsl: doctor::detect_wsl(),
+        worktrees: &worktrees,
+        editors: &editors,
+        pid_alive: &doctor::pid_alive,
+    });
+
+    if json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.render());
+    }
+    // Advice, not a verdict: findings never fail the command.
+    Ok(())
 }
 
 fn run_automation_command(command: AutomationCommands) -> Result<()> {

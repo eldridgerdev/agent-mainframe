@@ -10,6 +10,8 @@ pub mod commands;
 mod compose;
 mod config_wizard;
 mod diff;
+pub(crate) mod dormant;
+pub(crate) mod editor_ops;
 mod feature_ops;
 mod hooks;
 mod navigation;
@@ -22,6 +24,7 @@ mod project_ops;
 mod prompt_library;
 pub mod remote_control;
 mod rename;
+pub(crate) mod resource_gate;
 pub(crate) mod review;
 pub(crate) mod review_memory;
 mod search;
@@ -473,6 +476,34 @@ pub struct AppConfig {
     /// setting.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub review_models: std::collections::BTreeMap<String, String>,
+    /// Soft cap on how many agent-harness sessions may run at once across
+    /// **all** projects (the store is machine-global, so the limit is too).
+    /// Only agent harnesses count — terminals, editors, and TODOs sessions
+    /// do not. Starting past the cap warns and asks for an explicit confirm;
+    /// it is never a hard refusal. `0` disables the check.
+    #[serde(default = "default_max_concurrent_agents")]
+    pub max_concurrent_agents: usize,
+    /// Warn before starting an agent when the OS reports less than this much
+    /// available memory (MiB). Like the concurrency cap this is a soft gate:
+    /// warn plus explicit confirm. `0` disables the check, as does a platform
+    /// with no usable memory signal.
+    #[serde(default = "default_low_memory_warn_mb")]
+    pub low_memory_warn_mb: u64,
+    /// Kill the editor AMF launched for a feature (and its children, e.g.
+    /// language servers) when the feature is stopped. Editors AMF cannot
+    /// prove it owns are left alone regardless of this setting.
+    #[serde(default = "default_true")]
+    pub kill_editor_on_stop: bool,
+    /// A feature counts as dormant only when its agent has been idle for at
+    /// least this many minutes **and** [`Self::dormant_last_accessed_hours`]
+    /// has also elapsed. `0` in either key disables dormant detection.
+    #[serde(default = "default_dormant_idle_minutes")]
+    pub dormant_idle_minutes: u64,
+    /// Second half of the dormancy test: the feature was last accessed at
+    /// least this many hours ago. Both halves must hold. `0` in either key
+    /// disables dormant detection.
+    #[serde(default = "default_dormant_last_accessed_hours")]
+    pub dormant_last_accessed_hours: u64,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -515,6 +546,32 @@ fn default_true() -> bool {
 
 fn default_agent_restart_limit() -> usize {
     1
+}
+
+// Resource-guard defaults. Grounded in measured idle RSS per harness on a
+// typical dev box (see the "Resource guards" section of the README): a Claude
+// harness settles around 450 MiB, Codex/Opencode a little under that, and each
+// editor-launched language server (rust-analyzer on this codebase) dwarfs them
+// at 1-2 GiB. Four concurrent harnesses is roughly 1.8 GiB of agent, which
+// leaves room for the editors and language servers they pull in on a 16 GiB
+// machine without the limit tripping during ordinary two-or-three-feature work.
+fn default_max_concurrent_agents() -> usize {
+    4
+}
+
+// One harness plus the tool subprocesses it spawns needs on the order of
+// 700 MiB - 1 GiB; warning below 1.5 GiB available leaves enough headroom to
+// notice before the OOM killer does.
+fn default_low_memory_warn_mb() -> u64 {
+    1536
+}
+
+fn default_dormant_idle_minutes() -> u64 {
+    60
+}
+
+fn default_dormant_last_accessed_hours() -> u64 {
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -567,6 +624,11 @@ impl Default for AppConfig {
             ai_review_skill: None,
             review_model: None,
             review_models: std::collections::BTreeMap::new(),
+            max_concurrent_agents: default_max_concurrent_agents(),
+            low_memory_warn_mb: default_low_memory_warn_mb(),
+            kill_editor_on_stop: true,
+            dormant_idle_minutes: default_dormant_idle_minutes(),
+            dormant_last_accessed_hours: default_dormant_last_accessed_hours(),
         }
     }
 }
@@ -592,6 +654,31 @@ impl AppConfig {
             .get(action.config_key())
             .cloned()
             .or_else(|| self.review_model.clone())
+    }
+
+    /// The concurrency cap, or `None` when the check is disabled (`0`).
+    pub fn agent_concurrency_limit(&self) -> Option<usize> {
+        (self.max_concurrent_agents > 0).then_some(self.max_concurrent_agents)
+    }
+
+    /// The available-memory floor in MiB, or `None` when the check is
+    /// disabled (`0`). A platform with no memory signal also skips the gate.
+    pub fn low_memory_threshold_mb(&self) -> Option<u64> {
+        (self.low_memory_warn_mb > 0).then_some(self.low_memory_warn_mb)
+    }
+
+    /// The two dormancy thresholds as `(idle, last_accessed)` durations, or
+    /// `None` when either key is `0` — dormancy is an AND of both halves, so
+    /// switching one off switches the whole check off rather than degrading
+    /// it into "everything is dormant".
+    pub fn dormant_thresholds(&self) -> Option<(Duration, Duration)> {
+        if self.dormant_idle_minutes == 0 || self.dormant_last_accessed_hours == 0 {
+            return None;
+        }
+        Some((
+            Duration::from_secs(self.dormant_idle_minutes * 60),
+            Duration::from_secs(self.dormant_last_accessed_hours * 3600),
+        ))
     }
 }
 
@@ -2322,7 +2409,14 @@ impl App {
             store,
             store_path: PathBuf::new(),
             db: None,
-            config: AppConfig::default(),
+            config: AppConfig {
+                // Whether a test warns before starting an agent must not
+                // depend on how much memory the machine running it happens to
+                // have free. Tests that exercise the memory gate set their own
+                // threshold.
+                low_memory_warn_mb: 0,
+                ..AppConfig::default()
+            },
             active_extension: ExtensionConfig::default(),
             theme: crate::theme::Theme::default(),
             selection: Selection::Project(0),

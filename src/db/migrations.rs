@@ -80,6 +80,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist plan-interview drafts and accepted transcripts per feature",
             MIGRATION_016,
         ),
+        (
+            "Track editors AMF launched per feature so they can be reclaimed on stop",
+            MIGRATION_017,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -411,6 +415,40 @@ CREATE TABLE IF NOT EXISTS session_bookmarks (
     session_id TEXT NOT NULL,
     PRIMARY KEY (project_id, feature_id, session_id)
 );
+";
+
+/// Editors AMF launched for a feature, so stopping the feature can reclaim
+/// them (and the language servers they run) instead of leaving multi-GiB
+/// processes behind.
+///
+/// `feature_id` is a plain TEXT column with NO foreign key, for the same reason
+/// as `todo_lists` (see MIGRATION_011): `store::save` full-replaces `features`
+/// on every save, which would cascade-wipe these rows. Cleanup on feature
+/// deletion is explicit, in `db/editors.rs`.
+///
+/// `dedicated` records whether AMF opened a window it owns (VS Code launched
+/// with `--new-window`) or merely handed a path to an instance that was already
+/// running. Only a dedicated launch may ever be killed.
+///
+/// `command` is the argv AMF spawned, kept as the identity check at kill time:
+/// PIDs are recycled, and a bare liveness check would eventually signal an
+/// unrelated process. `started_at` is AMF's own launch timestamp, used to
+/// report age and to break ties in the report.
+const MIGRATION_017: &str = "
+CREATE TABLE IF NOT EXISTS launched_editors (
+    id            TEXT PRIMARY KEY,
+    feature_id    TEXT NOT NULL,
+    session_id    TEXT,
+    kind          TEXT NOT NULL,
+    pid           INTEGER NOT NULL,
+    worktree_path TEXT NOT NULL,
+    dedicated     INTEGER NOT NULL DEFAULT 0,
+    command       TEXT NOT NULL DEFAULT '',
+    started_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_launched_editors_feature
+    ON launched_editors(feature_id);
 ";
 
 #[cfg(test)]

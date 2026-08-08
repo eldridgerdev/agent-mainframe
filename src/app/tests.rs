@@ -395,6 +395,67 @@ fn app_config_default_agent_restart_limit_is_one() {
 }
 
 #[test]
+fn app_config_resource_guard_defaults() {
+    let config = AppConfig::default();
+    assert_eq!(config.max_concurrent_agents, 4);
+    assert_eq!(config.low_memory_warn_mb, 1536);
+    assert!(config.kill_editor_on_stop);
+    assert_eq!(config.dormant_idle_minutes, 60);
+    assert_eq!(config.dormant_last_accessed_hours, 4);
+}
+
+#[test]
+fn app_config_missing_resource_guard_keys_use_defaults() {
+    // Configs written before these keys existed must keep loading.
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.agent_concurrency_limit(), Some(4));
+    assert_eq!(config.low_memory_threshold_mb(), Some(1536));
+    assert!(config.kill_editor_on_stop);
+    assert_eq!(
+        config.dormant_thresholds(),
+        Some((
+            std::time::Duration::from_secs(60 * 60),
+            std::time::Duration::from_secs(4 * 3600)
+        ))
+    );
+}
+
+#[test]
+fn app_config_resource_guards_can_be_configured() {
+    let config: AppConfig = serde_json::from_str(
+        r#"{"max_concurrent_agents":8,"low_memory_warn_mb":2048,"kill_editor_on_stop":false,
+            "dormant_idle_minutes":15,"dormant_last_accessed_hours":24}"#,
+    )
+    .unwrap();
+    assert_eq!(config.agent_concurrency_limit(), Some(8));
+    assert_eq!(config.low_memory_threshold_mb(), Some(2048));
+    assert!(!config.kill_editor_on_stop);
+    assert_eq!(
+        config.dormant_thresholds(),
+        Some((
+            std::time::Duration::from_secs(15 * 60),
+            std::time::Duration::from_secs(24 * 3600)
+        ))
+    );
+}
+
+#[test]
+fn app_config_zero_disables_each_resource_guard() {
+    let config: AppConfig =
+        serde_json::from_str(r#"{"max_concurrent_agents":0,"low_memory_warn_mb":0}"#).unwrap();
+    assert_eq!(config.agent_concurrency_limit(), None);
+    assert_eq!(config.low_memory_threshold_mb(), None);
+
+    // Dormancy is an AND of both halves, so zeroing either one turns the
+    // whole check off instead of marking every feature dormant.
+    let idle_off: AppConfig = serde_json::from_str(r#"{"dormant_idle_minutes":0}"#).unwrap();
+    assert_eq!(idle_off.dormant_thresholds(), None);
+    let accessed_off: AppConfig =
+        serde_json::from_str(r#"{"dormant_last_accessed_hours":0}"#).unwrap();
+    assert_eq!(accessed_off.dormant_thresholds(), None);
+}
+
+#[test]
 fn app_config_default_diff_review_viewer_is_amf() {
     let config = AppConfig::default();
     assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
@@ -18751,4 +18812,505 @@ fn integrate_cherry_picks_into_a_clean_source_worktree() {
         source.join("b.txt").exists(),
         "the triage commit landed in the source worktree"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Pre-start resource gate
+// ---------------------------------------------------------------------------
+
+/// A store with one running feature (holding a live Claude harness) and one
+/// stopped feature, so the gate has something to count and something to start.
+fn store_with_running_and_stopped_features() -> ProjectStore {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Primary Claude".into());
+
+    let mut stopped = store.projects[0].features[0].clone();
+    stopped.id = "feat-2".to_string();
+    stopped.name = "other-feat".to_string();
+    stopped.branch = "other-feat".to_string();
+    stopped.tmux_session = "amf-other-feat".to_string();
+    stopped.sessions = vec![];
+    stopped.status = ProjectStatus::Stopped;
+    store.projects[0].features.push(stopped);
+    store
+}
+
+/// Census expectations: the running feature's `claude` window is live.
+fn expect_one_live_harness(tmux: &mut MockTmuxOps) {
+    tmux.expect_list_sessions()
+        .returning(|| Ok(vec!["amf-my-feat".to_string()]));
+    tmux.expect_list_windows()
+        .returning(|_| vec!["claude".to_string()]);
+}
+
+/// Everything `ensure_feature_running` needs to bring the stopped feature up.
+fn expect_feature_start(tmux: &mut MockTmuxOps) {
+    tmux.expect_session_exists().return_const(false);
+    tmux.expect_create_session_with_window()
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+}
+
+#[test]
+fn starting_a_feature_past_the_agent_limit_asks_first() {
+    let mut tmux = MockTmuxOps::new();
+    expect_one_live_harness(&mut tmux);
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+    app.selection = Selection::Feature(0, 1);
+
+    app.start_feature().unwrap();
+
+    match &app.mode {
+        AppMode::ConfirmResourceStart(state) => {
+            let over = state.over_limit.expect("the limit gate should have tripped");
+            assert_eq!(over.active, 1);
+            assert_eq!(over.limit, 1);
+            assert!(state.low_memory.is_none());
+            assert_eq!(state.pending, PendingStart::Feature { pi: 0, fi: 1 });
+        }
+        other => panic!("expected a resource confirm, got {:?}", std::mem::discriminant(other)),
+    }
+    // Nothing started while the question is open.
+    assert_eq!(
+        app.store.projects[0].features[1].status,
+        ProjectStatus::Stopped
+    );
+}
+
+#[test]
+fn confirming_the_resource_warning_starts_the_feature() {
+    let mut tmux = MockTmuxOps::new();
+    expect_one_live_harness(&mut tmux);
+    expect_feature_start(&mut tmux);
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+    app.selection = Selection::Feature(0, 1);
+
+    app.start_feature().unwrap();
+    assert!(matches!(app.mode, AppMode::ConfirmResourceStart(_)));
+
+    app.confirm_pending_start().unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(app.store.projects[0].features[1].status, ProjectStatus::Idle);
+}
+
+#[test]
+fn cancelling_the_resource_warning_starts_nothing() {
+    let mut tmux = MockTmuxOps::new();
+    expect_one_live_harness(&mut tmux);
+    // No start expectations: cancelling must not touch tmux at all.
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+    app.selection = Selection::Feature(0, 1);
+
+    app.start_feature().unwrap();
+    app.cancel_pending_start();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(
+        app.store.projects[0].features[1].status,
+        ProjectStatus::Stopped
+    );
+}
+
+#[test]
+fn starting_a_feature_under_the_limit_does_not_ask() {
+    let mut tmux = MockTmuxOps::new();
+    expect_one_live_harness(&mut tmux);
+    expect_feature_start(&mut tmux);
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 4;
+    app.config.low_memory_warn_mb = 0;
+    app.selection = Selection::Feature(0, 1);
+
+    app.start_feature().unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(app.store.projects[0].features[1].status, ProjectStatus::Idle);
+}
+
+#[test]
+fn adding_an_agent_session_past_the_limit_asks_first() {
+    let mut tmux = MockTmuxOps::new();
+    expect_one_live_harness(&mut tmux);
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+
+    app.add_builtin_session_with_label(0, 0, SessionKind::Claude, "Second Claude".into())
+        .unwrap();
+
+    match &app.mode {
+        AppMode::ConfirmResourceStart(state) => assert_eq!(
+            state.pending,
+            PendingStart::BuiltinSession {
+                pi: 0,
+                fi: 0,
+                kind: SessionKind::Claude,
+                label: Some("Second Claude".into()),
+            }
+        ),
+        other => panic!("expected a resource confirm, got {:?}", std::mem::discriminant(other)),
+    }
+    // The session is not created until the warning is answered.
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+}
+
+#[test]
+fn adding_a_terminal_session_skips_the_gate() {
+    // Terminals cost the machine little, so they never raise the warning —
+    // note there are no census expectations on the mock at all here.
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+
+    app.add_builtin_session_with_label(0, 0, SessionKind::Terminal, "Shell".into())
+        .unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+}
+
+#[test]
+fn low_memory_alone_raises_the_warning() {
+    let mut tmux = MockTmuxOps::new();
+    expect_one_live_harness(&mut tmux);
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    // Concurrency is fine; the memory floor is set above any real machine.
+    app.config.max_concurrent_agents = 0;
+    app.config.low_memory_warn_mb = u64::MAX;
+    app.selection = Selection::Feature(0, 1);
+
+    app.start_feature().unwrap();
+
+    match &app.mode {
+        AppMode::ConfirmResourceStart(state) => {
+            assert!(state.over_limit.is_none());
+            // Only assert the shape: a platform with no memory signal
+            // legitimately has nothing to warn about.
+            assert_eq!(
+                state.low_memory.is_some(),
+                crate::resources::mem::probe().is_some()
+            );
+        }
+        AppMode::Normal => assert!(
+            crate::resources::mem::probe().is_none(),
+            "a machine with a memory signal must have warned"
+        ),
+        other => panic!("unexpected mode {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn autostart_skips_with_a_warning_instead_of_prompting() {
+    let mut tmux = MockTmuxOps::new();
+    expect_one_live_harness(&mut tmux);
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+
+    assert!(!app.autostart_allowed("other-feat"));
+
+    // Creation paths must never raise the modal: a batch create would queue
+    // one per feature and the automation API has nobody to answer them.
+    assert!(matches!(app.mode, AppMode::Normal));
+    let message = app.message.as_deref().unwrap_or_default();
+    assert!(message.contains("other-feat"), "got {message:?}");
+    assert!(message.contains("agents already running"), "got {message:?}");
+}
+
+#[test]
+fn autostart_proceeds_when_there_is_room() {
+    let mut tmux = MockTmuxOps::new();
+    expect_one_live_harness(&mut tmux);
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 4;
+    app.config.low_memory_warn_mb = 0;
+
+    assert!(app.autostart_allowed("other-feat"));
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+// ---------------------------------------------------------------------------
+// Editor reclamation on stop
+// ---------------------------------------------------------------------------
+
+/// Stand-in for a VS Code window AMF opened: a copy of `sh` named `code`,
+/// launched with a VS Code-shaped argv, holding a child of its own the way a
+/// real window holds a language server.
+fn spawn_fake_editor(dir: &std::path::Path, workdir: &std::path::Path) -> std::process::Child {
+    let fake = dir.join("code");
+    std::fs::copy("/bin/sh", &fake).expect("copy sh");
+    std::process::Command::new(&fake)
+        .args([
+            "-c".as_ref(),
+            "sleep 60 & wait".as_ref(),
+            "--new-window".as_ref(),
+            workdir.as_os_str(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("fake editor should launch")
+}
+
+/// An app whose feature lives in `workdir`, with a temp DB attached.
+fn app_with_db(workdir: &std::path::Path, db_file: &NamedTempFile) -> App {
+    let mut store = store_with_feature(ProjectStatus::Idle);
+    store.projects[0].features[0].workdir = workdir.to_path_buf();
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_kill_session().returning(|_| Ok(()));
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.selection = Selection::Feature(0, 0);
+    app
+}
+
+#[test]
+fn stopping_a_feature_closes_the_editor_amf_opened() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let mut editor = spawn_fake_editor(tmp.path(), &workdir);
+    // Let the shell fork the child that stands in for a language server.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let editor_pid = editor.id() as i64;
+    let tree = crate::resources::procs::process_tree(
+        &crate::resources::procs::list_processes(),
+        editor_pid,
+    );
+    assert!(tree.len() > 1, "expected a child process, got {tree:?}");
+
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = app_with_db(&workdir, &db_file);
+    app.db
+        .as_ref()
+        .unwrap()
+        .record_launched_editor(
+            "feat-1",
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            editor_pid,
+            &workdir,
+            true,
+            "code --new-window",
+        )
+        .unwrap();
+
+    app.stop_feature().unwrap();
+    let _ = editor.wait();
+
+    for pid in &tree {
+        assert!(
+            !crate::resources::procs::pid_alive(*pid),
+            "pid {pid} survived the stop"
+        );
+    }
+    // The record is dropped along with the process it described.
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .launched_editors_for_feature("feat-1")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        app.message.as_deref().unwrap_or_default().contains("closed 1 editor"),
+        "got {:?}",
+        app.message
+    );
+}
+
+#[test]
+fn kill_editor_on_stop_opt_out_leaves_the_editor_running() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let mut editor = spawn_fake_editor(tmp.path(), &workdir);
+    let editor_pid = editor.id() as i64;
+
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = app_with_db(&workdir, &db_file);
+    app.config.kill_editor_on_stop = false;
+    app.db
+        .as_ref()
+        .unwrap()
+        .record_launched_editor(
+            "feat-1",
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            editor_pid,
+            &workdir,
+            true,
+            "code --new-window",
+        )
+        .unwrap();
+
+    app.stop_feature().unwrap();
+
+    assert!(
+        crate::resources::procs::pid_alive(editor_pid),
+        "the opt-out must bypass the kill entirely"
+    );
+    // And the record survives, since nothing was resolved.
+    assert_eq!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .launched_editors_for_feature("feat-1")
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let _ = editor.kill();
+    let _ = editor.wait();
+}
+
+#[test]
+fn an_editor_amf_did_not_open_is_reported_not_killed() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let mut editor = spawn_fake_editor(tmp.path(), &workdir);
+    let editor_pid = editor.id() as i64;
+
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = app_with_db(&workdir, &db_file);
+    // `dedicated: false` — the folder was handed to a window the user opened.
+    app.db
+        .as_ref()
+        .unwrap()
+        .record_launched_editor(
+            "feat-1",
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            editor_pid,
+            &workdir,
+            false,
+            "code",
+        )
+        .unwrap();
+
+    let report = app.kill_tracked_editors("feat-1");
+
+    assert!(report.killed.is_empty());
+    assert!(crate::resources::procs::pid_alive(editor_pid));
+    assert_eq!(
+        report.summary().as_deref(),
+        Some("left VS Code running (AMF did not open this window)")
+    );
+
+    let _ = editor.kill();
+    let _ = editor.wait();
+}
+
+#[test]
+fn a_recycled_pid_is_never_signalled() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    // A live process that is emphatically not the recorded editor: if identity
+    // revalidation were skipped, this would be killed.
+    let mut bystander = std::process::Command::new("sleep")
+        .arg("60")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let bystander_pid = bystander.id() as i64;
+
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = app_with_db(&workdir, &db_file);
+    app.db
+        .as_ref()
+        .unwrap()
+        .record_launched_editor(
+            "feat-1",
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            bystander_pid,
+            &workdir,
+            true,
+            "code --new-window",
+        )
+        .unwrap();
+
+    let report = app.kill_tracked_editors("feat-1");
+
+    assert!(report.killed.is_empty());
+    assert_eq!(
+        report.skipped,
+        vec![(
+            "VS Code".to_string(),
+            crate::app::editor_ops::SkipReason::PidRecycled
+        )]
+    );
+    assert!(
+        crate::resources::procs::pid_alive(bystander_pid),
+        "an unrelated process must never be signalled"
+    );
+
+    let _ = bystander.kill();
+    let _ = bystander.wait();
 }

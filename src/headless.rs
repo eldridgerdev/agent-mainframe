@@ -1,9 +1,44 @@
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 
 use crate::project::AgentKind;
+use crate::resources::limits::HeadlessLease;
+
+/// A headless harness process whose lifetime outlives the call that started
+/// it — the poll-driven runs (Final Review walkthroughs and co-reviews, the
+/// changeset overview, the diff-review explanation) that park a `Child` in app
+/// state and check on it each tick.
+///
+/// The concurrency lease rides along with the child instead of being scoped to
+/// a function, so a run that is abandoned mid-flight releases its slot when the
+/// state holding it is dropped.
+#[derive(Debug)]
+pub struct LeasedChild {
+    child: Child,
+    _lease: HeadlessLease,
+}
+
+impl LeasedChild {
+    pub fn new(child: Child) -> Self {
+        Self {
+            child,
+            _lease: HeadlessLease::acquire(),
+        }
+    }
+
+    /// Non-blocking status check; `Ok(None)` while the run is still going.
+    pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    /// Collect the finished run's output, releasing the lease afterwards.
+    pub fn wait_with_output(self) -> std::io::Result<Output> {
+        let Self { child, _lease } = self;
+        child.wait_with_output()
+    }
+}
 
 /// Harness-agnostic entry point for one-shot, non-interactive agent work.
 ///
@@ -414,6 +449,10 @@ fn run_command(
     prompt: &str,
     model: Option<&str>,
 ) -> Result<String> {
+    // Held for the whole run so the concurrency gate sees headless work.
+    // Taken here rather than at each call site: every path out of this
+    // function — spawn failure, `?`, cancellation, panic — releases it.
+    let _lease = crate::resources::limits::HeadlessLease::acquire();
     let args = assemble_args(harness, spec, model);
 
     let mut child = Command::new(&spec.binary)
@@ -485,6 +524,9 @@ fn run_jsonl_command(
     model: Option<&str>,
     on_progress: impl Fn(HeadlessProgress) + Send + 'static,
 ) -> Result<String> {
+    // See `run_command`: one lease per in-flight headless run, released on
+    // every exit path including cancellation.
+    let _lease = crate::resources::limits::HeadlessLease::acquire();
     let args = assemble_jsonl_args(harness, spec, model);
 
     let mut child = Command::new(&spec.binary)
@@ -1075,6 +1117,65 @@ fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resources::limits::{in_flight_headless_runs, lock_lease_tests, wait_for_in_flight};
+
+    #[test]
+    fn a_failed_headless_spawn_releases_its_lease() {
+        let _guard = lock_lease_tests();
+        let base = in_flight_headless_runs();
+        let spec = HeadlessCommand {
+            binary: "amf-no-such-headless-binary".into(),
+            args: vec!["-p"],
+            trailing: vec![],
+            envs: vec![],
+        };
+        let result = run_command(
+            &AgentKind::Claude,
+            &spec,
+            std::path::Path::new("/tmp"),
+            "prompt",
+            None,
+        );
+        assert!(result.is_err(), "spawn of a missing binary must fail");
+        assert_eq!(wait_for_in_flight(base), base);
+    }
+
+    #[test]
+    fn dropping_an_abandoned_leased_child_releases_its_lease() {
+        let _guard = lock_lease_tests();
+        // Stands in for a poll-driven run (walkthrough, co-review) that the
+        // reviewer walks away from before it finishes.
+        let base = in_flight_headless_runs();
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sleep should be available");
+        let mut leased = LeasedChild::new(child);
+        assert!(in_flight_headless_runs() > base);
+        assert!(leased.try_wait().expect("try_wait").is_none());
+
+        drop(leased);
+        assert_eq!(wait_for_in_flight(base), base);
+    }
+
+    #[test]
+    fn collecting_a_leased_child_releases_its_lease() {
+        let _guard = lock_lease_tests();
+        let base = in_flight_headless_runs();
+        let child = Command::new("true")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("true should be available");
+        let leased = LeasedChild::new(child);
+        assert!(in_flight_headless_runs() > base);
+
+        let output = leased.wait_with_output().expect("wait_with_output");
+        assert!(output.status.success());
+        assert_eq!(wait_for_in_flight(base), base);
+    }
 
     #[test]
     fn every_agent_harness_has_a_headless_command() {

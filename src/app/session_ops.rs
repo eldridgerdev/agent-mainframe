@@ -6,6 +6,13 @@ use super::*;
 use crate::project::LaunchOpts;
 use crate::tmux::TmuxManager;
 
+/// How long to wait for a launched VS Code window to appear as a local
+/// process, and how often to look. Generous because a cold VS Code start is
+/// several seconds; the wait happens on a background thread, so it costs the
+/// UI nothing.
+const VSCODE_OWNER_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const VSCODE_OWNER_RESOLVE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub(crate) fn session_kind_for_agent(agent: &AgentKind) -> SessionKind {
     match agent {
         AgentKind::Claude => SessionKind::Claude,
@@ -670,6 +677,31 @@ impl App {
         kind: SessionKind,
         label: Option<String>,
     ) -> Result<()> {
+        // Only harness sessions spend the machine's agent budget; terminals,
+        // editors, and TODOs are added without a word.
+        if kind.is_agent_harness()
+            && self.gate_start(PendingStart::BuiltinSession {
+                pi,
+                fi,
+                kind: kind.clone(),
+                label: label.clone(),
+            })
+        {
+            return Ok(());
+        }
+
+        self.add_builtin_session_unchecked(pi, fi, kind, label)
+    }
+
+    /// Add a session that has already cleared the resource gate (or never
+    /// needed it).
+    pub(crate) fn add_builtin_session_unchecked(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        kind: SessionKind,
+        label: Option<String>,
+    ) -> Result<()> {
         // TODOs is a native overlay with no tmux window, so it must not force
         // the host feature's tmux session to start.
         if kind == SessionKind::Todos {
@@ -846,16 +878,95 @@ impl App {
         };
 
         let workdir = feature.workdir.clone();
+        let feature_id = feature.id.clone();
+
+        // Windows already open on this worktree, captured *before* the launch:
+        // whichever match appears afterwards is the one AMF opened, and that
+        // difference is the only proof of ownership worth killing on.
+        let before = crate::resources::procs::existing_vscode_windows(&workdir);
+
+        // `--new-window` is what makes the instance AMF's own. Without it the
+        // folder is handed to whatever window happens to be running, which AMF
+        // must never close on the user's behalf.
+        let command = format!("code --new-window {}", workdir.display());
         std::process::Command::new("code")
+            .arg("--new-window")
             .arg(&workdir)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to launch VSCode: {}", e))?;
 
+        self.record_vscode_launch(&feature_id, &workdir, &command, before);
+
         self.message = Some(format!("Opened VSCode in {}", workdir.display()));
 
         Ok(())
+    }
+
+    /// Record the launch, then resolve which process it produced in the
+    /// background.
+    ///
+    /// The `code` CLI hands the request off and exits immediately, so its own
+    /// PID is worthless — the window process shows up seconds later, and on a
+    /// remote/WSL setup never shows up locally at all. The record therefore
+    /// starts as not-owned and is upgraded only if a new local window is
+    /// actually found; anything still not-owned is skipped at stop time.
+    fn record_vscode_launch(
+        &mut self,
+        feature_id: &str,
+        workdir: &std::path::Path,
+        command: &str,
+        before: Vec<i64>,
+    ) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+
+        // Drop records whose process is gone (closed window, reboot) so
+        // repeated launches don't pile up rows for one worktree.
+        if let Ok(existing) = db.launched_editors_for_feature(feature_id) {
+            for editor in existing {
+                if editor.worktree_path == workdir
+                    && !crate::resources::procs::pid_alive(editor.pid)
+                {
+                    let _ = db.delete_launched_editor(&editor.id);
+                }
+            }
+        }
+
+        let record = db.record_launched_editor(
+            feature_id,
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            0,
+            workdir,
+            false,
+            command,
+        );
+        let Ok(record) = record else {
+            self.log_warn("editor", "failed to record the VSCode launch".to_string());
+            return;
+        };
+
+        let db_path = db.path.clone();
+        let workdir = workdir.to_path_buf();
+        std::thread::spawn(move || {
+            let found = crate::resources::procs::find_new_vscode_window(
+                &workdir,
+                &before,
+                VSCODE_OWNER_RESOLVE_TIMEOUT,
+                VSCODE_OWNER_RESOLVE_POLL,
+            );
+            let Some(found) = found else {
+                // Left not-owned on purpose: a reused window, or a remote one
+                // with no local process, is not AMF's to close.
+                return;
+            };
+            if let Ok(db) = crate::db::AmfDb::open(&db_path) {
+                let _ = db.set_launched_editor_owner(&record.id, found.pid, true);
+            }
+        });
     }
 
     fn add_agent_session_for_picker(

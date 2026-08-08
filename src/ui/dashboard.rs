@@ -1441,6 +1441,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
+        AppMode::ConfirmResourceStart(state) => {
+            super::dialogs::draw_resource_confirm_dialog(frame, state, &app.theme);
+        }
+        AppMode::Dormant(state) => {
+            super::dialogs::draw_dormant_view(
+                frame,
+                state,
+                app.config.dormant_idle_minutes,
+                app.config.dormant_last_accessed_hours,
+                &app.theme,
+            );
+        }
         AppMode::PlanInterview(_) => unreachable!("plan interview handled above"),
         AppMode::CreatingBatchFeatures(state) => {
             super::dialogs::draw_create_batch_features_dialog(frame, state, &app.theme);

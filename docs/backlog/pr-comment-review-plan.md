@@ -1,7 +1,6 @@
 # PR Triage
 
-- **Status:** Shipped — all epics and open questions closed; one small
-  backlog item remains (compacting the global review-memory doc)
+- **Status:** Shipped — all epics, open questions, and backlog items closed
 - **Owner:** unassigned
 - **Relates to:** `trigger_final_review` / `DiffViewer` mode
   (`src/app/review.rs`), embedded tmux view (`AppMode::Viewing`,
@@ -1691,7 +1690,7 @@ non-goal for v1 (GitHub `gh` only), not an open question.
 
 ## Backlog
 
-- [ ] **Let `c` compact the global review-memory doc too.** The cross-project
+- [x] **Let `c` compact the global review-memory doc too.** The cross-project
       layer shipped with a scope toggle on the two *append* flows (`M`, `b`)
       but not on the compact pass — `c` still always targets the project doc,
       which is where the decided scope of that work ended. So the global doc
@@ -1707,6 +1706,11 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       time, so it may not need the machinery. →
       `src/app/pr_review.rs`, `src/app/state.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`.
+      Shipped: the confirm overlay now uses `g` to switch between the project
+      and global docs, refreshes the selected doc's finding count, and carries
+      that scope and resolved path through the background run, review, and
+      final write. If only the global doc has findings, `c` opens directly on
+      it; selecting an empty doc is rejected before spending an agent pass.
 - [x] **Split AI Review into its own workflow (resolves the "does AI review
       belong in this pane" open question).** AMF's own review of a PR's diff
       (`A`/`W`) used to live inside PR Triage, converting each finding into a

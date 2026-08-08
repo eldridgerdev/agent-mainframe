@@ -78,9 +78,9 @@ pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, the
 /// Full-screen PR picker: a scrollable list of the repo's PRs to open for
 /// triage. `⏎` opens the highlighted one, `a` toggles closed/merged, `#` drops
 /// to the manual number prompt, `b` opens the review-memory lookback
-/// bootstrap. `memory_paths` holds both resolved review-memory doc paths: the
-/// bootstrap depth picker shows whichever its `g` scope toggle points at, and
-/// the compact overlay always shows the project one (it only compacts that).
+/// bootstrap. `memory_paths` holds both resolved review-memory doc paths; the
+/// bootstrap depth picker and the compact overlay each show whichever their own
+/// `g` scope toggle points at.
 pub fn draw_pr_picker(
     frame: &mut Frame,
     state: &PrPickerState,
@@ -174,7 +174,7 @@ pub fn draw_pr_picker(
         draw_bootstrap_pick(frame, pick, memory_paths.for_scope(pick.scope), theme);
     }
     if let Some(confirm) = &state.compact_confirm {
-        draw_compact_confirm(frame, confirm, &memory_paths.project, theme);
+        draw_compact_confirm(frame, confirm, memory_paths.for_scope(confirm.scope), theme);
     }
 }
 
@@ -296,21 +296,33 @@ fn draw_compact_confirm(
         ])
         .split(inner);
 
+    // Scope word and path on their own line, same as the bootstrap picker: the
+    // destination is a choice (`g`) now, and a real path plus the count doesn't
+    // fit one row of a 60%-wide overlay without splitting mid-word.
     let n = confirm.existing_findings;
+    let note = if n == 0 {
+        "  Nothing to compact here — press g to switch docs, or esc to cancel."
+    } else {
+        "  One agent pass merges near-duplicate findings and prunes stale ones. \
+         You'll review the proposed doc before anything is written."
+    };
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
                 format!(
-                    "  {n} finding{} currently in {}.",
+                    "  {n} finding{} in the {} doc:",
                     if n == 1 { "" } else { "s" },
-                    memory_path.display()
+                    confirm.scope.label()
                 ),
                 Style::default().fg(theme.text.to_color()),
             )),
+            Line::from(Span::styled(
+                format!("  {}", memory_path.display()),
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
             Line::from(""),
             Line::from(Span::styled(
-                "  One agent pass merges near-duplicate findings and prunes stale ones. \
-                 You'll review the proposed doc before anything is written.",
+                note,
                 Style::default().fg(theme.text_muted.to_color()),
             )),
         ])
@@ -320,7 +332,7 @@ fn draw_compact_confirm(
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "[⏎] run   [esc] cancel",
+            "[⏎] run   [g] project/global   [esc] cancel",
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[1],
@@ -393,7 +405,10 @@ pub fn draw_review_memory_compact_running(
     theme: &Theme,
 ) {
     let area = frame.area();
-    let block = pane_block(theme).title(" Compact review memory (experimental) ");
+    let block = pane_block(theme).title(format!(
+        " Compact {} review memory (experimental) ",
+        state.scope.label()
+    ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -454,7 +469,7 @@ pub fn draw_review_memory_compact_review(
 
     let mut constraints = vec![Constraint::Length(1)]; // path line
     if state.error.is_some() {
-        constraints.push(Constraint::Length(2)); // error message
+        constraints.push(Constraint::Length(3)); // error / conflict message
     }
     constraints.push(Constraint::Min(1)); // doc body / editor
     constraints.push(Constraint::Length(1)); // key hints
@@ -474,9 +489,11 @@ pub fn draw_review_memory_compact_review(
     row += 1;
 
     if let Some(error) = &state.error {
+        // Already a full sentence at the call site — an io failure or a
+        // "the doc changed under you" conflict, which read differently.
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                format!("Write failed: {error}"),
+                error.clone(),
                 Style::default().fg(theme.danger.to_color()),
             )))
             .wrap(Wrap { trim: false }),

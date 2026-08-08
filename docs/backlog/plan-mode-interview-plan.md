@@ -244,9 +244,11 @@ pub struct PlanQuestion {
   Token figures come from the harness's own output/metadata via the
   existing usage subsystem; harnesses that don't report stay
   time-only.
-- Follow-up (out of scope here): `summary.rs` hardcodes
-  `ClaudeLauncher::run_headless` today even for codex/opencode/pi
-  sessions; once the runner exists it should switch over.
+- Completed follow-up (2026-08-06): `summary.rs` now uses the shared
+  `HeadlessRunner` with the feature's configured harness, so codex, opencode,
+  and pi session summaries no longer invoke Claude. Summary generation is a
+  restricted no-tools call because the captured pane already supplies all of
+  the context it needs.
 
 ### Synthesis output & handoff
 
@@ -673,6 +675,14 @@ interview with prior answers pre-filled, get an updated
       document remains as the design/implementation record because it captures
       the settled decisions, fallback semantics, and reproducible visual proof;
       the user-facing workflow and keys live in `README.md`
+
+### Post-ship follow-ups
+
+- [x] Route dashboard and in-session one-line summaries through the
+      harness-agnostic headless runner using the feature's configured agent,
+      rather than hardcoding Claude for every feature. Visual proof:
+      `docs/screenshots/harness-aware-session-summary/`, regenerable via
+      `scripts/dev/screenshot/scenarios/harness-aware-session-summary.txt`
 
 ## Open questions
 

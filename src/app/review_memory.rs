@@ -17,7 +17,11 @@
 //! exception is the explicit, user-triggered "compact" pass ([`compact_prompt`]),
 //! which proposes a wholesale rewrite (merging near-duplicates, pruning stale
 //! rules) but never writes it without the user reviewing and confirming the
-//! result first — see `App::pr_review_compact_write`.
+//! result first — see `App::pr_review_compact_write`. Because that rewrite is
+//! built from a snapshot read before the agent pass, and because any number of
+//! AMF sessions can append to the same doc meanwhile (all of them share the
+//! cross-project one), the write re-reads the file and reconciles against that
+//! snapshot via [`doc_drift`] rather than trusting it.
 
 use std::path::{Path, PathBuf};
 
@@ -177,12 +181,33 @@ pub fn append_finding(
     category: &str,
     finding: &str,
 ) -> std::io::Result<bool> {
-    let finding = finding.trim();
-    if finding.is_empty() {
+    // Checked before the doc is created, so a blank finding doesn't leave an
+    // empty doc behind on a repo that never had one.
+    if finding.trim().is_empty() {
         return Ok(false);
     }
     ensure_review_memory_doc(path, scope)?;
     let contents = std::fs::read_to_string(path)?;
+    match insert_finding(&contents, category, finding) {
+        Some(updated) => {
+            std::fs::write(path, updated)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// The in-memory half of [`append_finding`]: place `finding` under `category`
+/// in `contents`, returning the updated document, or `None` when the finding is
+/// blank or already present (the same case-insensitive, trimmed dedup
+/// [`append_finding`] has always applied). Split out so the compact flow can
+/// replay appends against a document it holds in memory without a read/write
+/// cycle per finding — see [`append_findings_to_doc`].
+fn insert_finding(contents: &str, category: &str, finding: &str) -> Option<String> {
+    let finding = finding.trim();
+    if finding.is_empty() {
+        return None;
+    }
 
     let already_present = contents.lines().any(|line| {
         line.trim()
@@ -191,7 +216,7 @@ pub fn append_finding(
             .eq_ignore_ascii_case(finding)
     });
     if already_present {
-        return Ok(false);
+        return None;
     }
 
     let heading = category_heading(category);
@@ -214,7 +239,7 @@ pub fn append_finding(
             out
         }
         None => {
-            let mut out = contents;
+            let mut out = contents.to_string();
             if !out.is_empty() && !out.ends_with("\n\n") {
                 if !out.ends_with('\n') {
                     out.push('\n');
@@ -230,8 +255,76 @@ pub fn append_finding(
         }
     };
 
-    std::fs::write(path, updated)?;
-    Ok(true)
+    Some(updated)
+}
+
+/// Replay a batch of `(category, finding)` appends onto `doc` in memory,
+/// returning the updated document and how many findings were actually added
+/// (blank or already-present ones are skipped, exactly as [`append_finding`]
+/// skips them). Used by the compact flow to re-apply findings another session
+/// appended while the compact pass was running.
+pub fn append_findings_to_doc(doc: &str, findings: &[(String, String)]) -> (String, usize) {
+    let mut out = doc.to_string();
+    let mut added = 0;
+    for (category, finding) in findings {
+        if let Some(updated) = insert_finding(&out, category, finding) {
+            out = updated;
+            added += 1;
+        }
+    }
+    (out, added)
+}
+
+/// How the review-memory doc on disk has moved since a snapshot was taken.
+///
+/// The compact pass rewrites a doc wholesale from a snapshot read minutes
+/// earlier (one agent pass, then however long the user spends reviewing the
+/// proposal). Other AMF sessions — including ones in other repos, for the
+/// cross-project doc — append to the same file in that window, so the write
+/// has to know whether it is about to clobber findings it never saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocDrift {
+    /// Byte-identical to the snapshot: the write is safe as-is.
+    Unchanged,
+    /// Every difference is explained by these findings having been appended
+    /// since the snapshot, so re-applying them on top of the rewrite loses
+    /// nothing.
+    Appended(Vec<(String, String)>),
+    /// The doc changed in ways an append cannot explain (prose edited, findings
+    /// removed, file replaced or deleted). Any findings that *were* appended
+    /// are still carried, but a wholesale rewrite would drop the rest.
+    Diverged(Vec<(String, String)>),
+}
+
+/// Classify how `current` (what's on disk now) differs from `baseline` (what
+/// the compact pass read).
+///
+/// Findings appended since the snapshot are detected by bullet text, using the
+/// same case-insensitive, trimmed comparison [`append_finding`] dedups on. The
+/// difference is then declared append-only only if replaying those appends onto
+/// the snapshot reproduces the current doc — which it does when the writer was
+/// [`append_finding`], and doesn't when a human edited prose or deleted
+/// findings by hand.
+pub fn doc_drift(baseline: &str, current: &str) -> DocDrift {
+    if baseline == current {
+        return DocDrift::Unchanged;
+    }
+    let known: Vec<String> = baseline
+        .lines()
+        .map(|line| line.trim().trim_start_matches('-').trim().to_lowercase())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let added: Vec<(String, String)> = parse_findings_markdown(current)
+        .into_iter()
+        .filter(|(_, finding)| !known.contains(&finding.trim().to_lowercase()))
+        .collect();
+
+    let (replayed, _) = append_findings_to_doc(baseline, &added);
+    if replayed.trim_end() == current.trim_end() {
+        DocDrift::Appended(added)
+    } else {
+        DocDrift::Diverged(added)
+    }
 }
 
 const PROJECT_CONTEXT_LABEL: &str = "--- This repository's review memory ---";
@@ -578,6 +671,69 @@ mod tests {
         assert!(contents.contains("Some hand-written prose explaining context."));
         assert!(contents.contains("- An existing finding"));
         assert!(contents.contains("- A new finding"));
+    }
+
+    #[test]
+    fn doc_drift_reports_unchanged_for_an_identical_doc() {
+        let doc = "# Review memory\n\n## Tests\n- One\n";
+
+        assert_eq!(doc_drift(doc, doc), DocDrift::Unchanged);
+    }
+
+    #[test]
+    fn doc_drift_recognizes_findings_appended_since_the_snapshot() {
+        // The concurrent writer is always `append_finding` (no other flow
+        // rewrites these docs), so its output has to classify as append-only.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("review-memory.md");
+        let baseline = "# Review memory\n\n## Tests\n- One\n";
+        std::fs::write(&path, baseline).unwrap();
+
+        append_finding(&path, MemoryScope::Project, "tests", "Two").unwrap();
+        append_finding(&path, MemoryScope::Project, "concurrency", "Three").unwrap();
+        let current = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(
+            doc_drift(baseline, &current),
+            DocDrift::Appended(vec![
+                ("Tests".to_string(), "Two".to_string()),
+                ("Concurrency".to_string(), "Three".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn doc_drift_flags_edits_an_append_cannot_explain() {
+        let baseline = "# Review memory\n\n## Tests\n- One\n- Two\n";
+
+        // A deleted finding.
+        assert!(matches!(
+            doc_drift(baseline, "# Review memory\n\n## Tests\n- One\n"),
+            DocDrift::Diverged(_)
+        ));
+        // Hand-edited prose, alongside a genuine append that's still carried.
+        let edited = "# Review memory\n\nNew prose.\n\n## Tests\n- One\n- Two\n- Three\n";
+        match doc_drift(baseline, edited) {
+            DocDrift::Diverged(added) => {
+                assert_eq!(added, vec![("Tests".to_string(), "Three".to_string())]);
+            }
+            other => panic!("expected Diverged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_findings_to_doc_skips_findings_already_present() {
+        let doc = "# Review memory\n\n## Tests\n- One\n";
+        let findings = vec![
+            ("Tests".to_string(), "one".to_string()),
+            ("Tests".to_string(), "Two".to_string()),
+        ];
+
+        let (updated, added) = append_findings_to_doc(doc, &findings);
+
+        assert_eq!(added, 1);
+        assert!(updated.contains("- Two"));
+        assert_eq!(count_findings(&updated), 2);
     }
 
     #[test]

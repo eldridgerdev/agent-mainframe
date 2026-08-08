@@ -552,15 +552,29 @@ closes out.
 
 ### Epic 4 — Surface (rendering, keys, entry point, onboarding)
 
-- [ ] Build `src/ui/dialogs/learning.rs`: file list with the
+- [x] Build `src/ui/dialogs/learning.rs`: file list with the
       orientation group, content with line numbers and
       `crate::highlight` syntax, selection highlight, Q&A panel with
       intent + status words + threaded follow-ups + actioned/session
       markers, answers rendered through
       `markdown::draw_markdown_document`, and a header showing scope,
-      level, harness, `read-only`, and in-flight count. Verify a
-      markdown answer with headings, a list, and a fenced code block
-      renders formatted and scrolls to the end.
+      level, harness, `read-only`, and in-flight count. Modal layers
+      draw in the same precedence the key handler uses. Ten tests,
+      seven of them rendering through a `TestBackend`:
+      `a_markdown_answer_renders_formatted` (the plan's check — heading
+      markers and code fences are consumed, the code block's contents
+      and list items survive), `a_long_answer_scrolls_to_its_end`
+      (scroll-to-bottom lands on the last line and the stored scroll is
+      clamped), `the_header_says_what_the_mode_is_doing_and_that_it_is_read_only`,
+      `an_in_flight_count_appears_only_while_something_is_generating`,
+      `an_actioned_answer_is_marked_in_the_history`,
+      `a_follow_up_renders_indented_under_its_parent`,
+      `the_empty_history_pane_says_how_to_start`. One fix came out of
+      writing them: the Q&A headline is wider than the pane, and since
+      the renderer truncates from the right, the `→ TODO` / `→ session`
+      markers were being cut off at every realistic width. They now
+      precede the harness/run-mode provenance, so the droppable part is
+      what gets dropped.
 - [x] Add `src/handlers/learning.rs` and wire it into the main key
       dispatch: navigation, scope toggle, level toggle, selection keys,
       the two ask keys (explain / change), starter-question picker,
@@ -591,12 +605,27 @@ closes out.
       asserts the help appears only the first time — the existing
       overlay tests run without a DB, so that needs a DB-backed `App`
       fixture. Worth adding in Epic 6.
-- [ ] Add the dashboard entry key `K` (verified unbound in
-      `handle_normal_key`) on the selected feature/project, register it
-      in `DASHBOARD_KEYBINDING_ACTIONS`, and add it to the dashboard
-      help overlay list. Verify every existing dashboard binding still
-      works, especially `L` (prompt library), and that `K` appears in
-      the config wizard's bindable actions.
+- [x] Add the dashboard entry key `K` (verified unbound in
+      `handle_normal_key`; the `K` in `handlers/todos.rs` is a different
+      mode) on the selected feature/project, register it in
+      `DASHBOARD_KEYBINDING_ACTIONS`, and add it to the dashboard help
+      overlay list. `App::open_learning_mode_for_selection` resolves the
+      selection: a feature or session row opens that feature, a project
+      row opens its first feature, and a project with no features says
+      why nothing happened instead of swallowing the keypress. Tests:
+      `k_opens_learning_mode_on_the_selected_feature`,
+      `k_on_a_project_row_opens_its_first_feature`,
+      `k_explains_itself_when_the_project_has_no_features`,
+      `closing_the_overlay_returns_to_the_dashboard`, and
+      `k_makes_the_overlay_actually_render`, which drives the whole
+      chain — key sets the mode, `ui::draw` dispatches on it, the
+      overlay paints. `L` (prompt library) is unaffected, and
+      `default_keys_are_unique_across_actions` now guards the whole
+      table against a future collision stealing a binding (the remap
+      lookup resolves a pressed key to the *first* matching action, so a
+      duplicate would silently shadow one). The config wizard derives
+      its list from the same table with no separate label map, covered
+      by `the_wizard_offers_every_dashboard_action_including_learning_mode`.
 - [x] Implement the starter-question table and picker (anchor-aware
       filtering, loads into the editable prompt). Nine presets in
       `STARTER_QUESTIONS`, scoped `Project` / `File` / `Lines`; a file

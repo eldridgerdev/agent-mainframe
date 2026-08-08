@@ -216,6 +216,97 @@ mod tests {
         (repo, app)
     }
 
+    // ── the K entry key ──────────────────────────────────────
+
+    /// `K` goes through `handle_normal_key`, not this module's handler — the
+    /// overlay has to be reachable from the dashboard for any of the rest to
+    /// matter.
+    fn press_k(app: &mut App) {
+        crate::handlers::handle_normal_key(app, key(KeyCode::Char('K'))).unwrap();
+    }
+
+    #[test]
+    fn k_opens_learning_mode_on_the_selected_feature() {
+        let (_repo, mut app) = crate::app::learning::tests::dashboard_app_for_handlers();
+        app.selection = crate::app::Selection::Feature(0, 0);
+
+        press_k(&mut app);
+
+        let state = learning(&app);
+        assert_eq!(state.pi, 0);
+        assert_eq!(state.fi, 0);
+        assert_eq!(state.feature_name, "my-feat");
+        assert!(!state.entries.is_empty(), "the file list loaded");
+    }
+
+    #[test]
+    fn k_on_a_project_row_opens_its_first_feature() {
+        let (_repo, mut app) = crate::app::learning::tests::dashboard_app_for_handlers();
+        app.selection = crate::app::Selection::Project(0);
+
+        press_k(&mut app);
+
+        assert_eq!(learning(&app).fi, 0);
+    }
+
+    #[test]
+    fn k_explains_itself_when_the_project_has_no_features() {
+        let (_repo, mut app) = crate::app::learning::tests::featureless_app_for_handlers();
+        app.selection = crate::app::Selection::Project(0);
+
+        press_k(&mut app);
+
+        assert!(
+            matches!(app.mode, AppMode::Normal),
+            "nothing to read, so the overlay must not open"
+        );
+        assert!(
+            app.message.as_deref().is_some_and(|m| m.contains("feature")),
+            "the keypress has to say why nothing happened, got {:?}",
+            app.message
+        );
+    }
+
+    /// The whole chain in one test: the key sets the mode, the dashboard's
+    /// `draw` dispatches on it, and the overlay paints. Each half is covered
+    /// elsewhere; what this catches is the two not being connected.
+    #[test]
+    fn k_makes_the_overlay_actually_render() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (_repo, mut app) = crate::app::learning::tests::dashboard_app_for_handlers();
+        app.selection = crate::app::Selection::Feature(0, 0);
+        press_k(&mut app);
+
+        let backend = TestBackend::new(140, 44);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("Learning Mode"), "the overlay is on screen");
+        assert!(rendered.contains("read-only"));
+    }
+
+    #[test]
+    fn closing_the_overlay_returns_to_the_dashboard() {
+        let (_repo, mut app) = crate::app::learning::tests::dashboard_app_for_handlers();
+        app.selection = crate::app::Selection::Feature(0, 0);
+        press_k(&mut app);
+
+        handle_learning_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Normal));
+        assert!(matches!(app.selection, crate::app::Selection::Feature(0, 0)));
+    }
+
     #[test]
     fn the_help_overlay_opens_closes_and_swallows_keys() {
         let (_repo, mut app) = opened();

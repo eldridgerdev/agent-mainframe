@@ -10,6 +10,7 @@ mod feature;
 mod harness;
 mod help;
 mod hooks;
+mod learning;
 mod markdown;
 mod plan_interview;
 mod pr_review;
@@ -38,6 +39,7 @@ pub use hooks::{
     draw_diff_review_dialog, draw_hook_prompt_dialog, draw_latest_prompt_dialog,
     draw_running_hook_dialog,
 };
+pub use learning::draw_learning_view;
 pub use markdown::{draw_markdown_loading, draw_markdown_viewer};
 pub use plan_interview::draw_plan_interview_dialog;
 pub use pr_review::{

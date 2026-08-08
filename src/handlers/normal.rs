@@ -289,6 +289,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('W') => {
             app.open_ai_review();
         }
+        KeyCode::Char('K') => {
+            app.open_learning_mode_for_selection()?;
+        }
         KeyCode::Char('P') => {
             app.start_plan_interview_for_selected_feature();
         }
@@ -321,6 +324,7 @@ pub(crate) const DASHBOARD_KEYBINDING_ACTIONS: &[(&str, char)] = &[
     ("syntax_picker", 'p'),
     ("pr_review", 'G'),
     ("ai_review", 'W'),
+    ("learning_mode", 'K'),
     ("session_config", 'u'),
     ("fork_feature", 'F'),
     ("mark_ready", 'y'),
@@ -409,6 +413,22 @@ mod tests {
         assert_eq!(default_key_for_action("syntax_picker"), Some('p'));
         assert_eq!(default_key_for_action("session_config"), Some('u'));
         assert_eq!(default_key_for_action("mark_ready"), Some('y'));
+        assert_eq!(default_key_for_action("learning_mode"), Some('K'));
+    }
+
+    /// Two actions sharing a default key would make one of them unreachable,
+    /// and the remap lookup in `handle_normal_key` resolves a pressed key to
+    /// the *first* matching action — so a collision silently steals a binding.
+    #[test]
+    fn default_keys_are_unique_across_actions() {
+        let mut seen: Vec<char> = Vec::new();
+        for (action, key) in DASHBOARD_KEYBINDING_ACTIONS {
+            assert!(
+                !seen.contains(key),
+                "{action} reuses the default key {key:?}"
+            );
+            seen.push(*key);
+        }
     }
 
     #[test]

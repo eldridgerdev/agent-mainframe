@@ -233,6 +233,31 @@ impl App {
         Ok(())
     }
 
+    /// Open Learning Mode on whatever the dashboard has selected.
+    ///
+    /// A project row opens on the project's first feature: the files have to be
+    /// read from some working directory, and the first feature is the one that
+    /// reuses the repo itself. A project with no features has nothing to read,
+    /// which is worth saying out loud rather than swallowing the keypress.
+    pub fn open_learning_mode_for_selection(&mut self) -> Result<()> {
+        let target = match &self.selection {
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => Some((*pi, *fi)),
+            Selection::Project(pi) => self
+                .store
+                .projects
+                .get(*pi)
+                .filter(|project| !project.features.is_empty())
+                .map(|_| (*pi, 0)),
+        };
+        let Some((pi, fi)) = target else {
+            self.message = Some(
+                "Add a feature first — Learning Mode reads that feature's files".to_string(),
+            );
+            return Ok(());
+        };
+        self.open_learning_mode(pi, fi)
+    }
+
     /// Close the overlay and return to the dashboard with the feature it was
     /// opened from selected.
     pub fn close_learning_mode(&mut self) {
@@ -2363,6 +2388,23 @@ pub(crate) mod tests {
                 .all(|t| !file_only.contains(t)),
             "file presets need a file"
         );
+    }
+
+    /// Shared with `crate::handlers::learning`'s tests: a dashboard-mode app on
+    /// a real temp repo, for exercising the `K` entry key.
+    pub(crate) fn dashboard_app_for_handlers() -> (TempDir, App) {
+        let repo = repo_with_branch_change();
+        let app = app_at(repo.path(), true);
+        (repo, app)
+    }
+
+    /// As above, but the project has no features — nothing for Learning Mode
+    /// to read.
+    pub(crate) fn featureless_app_for_handlers() -> (TempDir, App) {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.store.projects[0].features.clear();
+        (repo, app)
     }
 
     /// Shared with `crate::handlers::learning`'s tests: an overlay opened on a

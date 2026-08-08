@@ -1100,6 +1100,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::Learning(state) = &mut app.mode {
+        super::dialogs::draw_learning_view(frame, state, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme);
+        return;
+    }
+
     if matches!(app.mode, AppMode::Viewing(_)) {
         // `message` is shared by dashboard status bars and dialog validation,
         // but pane view should not leave AMF-owned text painted over the

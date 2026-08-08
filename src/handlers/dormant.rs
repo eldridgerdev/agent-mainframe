@@ -41,8 +41,8 @@ pub fn handle_dormant_key(app: &mut App, key: KeyEvent) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::dormant::DormantFeature;
     use crate::app::DormantViewState;
+    use crate::app::dormant::DormantFeature;
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use crossterm::event::KeyModifiers;
     use std::path::PathBuf;
@@ -127,7 +127,10 @@ mod tests {
                 assert_eq!(project, "proj");
                 assert_eq!(feature, "alpha");
             }
-            other => panic!("expected the delete confirm, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "expected the delete confirm, got {:?}",
+                std::mem::discriminant(other)
+            ),
         }
     }
 }

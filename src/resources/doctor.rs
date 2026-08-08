@@ -86,7 +86,11 @@ impl Report {
     pub fn render(&self) -> String {
         let mut out = String::from("amf doctor\n\n");
         for finding in &self.findings {
-            out.push_str(&format!("[{}] {}\n", finding.severity.marker(), finding.summary));
+            out.push_str(&format!(
+                "[{}] {}\n",
+                finding.severity.marker(),
+                finding.summary
+            ));
             for line in &finding.detail {
                 out.push_str(&format!("       {line}\n"));
             }
@@ -175,7 +179,9 @@ fn check_agents(inputs: &Inputs<'_>) -> Finding {
             format!("{} agent session(s) running, limit {limit}", active.len()),
         )
         .with_detail(detail)
-        .with_advice("starting another will ask for confirmation; z on the dashboard lists idle ones"),
+        .with_advice(
+            "starting another will ask for confirmation; z on the dashboard lists idle ones",
+        ),
         Some(limit) => Finding::new(
             "agents",
             Severity::Ok,
@@ -237,10 +243,7 @@ fn check_open_editors(inputs: &Inputs<'_>) -> Finding {
     Finding::new(
         "editors-open",
         Severity::Notice,
-        format!(
-            "{} editor window(s) open alongside the agents",
-            open.len()
-        ),
+        format!("{} editor window(s) open alongside the agents", open.len()),
     )
     .with_detail(open)
     .with_advice(
@@ -306,7 +309,10 @@ fn check_swap(inputs: &Inputs<'_>) -> Option<Finding> {
         Finding::new(
             "swap",
             Severity::Warn,
-            format!("swap {}% used ({free} MiB free of {total} MiB)", (used_fraction * 100.0).round()),
+            format!(
+                "swap {}% used ({free} MiB free of {total} MiB)",
+                (used_fraction * 100.0).round()
+            ),
         )
         .with_advice("heavy swapping is what makes the machine feel frozen; stop something")
     } else {
@@ -335,7 +341,11 @@ fn check_orphan_sessions(inputs: &Inputs<'_>) -> Finding {
         .collect();
 
     if orphans.is_empty() {
-        return Finding::new("tmux-sessions", Severity::Ok, "no orphaned amf-* tmux sessions");
+        return Finding::new(
+            "tmux-sessions",
+            Severity::Ok,
+            "no orphaned amf-* tmux sessions",
+        );
     }
     Finding::new(
         "tmux-sessions",

@@ -55,7 +55,8 @@ pub fn is_dormant(
     let Some(last_activity) = last_activity else {
         return false;
     };
-    elapsed(now, last_activity) > idle_threshold && elapsed(now, last_accessed) > unattended_threshold
+    elapsed(now, last_activity) > idle_threshold
+        && elapsed(now, last_accessed) > unattended_threshold
 }
 
 /// Wall-clock gap, clamped at zero: a timestamp in the future (clock skew, a
@@ -144,11 +145,7 @@ impl App {
         let db = self.db.as_ref();
         let editor_alive = |feature_id: &str| -> bool {
             db.and_then(|db| db.launched_editors_for_feature(feature_id).ok())
-                .is_some_and(|editors| {
-                    editors
-                        .iter()
-                        .any(|editor| procs::pid_alive(editor.pid))
-                })
+                .is_some_and(|editors| editors.iter().any(|editor| procs::pid_alive(editor.pid)))
         };
         dormant_features(
             &self.store,
@@ -282,7 +279,13 @@ mod tests {
             UNATTENDED
         ));
         // Idle agent, but the feature was just opened: the user is reading it.
-        assert!(!is_dormant(now, Some(long_idle), just_now, IDLE, UNATTENDED));
+        assert!(!is_dormant(
+            now,
+            Some(long_idle),
+            just_now,
+            IDLE,
+            UNATTENDED
+        ));
         // Untouched for days, but the agent is producing output right now.
         assert!(!is_dormant(
             now,
@@ -318,7 +321,13 @@ mod tests {
     #[test]
     fn a_missing_activity_signal_is_never_dormant() {
         let now = Utc::now();
-        assert!(!is_dormant(now, None, ago(now, 100 * 3600), IDLE, UNATTENDED));
+        assert!(!is_dormant(
+            now,
+            None,
+            ago(now, 100 * 3600),
+            IDLE,
+            UNATTENDED
+        ));
     }
 
     #[test]
@@ -407,7 +416,13 @@ mod tests {
             ("amf-b".to_string(), "claude".to_string(), 2_000),
         ];
         let latest = latest_activity_by_session(&activity);
-        assert_eq!(latest["amf-a"], Utc.timestamp_opt(5_000, 0).single().unwrap());
-        assert_eq!(latest["amf-b"], Utc.timestamp_opt(2_000, 0).single().unwrap());
+        assert_eq!(
+            latest["amf-a"],
+            Utc.timestamp_opt(5_000, 0).single().unwrap()
+        );
+        assert_eq!(
+            latest["amf-b"],
+            Utc.timestamp_opt(2_000, 0).single().unwrap()
+        );
     }
 }

@@ -21,7 +21,7 @@ are tagged.
   sessions are neither counted nor gated. Two new settings drive it:
   `max_concurrent_agents` (default `4`) and `low_memory_warn_mb` (default
   `1536`); set either to `0` to turn that half off. The defaults are sized from
-  measured idle memory per harness — see "Resource guards" in the README for
+  measured idle memory per harness — the README's Configuration section has
   the numbers and the reasoning. Platforms where AMF cannot read a trustworthy
   memory figure simply run on the agent count alone.
 
@@ -319,47 +319,70 @@ are tagged.
   dismissed investigations leave the current plan untouched, and a failure
   preserves the research request for retry. No migration is required.
 
+## [v0.34.0] - 2026-08-07
+
+### Added
+
+- **Final Review now has a complete key reference.** Press `?` from the review
+  or line cursor to open a scrollable, grouped list of every review shortcut,
+  including clear labels for actions that spend agent tokens.
+- **Final Review can open the current file in your editor.** Press `E` to open
+  the reviewed file at the cursored line using `$VISUAL` or `$EDITOR`.
+  Returning to AMF reloads the diff if the file changed.
+- **Final Review can navigate comments across files and undo verdicts.** Use
+  `{` and `}` to visit review comments throughout the changeset, and `U`
+  to restore the most recent approve, skip, or rejection.
+- **Diff review has richer context controls.** Use `+`, `-`, or `*` to
+  expand and contract hunks up to the whole file, and `W` to hide
+  whitespace-only changes. Modified lines also highlight the exact words that
+  changed in unified and side-by-side layouts.
+- **Plan interviews can be resumed, rerun, and used on existing features.**
+  Answers and generated drafts survive cancellation or restart, accepted
+  answers prefill later planning passes, and `P` starts an interview for a
+  feature that already exists.
+- **Plans can be refined without filling the implementation session with
+  research.** Press `f` to give a draft direct revision feedback or `i` to
+  run isolated, read-only investigations. After accepting a new plan for a
+  running feature, AMF can seed a handoff prompt into that feature's composer.
+- **Pi can power plan interviews and expose model selection for AI Review.**
+  Current Pi installations use the safe headless flow; older versions keep the
+  existing fallback to another available harness.
+- **The theme picker groups large theme families.** Catppuccin and Gruvbox
+  Material now open into their own variant screens, keeping the top-level
+  picker short while preserving live previews and existing shortcuts.
+- **Codex sessions can capture AMF UI proof.** New Codex feature setup includes
+  the `amf-screenshot` skill for isolated PNG and GIF capture without touching
+  the user's real AMF database or tmux sessions.
 ### Changed
 
-- **Plan mode now handles presets, empty question banks, and large answers
-  predictably.** A preset that enables plan mode opens the same guided
-  interview as the manual toggle, while batch creation now explains that it
-  skips interviews. Projects that disable the built-in bank without adding
-  custom questions can draft directly from the required brief. Very large
-  briefs and answers remain complete in the saved interview and raw plan, but
-  AMF bounds each field before sending it to an AI so pasted logs or documents
-  cannot consume unlimited model context. No migration is required.
-- **The optional AI step now says exactly what each choice does.** Press `a` to
-  ask AI follow-up questions, `Ctrl+F` to draft the plan immediately from saved
-  answers, or `Enter` to review a raw plan without spending agent tokens. The
-  dialog and key hints clearly identify which choices use tokens. The step fits
-  an 80x24 terminal, and a smaller one gets shorter wording rather than a
-  disclosure cut off mid-sentence.
-- **The default plan interview is shorter.** Five built-in questions now cover
-  the same discovery areas that previously took seven by combining user and UI
-  workflow prompts, and data and integration prompts. Project questions that
-  override either retired question ID remain available as configured prompts.
+- **Global review memory can be compacted from PR Triage.** Press `c`, then
+  `g`, to select the cross-project memory document. AMF preserves findings
+  added by another session while compaction is running and asks before any
+  conflicting overwrite.
+- **Session summaries use the feature's own harness.** Codex, OpenCode, and Pi
+  features no longer launch Claude just to generate their one-line summary.
+- **Plan interviews are clearer and safer at their edges.** The optional AI
+  step identifies token-using choices, the default interview is shorter,
+  presets enter the same guided flow, projects with no questions can draft
+  from the brief, and oversized answers are bounded only when sent to an AI.
 
 ### Fixed
 
-- **AMF feedback no longer sticks to the bottom-left of an agent pane.**
-  Repaint confirmations and any other transient AMF status messages now appear
-  as timed toasts, then clear automatically without covering harness output.
-- **Custom-session Nerd Font icons can now be chosen visually in the config
-  wizard.** The chooser previews useful session icons and still accepts custom
-  glyphs. Existing bundled names such as `nf-md-server` now render as icons,
-  so no config migration is required.
-- **OSC 8 hyperlinks now work through AMF's managed tmux server on macOS.**
-  Terminals that support hyperlinks can open links from agent sessions normally,
-  including saved sessions reopened after upgrading.
+- **Pane feedback no longer covers agent output indefinitely.** Repaint and
+  status confirmations appear as timed toasts and clear automatically.
+- **Custom-session icons can be chosen visually.** The config wizard previews
+  useful Nerd Font icons and correctly renders existing bundled icon names.
+- **Managed tmux hyperlinks work on macOS.** OSC 8 links from agent sessions
+  open normally after the session is reopened.
+- **Final Review no longer clips its footer shortcuts.** Both hint rows receive
+  their own space, including at narrower terminal widths, while short terminals
+  still preserve room for the diff.
 
 ### Migration
 
-No migration is required. Plan interviews still work without a database, and
-existing features are unaffected — the first interview you run after upgrading
-starts saving its answers. Existing saved sessions pick up the hyperlink fix
-when they are reopened, and Codex features receive the screenshot skill when
-their local agent setup next runs.
+No migration is required. AMF creates plan-interview storage automatically.
+Existing saved sessions pick up the macOS hyperlink fix when reopened, and
+Codex features receive the screenshot skill when their local setup next runs.
 
 ## [v0.33.0] - 2026-07-28
 

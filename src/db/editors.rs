@@ -197,7 +197,11 @@ mod tests {
     #[test]
     fn records_and_lists_launches_per_feature() {
         let (_tmp, db) = open_temp_db();
-        assert!(db.launched_editors_for_feature("feat-1").unwrap().is_empty());
+        assert!(
+            db.launched_editors_for_feature("feat-1")
+                .unwrap()
+                .is_empty()
+        );
 
         let recorded = db
             .record_launched_editor(
@@ -220,7 +224,11 @@ mod tests {
         assert_eq!(loaded[0].worktree_path, PathBuf::from("/tmp/wt"));
 
         // Another feature's launches stay separate.
-        assert!(db.launched_editors_for_feature("feat-2").unwrap().is_empty());
+        assert!(
+            db.launched_editors_for_feature("feat-2")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -257,7 +265,10 @@ mod tests {
         .unwrap();
 
         let loaded = db.launched_editors_for_feature("feat-1").unwrap();
-        assert!(!loaded[0].dedicated, "reused instances are never AMF's to kill");
+        assert!(
+            !loaded[0].dedicated,
+            "reused instances are never AMF's to kill"
+        );
         assert_eq!(loaded[0].kind, EditorKind::Other);
         assert!(loaded[0].session_id.is_none());
     }
@@ -320,7 +331,11 @@ mod tests {
 
         db.delete_launched_editors_for_feature("feat-1").unwrap();
 
-        assert!(db.launched_editors_for_feature("feat-1").unwrap().is_empty());
+        assert!(
+            db.launched_editors_for_feature("feat-1")
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(db.launched_editors_for_feature("feat-2").unwrap().len(), 1);
     }
 

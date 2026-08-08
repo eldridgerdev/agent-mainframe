@@ -162,13 +162,15 @@ mod tests {
 
     #[test]
     fn a_short_message_stays_on_one_line() {
-        assert_eq!(wrap_message("Started 'alpha'", 40, 5), vec!["Started 'alpha'"]);
+        assert_eq!(
+            wrap_message("Started 'alpha'", 40, 5),
+            vec!["Started 'alpha'"]
+        );
     }
 
     #[test]
     fn a_long_message_wraps_on_word_boundaries_instead_of_truncating() {
-        let message =
-            "'cache-eviction' created but not started: 1 agent already running (limit 1). \
+        let message = "'cache-eviction' created but not started: 1 agent already running (limit 1). \
              Press c to start it.";
         let lines = wrap_message(message, 46, 5);
 
@@ -180,7 +182,10 @@ mod tests {
             );
         }
         // Nothing is lost: the whole message is readable across the lines.
-        assert_eq!(lines.join(" "), message.split_whitespace().collect::<Vec<_>>().join(" "));
+        assert_eq!(
+            lines.join(" "),
+            message.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
         assert!(!lines.last().unwrap().ends_with('…'));
     }
 

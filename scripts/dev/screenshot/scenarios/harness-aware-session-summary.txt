@@ -1,0 +1,36 @@
+# harness-aware-session-summary: visual proof that dashboard summaries use
+# the selected feature's harness rather than hardcoding Claude. The capture
+# fixture supplies a deterministic fake Codex executable. Set
+# SUMMARY_SHOT_SEED_FEATURE to its create-feature automation payload.
+
+shot:dashboard-project
+
+# The scratch onboarding enables Claude so the driver can reach the dashboard.
+# Enable the fixture's Codex harness before creating the Codex feature.
+key:A
+wait:400
+key:j
+key:j
+key:Enter
+wait:900
+shot:codex-harness-verified
+key:c
+wait:500
+
+run:$AMF_BIN automation create-feature --file "$SUMMARY_SHOT_SEED_FEATURE"
+wait:1400
+
+# Select the new feature. Its agent session contains enough deterministic pane
+# output for AMF's minimum-content summary guard.
+key:j
+wait:300
+shot:codex-feature-before-summary
+
+# Z starts the same summary action available as `g` in an embedded session.
+# The fake headless call pauses briefly so the asynchronous progress state is
+# visible before returning its provider-identifying summary.
+key:Z
+wait:300
+shot:codex-summary-generating
+wait:1800
+shot:codex-summary-complete

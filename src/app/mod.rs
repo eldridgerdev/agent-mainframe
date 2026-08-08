@@ -549,7 +549,7 @@ fn default_agent_restart_limit() -> usize {
 }
 
 // Resource-guard defaults. Grounded in measured idle RSS per harness on a
-// typical dev box (see the "Resource guards" section of the README): a Claude
+// typical dev box (the README's Configuration section carries the numbers): a Claude
 // harness settles around 450 MiB, Codex/Opencode a little under that, and each
 // editor-launched language server (rust-analyzer on this codebase) dwarfs them
 // at 1-2 GiB. Four concurrent harnesses is roughly 1.8 GiB of agent, which

@@ -67,7 +67,9 @@ pub(crate) fn lock_lease_tests() -> std::sync::MutexGuard<'static, ()> {
     static LEASE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     // A test that panics on purpose (the cancellation case) poisons the lock;
     // the guarded data is a unit, so recovering is safe.
-    LEASE_TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner())
+    LEASE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
 }
 
 /// Wait for the global count to come back to `target`.

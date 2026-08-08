@@ -159,62 +159,13 @@ impl ClaudeLauncher {
         }
     }
 
-    /// Run a headless Claude command and return the output.
-    ///
-    /// The prompt is piped over stdin rather than passed as a `-p <prompt>`
-    /// argument: Linux caps a single `argv` element at `MAX_ARG_STRLEN`
-    /// (128 KiB), well under what a real PR diff or file review routinely
-    /// runs to, and exceeding it fails the whole spawn with `E2BIG` before
-    /// `claude` ever sees the request. Piping has no comparable ceiling.
-    pub fn run_headless(workdir: &Path, prompt: &str) -> Result<String> {
-        // A headless summary run is a full Claude process like any other, so
-        // it counts toward the agent concurrency limit while it lasts.
-        let _lease = crate::resources::limits::HeadlessLease::acquire();
-        let binary = Self::resolve_binary();
-        let mut child = Command::new(&binary)
-            .args(["-p", "--output-format", "text"])
-            .current_dir(workdir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("Failed to spawn claude in headless mode")?;
-
-        // Write on a separate thread and let `wait_with_output` drain
-        // stdout/stderr concurrently: writing the whole prompt first and only
-        // then reading output risks a classic pipe deadlock if a large
-        // response fills the stdout pipe buffer before `claude` has consumed
-        // all of stdin.
-        let mut stdin = child
-            .stdin
-            .take()
-            .context("Failed to open stdin for claude")?;
-        let prompt = prompt.to_string();
-        let writer = std::thread::spawn(move || {
-            let _ = stdin.write_all(prompt.as_bytes());
-            // `stdin` drops here, closing the pipe so `claude` sees EOF.
-        });
-
-        let output = child
-            .wait_with_output()
-            .context("Failed to run claude in headless mode")?;
-        let _ = writer.join();
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("claude headless command failed: {}", stderr);
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    }
-
     /// Spawn a non-blocking headless Claude command; callers poll the
-    /// returned `Child`'s piped stdout/stderr for the result. See
-    /// [`Self::run_headless`] for why the prompt is piped over stdin instead
-    /// of passed as an argument. The write happens on a detached thread so
-    /// this stays non-blocking — the child's stdout isn't read until the
-    /// caller starts polling, so a synchronous write-then-return here would
-    /// risk the same pipe deadlock `run_headless` avoids.
+    /// returned `Child`'s piped stdout/stderr for the result. The prompt is
+    /// piped over stdin rather than passed as an argument so large reviews do
+    /// not hit the platform's argv limit. The write happens on a detached
+    /// thread so this stays non-blocking — the child's stdout isn't read until
+    /// the caller starts polling, so a synchronous write-then-return here
+    /// would risk a pipe deadlock.
     ///
     /// `model`, when set, is passed as `--model <name>` so a bounded,
     /// single-purpose pass (a per-file walkthrough, an AI co-review) can run
@@ -306,15 +257,5 @@ mod tests {
             ClaudeLauncher::remote_control_block_reason(true).as_deref(),
             Some("Unavailable with z.ai provider")
         );
-    }
-
-    #[test]
-    #[ignore = "manual verification only: shells out to a live `claude` binary"]
-    fn run_headless_handles_a_prompt_over_the_argv_limit() {
-        let big = "x ".repeat(100_000); // ~200KB, well past Linux's 128KB MAX_ARG_STRLEN
-        let prompt = format!("Reply with exactly the word DONE and nothing else. Padding: {big}");
-        let out = ClaudeLauncher::run_headless(std::path::Path::new("/tmp"), &prompt)
-            .expect("run_headless should not fail on a large prompt");
-        assert!(out.to_uppercase().contains("DONE"), "got: {out}");
     }
 }

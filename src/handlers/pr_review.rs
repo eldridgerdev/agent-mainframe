@@ -208,11 +208,14 @@ fn handle_bootstrap_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Key handling for the review-memory compact confirm overlay: `⏎` run,
-/// `esc`/`q` cancel back to the PR picker.
+/// Key handling for the review-memory compact confirm overlay: `⏎` run, `g`
+/// toggles which doc gets compacted (this repo's / cross-project — the same
+/// gesture the bootstrap picker and `M` use), `esc`/`q` cancel back to the PR
+/// picker.
 fn handle_compact_confirm_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.review_memory_compact_confirm_cancel(),
+        KeyCode::Char('g') => app.review_memory_compact_toggle_scope(),
         KeyCode::Enter => app.review_memory_compact_confirm_run(),
         _ => {}
     }

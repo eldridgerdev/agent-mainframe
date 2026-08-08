@@ -12471,10 +12471,132 @@ fn open_review_memory_compact_confirm_reads_doc_and_opens() {
 
     match &app.mode {
         AppMode::PrPicker(state) => {
-            assert_eq!(state.compact_confirm.as_ref().unwrap().existing_findings, 2);
+            let confirm = state.compact_confirm.as_ref().unwrap();
+            assert_eq!(confirm.existing_findings, 2);
+            assert_eq!(
+                confirm.scope,
+                crate::app::review_memory::MemoryScope::Project
+            );
         }
         other => panic!("expected PrPicker, got {:?}", std::mem::discriminant(other)),
     }
+}
+
+#[test]
+fn open_review_memory_compact_confirm_uses_global_when_only_global_has_findings() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    let global_doc = tmp.path().join("global-review-memory.md");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(
+        &global_doc,
+        "# Review memory (cross-project)\n\n## Tests\n- One\n- Two\n- Three\n",
+    )
+    .unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    app.config.global_review_memory_path = Some(global_doc.display().to_string());
+    app.mode = AppMode::PrPicker(crate::app::PrPickerState {
+        workdir: repo,
+        entries: vec![],
+        selected: 0,
+        include_closed: false,
+        error: None,
+        bootstrap_pick: None,
+        compact_confirm: None,
+        current_user: None,
+    });
+
+    app.open_review_memory_compact_confirm();
+
+    match &app.mode {
+        AppMode::PrPicker(state) => {
+            let confirm = state.compact_confirm.as_ref().unwrap();
+            assert_eq!(confirm.existing_findings, 3);
+            assert_eq!(
+                confirm.scope,
+                crate::app::review_memory::MemoryScope::Global
+            );
+        }
+        other => panic!("expected PrPicker, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn review_memory_compact_toggle_scope_rereads_the_selected_doc() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    let global_doc = tmp.path().join("global-review-memory.md");
+    std::fs::create_dir_all(repo.join(".amf")).unwrap();
+    std::fs::write(
+        repo.join(".amf").join("review-memory.md"),
+        "# Review memory\n\n## Tests\n- Project one\n- Project two\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &global_doc,
+        "# Review memory (cross-project)\n\n## Tests\n- Global one\n",
+    )
+    .unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    app.config.global_review_memory_path = Some(global_doc.display().to_string());
+    app.mode = AppMode::PrPicker(crate::app::PrPickerState {
+        workdir: repo,
+        entries: vec![],
+        selected: 0,
+        include_closed: false,
+        error: None,
+        bootstrap_pick: None,
+        compact_confirm: None,
+        current_user: None,
+    });
+
+    let compact_selection = |app: &App| match &app.mode {
+        AppMode::PrPicker(state) => {
+            let confirm = state.compact_confirm.as_ref().unwrap();
+            (confirm.scope, confirm.existing_findings)
+        }
+        _ => panic!("expected PrPicker"),
+    };
+
+    app.open_review_memory_compact_confirm();
+    assert_eq!(
+        compact_selection(&app),
+        (crate::app::review_memory::MemoryScope::Project, 2)
+    );
+
+    app.review_memory_compact_toggle_scope();
+    assert_eq!(
+        compact_selection(&app),
+        (crate::app::review_memory::MemoryScope::Global, 1)
+    );
+
+    app.review_memory_compact_toggle_scope();
+    assert_eq!(
+        compact_selection(&app),
+        (crate::app::review_memory::MemoryScope::Project, 2)
+    );
 }
 
 #[test]
@@ -12522,6 +12644,7 @@ fn review_memory_compact_confirm_cancel_closes_the_overlay() {
     if let AppMode::PrPicker(state) = &mut app.mode {
         state.compact_confirm = Some(crate::app::CompactConfirmState {
             existing_findings: 3,
+            scope: crate::app::review_memory::MemoryScope::Project,
         });
     }
     assert!(app.review_memory_compact_confirming());
@@ -12530,6 +12653,63 @@ fn review_memory_compact_confirm_cancel_closes_the_overlay() {
 
     assert!(!app.review_memory_compact_confirming());
     assert!(matches!(app.mode, AppMode::PrPicker(_)));
+}
+
+#[test]
+fn review_memory_compact_confirm_run_targets_the_selected_global_doc() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    let global_doc = tmp.path().join("global-review-memory.md");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    app.config.global_review_memory_path = Some(global_doc.display().to_string());
+    app.mode = AppMode::PrPicker(crate::app::PrPickerState {
+        workdir: repo,
+        entries: vec![],
+        selected: 0,
+        include_closed: false,
+        error: None,
+        bootstrap_pick: None,
+        compact_confirm: Some(crate::app::CompactConfirmState {
+            // The missing file makes the spawned background read return
+            // immediately, while this cached count still lets us exercise the
+            // selected-path handoff without invoking an agent in the test.
+            existing_findings: 1,
+            scope: crate::app::review_memory::MemoryScope::Global,
+        }),
+        current_user: None,
+    });
+
+    app.review_memory_compact_confirm_run();
+
+    match &app.mode {
+        AppMode::ReviewMemoryCompactRunning(state) => {
+            assert_eq!(state.scope, crate::app::review_memory::MemoryScope::Global);
+            assert_eq!(state.path, global_doc);
+            assert!(state.origin.compact_confirm.is_none());
+        }
+        other => panic!(
+            "expected ReviewMemoryCompactRunning, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+    assert_eq!(
+        app.review_memory_compact_pending
+            .as_ref()
+            .map(|state| (&state.path, state.scope)),
+        Some((&global_doc, crate::app::review_memory::MemoryScope::Global))
+    );
 }
 
 #[test]
@@ -12551,6 +12731,7 @@ fn poll_review_memory_compact_bg_success_opens_review_dialog() {
     let run_state = crate::app::CompactRunState {
         origin,
         path: std::path::PathBuf::from("/tmp/test-workdir/.amf/review-memory.md"),
+        scope: crate::app::review_memory::MemoryScope::Global,
         stage: crate::app::pr_review::CompactStage::ReadingDoc,
     };
     app.review_memory_compact_pending = Some(run_state.clone());
@@ -12575,6 +12756,7 @@ fn poll_review_memory_compact_bg_success_opens_review_dialog() {
             original_findings: 5,
             proposed_findings: 3,
             proposed_content: "# Review memory\n\n## Tests\n- Merged finding\n".to_string(),
+            original_content: "# Review memory\n\n## Tests\n- One\n- Two\n".to_string(),
         },
     ))))
     .unwrap();
@@ -12582,6 +12764,7 @@ fn poll_review_memory_compact_bg_success_opens_review_dialog() {
     assert!(app.review_memory_compact_bg.is_none());
     match &app.mode {
         AppMode::ReviewMemoryCompactReview(state) => {
+            assert_eq!(state.scope, crate::app::review_memory::MemoryScope::Global);
             assert_eq!(state.original_findings, 5);
             assert_eq!(state.proposed_findings, 3);
             assert_eq!(
@@ -12615,6 +12798,7 @@ fn poll_review_memory_compact_bg_nothing_to_compact_returns_to_picker_with_messa
     let run_state = crate::app::CompactRunState {
         origin,
         path: std::path::PathBuf::from("/tmp/test-workdir/.amf/review-memory.md"),
+        scope: crate::app::review_memory::MemoryScope::Project,
         stage: crate::app::pr_review::CompactStage::ReadingDoc,
     };
     app.review_memory_compact_pending = Some(run_state.clone());
@@ -12646,6 +12830,7 @@ fn poll_review_memory_compact_bg_error_still_returns_to_picker() {
     let run_state = crate::app::CompactRunState {
         origin,
         path: std::path::PathBuf::from("/tmp/test-workdir/.amf/review-memory.md"),
+        scope: crate::app::review_memory::MemoryScope::Project,
         stage: crate::app::pr_review::CompactStage::ReadingDoc,
     };
     app.review_memory_compact_pending = Some(run_state.clone());
@@ -12693,6 +12878,7 @@ fn cancel_review_memory_compact_does_not_reopen_review_dialog_over_the_user() {
     let run_state = crate::app::CompactRunState {
         origin,
         path: std::path::PathBuf::from("/tmp/test-workdir/.amf/review-memory.md"),
+        scope: crate::app::review_memory::MemoryScope::Project,
         stage: crate::app::pr_review::CompactStage::ReadingDoc,
     };
     app.review_memory_compact_pending = Some(run_state.clone());
@@ -12706,6 +12892,7 @@ fn cancel_review_memory_compact_does_not_reopen_review_dialog_over_the_user() {
             original_findings: 2,
             proposed_findings: 1,
             proposed_content: "# Review memory\n".to_string(),
+            original_content: "# Review memory\n\n## Tests\n- One\n- Two\n".to_string(),
         },
     ))))
     .unwrap();
@@ -12722,7 +12909,11 @@ fn cancel_review_memory_compact_does_not_reopen_review_dialog_over_the_user() {
     );
 }
 
+/// Enter the compact review dialog with `content` proposed for `path`, taking
+/// the conflict baseline from whatever is on disk at `path` right now — the
+/// same snapshot the background pass would have read.
 fn enter_compact_review_for_test(app: &mut App, path: std::path::PathBuf, content: &str) {
+    let original_content = std::fs::read_to_string(&path).unwrap_or_default();
     let origin = crate::app::PrPickerState {
         workdir: std::path::PathBuf::from("/tmp/test-workdir"),
         entries: vec![],
@@ -12736,9 +12927,12 @@ fn enter_compact_review_for_test(app: &mut App, path: std::path::PathBuf, conten
     app.mode = AppMode::ReviewMemoryCompactReview(crate::app::CompactReviewState {
         origin,
         path,
+        scope: crate::app::review_memory::MemoryScope::Project,
         original_findings: 3,
         proposed_findings: 2,
         editor: crate::editor::TextEditor::new(content.to_string()),
+        original_content,
+        overwrite_confirmed: false,
         editing: false,
         scroll: 0,
         sync_to_cursor: false,
@@ -12777,6 +12971,110 @@ fn pr_review_compact_write_overwrites_file_and_returns_to_picker() {
         app.toasts
             .last()
             .is_some_and(|t| t.message.contains("3") && t.message.contains("2"))
+    );
+}
+
+#[test]
+fn pr_review_compact_write_keeps_findings_appended_while_the_dialog_was_open() {
+    // The compact proposal rewrites a snapshot taken before the agent pass. Any
+    // AMF session can append to the same doc in that window (every session on
+    // the machine shares the global one), so those findings have to survive the
+    // rewrite instead of being clobbered by a stale snapshot.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("review-memory.md");
+    std::fs::write(
+        &path,
+        "# Review memory\n\n## Tests\n- Stale one\n- Stale two\n",
+    )
+    .unwrap();
+
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_compact_review_for_test(
+        &mut app,
+        path.clone(),
+        "# Review memory\n\n## Tests\n- Merged finding\n",
+    );
+
+    // Another session appends after the snapshot was taken.
+    crate::app::review_memory::append_finding(
+        &path,
+        crate::app::review_memory::MemoryScope::Project,
+        "Concurrency",
+        "Guard the shared doc",
+    )
+    .unwrap();
+
+    app.pr_review_compact_write().unwrap();
+
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("- Merged finding"));
+    assert!(contents.contains("- Guard the shared doc"));
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("kept 1 finding added elsewhere"))
+    );
+}
+
+#[test]
+fn pr_review_compact_write_refuses_once_when_the_doc_diverged_then_overwrites() {
+    // A change no append can explain (prose hand-edited, findings deleted)
+    // can't be replayed onto the rewrite, so the first confirm reports it
+    // inline and writes nothing; confirming again is a deliberate overwrite.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("review-memory.md");
+    std::fs::write(
+        &path,
+        "# Review memory\n\n## Tests\n- Stale one\n- Stale two\n",
+    )
+    .unwrap();
+
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_compact_review_for_test(
+        &mut app,
+        path.clone(),
+        "# Review memory\n\n## Tests\n- Merged finding\n",
+    );
+
+    let hand_edited = "# Review memory\n\nHand-written note.\n\n## Tests\n- Stale one\n";
+    std::fs::write(&path, hand_edited).unwrap();
+
+    app.pr_review_compact_write().unwrap();
+
+    match &app.mode {
+        AppMode::ReviewMemoryCompactReview(state) => {
+            assert!(
+                state
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("changed on disk"))
+            );
+            assert!(state.overwrite_confirmed);
+        }
+        other => panic!(
+            "expected the dialog to stay open, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), hand_edited);
+
+    app.pr_review_compact_write().unwrap();
+
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# Review memory\n\n## Tests\n- Merged finding\n"
     );
 }
 
@@ -18822,8 +19120,7 @@ fn integrate_cherry_picks_into_a_clean_source_worktree() {
 /// stopped feature, so the gate has something to count and something to start.
 fn store_with_running_and_stopped_features() -> ProjectStore {
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0]
-        .add_session_named(SessionKind::Claude, "Primary Claude".into());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "Primary Claude".into());
 
     let mut stopped = store.projects[0].features[0].clone();
     stopped.id = "feat-2".to_string();
@@ -18873,13 +19170,18 @@ fn starting_a_feature_past_the_agent_limit_asks_first() {
 
     match &app.mode {
         AppMode::ConfirmResourceStart(state) => {
-            let over = state.over_limit.expect("the limit gate should have tripped");
+            let over = state
+                .over_limit
+                .expect("the limit gate should have tripped");
             assert_eq!(over.active, 1);
             assert_eq!(over.limit, 1);
             assert!(state.low_memory.is_none());
             assert_eq!(state.pending, PendingStart::Feature { pi: 0, fi: 1 });
         }
-        other => panic!("expected a resource confirm, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected a resource confirm, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
     // Nothing started while the question is open.
     assert_eq!(
@@ -18909,7 +19211,10 @@ fn confirming_the_resource_warning_starts_the_feature() {
     app.confirm_pending_start().unwrap();
 
     assert!(matches!(app.mode, AppMode::Normal));
-    assert_eq!(app.store.projects[0].features[1].status, ProjectStatus::Idle);
+    assert_eq!(
+        app.store.projects[0].features[1].status,
+        ProjectStatus::Idle
+    );
 }
 
 #[test]
@@ -18955,7 +19260,10 @@ fn starting_a_feature_under_the_limit_does_not_ask() {
     app.start_feature().unwrap();
 
     assert!(matches!(app.mode, AppMode::Normal));
-    assert_eq!(app.store.projects[0].features[1].status, ProjectStatus::Idle);
+    assert_eq!(
+        app.store.projects[0].features[1].status,
+        ProjectStatus::Idle
+    );
 }
 
 #[test]
@@ -18984,7 +19292,10 @@ fn adding_an_agent_session_past_the_limit_asks_first() {
                 label: Some("Second Claude".into()),
             }
         ),
-        other => panic!("expected a resource confirm, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected a resource confirm, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
     // The session is not created until the warning is answered.
     assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
@@ -19183,7 +19494,10 @@ fn stopping_a_feature_closes_the_editor_amf_opened() {
             .is_empty()
     );
     assert!(
-        app.message.as_deref().unwrap_or_default().contains("closed 1 editor"),
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("closed 1 editor"),
         "got {:?}",
         app.message
     );

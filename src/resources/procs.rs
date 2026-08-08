@@ -180,9 +180,9 @@ pub fn find_new_vscode_window(
 ) -> Option<ProcInfo> {
     let deadline = Instant::now() + timeout;
     loop {
-        let found = list_processes().into_iter().find(|proc| {
-            !before.contains(&proc.pid) && is_vscode_for_workdir(&proc.args, workdir)
-        });
+        let found = list_processes()
+            .into_iter()
+            .find(|proc| !before.contains(&proc.pid) && is_vscode_for_workdir(&proc.args, workdir));
         if found.is_some() {
             return found;
         }
@@ -230,11 +230,31 @@ mod tests {
     #[test]
     fn process_tree_collects_descendants() {
         let procs = vec![
-            ProcInfo { pid: 1, ppid: 0, args: "init".into() },
-            ProcInfo { pid: 10, ppid: 1, args: "code".into() },
-            ProcInfo { pid: 11, ppid: 10, args: "renderer".into() },
-            ProcInfo { pid: 12, ppid: 11, args: "rust-analyzer".into() },
-            ProcInfo { pid: 20, ppid: 1, args: "unrelated".into() },
+            ProcInfo {
+                pid: 1,
+                ppid: 0,
+                args: "init".into(),
+            },
+            ProcInfo {
+                pid: 10,
+                ppid: 1,
+                args: "code".into(),
+            },
+            ProcInfo {
+                pid: 11,
+                ppid: 10,
+                args: "renderer".into(),
+            },
+            ProcInfo {
+                pid: 12,
+                ppid: 11,
+                args: "rust-analyzer".into(),
+            },
+            ProcInfo {
+                pid: 20,
+                ppid: 1,
+                args: "unrelated".into(),
+            },
         ];
         let tree = process_tree(&procs, 10);
         assert_eq!(tree, vec![10, 11, 12]);
@@ -365,7 +385,10 @@ mod tests {
             Duration::from_millis(400),
             Duration::from_millis(50),
         );
-        assert!(found.is_none(), "a pre-existing window is not AMF's to kill");
+        assert!(
+            found.is_none(),
+            "a pre-existing window is not AMF's to kill"
+        );
 
         let _ = child.kill();
         let _ = child.wait();
@@ -388,7 +411,10 @@ mod tests {
         // Give the shell a moment to fork its children.
         std::thread::sleep(Duration::from_millis(300));
         let children = process_tree(&list_processes(), root);
-        assert!(children.len() > 1, "expected child processes, got {children:?}");
+        assert!(
+            children.len() > 1,
+            "expected child processes, got {children:?}"
+        );
 
         terminate_tree(root, Duration::from_secs(2));
         let _ = parent.wait();

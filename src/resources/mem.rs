@@ -60,7 +60,6 @@ impl MemorySnapshot {
     pub fn is_low(&self, threshold_mb: u64) -> bool {
         self.available_mb < threshold_mb
     }
-
 }
 
 /// Read the current memory state, or `None` on a platform with no usable
@@ -91,7 +90,8 @@ fn probe_linux() -> Option<MemorySnapshot> {
     // A cgroup limit only ever narrows the picture: inside a limited container
     // the host may look idle while the process is one allocation from the OOM
     // killer. Take the tighter of the two.
-    if let Some(cgroup) = probe_cgroup_v2(Path::new("/proc/self/cgroup"), Path::new("/sys/fs/cgroup"))
+    if let Some(cgroup) =
+        probe_cgroup_v2(Path::new("/proc/self/cgroup"), Path::new("/sys/fs/cgroup"))
         && cgroup.available_mb < snapshot.available_mb
     {
         snapshot.available_mb = cgroup.available_mb;
@@ -216,7 +216,12 @@ fn probe_macos() -> Option<MemorySnapshot> {
         .output()
         .ok()
         .filter(|out| out.status.success())
-        .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok())?;
+        .and_then(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })?;
 
     let vm_stat = Command::new("vm_stat")
         .output()

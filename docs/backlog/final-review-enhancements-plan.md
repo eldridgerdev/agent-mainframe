@@ -19,10 +19,10 @@
   note instruction per turn. Per-action model overrides (a `review_models`
   map keyed by `ReviewAction`) and bounded live review notes with a
   reviewer-visible archive have since shipped too, as have `$EDITOR` at the
-  cursored line and the `?` help overlay. The remaining
-  viewer-ergonomics items are mouse support and a newly-found footer bug (the
-  review footer's second hint row is silently clipped by the first row's
-  wrapping); the AI co-review
+  cursored line, the `?` help overlay, and the fix for the footer bug that
+  overlay turned up (the review footer's second hint row was silently clipped
+  by the first row's wrapping). Mouse support is the last
+  viewer-ergonomics item; the AI co-review
   and workflow items are not yet started. Three Cost follow-ups remain:
   cumulative final-review workflow accounting, best-effort attribution of
   review-note generation cost, and measuring the most token-efficient way to
@@ -1191,25 +1191,41 @@ Viewer:
       lands back at the top. Review-only: the plain diff viewer's key surface
       still fits in its own footer, so `?` there is inert.
       `open_review_help` / `review_help_scroll_*` in `src/app/review.rs`.
-- [ ] The review footer's second hint row is clipped on ordinary terminals —
-      found while capturing the `?` overlay above. `draw_review_footer` renders
-      two `Line`s into a 2-row area with `Wrap { trim: false }`, but the first
-      line (verdicts, comments, navigation, layout, whitespace, walkthrough, AI
-      review, overview, history, undecided count) is long enough to wrap into
-      *both* rows on its own at 160 columns, so the second line — `j/k scroll`,
-      `b base ref`, `F filter`, `t target`, `X apply-at-finish`, `q finish`,
-      `Esc pause` — is silently dropped and never drawn. Those are exactly the
-      round-level keys a reviewer needs and the hardest to guess. The `?`
-      overlay makes them discoverable, but the footer itself is still lying by
-      omission, and the drop is width-dependent so it can't be reasoned about
-      from the code. Options worth weighing: measure the wrapped height and
-      grow the footer to fit (it already grows for the feedback editor and the
-      comment peek box), prioritise the hints and drop the least important ones
-      explicitly rather than by accident, or split the two rows into
-      independently-rendered areas so neither can eat the other. Any fix wants
-      a render test at a few widths, since the bug is invisible at the width
-      the existing tests use. See
-      `docs/screenshots/final-review-help-overlay/01-review-footer-help-hint.png`.
+- [x] The review footer's second hint row is no longer clipped — both fixes
+      the plan floated, because each closes half the hole. **Grow to fit:** the
+      footer's height is now measured from the hints it is about to draw rather
+      than hardcoded at 2 (`review_hint_height` →
+      `wrapped_line_height`/`hint_rows_height`, `src/ui/dialogs/diff.rs`),
+      mirroring how it already grows for the feedback editor and the comment
+      peek box. Measuring means simulating ratatui's *word* wrapper, not
+      `ceil(width / cols)` — the latter undercounts, which would put the footer
+      straight back to clipping. The hints are capped at `REVIEW_HINT_MAX_ROWS`
+      (8), and further by `inner.height - 10`, so a very narrow or very short
+      terminal can't let the key hints crowd the diff off screen.
+      **Independent areas:** the two rows are drawn as two `Paragraph`s into
+      their own sub-areas (`render_hint_rows`) instead of one two-line
+      `Paragraph`, so the first row structurally *cannot* consume the second's
+      space even if the measurement is ever wrong or the cap bites. The second
+      row is sized first, so overflow lands on the first row's tail — and that
+      row leads with `? keys`, the pointer to the full list. To make this
+      measurable, the hint lines are now built by `review_hint_lines` (all
+      three shapes: finish confirmation, line cursor, standard verdict row)
+      separately from being rendered; the cursor peek box splits against the
+      measured hint height rather than a hardcoded 2.
+      Regression test renders at 200/160/120/100/80 columns, with and without
+      the line cursor and with the peek box open, asserting the second row's
+      hints survive; reverting either half fails it at 200 columns — wider than
+      the 160 the bug was found at, since the first row alone wraps past a
+      single row well before that. Captured before/after pairs at 160 and 120
+      columns (plus after-only at 200 and 80, and the cursor-mode footer where
+      the two rows swap roles) from reverted and fixed builds of the same
+      scenario: `docs/screenshots/final-review-footer-rows/`, scenario
+      `scripts/dev/screenshot/scenarios/final-review-footer-rows.txt`. At 120
+      the old footer was also cutting the *first* row off mid-hint at `W ws:`,
+      and in cursor mode it was dropping `c/Esc exit cursor` — the key that
+      leaves the mode. See also
+      `docs/screenshots/final-review-help-overlay/01-review-footer-help-hint.png`,
+      the frame the bug was originally spotted in.
 - [ ] Mouse support in the diff viewer (file list, patch scroll,
       comment cursor)
 

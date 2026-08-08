@@ -8,8 +8,8 @@
 //! probe on this platform, limit disabled in config) is silently no gate at
 //! all.
 
-use crate::app::{AppMode, PendingStart, ResourceConfirmState, ViewState};
 use crate::app::{App, AppConfig};
+use crate::app::{AppMode, PendingStart, ResourceConfirmState, ViewState};
 use crate::resources::limits::{self, LiveWindows};
 use crate::resources::mem::{self, MemorySnapshot};
 
@@ -103,8 +103,8 @@ impl App {
         // quiet machine. The store gives a free upper bound on running
         // harnesses — if even that is under the limit, and memory is fine,
         // there is nothing to ask about.
-        let ceiling = limits::max_possible_harness_sessions(&self.store)
-            + limits::in_flight_headless_runs();
+        let ceiling =
+            limits::max_possible_harness_sessions(&self.store) + limits::in_flight_headless_runs();
         let certainly_under_limit = self
             .config
             .agent_concurrency_limit()
@@ -221,7 +221,8 @@ impl App {
 
     /// Proceed with the stashed start, bypassing the gate this time.
     pub fn confirm_pending_start(&mut self) -> anyhow::Result<()> {
-        let AppMode::ConfirmResourceStart(state) = std::mem::replace(&mut self.mode, AppMode::Normal)
+        let AppMode::ConfirmResourceStart(state) =
+            std::mem::replace(&mut self.mode, AppMode::Normal)
         else {
             return Ok(());
         };
@@ -268,7 +269,8 @@ impl App {
 
     /// Drop the stashed start; nothing was spawned.
     pub fn cancel_pending_start(&mut self) {
-        let AppMode::ConfirmResourceStart(state) = std::mem::replace(&mut self.mode, AppMode::Normal)
+        let AppMode::ConfirmResourceStart(state) =
+            std::mem::replace(&mut self.mode, AppMode::Normal)
         else {
             return;
         };

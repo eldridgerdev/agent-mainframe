@@ -9,10 +9,13 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-
 /// Pre-start warning: the machine is at the agent cap and/or low on memory.
 /// Advisory only — confirming starts the agent anyway.
-pub fn draw_resource_confirm_dialog(frame: &mut Frame, state: &ResourceConfirmState, theme: &Theme) {
+pub fn draw_resource_confirm_dialog(
+    frame: &mut Frame,
+    state: &ResourceConfirmState,
+    theme: &Theme,
+) {
     let mut body: Vec<Line> = Vec::new();
     if let Some(over) = state.over_limit {
         body.extend(over_limit_lines(&over, theme));
@@ -225,14 +228,14 @@ mod tests {
 
     #[test]
     fn open_editors_are_named_under_the_memory_figure() {
-        let lines = open_editor_lines(
-            &["VS Code — agent-limits".to_string()],
-            &Theme::default(),
-        );
+        let lines = open_editor_lines(&["VS Code — agent-limits".to_string()], &Theme::default());
         let rendered = text(&lines);
         assert!(rendered.contains("1 editor window open"), "got {rendered}");
         assert!(rendered.contains("not counted as agents"), "got {rendered}");
-        assert!(rendered.contains("VS Code — agent-limits"), "got {rendered}");
+        assert!(
+            rendered.contains("VS Code — agent-limits"),
+            "got {rendered}"
+        );
         assert!(rendered.contains("outweigh the agents"), "got {rendered}");
     }
 
@@ -249,7 +252,10 @@ mod tests {
     #[test]
     fn the_memory_figure_still_leads() {
         let rendered = text(&low_memory_lines(&low(), &Theme::default()));
-        assert!(rendered.contains("900 MiB memory available"), "got {rendered}");
+        assert!(
+            rendered.contains("900 MiB memory available"),
+            "got {rendered}"
+        );
         assert!(rendered.contains("1536 MiB floor"), "got {rendered}");
     }
 }

@@ -76,3 +76,30 @@ the correct answer, and the one this frame is showing.
 ## 9. The new `z` binding in the help overlay
 
 ![Help overlay listing z — Dormant features (idle + unattended)](009-help-overlay-z-binding.png)
+
+---
+
+## The other half of the gate: memory
+
+Frames 10–11 come from a second run
+(`scripts/dev/screenshot/scenarios/agent-limits-memory.txt`) with the agent
+limit switched off and the memory floor set above any real machine, so the
+memory half is the only one talking. A tracked editor is staged in the scratch
+database — a long-lived process recorded exactly as a real
+`code --new-window` launch is once its window process is attributed.
+
+### 10. Autostart backs off on memory too
+
+The same skip-with-warning, for the other reason.
+
+![cache-eviction created but not started: only 3360 MiB memory available](010-autostart-skipped-on-memory.png)
+
+### 11. The memory warning names the open editors
+
+Editors are **not** counted as agents — one language server can outweigh five
+harnesses, so a single number could never price both honestly. But when memory
+is what tripped, the editors are usually where it went, so the dialog names
+them under the figure. Long lists are summarized (`+N more`) so the question
+stays on screen.
+
+![Resource Check showing memory below the floor and naming VS Code on search-ranking](011-memory-warning-names-editors.png)

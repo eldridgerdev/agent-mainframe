@@ -3492,6 +3492,10 @@ pub enum PendingStart {
 pub struct ResourceConfirmState {
     pub over_limit: Option<crate::app::resource_gate::OverLimit>,
     pub low_memory: Option<crate::app::resource_gate::LowMemory>,
+    /// Editor windows open right now, collected only when the memory half
+    /// tripped: they are not agents and are not counted as such, but they are
+    /// usually the larger half of where the memory went.
+    pub open_editors: Vec<String>,
     pub pending: PendingStart,
     /// Session view to restore after confirming or cancelling, when the start
     /// was initiated from inside an embedded session rather than the dashboard.

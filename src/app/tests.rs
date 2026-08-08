@@ -19068,7 +19068,11 @@ fn autostart_skips_with_a_warning_instead_of_prompting() {
     assert!(matches!(app.mode, AppMode::Normal));
     let message = app.message.as_deref().unwrap_or_default();
     assert!(message.contains("other-feat"), "got {message:?}");
-    assert!(message.contains("agents already running"), "got {message:?}");
+    // Singular here on purpose: one agent, one limit.
+    assert!(
+        message.contains("1 agent already running"),
+        "got {message:?}"
+    );
 }
 
 #[test]

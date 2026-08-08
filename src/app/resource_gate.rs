@@ -148,9 +148,17 @@ impl App {
                         ),
                     );
                 }
+                // Only worth gathering when memory is what tripped -- it is
+                // an explanation of the shortfall, not a second limit.
+                let open_editors = if low_memory.is_some() {
+                    self.open_tracked_editors()
+                } else {
+                    Vec::new()
+                };
                 self.mode = AppMode::ConfirmResourceStart(Box::new(ResourceConfirmState {
                     over_limit,
                     low_memory,
+                    open_editors,
                     pending,
                     from_view: None,
                 }));

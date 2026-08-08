@@ -134,7 +134,11 @@ pub struct Inputs<'a> {
 
 /// Run every check.
 pub fn diagnose(inputs: &Inputs<'_>) -> Report {
-    let mut findings = vec![check_agents(inputs), check_memory(inputs)];
+    let mut findings = vec![
+        check_agents(inputs),
+        check_open_editors(inputs),
+        check_memory(inputs),
+    ];
     findings.extend(check_swap(inputs));
     findings.push(check_orphan_sessions(inputs));
     findings.push(check_orphan_worktrees(inputs));
@@ -179,6 +183,70 @@ fn check_agents(inputs: &Inputs<'_>) -> Finding {
         )
         .with_detail(detail),
     }
+}
+
+/// Editor windows open for features that are still running.
+///
+/// Reported next to the agent count because the count alone is misleading:
+/// "2 of 4 agents" reads as headroom, while two editor windows and their
+/// language servers can outweigh every harness on the machine put together.
+/// Editors left behind by *stopped* features are a different problem and get
+/// their own finding.
+fn check_open_editors(inputs: &Inputs<'_>) -> Finding {
+    let running: HashSet<&str> = inputs
+        .store
+        .projects
+        .iter()
+        .flat_map(|project| project.features.iter())
+        .filter(|feature| feature.status != ProjectStatus::Stopped)
+        .map(|feature| feature.id.as_str())
+        .collect();
+
+    let feature_name = |id: &str| -> String {
+        inputs
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| project.features.iter())
+            .find(|feature| feature.id == id)
+            .map(|feature| feature.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+
+    let open: Vec<String> = inputs
+        .editors
+        .iter()
+        .filter(|editor| running.contains(editor.feature_id.as_str()))
+        .filter(|editor| (inputs.pid_alive)(editor.pid))
+        .map(|editor| {
+            format!(
+                "{} on {}",
+                editor.kind.display_name(),
+                feature_name(&editor.feature_id)
+            )
+        })
+        .collect();
+
+    if open.is_empty() {
+        return Finding::new(
+            "editors-open",
+            Severity::Ok,
+            "no editor windows open for running features",
+        );
+    }
+    Finding::new(
+        "editors-open",
+        Severity::Notice,
+        format!(
+            "{} editor window(s) open alongside the agents",
+            open.len()
+        ),
+    )
+    .with_detail(open)
+    .with_advice(
+        "language servers under these usually outweigh every agent on the machine, \
+         and the agent count above does not include them",
+    )
 }
 
 fn check_memory(inputs: &Inputs<'_>) -> Finding {
@@ -632,12 +700,39 @@ mod tests {
     }
 
     #[test]
-    fn a_running_feature_keeps_its_editor_out_of_the_report() {
+    fn a_running_feature_keeps_its_editor_out_of_the_stale_report() {
         let mut fixture = Fixture::new();
         fixture.editors = vec![editor("feat-alpha", 4242, true)];
 
         let report = fixture.run(&|_| true);
+        // Not stale -- its feature is still running ...
         assert_eq!(finding(&report, "editors").severity, Severity::Ok);
+        // ... but it is still weight on the machine, reported next to the
+        // agent count that does not include it.
+        let open = finding(&report, "editors-open");
+        assert_eq!(open.severity, Severity::Notice);
+        assert_eq!(open.detail, vec!["VS Code on alpha"]);
+        assert!(open.advice.as_deref().unwrap().contains("outweigh"));
+    }
+
+    #[test]
+    fn a_closed_editor_is_not_reported_as_open() {
+        let mut fixture = Fixture::new();
+        fixture.editors = vec![editor("feat-alpha", 4242, true)];
+
+        let report = fixture.run(&|_| false);
+        assert_eq!(finding(&report, "editors-open").severity, Severity::Ok);
+    }
+
+    #[test]
+    fn a_stopped_features_editor_is_reported_once_as_stale_not_as_open() {
+        let mut fixture = Fixture::new();
+        fixture.store = store(vec![feature("alpha", ProjectStatus::Stopped)]);
+        fixture.editors = vec![editor("feat-alpha", 4242, true)];
+
+        let report = fixture.run(&|_| true);
+        assert_eq!(finding(&report, "editors").severity, Severity::Warn);
+        assert_eq!(finding(&report, "editors-open").severity, Severity::Ok);
     }
 
     #[test]

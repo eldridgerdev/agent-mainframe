@@ -47,9 +47,13 @@ are tagged.
   `x` stop, `e` close just the editor, `d` delete, and `Enter` to jump in.
 
 - **`amf doctor` reports what AMF is putting on this machine.** Agent sessions
-  against your limit, memory and swap, `amf-*` tmux sessions with no matching
-  feature, worktrees on disk with no matching feature, and editors still
-  running for features you stopped. `--json` emits the same findings for
+  against your limit, editor windows open alongside them, memory and swap,
+  `amf-*` tmux sessions with no matching feature, worktrees on disk with no
+  matching feature, and editors still running for features you stopped.
+  Editors sit next to the agent count rather than inside it — one language
+  server can outweigh five harnesses, so a single number could not price both
+  — and when the pre-start warning fires on memory it names the open editors
+  for the same reason. `--json` emits the same findings for
   scripting. It is advice only — it stops nothing, kills nothing, deletes
   nothing, and always exits `0`. Under WSL it points at where swap is
   configured while being explicit that adding swap trades an out-of-memory kill

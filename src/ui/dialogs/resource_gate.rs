@@ -22,6 +22,7 @@ pub fn draw_resource_confirm_dialog(frame: &mut Frame, state: &ResourceConfirmSt
     }
     if let Some(low) = state.low_memory {
         body.extend(low_memory_lines(&low, theme));
+        body.extend(open_editor_lines(&state.open_editors, theme));
     }
 
     // Sized to what it actually says: heading, the tripped gate(s), a blank
@@ -124,6 +125,46 @@ fn over_limit_lines<'a>(over: &OverLimit, theme: &Theme) -> Vec<Line<'a>> {
     ]
 }
 
+/// Names the editor windows AMF knows are open, under the memory figure.
+///
+/// They are deliberately *not* counted as agents — one language server can
+/// outweigh five harnesses, so a single count could never price both — but
+/// when memory is what tripped, they are usually where it went, and saying so
+/// is the difference between a number and something to act on.
+fn open_editor_lines<'a>(editors: &[String], theme: &Theme) -> Vec<Line<'a>> {
+    if editors.is_empty() {
+        return Vec::new();
+    }
+    // A long list would push the question off the dialog; the count carries
+    // the rest.
+    const NAMED: usize = 3;
+    let mut lines = vec![Line::from(Span::styled(
+        format!(
+            " {} editor window{} open (not counted as agents):",
+            editors.len(),
+            if editors.len() == 1 { "" } else { "s" }
+        ),
+        Style::default().fg(theme.text.to_color()),
+    ))];
+    for editor in editors.iter().take(NAMED) {
+        lines.push(Line::from(Span::styled(
+            format!("   {editor}"),
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+    }
+    if editors.len() > NAMED {
+        lines.push(Line::from(Span::styled(
+            format!("   +{} more", editors.len() - NAMED),
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        " Their language servers usually outweigh the agents.",
+        Style::default().fg(theme.text_muted.to_color()),
+    )));
+    lines
+}
+
 fn low_memory_lines<'a>(low: &LowMemory, theme: &Theme) -> Vec<Line<'a>> {
     let mut lines = vec![Line::from(Span::styled(
         format!(
@@ -143,4 +184,72 @@ fn low_memory_lines<'a>(low: &LowMemory, theme: &Theme) -> Vec<Line<'a>> {
         Style::default().fg(theme.text_muted.to_color()),
     )));
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::resource_gate::LowMemory;
+    use crate::resources::mem::{MemorySnapshot, MemorySource};
+
+    fn low() -> LowMemory {
+        LowMemory {
+            snapshot: MemorySnapshot {
+                available_mb: 900,
+                total_mb: 16384,
+                swap_free_mb: Some(1024),
+                swap_total_mb: Some(2048),
+                source: MemorySource::ProcMeminfo,
+            },
+            threshold_mb: 1536,
+        }
+    }
+
+    fn text(lines: &[Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn no_open_editors_adds_nothing() {
+        assert!(open_editor_lines(&[], &Theme::default()).is_empty());
+    }
+
+    #[test]
+    fn open_editors_are_named_under_the_memory_figure() {
+        let lines = open_editor_lines(
+            &["VS Code — agent-limits".to_string()],
+            &Theme::default(),
+        );
+        let rendered = text(&lines);
+        assert!(rendered.contains("1 editor window open"), "got {rendered}");
+        assert!(rendered.contains("not counted as agents"), "got {rendered}");
+        assert!(rendered.contains("VS Code — agent-limits"), "got {rendered}");
+        assert!(rendered.contains("outweigh the agents"), "got {rendered}");
+    }
+
+    #[test]
+    fn a_long_editor_list_is_summarized_so_the_question_stays_on_screen() {
+        let editors: Vec<String> = (1..=6).map(|n| format!("VS Code — feat-{n}")).collect();
+        let rendered = text(&open_editor_lines(&editors, &Theme::default()));
+        assert!(rendered.contains("6 editor windows open"), "got {rendered}");
+        assert!(rendered.contains("VS Code — feat-3"), "got {rendered}");
+        assert!(!rendered.contains("VS Code — feat-4"), "got {rendered}");
+        assert!(rendered.contains("+3 more"), "got {rendered}");
+    }
+
+    #[test]
+    fn the_memory_figure_still_leads() {
+        let rendered = text(&low_memory_lines(&low(), &Theme::default()));
+        assert!(rendered.contains("900 MiB memory available"), "got {rendered}");
+        assert!(rendered.contains("1536 MiB floor"), "got {rendered}");
+    }
 }

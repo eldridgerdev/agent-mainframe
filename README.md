@@ -234,10 +234,15 @@ amf doctor --json   # same findings, structured
 ```
 
 `amf doctor` reports what AMF is putting on the machine: agent sessions
-against the configured limit, available memory and swap, `amf-*` tmux
-sessions with no matching feature, worktrees on disk with no matching
-feature, and editors still running for features that were stopped. Under
-WSL it adds a note about where swap is configured.
+against the configured limit, editor windows open alongside them, available
+memory and swap, `amf-*` tmux sessions with no matching feature, worktrees
+on disk with no matching feature, and editors still running for features
+that were stopped. Under WSL it adds a note about where swap is configured.
+
+Editors are reported next to the agent count rather than folded into it:
+one language server can outweigh five agent harnesses, so a single number
+could never price both honestly. The agent count is what the limit gates;
+memory is what actually accounts for the editors.
 
 It is **advice only** — it stops nothing, kills nothing, deletes nothing,
 and always exits `0`. (Opening the database can apply a pending schema

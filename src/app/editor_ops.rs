@@ -89,6 +89,39 @@ fn still_the_same_editor(editor: &LaunchedEditor) -> bool {
 }
 
 impl App {
+    /// Tracked editor windows that are open right now, as
+    /// `"VS Code — feature-name"`.
+    ///
+    /// Used where memory is the thing being explained: an editor is not an
+    /// agent and is not counted as one, but its language servers are usually
+    /// the larger half of why memory is short, so naming them turns "you are
+    /// low on memory" into something the reader can act on.
+    pub fn open_tracked_editors(&self) -> Vec<String> {
+        let Some(db) = self.db.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(editors) = db.all_launched_editors() else {
+            return Vec::new();
+        };
+        editors
+            .iter()
+            .filter(|editor| procs::pid_alive(editor.pid))
+            .map(|editor| {
+                let feature = self
+                    .store
+                    .projects
+                    .iter()
+                    .flat_map(|project| project.features.iter())
+                    .find(|feature| feature.id == editor.feature_id)
+                    .map(|feature| feature.name.clone());
+                match feature {
+                    Some(name) => format!("{} — {name}", editor.kind.display_name()),
+                    None => editor.kind.display_name().to_string(),
+                }
+            })
+            .collect()
+    }
+
     /// Close the editors AMF opened for a feature, and forget the records it
     /// resolved either way. Records for windows that are alive but not AMF's
     /// are kept, so `amf doctor` can still point at them.

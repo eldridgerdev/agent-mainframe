@@ -302,6 +302,10 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('Z') => {
             app.trigger_summary_for_selected()?;
         }
+        // `z` for zzz: features nobody is watching.
+        KeyCode::Char('z') => {
+            app.open_dormant_view();
+        }
         KeyCode::Char('D') => {
             app.open_debug_log(None);
         }

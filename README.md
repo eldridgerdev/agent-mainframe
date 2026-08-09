@@ -168,6 +168,7 @@ on an existing feature to run the interview again.
 | `r` / `d` | Rename / delete the selected item |
 | `/` | Search and jump |
 | `i` | Show agents waiting for input |
+| `z` | Show dormant features: idle and unattended |
 | `G` | Open GitHub PR triage |
 | `W` | Run AMF's AI review of a PR diff |
 | `L` | Open the prompt library |
@@ -218,6 +219,30 @@ Add a `TODOs` session with `s` to maintain a project-wide checklist. From any
 session, press `Ctrl+Space`, then `N` to capture a TODO without leaving your
 current work.
 
+### Keep the machine from filling up
+
+Agents and the editors they sit alongside are the bulk of what AMF puts on your
+machine, and nothing warns you before the last gigabyte goes.
+
+Before starting an agent, AMF checks how many are already running — across every
+project, plus any headless review or plan run in flight — and how much memory is
+left. If either is past its threshold, one dialog says which, and `y` starts it
+anyway. It never refuses. Terminals, editors, and TODO sessions are not counted
+and never raise it.
+
+Creating a feature never raises that dialog: a batch create would queue one per
+feature. The feature is created and left stopped instead, with a toast saying
+why; `c` starts it.
+
+Stopping a feature also closes the editor AMF opened for it, and the language
+servers under it — usually the largest thing the feature was holding. AMF only
+closes a window it opened itself and can still identify; anything else it
+reports as left alone. Under WSL, where `code` hands off to the Windows side,
+there is no local window for AMF to own, so it always reports a skip.
+
+Press `z` to list dormant features — idle *and* unattended — with per-row stop,
+close-editor, delete, and open.
+
 ## Configuration
 
 AMF creates its global configuration at `~/.config/amf/config.json`. A project
@@ -246,6 +271,24 @@ a Nerd Font, enable ASCII fallbacks:
 AMF stores its projects, features, saved prompts, and other application state
 in `~/.config/amf/amf.db`.
 
+These settings govern the resource guards described above:
+
+```json
+{
+  "max_concurrent_agents": 4,
+  "low_memory_warn_mb": 1536,
+  "kill_editor_on_stop": true,
+  "dormant_idle_minutes": 60,
+  "dormant_last_accessed_hours": 4
+}
+```
+
+`0` disables either warning. The defaults come from measured idle memory: a
+Claude harness settles near 380 MiB and Codex near 220 MiB, while a single
+language server runs to roughly 1.8 GiB — which is why editors are reclaimed
+when a feature stops but never counted as agents. A feature is dormant only
+when both of its thresholds are past.
+
 ### Built-in customization skills
 
 AMF injects a small set of skills into Claude Code, Codex, and OpenCode feature
@@ -272,6 +315,11 @@ examples, dry runs, and response formats.
 
 ## Troubleshooting
 
+- Run `amf doctor` for a read-only report on what AMF is putting on the
+  machine: agents against your limit, editor windows open alongside them,
+  memory and swap, `amf-*` tmux sessions and worktrees with no matching
+  feature, and editors still running for features you stopped. `--json` emits
+  the same findings for scripting. It changes nothing and always exits `0`.
 - Press `D` on the dashboard to view AMF's debug log. The same log is available
   at `~/.local/state/amf/debug.log`.
 - If icons render incorrectly, set `"nerd_font": false` in the global config.

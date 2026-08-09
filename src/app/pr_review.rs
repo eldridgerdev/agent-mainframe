@@ -3670,7 +3670,13 @@ impl App {
             None => anyhow::bail!("could not find the feature for this PR"),
         };
 
-        self.ensure_feature_running_for_new_session(pi, fi)?;
+        // The fix hand-off is already in motion and its target lives in the
+        // pane's state, so a modal here would strand it: warn instead.
+        self.ensure_feature_running_for_new_session(
+            pi,
+            fi,
+            StartIntent::Warn("the PR triage agent"),
+        )?;
 
         let feature = &self.store.projects[pi].features[fi];
         if let Some(si) = pr_triage_session_index(feature, target) {
@@ -3682,8 +3688,13 @@ impl App {
             // in place, but a user who removed that window still gets a
             // working `f` rather than a dead end.
             FixTarget::DedicatedReview | FixTarget::NewFeature => {
-                let si =
-                    self.create_dedicated_review_session(pi, fi, TRIAGE_SESSION_LABEL, harness)?;
+                let si = self.create_dedicated_review_session(
+                    pi,
+                    fi,
+                    TRIAGE_SESSION_LABEL,
+                    harness,
+                    StartIntent::Warn("the PR triage agent"),
+                )?;
                 Ok((pi, fi, si))
             }
             FixTarget::ExistingLive => {

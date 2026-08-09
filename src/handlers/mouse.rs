@@ -298,6 +298,7 @@ fn handle_click(
             | AppMode::NotificationPicker(_, _)
             | AppMode::DiffReviewPrompt(_)
             | AppMode::RunningHook(_)
+            | AppMode::ConfirmResourceStart(_)
     ) {
         return Ok(());
     }

@@ -6,6 +6,13 @@ use super::*;
 use crate::project::LaunchOpts;
 use crate::tmux::TmuxManager;
 
+/// How long to wait for a launched VS Code window to appear as a local
+/// process, and how often to look. Generous because a cold VS Code start is
+/// several seconds; the wait happens on a background thread, so it costs the
+/// UI nothing.
+const VSCODE_OWNER_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const VSCODE_OWNER_RESOLVE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub(crate) fn session_kind_for_agent(agent: &AgentKind) -> SessionKind {
     match agent {
         AgentKind::Claude => SessionKind::Claude,
@@ -266,6 +273,9 @@ impl App {
             state.session_id.clone(),
             resume_id,
             &mut created_session,
+            // Mid-recovery: the picked session id lives in a mode the dialog
+            // would replace, so warn rather than park and lose it.
+            StartIntent::Warn("the recovered agent session"),
         ) {
             // This tmux session was created solely for this recovery attempt.
             // Remove a partially launched session so the same dialog can be
@@ -328,10 +338,17 @@ impl App {
         }
     }
 
+    /// Bring `(pi, fi)` up so a new session can be added to it.
+    ///
+    /// `intent` covers the *feature's own* saved agents, which come up with
+    /// the tmux session: adding even a terminal to a stopped feature can start
+    /// several harnesses. Callers that already gated the whole operation pass
+    /// [`StartIntent::Approved`].
     pub(crate) fn ensure_feature_running_for_new_session(
         &mut self,
         pi: usize,
         fi: usize,
+        intent: StartIntent,
     ) -> Result<()> {
         if self.block_if_feature_pending_worktree_script(pi, fi) {
             anyhow::bail!("feature cannot start while its worktree script is still running");
@@ -345,8 +362,13 @@ impl App {
             .map(|feature| feature.tmux_session.clone())
             .ok_or_else(|| anyhow::anyhow!("feature not found"))?;
 
-        if !self.tmux.session_exists(&tmux_session) {
-            self.ensure_feature_running(pi, fi)?;
+        if !self.tmux.session_exists(&tmux_session)
+            && self.ensure_feature_running(pi, fi, intent)? == Started::Parked
+        {
+            // Unreachable for the callers that exist: adding a session is
+            // either pre-approved or warn-only, because there is no way to
+            // hand the caller its new session back after a dialog.
+            anyhow::bail!("this start cannot wait on a confirmation dialog");
         }
 
         if !self.tmux.session_exists(&tmux_session) {
@@ -587,7 +609,14 @@ impl App {
         config: &crate::extension::CustomSessionConfig,
         label: String,
     ) -> Result<bool> {
-        self.ensure_feature_running_for_new_session(pi, fi)?;
+        // A custom session is not itself an agent, but adding one to a stopped
+        // feature brings that feature's saved agents up with it. The picker
+        // has no state to resume from, so this warns rather than parks.
+        self.ensure_feature_running_for_new_session(
+            pi,
+            fi,
+            StartIntent::Warn("this feature's saved agents"),
+        )?;
 
         let window_hint = config
             .window_name
@@ -670,13 +699,53 @@ impl App {
         kind: SessionKind,
         label: Option<String>,
     ) -> Result<()> {
+        // A harness session obviously spends the machine's agent budget. So
+        // does a terminal or an editor added to a *stopped* feature: bringing
+        // its tmux session up launches every agent it has saved. Only an add
+        // that starts nothing — a second window on a feature already running,
+        // or the tmux-less TODOs list — goes through without a word.
+        if (kind.is_agent_harness() || self.add_would_start_feature(pi, fi, &kind))
+            && self.gate_start(PendingStart::BuiltinSession {
+                pi,
+                fi,
+                kind: kind.clone(),
+                label: label.clone(),
+            })
+        {
+            return Ok(());
+        }
+
+        self.add_builtin_session_unchecked(pi, fi, kind, label)
+    }
+
+    /// Whether adding a `kind` session to `(pi, fi)` would bring the
+    /// feature's tmux session — and so its saved agents — up.
+    fn add_would_start_feature(&self, pi: usize, fi: usize, kind: &SessionKind) -> bool {
+        kind.is_tmux_backed()
+            && self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|project| project.features.get(fi))
+                .is_some_and(|feature| !self.tmux.session_exists(&feature.tmux_session))
+    }
+
+    /// Add a session that has already cleared the resource gate (or never
+    /// needed it).
+    pub(crate) fn add_builtin_session_unchecked(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        kind: SessionKind,
+        label: Option<String>,
+    ) -> Result<()> {
         // TODOs is a native overlay with no tmux window, so it must not force
         // the host feature's tmux session to start.
         if kind == SessionKind::Todos {
             return self.add_todos_session_for_picker(pi, fi, label);
         }
 
-        self.ensure_feature_running_for_new_session(pi, fi)?;
+        self.ensure_feature_running_for_new_session(pi, fi, StartIntent::Approved)?;
 
         match kind {
             SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi, label),
@@ -846,16 +915,142 @@ impl App {
         };
 
         let workdir = feature.workdir.clone();
+        let feature_id = feature.id.clone();
+
+        // Windows already open on this worktree, captured *before* the launch:
+        // whichever match appears afterwards is the one AMF opened, and that
+        // difference is the only proof of ownership worth killing on.
+        let before = crate::resources::procs::existing_vscode_windows(&workdir);
+
+        // `--new-window` is what makes the instance AMF's own. Without it the
+        // folder is handed to whatever window happens to be running, which AMF
+        // must never close on the user's behalf.
+        let command = format!("code --new-window {}", workdir.display());
         std::process::Command::new("code")
+            .arg("--new-window")
             .arg(&workdir)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to launch VSCode: {}", e))?;
 
+        self.record_vscode_launch(&feature_id, &workdir, &command, before);
+
         self.message = Some(format!("Opened VSCode in {}", workdir.display()));
 
         Ok(())
+    }
+
+    /// Record the launch, then resolve which process it produced in the
+    /// background.
+    ///
+    /// The `code` CLI hands the request off and exits immediately, so its own
+    /// PID is worthless — the window process shows up seconds later, and on a
+    /// remote/WSL setup never shows up locally at all. The record therefore
+    /// starts as not-owned and is upgraded only if a new local window is
+    /// actually found; anything still not-owned is skipped at stop time.
+    ///
+    /// Because VS Code is a singleton application, "a new local window" only
+    /// exists when this launch is what *started* VS Code. Handing a folder to a
+    /// running instance produces a window but no new eligible process, and that
+    /// launch stays not-owned for good — correctly, since AMF cannot close that
+    /// window without closing the instance around it.
+    ///
+    /// A launch still resolving when its feature is stopped is not lost: the
+    /// stop marks it for reclamation (see
+    /// [`crate::app::editor_ops::PendingEditorLaunch`]) and the resolver below
+    /// closes the window instead of recording it.
+    fn record_vscode_launch(
+        &mut self,
+        feature_id: &str,
+        workdir: &std::path::Path,
+        command: &str,
+        before: Vec<i64>,
+    ) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+
+        // Drop records whose process is gone (closed window, reboot) so
+        // repeated launches don't pile up rows for one worktree.
+        if let Ok(existing) = db.launched_editors_for_feature(feature_id) {
+            for editor in existing {
+                if editor.worktree_path == workdir
+                    && !crate::resources::procs::pid_alive(editor.pid)
+                {
+                    let _ = db.delete_launched_editor(&editor.id);
+                }
+            }
+        }
+
+        let record = db.record_launched_editor(
+            feature_id,
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            0,
+            workdir,
+            false,
+            command,
+        );
+        let Ok(record) = record else {
+            self.log_warn("editor", "failed to record the VSCode launch".to_string());
+            return;
+        };
+
+        let db_path = db.path.clone();
+        let workdir = workdir.to_path_buf();
+
+        use crate::app::editor_ops::{PendingEditorLaunch, PendingLaunchState, lock_state};
+        let state = std::sync::Arc::new(std::sync::Mutex::new(PendingLaunchState::Resolving));
+        self.prune_resolved_editor_launches();
+        self.pending_editor_launches.push(PendingEditorLaunch {
+            feature_id: feature_id.to_string(),
+            record_id: record.id.clone(),
+            kind: crate::db::editors::EditorKind::Vscode,
+            state: state.clone(),
+        });
+
+        std::thread::spawn(move || {
+            let found = crate::resources::procs::find_new_vscode_window(
+                &workdir,
+                &before,
+                VSCODE_OWNER_RESOLVE_TIMEOUT,
+                VSCODE_OWNER_RESOLVE_POLL,
+            );
+            // Held across the decision *and* the write, so a stop arriving in
+            // the middle either claims the launch (and this closes the window)
+            // or finds the row already owned (and closes it itself). There is no
+            // ordering where the window survives with nobody responsible.
+            let mut state = lock_state(&state);
+            let reclaim = *state == PendingLaunchState::Reclaim;
+            *state = PendingLaunchState::Done;
+
+            let Some(found) = found else {
+                // Left not-owned on purpose: a reused window, or a remote one
+                // with no local process, is not AMF's to close.
+                return;
+            };
+
+            if reclaim {
+                // The feature was stopped while this window was still opening.
+                crate::resources::procs::terminate_tree(
+                    found.pid,
+                    std::time::Duration::from_secs(2),
+                );
+                if let Ok(db) = crate::db::AmfDb::open(&db_path) {
+                    let _ = db.delete_launched_editor(&record.id);
+                }
+                return;
+            }
+
+            // The process's own start time, recorded now so that a later
+            // process inheriting this PID cannot pass the kill-time check.
+            let started =
+                crate::resources::procs::start_time_for_pid(found.pid).unwrap_or_default();
+            if let Ok(db) = crate::db::AmfDb::open(&db_path) {
+                let _ = db.set_launched_editor_owner(&record.id, found.pid, true, &started);
+            }
+        });
     }
 
     fn add_agent_session_for_picker(
@@ -964,8 +1159,9 @@ impl App {
         fi: usize,
         label: &str,
         harness: Option<AgentKind>,
+        intent: StartIntent,
     ) -> Result<usize> {
-        self.create_agent_session_labeled(pi, fi, label, harness)
+        self.create_agent_session_labeled(pi, fi, label, harness, intent)
     }
 
     /// Create an agent-harness session in `(pi, fi)` with a caller-provided
@@ -981,8 +1177,18 @@ impl App {
         fi: usize,
         label: &str,
         harness: Option<AgentKind>,
+        intent: StartIntent,
     ) -> Result<usize> {
-        self.ensure_feature_running_for_new_session(pi, fi)?;
+        // This always launches a harness, so the gate runs unconditionally --
+        // once, here, covering both the new session and any of the feature's
+        // own agents that come up with it.
+        if self.gate_launch(intent) == Started::Parked {
+            // See `ensure_feature_running_for_new_session`: this primitive
+            // owes its caller a session index, which a parked start cannot
+            // produce.
+            anyhow::bail!("this start cannot wait on a confirmation dialog");
+        }
+        self.ensure_feature_running_for_new_session(pi, fi, StartIntent::Approved)?;
 
         let repo = self.store.projects[pi].repo.clone();
         // The caller may pin a harness (e.g. the final review prompts for one);

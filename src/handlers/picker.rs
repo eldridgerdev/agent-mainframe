@@ -848,6 +848,9 @@ pub fn handle_new_session_name_key(app: &mut App, key: KeyCode) -> Result<()> {
                         kind,
                         label.clone(),
                     ) {
+                        // A start parked on the resource warning hasn't added
+                        // anything yet; the confirm path reports it instead.
+                        Ok(()) if matches!(app.mode, AppMode::ConfirmResourceStart(_)) => {}
                         Ok(()) => app.push_toast_success(format!("Added '{}'", label)),
                         Err(e) => app.push_toast_error(format!("Error: {}", e)),
                     }
@@ -902,7 +905,12 @@ pub fn handle_new_session_name_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
 
-            if !matches!(app.mode, AppMode::Viewing(_))
+            if matches!(app.mode, AppMode::ConfirmResourceStart(_)) {
+                // The add is parked on the resource warning; hand it the view
+                // to restore once the warning is answered instead of
+                // returning there now.
+                app.set_resource_confirm_return_view(state.return_to.from_view);
+            } else if !matches!(app.mode, AppMode::Viewing(_))
                 && let Some(view) = state.return_to.from_view
             {
                 app.mode = AppMode::Viewing(view);

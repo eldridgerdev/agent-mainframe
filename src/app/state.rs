@@ -878,13 +878,13 @@ pub struct DiffViewerState {
     /// file with no developer note. Cached so it survives file switches.
     pub generated_notes: std::collections::HashMap<String, String>,
     /// In-flight headless process generating a walkthrough (one at a time).
-    pub walkthrough_child: Option<Child>,
+    pub walkthrough_child: Option<crate::headless::LeasedChild>,
     /// Path the in-flight walkthrough is being generated for, so the result is
     /// filed correctly even if the reviewer navigates to another file.
     pub walkthrough_file: Option<String>,
     /// In-flight headless AI co-review pass (one at a time). Separate slot from
     /// the walkthrough so the two can't clobber each other.
-    pub co_review_child: Option<Child>,
+    pub co_review_child: Option<crate::headless::LeasedChild>,
     /// Path the in-flight co-review is being generated for, so draft comments
     /// land on the right file even if the reviewer navigates away.
     pub co_review_file: Option<String>,
@@ -893,7 +893,7 @@ pub struct DiffViewerState {
     /// reviewer explicitly regenerates it so reopening the modal is free.
     pub changeset_overview: Option<String>,
     /// In-flight headless process generating the changeset overview.
-    pub changeset_overview_child: Option<Child>,
+    pub changeset_overview_child: Option<crate::headless::LeasedChild>,
     /// True while the changeset-overview modal is shown. Independent of
     /// generation state so a cached overview can be reopened without
     /// re-running the headless pass.
@@ -3663,6 +3663,11 @@ pub enum AppMode {
     /// no review session exists yet). The feedback file is already written; this
     /// only governs where the "address the feedback" prompt is dispatched.
     ReviewHarnessPick(ReviewHarnessPickState),
+    /// Soft warning shown before starting an agent when the machine is already
+    /// at the concurrency cap and/or low on memory. Confirming starts anyway.
+    ConfirmResourceStart(Box<ResourceConfirmState>),
+    /// Features that are idle and unattended, with per-row reclaim actions.
+    Dormant(DormantViewState),
 }
 
 /// Pending dispatch of a finished review's feedback to a freshly-spun-up
@@ -4037,7 +4042,7 @@ pub struct DiffReviewState {
     pub editing_feedback: bool,
     pub layout: DiffViewerLayout,
     pub explanation: Option<String>,
-    pub explanation_child: Option<Child>,
+    pub explanation_child: Option<crate::headless::LeasedChild>,
     pub response_file: PathBuf,
     pub proceed_signal: PathBuf,
     pub request_id: Option<String>,
@@ -4056,6 +4061,65 @@ impl DiffReviewState {
     pub fn hold_active(&self) -> bool {
         self.hold_remaining_secs() > 0.0
     }
+}
+
+/// The dormant-features overlay: features that are idle *and* unattended, with
+/// what each is still holding.
+pub struct DormantViewState {
+    pub features: Vec<crate::app::dormant::DormantFeature>,
+    pub selected: usize,
+    /// Result of the last action, shown in the overlay's footer.
+    pub message: Option<String>,
+}
+
+impl DormantViewState {
+    pub fn selected_feature(&self) -> Option<&crate::app::dormant::DormantFeature> {
+        self.features.get(self.selected)
+    }
+
+    /// Keep the cursor on a real row after the list shrinks.
+    pub fn clamp_selection(&mut self) {
+        if self.selected >= self.features.len() {
+            self.selected = self.features.len().saturating_sub(1);
+        }
+    }
+}
+
+/// A harness start paused on the resource-gate confirmation, replayed verbatim
+/// if the user confirms and dropped if they cancel.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PendingStart {
+    /// Starting a stopped feature (`c` on the dashboard).
+    Feature { pi: usize, fi: usize },
+    /// Adding a session to a feature (session picker) that will spawn a
+    /// harness — either the session itself, or the stopped feature's saved
+    /// agents coming up underneath it.
+    BuiltinSession {
+        pi: usize,
+        fi: usize,
+        kind: SessionKind,
+        label: Option<String>,
+    },
+    /// Opening a stopped feature or session from the dashboard (`Enter`).
+    /// Replayed against the current selection, which the dialog leaves alone.
+    EnterView { auto_compose: bool },
+    /// Jumping to a stopped feature from inside a session view (leader n/p).
+    SwitchViewToFeature { pi: usize, fi: usize },
+}
+
+/// The pre-start warning: what tripped, what it was about to do, and where to
+/// go back to afterwards.
+pub struct ResourceConfirmState {
+    pub over_limit: Option<crate::app::resource_gate::OverLimit>,
+    pub low_memory: Option<crate::app::resource_gate::LowMemory>,
+    /// Editor windows open right now, collected only when the memory half
+    /// tripped: they are not agents and are not counted as such, but they are
+    /// usually the larger half of where the memory went.
+    pub open_editors: Vec<String>,
+    pub pending: PendingStart,
+    /// Session view to restore after confirming or cancelling, when the start
+    /// was initiated from inside an embedded session rather than the dashboard.
+    pub from_view: Option<ViewState>,
 }
 
 pub enum HookNext {

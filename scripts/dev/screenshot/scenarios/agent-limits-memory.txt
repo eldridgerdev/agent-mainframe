@@ -1,0 +1,43 @@
+# agent-limits-memory: the other half of the pre-start gate -- the memory
+# warning, and the editor windows it names.
+#
+# Editors are never counted as agents (one language server can outweigh five
+# harnesses, so one number could not price both), but when memory is what
+# tripped they are usually where it went, so the dialog names them.
+#
+# Run with a config whose memory floor always trips and whose agent limit is
+# off, so the memory half is the only one talking:
+#
+#   ./amf-capture.sh --scenario <this file> \
+#     --config <config with "low_memory_warn_mb": 99000000,
+#                           "max_concurrent_agents": 0> \
+#     --seed <seed-project.json> --seed-feature <seed-feature-1.json> \
+#     --geometry 150x40
+
+wait:2000
+
+# Stage a tracked editor: a long-lived process, recorded against the seeded
+# feature exactly as a real `code --new-window` launch would be once its
+# window process is attributed. The scratch DB is throwaway, and the dialog
+# reads these rows live rather than from the cached store.
+run:sleep 600 & echo $! > "$XDG_CONFIG_HOME/editor.pid"
+run:python3 -c "import sqlite3,os,uuid,datetime; d=os.environ['XDG_CONFIG_HOME']; c=sqlite3.connect(d+'/amf/amf.db'); fid=c.execute('select id from features limit 1').fetchone()[0]; pid=int(open(d+'/editor.pid').read()); c.execute('insert into launched_editors (id,feature_id,session_id,kind,pid,worktree_path,dedicated,command,started_at) values (?,?,?,?,?,?,?,?,?)', (str(uuid.uuid4()), fid, None, 'vscode', pid, '/tmp/demo', 1, 'code --new-window /tmp/demo', datetime.datetime.now(datetime.timezone.utc).isoformat())); c.commit()"
+
+# A second feature, created while memory is (as far as the gate is concerned)
+# exhausted: created, left stopped, and told why.
+run:"$AMF_BIN" automation create-feature --file "$AMF_SHOT_SEED_2" >/dev/null
+wait:3000
+shot:autostart-skipped-on-memory
+
+key:j
+wait:600
+
+# `c` -- the memory half of the same dialog, with the open editor named under
+# the figure that tripped.
+text:c
+wait:1500
+shot:memory-warning-names-editors
+
+key:Escape
+wait:600
+run:kill "$(cat "$XDG_CONFIG_HOME/editor.pid")" 2>/dev/null || true

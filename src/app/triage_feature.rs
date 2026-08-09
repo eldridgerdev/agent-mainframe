@@ -31,11 +31,11 @@ use std::process::Command;
 
 use anyhow::Result;
 
-use crate::app::App;
 use crate::app::pr_review::{FixTarget, TRIAGE_SESSION_LABEL};
 use crate::app::state::{
     AppMode, TriageFeatureSetupState, TriageIntegrateState, TriageIntegration, TriageSetupRow,
 };
+use crate::app::{App, StartIntent};
 use crate::extension::merge_project_extension_config;
 use crate::project::{
     Feature, ProjectStatus, TriageSource, VibeMode, normalized_feature_name, worktree_name,
@@ -421,7 +421,9 @@ impl App {
             .position(|f| f.name == feature_name)
             .ok_or_else(|| anyhow::anyhow!("triage feature missing after add"))?;
         self.store.projects[pi].collapsed = false;
-        self.ensure_feature_running(pi, fi)?;
+        // Mid-flow: the companion feature has already been created and
+        // recorded, so a modal here would strand the triage hand-off.
+        self.ensure_feature_running(pi, fi, StartIntent::Warn("the PR triage agent"))?;
         self.save()?;
         self.log_info(
             "pr_triage",

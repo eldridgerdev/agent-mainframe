@@ -11,7 +11,7 @@ use crate::extension::{load_global_extension_config, merge_project_extension_con
 use crate::project::{LaunchOpts, normalized_feature_name, worktree_name};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
-use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
+use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep, PendingStart};
 
 impl App {
     /// Whether Remote Control may be enabled for a launch given the current
@@ -467,6 +467,7 @@ impl App {
 
         self.mode = AppMode::Normal;
 
+        let mut started = false;
         if let Some(pi) = self
             .store
             .projects
@@ -474,12 +475,23 @@ impl App {
             .position(|p| p.name == prepared.project_name)
         {
             let fi = self.store.projects[pi].features.len().saturating_sub(1);
-            self.ensure_feature_running(pi, fi)?;
+            // A machine at the agent cap gets the feature without its agent
+            // rather than a modal in the middle of the creation flow.
+            started = self.autostart_allowed(&prepared.branch);
+            if started {
+                // `autostart_allowed` above is this path's gate.
+                self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
+            }
             self.save()?;
-            if prepared.steering_enabled {
+            if started && prepared.steering_enabled {
                 self.open_startup_steering_prompt(pi, fi)?;
                 return Ok(());
             }
+        }
+
+        if !started {
+            // `autostart_allowed` already reported why.
+            return Ok(());
         }
 
         match prepared.hook_succeeded {
@@ -654,8 +666,20 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
-        self.ensure_feature_running_with_launch_override(pi, fi, None, None)
+    /// Bring `(pi, fi)`'s tmux session up, launching its saved agent
+    /// harnesses.
+    ///
+    /// This is where every "start a feature" route converges, so it is where
+    /// the resource gate lives: `intent` says what to do if the machine is
+    /// already loaded. A call that finds the session already running launches
+    /// nothing and is never gated.
+    pub(crate) fn ensure_feature_running(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        intent: StartIntent,
+    ) -> Result<Started> {
+        self.ensure_feature_running_with_launch_override(pi, fi, None, None, intent)
     }
 
     pub(crate) fn ensure_feature_running_for_recovery(
@@ -665,12 +689,14 @@ impl App {
         session_id: String,
         resume_id: Option<String>,
         created_session: &mut bool,
-    ) -> Result<()> {
+        intent: StartIntent,
+    ) -> Result<Started> {
         self.ensure_feature_running_with_launch_override(
             pi,
             fi,
             Some((session_id, resume_id)),
             Some(created_session),
+            intent,
         )
     }
 
@@ -680,12 +706,29 @@ impl App {
         fi: usize,
         launch_override: Option<(String, Option<String>)>,
         created_session: Option<&mut bool>,
-    ) -> Result<()> {
+        intent: StartIntent,
+    ) -> Result<Started> {
+        // Ask before any of the setup below runs, and only when this call will
+        // really start something: an already-running session means the harness
+        // is already counted, and re-entering its feature must not prompt.
+        let existing_session = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|feature| feature.tmux_session.clone());
+        let already_running = existing_session
+            .as_deref()
+            .is_some_and(|session| self.tmux.session_exists(session));
+        if !already_running && self.gate_launch(intent) == Started::Parked {
+            return Ok(Started::Parked);
+        }
+
         let repo = self.store.projects[pi].repo.clone();
         let viewport = self.view_pane_viewport();
         let (agent, mode) = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(feature) => (feature.agent.clone(), feature.mode.clone()),
-            None => return Ok(()),
+            None => return Ok(Started::Yes),
         };
         self.ensure_agent_mode_supported(&agent, &mode)?;
         // Resolve before the mutable borrow of `feature` below.
@@ -697,7 +740,7 @@ impl App {
             .and_then(|p| p.features.get_mut(fi))
         {
             Some(f) => f,
-            None => return Ok(()),
+            None => return Ok(Started::Yes),
         };
 
         ensure_notification_hooks(
@@ -712,8 +755,8 @@ impl App {
 
         Self::initialize_feature_sessions(feature, false, None);
 
-        if self.tmux.session_exists(&feature.tmux_session) {
-            return Ok(());
+        if already_running {
+            return Ok(Started::Yes);
         }
 
         self.tmux.create_session_with_window(
@@ -933,7 +976,7 @@ impl App {
         feature.status = ProjectStatus::Idle;
         feature.touch();
 
-        Ok(())
+        Ok(Started::Yes)
     }
 
     pub fn start_feature(&mut self) -> Result<()> {
@@ -966,6 +1009,20 @@ impl App {
             return Ok(());
         }
 
+        // Starting a feature launches its agent harness, so it goes through
+        // the resource gate. A tripped gate parks the start in a confirmation
+        // dialog that replays `begin_start_feature` on confirm.
+        if self.gate_start(PendingStart::Feature { pi, fi }) {
+            return Ok(());
+        }
+
+        self.begin_start_feature(pi, fi)
+    }
+
+    /// Start a feature that has already cleared the resource gate: runs the
+    /// `on_start` hook (prompting first when it has a prompt) and brings the
+    /// tmux session up.
+    pub(crate) fn begin_start_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         // If on_start has a prompt, show the picker first.
         let on_start = self.active_extension.lifecycle_hooks.on_start.clone();
         if let Some(ref cfg) = on_start
@@ -988,7 +1045,8 @@ impl App {
             return Ok(());
         }
 
-        self.ensure_feature_running(pi, fi)?;
+        // `start_feature` gated this start before parking or proceeding.
+        self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
 
         // Fire on_start lifecycle hook (plain script) if configured.
         if let Some(ref cfg) = on_start {
@@ -1009,9 +1067,10 @@ impl App {
         Ok(())
     }
 
-    /// Inner start logic called after a hook prompt is confirmed.
+    /// Inner start logic called after a hook prompt is confirmed. The gate
+    /// ran back in `start_feature`, before the prompt was raised.
     pub fn do_start_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
-        self.ensure_feature_running(pi, fi)?;
+        self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
         let name = self
             .store
             .projects
@@ -1108,10 +1167,23 @@ impl App {
         // Remember that this stop was deliberate so reopening a saved agent
         // pane restarts and resumes in one keypress instead of asking whether
         // the session was lost.
-        self.user_stopped_features.insert(feature_id);
+        self.user_stopped_features.insert(feature_id.clone());
         self.clear_sidebar_state_for_session(&tmux_session);
+
+        // The tmux session is gone, but the editor AMF opened for this feature
+        // is not in tmux — and neither are the language servers under it, which
+        // are the heaviest thing the feature was holding.
+        let editor_report = if self.config.kill_editor_on_stop {
+            self.kill_tracked_editors(&feature_id)
+        } else {
+            Default::default()
+        };
+
         self.save()?;
-        self.message = Some(format!("Stopped '{}'", name));
+        self.message = Some(match editor_report.summary() {
+            Some(detail) => format!("Stopped '{}' - {}", name, detail),
+            None => format!("Stopped '{}'", name),
+        });
 
         Ok(())
     }
@@ -1299,10 +1371,16 @@ impl App {
         }
 
         self.clear_sidebar_state_for_session(&tmux_session);
-        if let Some(feature_id) = feature_id.as_deref()
-            && let Some(db) = self.db.as_ref()
-        {
-            let _ = db.delete_feature_statuses(feature_id);
+        if let Some(feature_id) = feature_id.as_deref() {
+            // The worktree is going away, so an editor still open on it is
+            // worth closing rather than leaving pointed at a deleted path.
+            if self.config.kill_editor_on_stop {
+                self.kill_tracked_editors(feature_id);
+            }
+            if let Some(db) = self.db.as_ref() {
+                let _ = db.delete_feature_statuses(feature_id);
+                let _ = db.delete_launched_editors_for_feature(feature_id);
+            }
         }
         self.delete_plan_interviews_for_deleted_feature(&project_name, &feature_name, &feature_id);
         self.store.remove_feature(&project_name, &feature_name);
@@ -1659,7 +1737,12 @@ impl App {
             .position(|p| p.name == project_name)
         {
             let fi = self.store.projects[pi].features.len().saturating_sub(1);
-            self.ensure_feature_running(pi, fi)?;
+            if !self.autostart_allowed(&new_branch) {
+                self.save()?;
+                return Ok(());
+            }
+            // `autostart_allowed` above is this path's gate.
+            self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
             self.save()?;
         }
 

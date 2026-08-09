@@ -81,12 +81,20 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             MIGRATION_016,
         ),
         (
-            "Add learning_sessions + learning_qa tables for Learning Mode",
+            "Track editors AMF launched per feature so they can be reclaimed on stop",
             MIGRATION_017,
         ),
         (
-            "Record whether a learning Q&A's captured selection is a diff excerpt",
+            "Record the editor process's own start time to survive PID recycling",
             MIGRATION_018,
+        ),
+        (
+            "Add learning_sessions + learning_qa tables for Learning Mode",
+            MIGRATION_019,
+        ),
+        (
+            "Record whether a learning Q&A's captured selection is a diff excerpt",
+            MIGRATION_020,
         ),
     ];
 
@@ -347,80 +355,6 @@ CREATE INDEX IF NOT EXISTS idx_plan_interviews_updated
     ON plan_interviews(updated_at);
 ";
 
-// Learning Mode's Q&A history (see `docs/backlog/learning-mode-plan.md`).
-// Shaped after MIGRATION_011's todo tables: `project_id` / `feature_id` are
-// plain TEXT with no FK to projects/features (those live in the store tables
-// and are rewritten wholesale on save), so cleanup on project deletion is
-// explicit — see `learning::delete_sessions_for_project`.
-//
-// `project_id` is deliberately *not* UNIQUE: whether a project has one
-// learning session or many is still open (the plan's "learning-session
-// lifecycle" question), and v1's one-per-project behaviour is enforced in
-// `load_or_create_session` rather than baked into the schema.
-//
-// `parent_qa_id` self-references so a follow-up thread dies with the question
-// it hangs off, matching the session→Q&A cascade.
-const MIGRATION_017: &str = "
-CREATE TABLE IF NOT EXISTS learning_sessions (
-    id              TEXT PRIMARY KEY,
-    project_id      TEXT NOT NULL,
-    feature_id      TEXT NOT NULL,
-    title           TEXT NOT NULL DEFAULT '',
-    harness         TEXT NOT NULL DEFAULT 'claude',
-    level           TEXT NOT NULL DEFAULT 'newcomer',
-    onboarding_seen INTEGER NOT NULL DEFAULT 0,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_learning_sessions_project
-    ON learning_sessions(project_id);
-
-CREATE TABLE IF NOT EXISTS learning_qa (
-    id                  TEXT PRIMARY KEY,
-    learning_session_id TEXT NOT NULL
-                        REFERENCES learning_sessions(id) ON DELETE CASCADE,
-    parent_qa_id        TEXT REFERENCES learning_qa(id) ON DELETE CASCADE,
-    file_path           TEXT,
-    anchor_kind         TEXT NOT NULL DEFAULT 'file',
-    line_start          INTEGER,
-    line_end            INTEGER,
-    selection_text      TEXT NOT NULL DEFAULT '',
-    question            TEXT NOT NULL,
-    intent              TEXT NOT NULL DEFAULT 'explain',
-    level               TEXT NOT NULL DEFAULT 'newcomer',
-    answer              TEXT,
-    harness             TEXT NOT NULL DEFAULT 'claude',
-    run_mode            TEXT NOT NULL DEFAULT 'no_tools',
-    status              TEXT NOT NULL DEFAULT 'pending',
-    error               TEXT,
-    todo_id             TEXT,
-    spawned_session_id  TEXT,
-    created_at          TEXT NOT NULL,
-    updated_at          TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_learning_qa_session
-    ON learning_qa(learning_session_id);
-CREATE INDEX IF NOT EXISTS idx_learning_qa_parent
-    ON learning_qa(parent_qa_id);
-";
-
-// Whether a row's captured `selection_text` is a unified-diff excerpt rather
-// than plain source.
-//
-// It cannot be re-derived from the row: a line anchor looks identical whether
-// it came from the repo tree or from a diff, and the browse scope that would
-// have told them apart isn't stored. Without it a follow-up asked after the
-// user browsed elsewhere would present its parent's diff excerpt as ordinary
-// numbered source (or the reverse), which is exactly the confusion the `+`/`-`
-// markers exist to prevent. Existing rows default to 0: plain source is the
-// safer wrong answer, since a marker-free block read as a diff would be.
-const MIGRATION_018: &str = "
-ALTER TABLE learning_qa
-    ADD COLUMN selection_is_diff INTEGER NOT NULL DEFAULT 0;
-";
-
 const MIGRATION_001: &str = "
 CREATE TABLE IF NOT EXISTS store_meta (
     key   TEXT PRIMARY KEY,
@@ -495,20 +429,138 @@ CREATE TABLE IF NOT EXISTS session_bookmarks (
 );
 ";
 
+/// Editors AMF launched for a feature, so stopping the feature can reclaim
+/// them (and the language servers they run) instead of leaving multi-GiB
+/// processes behind.
+///
+/// `feature_id` is a plain TEXT column with NO foreign key, for the same reason
+/// as `todo_lists` (see MIGRATION_011): `store::save` full-replaces `features`
+/// on every save, which would cascade-wipe these rows. Cleanup on feature
+/// deletion is explicit, in `db/editors.rs`.
+///
+/// `dedicated` records whether AMF opened a window it owns (VS Code launched
+/// with `--new-window`) or merely handed a path to an instance that was already
+/// running. Only a dedicated launch may ever be killed.
+///
+/// `command` is the argv AMF spawned, kept as the identity check at kill time:
+/// PIDs are recycled, and a bare liveness check would eventually signal an
+/// unrelated process. `started_at` is AMF's own launch timestamp, used to
+/// report age and to break ties in the report.
+const MIGRATION_017: &str = "
+CREATE TABLE IF NOT EXISTS launched_editors (
+    id            TEXT PRIMARY KEY,
+    feature_id    TEXT NOT NULL,
+    session_id    TEXT,
+    kind          TEXT NOT NULL,
+    pid           INTEGER NOT NULL,
+    worktree_path TEXT NOT NULL,
+    dedicated     INTEGER NOT NULL DEFAULT 0,
+    command       TEXT NOT NULL DEFAULT '',
+    started_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_launched_editors_feature
+    ON launched_editors(feature_id);
+";
+
+/// The argv identity check of `MIGRATION_017` is not enough on its own: argv is
+/// reproducible, so a recycled PID belonging to a *user-opened* window on the
+/// same worktree passes it. `proc_started_at` records when the attributed
+/// process itself started (`ps -o lstart=`), which the next holder of that PID
+/// cannot match. Empty for rows written before this migration and for launches
+/// whose owner was never resolved — both fall back to the argv check alone.
+const MIGRATION_018: &str = "
+ALTER TABLE launched_editors ADD COLUMN proc_started_at TEXT NOT NULL DEFAULT '';
+";
+
+// Learning Mode's Q&A history (see `docs/backlog/learning-mode-plan.md`).
+// Shaped after MIGRATION_011's todo tables: `project_id` / `feature_id` are
+// plain TEXT with no FK to projects/features (those live in the store tables
+// and are rewritten wholesale on save), so cleanup on project deletion is
+// explicit — see `learning::delete_sessions_for_project`.
+//
+// `project_id` is deliberately *not* UNIQUE: whether a project has one
+// learning session or many is still open (the plan's "learning-session
+// lifecycle" question), and v1's one-per-project behaviour is enforced in
+// `load_or_create_session` rather than baked into the schema.
+//
+// `parent_qa_id` self-references so a follow-up thread dies with the question
+// it hangs off, matching the session→Q&A cascade.
+const MIGRATION_019: &str = "
+CREATE TABLE IF NOT EXISTS learning_sessions (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    feature_id      TEXT NOT NULL,
+    title           TEXT NOT NULL DEFAULT '',
+    harness         TEXT NOT NULL DEFAULT 'claude',
+    level           TEXT NOT NULL DEFAULT 'newcomer',
+    onboarding_seen INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_learning_sessions_project
+    ON learning_sessions(project_id);
+
+CREATE TABLE IF NOT EXISTS learning_qa (
+    id                  TEXT PRIMARY KEY,
+    learning_session_id TEXT NOT NULL
+                        REFERENCES learning_sessions(id) ON DELETE CASCADE,
+    parent_qa_id        TEXT REFERENCES learning_qa(id) ON DELETE CASCADE,
+    file_path           TEXT,
+    anchor_kind         TEXT NOT NULL DEFAULT 'file',
+    line_start          INTEGER,
+    line_end            INTEGER,
+    selection_text      TEXT NOT NULL DEFAULT '',
+    question            TEXT NOT NULL,
+    intent              TEXT NOT NULL DEFAULT 'explain',
+    level               TEXT NOT NULL DEFAULT 'newcomer',
+    answer              TEXT,
+    harness             TEXT NOT NULL DEFAULT 'claude',
+    run_mode            TEXT NOT NULL DEFAULT 'no_tools',
+    status              TEXT NOT NULL DEFAULT 'pending',
+    error               TEXT,
+    todo_id             TEXT,
+    spawned_session_id  TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_learning_qa_session
+    ON learning_qa(learning_session_id);
+CREATE INDEX IF NOT EXISTS idx_learning_qa_parent
+    ON learning_qa(parent_qa_id);
+";
+
+// Whether a row's captured `selection_text` is a unified-diff excerpt rather
+// than plain source.
+//
+// It cannot be re-derived from the row: a line anchor looks identical whether
+// it came from the repo tree or from a diff, and the browse scope that would
+// have told them apart isn't stored. Without it a follow-up asked after the
+// user browsed elsewhere would present its parent's diff excerpt as ordinary
+// numbered source (or the reverse), which is exactly the confusion the `+`/`-`
+// markers exist to prevent. Existing rows default to 0: plain source is the
+// safer wrong answer, since a marker-free block read as a diff would be.
+const MIGRATION_020: &str = "
+ALTER TABLE learning_qa
+    ADD COLUMN selection_is_diff INTEGER NOT NULL DEFAULT 0;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
 
-    /// A DB last touched before Learning Mode existed (schema version 16)
-    /// upgrades in place: only 017 replays, and it lands the two new tables.
+    /// A DB last touched before Learning Mode existed (schema version 18)
+    /// upgrades in place: only 019 replays, and it lands the two new tables.
     #[test]
-    fn migration_017_upgrades_a_v016_database() {
+    fn migration_019_upgrades_a_pre_learning_database() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
-             INSERT INTO schema_version VALUES (16, datetime('now'), 'seed');",
+             INSERT INTO schema_version VALUES (18, datetime('now'), 'seed');",
         )
         .unwrap();
 
@@ -517,9 +569,9 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        // `run` doesn't stop at 017 — it carries on through every later
-        // migration, so the DB lands at the newest version, not at 17.
-        assert_eq!(version, 18);
+        // `run` doesn't stop at 019 — it carries on through every later
+        // migration, so the DB lands at the newest version, not at 19.
+        assert_eq!(version, 20);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -528,23 +580,23 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(found, 1, "{table} should exist after migration 017");
+            assert_eq!(found, 1, "{table} should exist after migration 019");
         }
     }
 
-    /// Migration 018 adds `selection_is_diff` to rows written before it
+    /// Migration 020 adds `selection_is_diff` to rows written before it
     /// existed. They default to 0 — plain source — which is the safe wrong
     /// answer: a marker-free block presented as a diff would confuse the agent,
     /// whereas a diff presented as source is what those rows already got.
     #[test]
-    fn migration_018_backfills_existing_qa_rows_as_plain_source() {
+    fn migration_020_backfills_existing_qa_rows_as_plain_source() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
-        conn.execute_batch(super::MIGRATION_017).unwrap();
+        conn.execute_batch(super::MIGRATION_019).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
-             INSERT INTO schema_version VALUES (17, datetime('now'), 'seed');",
+             INSERT INTO schema_version VALUES (19, datetime('now'), 'seed');",
         )
         .unwrap();
         conn.execute_batch(
@@ -577,7 +629,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 20);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -590,7 +642,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 18);
+        assert_eq!(rows, 20);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

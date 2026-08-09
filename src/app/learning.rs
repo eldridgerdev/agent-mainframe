@@ -3505,7 +3505,12 @@ pub(crate) mod tests {
         deliver(&mut app, &id, Err("Claude couldn't answer".to_string()));
 
         app.open_learning_mode(0, 0).unwrap();
-        let row = learning(&app).qa.iter().find(|r| r.id == id).unwrap().clone();
+        let row = learning(&app)
+            .qa
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .clone();
         assert_eq!(row.status, crate::app::LearningQaStatus::Failed);
         let reason = row.error.as_deref().unwrap_or_default();
         assert!(reason.contains("couldn't answer"), "{reason}");
@@ -3605,7 +3610,9 @@ pub(crate) mod tests {
 
         let selection = app.learning_selection_text();
         assert!(
-            selection.lines().any(|l| l.starts_with("+fn line_30_renamed")),
+            selection
+                .lines()
+                .any(|l| l.starts_with("+fn line_30_renamed")),
             "the addition keeps its marker: {selection}"
         );
         assert!(

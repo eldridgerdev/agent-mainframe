@@ -211,6 +211,12 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
         Span::styled("t", key),
         Span::styled(" starter questions", word),
     ];
+    // Only offered once there is an answer to continue from, so the key isn't
+    // advertised before it can do anything.
+    if state.qa.iter().any(|qa| qa.answer.is_some()) {
+        first.push(Span::styled("  F", key));
+        first.push(Span::styled(" ask a follow-up", word));
+    }
     if state.question.is_none() && !state.qa.is_empty() {
         first.push(Span::styled(
             format!("   ({} asked)", state.qa.len()),
@@ -807,6 +813,11 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 " top/bottom  ",
                 Style::default().fg(theme.text_muted.to_color()),
             ),
+            Span::styled("F", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " ask a follow-up  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
             Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::styled(
                 " back to browsing",
@@ -1140,6 +1151,10 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         (
             "t",
             "starter questions — presets to edit, for when you're not sure",
+        ),
+        (
+            "F",
+            "ask a follow-up — the agent keeps the answer you just read",
         ),
     ] {
         lines.push(key_row(k, text, key, body));

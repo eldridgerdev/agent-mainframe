@@ -79,6 +79,9 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::PageUp => app.learning_answer_scroll(-(PAGE_STEP as isize)),
             KeyCode::Char('g') => app.learning_answer_scroll_to_top(),
             KeyCode::Char('G') => app.learning_answer_scroll_to_bottom(),
+            // The most likely next move while reading an answer: ask about
+            // something in it. Closes the pane and opens the prompt.
+            KeyCode::Char('F') => app.learning_open_follow_up(),
             KeyCode::Char('?') => app.learning_open_help(),
             _ => {}
         }
@@ -108,6 +111,7 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('e') => app.learning_open_question(LearningQaIntent::Explain, None),
         KeyCode::Char('c') => app.learning_open_question(LearningQaIntent::Action, None),
         KeyCode::Char('t') => app.learning_open_starter_picker(),
+        KeyCode::Char('F') => app.learning_open_follow_up(),
 
         // Settings and view.
         KeyCode::Char('s') => app.learning_toggle_scope(),
@@ -313,6 +317,38 @@ mod tests {
             app.selection,
             crate::app::Selection::Feature(0, 0)
         ));
+    }
+
+    #[test]
+    fn f_asks_a_follow_up_from_the_answer_you_are_reading() {
+        let (_repo, mut app) = opened();
+
+        // Ask, and hand the row an answer without running a real CLI.
+        let parent = app
+            .learning_ask("What is this?", LearningQaIntent::Explain, None)
+            .unwrap();
+        app.learning_answer_tx
+            .send(crate::app::learning::LearningAnswer {
+                qa_id: parent.clone(),
+                result: Ok("It is the entry point.".to_string()),
+            })
+            .unwrap();
+        assert!(app.poll_learning_answers_bg());
+
+        handle_learning_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+        let question = learning(&app).question.as_ref().unwrap();
+        assert_eq!(question.parent_qa_id.as_deref(), Some(parent.as_str()));
+        assert!(!learning(&app).answer_open, "the answer pane steps aside");
+
+        for c in "what is that?".chars() {
+            handle_learning_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        let state = learning(&app);
+        assert_eq!(state.qa.len(), 2);
+        assert_eq!(state.qa[1].question, "what is that?");
+        assert_eq!(state.qa[1].parent_qa_id.as_deref(), Some(parent.as_str()));
     }
 
     #[test]

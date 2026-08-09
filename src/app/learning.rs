@@ -1204,6 +1204,16 @@ fn numbered_block(text: &str, start_line: usize, max_lines: usize) -> String {
     out
 }
 
+/// The place a question is asked about, captured so it can't move under the
+/// user. A follow-up reuses its parent's capture verbatim, which is why these
+/// three fields are persisted on every row.
+#[derive(Debug, Clone)]
+pub struct AskAnchor {
+    pub anchor: LearningAnchor,
+    pub file_path: Option<String>,
+    pub selection_text: String,
+}
+
 impl App {
     /// Assemble the prompt context for a question asked right now, against the
     /// overlay's current anchor.
@@ -1213,10 +1223,31 @@ impl App {
         intent: LearningQaIntent,
         ancestors: Vec<ParentTurn>,
     ) -> Option<LearningPromptContext> {
+        self.learning_prompt_context_at(question, intent, ancestors, None)
+    }
+
+    /// As above, but against `captured` when a question inherits its place
+    /// from somewhere other than the cursor — a follow-up asked from the
+    /// answer pane, where the file list may have moved on since.
+    pub fn learning_prompt_context_at(
+        &self,
+        question: &str,
+        intent: LearningQaIntent,
+        ancestors: Vec<ParentTurn>,
+        captured: Option<&AskAnchor>,
+    ) -> Option<LearningPromptContext> {
         let AppMode::Learning(state) = &self.mode else {
             return None;
         };
-        let selection_start_line = match state.anchor {
+        let anchor = captured.map(|c| c.anchor).unwrap_or(state.anchor);
+        let file_path = match anchor {
+            LearningAnchor::Project => None,
+            _ => match captured {
+                Some(c) => c.file_path.clone(),
+                None => state.content_path.clone(),
+            },
+        };
+        let selection_start_line = match anchor {
             LearningAnchor::Lines { start, .. } => Some(start),
             LearningAnchor::Hunk { .. } => match anchor_for_cursor(state) {
                 LearningAnchor::Lines { start, .. } => Some(start),
@@ -1224,17 +1255,27 @@ impl App {
             },
             _ => Some(1),
         };
+        // Surrounding context is only honest while the loaded file is still
+        // the one being asked about; a follow-up on a file the user has since
+        // browsed away from gets its parent's turn instead of the wrong file.
+        let file_lines = if file_path.is_some() && file_path == state.content_path {
+            state.content.clone()
+        } else if captured.is_some() {
+            Vec::new()
+        } else {
+            state.content.clone()
+        };
         Some(LearningPromptContext {
             project_name: state.project_name.clone(),
             feature_name: state.feature_name.clone(),
-            file_path: match state.anchor {
-                LearningAnchor::Project => None,
-                _ => state.content_path.clone(),
+            file_path,
+            anchor,
+            selection_text: match captured {
+                Some(c) => c.selection_text.clone(),
+                None => selection_text(state),
             },
-            anchor: state.anchor,
-            selection_text: selection_text(state),
             selection_is_diff: state.selection_is_diff(),
-            file_lines: state.content.clone(),
+            file_lines,
             selection_start_line,
             question: question.to_string(),
             intent,
@@ -1245,6 +1286,26 @@ impl App {
 }
 
 // ── asking (headless, non-blocking) ──────────────────────────
+
+/// Where a new follow-up on `parent_id` belongs: just past the parent and
+/// everything already hanging off it, so a thread stays contiguous.
+///
+/// `None` when the parent isn't in `rows` — a stale id appends rather than
+/// disappearing.
+pub fn thread_insert_index(rows: &[LearningQa], parent_id: &str) -> Option<usize> {
+    let mut last = rows.iter().position(|row| row.id == parent_id)?;
+    let mut thread: Vec<&str> = vec![parent_id];
+    // One pass per row is enough: rows are stored parent-before-child, so a
+    // descendant is always seen after the ancestor that admits it.
+    for (index, row) in rows.iter().enumerate().skip(last + 1) {
+        let parent = row.parent_qa_id.as_deref();
+        if parent.is_some_and(|p| thread.contains(&p)) {
+            thread.push(&row.id);
+            last = index;
+        }
+    }
+    Some(last + 1)
+}
 
 /// A finished headless run, delivered back to the UI thread.
 pub struct LearningAnswer {
@@ -1267,27 +1328,39 @@ impl App {
         intent: LearningQaIntent,
         parent_qa_id: Option<String>,
     ) -> Option<String> {
+        self.learning_ask_at(question, intent, parent_qa_id, None)
+    }
+
+    /// As above, against an explicitly captured place rather than wherever the
+    /// cursor happens to be. A follow-up passes its parent's capture, so it
+    /// asks about the same code even if the file list has moved on.
+    pub fn learning_ask_at(
+        &mut self,
+        question: &str,
+        intent: LearningQaIntent,
+        parent_qa_id: Option<String>,
+        captured: Option<AskAnchor>,
+    ) -> Option<String> {
         let question = question.trim().to_string();
         if question.is_empty() {
             return None;
         }
         let ancestors = self.learning_ancestor_turns(parent_qa_id.as_deref());
-        let ctx = self.learning_prompt_context(&question, intent, ancestors)?;
+        let ctx =
+            self.learning_prompt_context_at(&question, intent, ancestors, captured.as_ref())?;
 
         let AppMode::Learning(state) = &mut self.mode else {
             return None;
         };
-        let (line_start, _) = state.anchor.line_range();
-        let _ = line_start;
         // Recorded as what will actually run: a harness with no no-tools mode
         // is a deep dive whatever was asked for (see `effective_for`).
         let run_mode = crate::app::LearningRunMode::NoTools.effective_for(&state.harness);
         let qa = LearningQa {
             id: uuid::Uuid::new_v4().to_string(),
             session_id: state.session_id.clone(),
-            parent_qa_id,
+            parent_qa_id: parent_qa_id.clone(),
             file_path: ctx.file_path.clone(),
-            anchor: state.anchor,
+            anchor: ctx.anchor,
             selection_text: ctx.selection_text.clone(),
             question: question.clone(),
             intent,
@@ -1305,10 +1378,17 @@ impl App {
         let qa_id = qa.id.clone();
         let harness = qa.harness.clone();
         let workdir = state.workdir.clone();
-        state.qa.push(qa.clone());
-        // Show the newest question, so an answer that takes a while is visibly
+        // A follow-up belongs under the thread it continues, not at the bottom
+        // of the history — the renderer indents it under its parent, and a row
+        // indented under something twenty rows above it reads as a glitch.
+        let at = parent_qa_id
+            .as_deref()
+            .and_then(|parent| thread_insert_index(&state.qa, parent))
+            .unwrap_or(state.qa.len());
+        state.qa.insert(at, qa.clone());
+        // Show the new question, so an answer that takes a while is visibly
         // *this* question's answer.
-        state.selected_qa = state.qa.len() - 1;
+        state.selected_qa = at;
 
         self.persist_learning_qa(&qa);
         self.spawn_learning_run(&qa_id, harness, workdir, build_prompt(&ctx), run_mode);
@@ -1753,6 +1833,54 @@ impl App {
         }
     }
 
+    /// Ask a follow-up to the selected answer.
+    ///
+    /// A newcomer's second question ("wait, what's a trait?") matters as much
+    /// as their first, so the prompt opens carrying the parent's place in the
+    /// project *and* its question and answer — the agent answers against what
+    /// the user was just told rather than re-deriving it.
+    pub fn learning_open_follow_up(&mut self) {
+        let Some(parent) = (match &self.mode {
+            AppMode::Learning(state) => state.qa.get(state.selected_qa).cloned(),
+            _ => return,
+        }) else {
+            if let AppMode::Learning(state) = &mut self.mode {
+                state.error =
+                    Some("Ask something first — a follow-up continues an earlier answer.".into());
+            }
+            return;
+        };
+        if parent.answer.is_none() {
+            if let AppMode::Learning(state) = &mut self.mode {
+                state.error = Some(match parent.status {
+                    crate::app::LearningQaStatus::Failed => {
+                        "That question never got an answer to follow up on. Ask it again first."
+                            .to_string()
+                    }
+                    _ => "That answer is still generating — you can follow up once it arrives."
+                        .to_string(),
+                });
+            }
+            return;
+        }
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.error = None;
+            state.answer_open = false;
+            state.question = Some(crate::app::LearningQuestionEditor {
+                editor: crate::editor::TextEditor::new(String::new()),
+                // Inherited, not re-chosen: a follow-up to an explanation is
+                // still an explanation unless the user flips it with Ctrl+E.
+                intent: parent.intent,
+                parent_qa_id: Some(parent.id.clone()),
+                anchor: parent.anchor,
+                file_path: parent.file_path.clone(),
+                selection_text: parent.selection_text.clone(),
+                scroll: 0,
+                sync_to_cursor: true,
+            });
+        }
+    }
+
     /// Flip explain ⇄ change without losing what's been typed.
     pub fn learning_question_toggle_intent(&mut self) {
         if let AppMode::Learning(state) = &mut self.mode
@@ -1771,13 +1899,23 @@ impl App {
 
     /// Ask what's in the prompt. Returns the new row's id.
     pub fn learning_submit_question(&mut self) -> Option<String> {
-        let (text, intent, parent) = match &self.mode {
+        let (text, intent, parent, captured) = match &self.mode {
             AppMode::Learning(state) => {
                 let q = state.question.as_ref()?;
+                // The prompt captured its place when it opened; honour that
+                // capture rather than re-reading the cursor, so a follow-up
+                // asks about its parent's code and not wherever browsing left
+                // the file list.
+                let captured = q.parent_qa_id.as_ref().map(|_| AskAnchor {
+                    anchor: q.anchor,
+                    file_path: q.file_path.clone(),
+                    selection_text: q.selection_text.clone(),
+                });
                 (
                     q.editor.text().to_string(),
                     q.intent,
                     q.parent_qa_id.clone(),
+                    captured,
                 )
             }
             _ => return None,
@@ -1789,7 +1927,7 @@ impl App {
             state.question = None;
             state.starter_picker = None;
         }
-        self.learning_ask(&text, intent, parent)
+        self.learning_ask_at(&text, intent, parent, captured)
     }
 
     /// Offer the presets that fit the current anchor. Opens the prompt first
@@ -3029,6 +3167,203 @@ pub(crate) mod tests {
         assert_eq!(walk_files_capped(dir.path(), 1, 12).len(), 1);
         // The depth cap keeps the walk shallow.
         assert_eq!(walk_files_capped(dir.path(), 100, 0), vec!["main.py"]);
+    }
+
+    // ── follow-ups ───────────────────────────────────────────
+
+    /// Ask, answer, and follow up — the loop a newcomer's second question
+    /// depends on.
+    fn ask_and_answer(app: &mut App, question: &str, answer: &str) -> String {
+        let id = app
+            .learning_ask(question, LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(app, &id, Ok(answer.to_string()));
+        id
+    }
+
+    fn follow_up(app: &mut App, question: &str) -> String {
+        app.learning_open_follow_up();
+        assert!(
+            learning(app).question.is_some(),
+            "the follow-up prompt should be open"
+        );
+        for c in question.chars() {
+            if let AppMode::Learning(state) = &mut app.mode
+                && let Some(q) = &mut state.question
+            {
+                q.editor.insert_str(&c.to_string());
+            }
+        }
+        app.learning_submit_question().unwrap()
+    }
+
+    #[test]
+    fn a_follow_up_carries_its_parents_question_and_answer_into_the_prompt() {
+        let (_repo, mut app) = opened_app();
+        let parent = ask_and_answer(&mut app, "What is this file for?", "It is the entry point.");
+
+        let child = follow_up(&mut app, "What's an entry point?");
+
+        let state = learning(&app);
+        let row = state.qa.iter().find(|r| r.id == child).unwrap();
+        assert_eq!(row.parent_qa_id.as_deref(), Some(parent.as_str()));
+        assert_eq!(
+            row.intent,
+            LearningQaIntent::Explain,
+            "a follow-up inherits its parent's intent"
+        );
+
+        // The prompt the agent would receive carries the earlier turn verbatim.
+        let ancestors = app.learning_ancestor_turns(Some(&parent));
+        let ctx = app
+            .learning_prompt_context(
+                "What's an entry point?",
+                LearningQaIntent::Explain,
+                ancestors,
+            )
+            .unwrap();
+        let prompt = build_prompt(&ctx);
+        assert!(prompt.contains("What is this file for?"), "{prompt}");
+        assert!(prompt.contains("It is the entry point."), "{prompt}");
+        assert_eq!(
+            prompt.matches("It is the entry point.").count(),
+            1,
+            "the parent answer appears exactly once"
+        );
+    }
+
+    #[test]
+    fn a_two_deep_follow_up_keeps_the_whole_conversation() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What is this file for?", "It is the entry point.");
+
+        let second = follow_up(&mut app, "What's an entry point?");
+        deliver(&mut app, &second, Ok("Where execution starts.".to_string()));
+        let third = follow_up(&mut app, "What is execution?");
+
+        let ancestors = app.learning_ancestor_turns(Some(&second));
+        assert_eq!(ancestors.len(), 2, "both earlier turns come through");
+        // Oldest first, so the agent reads the conversation in order.
+        assert_eq!(ancestors[0].question, "What is this file for?");
+        assert_eq!(ancestors[1].question, "What's an entry point?");
+
+        let state = learning(&app);
+        let row = state.qa.iter().find(|r| r.id == third).unwrap();
+        assert_eq!(row.parent_qa_id.as_deref(), Some(second.as_str()));
+    }
+
+    #[test]
+    fn a_follow_up_asks_about_its_parents_code_not_wherever_browsing_ended_up() {
+        let (_repo, mut app) = opened_app();
+        app.learning_cursor_move(1);
+        let parent = ask_and_answer(&mut app, "Explain this line.", "It prints.");
+        let (parent_anchor, parent_path, parent_text) = {
+            let row = learning(&app).qa.iter().find(|r| r.id == parent).unwrap();
+            (
+                row.anchor,
+                row.file_path.clone(),
+                row.selection_text.clone(),
+            )
+        };
+
+        // Browse somewhere else entirely before following up.
+        app.learning_select_next_entry();
+        app.learning_select_project();
+        assert_ne!(learning(&app).anchor, parent_anchor);
+
+        let child = follow_up(&mut app, "What does printing mean here?");
+
+        let state = learning(&app);
+        let row = state.qa.iter().find(|r| r.id == child).unwrap();
+        assert_eq!(row.anchor, parent_anchor, "same place as its parent");
+        assert_eq!(row.file_path, parent_path);
+        assert_eq!(row.selection_text, parent_text);
+    }
+
+    #[test]
+    fn a_follow_up_lands_under_the_thread_it_continues() {
+        let (_repo, mut app) = opened_app();
+        let first = ask_and_answer(&mut app, "First question?", "First answer.");
+        // A second, unrelated question that would otherwise sit between the
+        // parent and its follow-up.
+        let unrelated = app
+            .learning_ask("Unrelated question?", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        // Follow up on the *first* row, not the newest.
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_qa = 0;
+        }
+        let child = follow_up(&mut app, "Follow-up?");
+
+        let ids: Vec<&str> = learning(&app).qa.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![first.as_str(), child.as_str(), unrelated.as_str()],
+            "the follow-up sits directly under its parent"
+        );
+        assert_eq!(
+            learning(&app).selected_qa,
+            1,
+            "and the cursor follows the new question"
+        );
+    }
+
+    /// A bare row, for the ordering helpers that only look at ids and parents.
+    fn qa_row(id: &str, parent: Option<&str>) -> LearningQa {
+        LearningQa {
+            id: id.to_string(),
+            session_id: "s".to_string(),
+            parent_qa_id: parent.map(str::to_string),
+            file_path: None,
+            anchor: LearningAnchor::Project,
+            selection_text: String::new(),
+            question: id.to_string(),
+            intent: LearningQaIntent::Explain,
+            level: LearningLevel::Newcomer,
+            answer: None,
+            harness: AgentKind::Claude,
+            run_mode: crate::app::LearningRunMode::NoTools,
+            status: crate::app::LearningQaStatus::Pending,
+            error: None,
+            todo_id: None,
+            spawned_session_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_thread_insert_lands_past_every_descendant() {
+        let rows = vec![
+            qa_row("a", None),
+            qa_row("b", Some("a")),
+            qa_row("c", Some("b")),
+            qa_row("d", None),
+        ];
+        // Past the whole a → b → c thread, not just past `a`.
+        assert_eq!(thread_insert_index(&rows, "a"), Some(3));
+        assert_eq!(thread_insert_index(&rows, "b"), Some(3));
+        assert_eq!(thread_insert_index(&rows, "c"), Some(3));
+        assert_eq!(thread_insert_index(&rows, "d"), Some(4));
+        assert_eq!(
+            thread_insert_index(&rows, "gone"),
+            None,
+            "a stale parent appends rather than vanishing"
+        );
+    }
+
+    #[test]
+    fn following_up_on_an_unanswered_question_says_to_wait() {
+        let (_repo, mut app) = opened_app();
+        app.learning_ask("Still thinking?", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        app.learning_open_follow_up();
+        let state = learning(&app);
+        assert!(state.question.is_none(), "nothing to follow up on yet");
+        let error = state.error.as_deref().unwrap_or_default();
+        assert!(error.contains("still generating"), "{error}");
     }
 
     #[test]

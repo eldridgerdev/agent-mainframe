@@ -3,9 +3,9 @@
 - **Status:** In progress — Epics 1 (foundations), 2 (browsing), 3
   (asking), and 4 (surface) complete, plus a first pass of Epic 6
   hardening. Learning Mode is reachable from the dashboard with `K` and
-  usable end to end: browse, select, ask, read the answer. Epic 5
-  (acting on an answer — follow-up, deep dive, relabel, make actionable,
-  escalate) is next and entirely unbuilt.
+  usable end to end: browse, select, ask, read the answer, ask a
+  follow-up. Epic 5's remaining items (deep dive, relabel intent, make
+  actionable, escalate to a live session) are next.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -644,12 +644,36 @@ closes out.
 
 ### Epic 5 — Acting on an answer
 
-- [ ] Implement **ask a follow-up**: new Q&A row with `parent_qa_id`,
+- [x] Implement **ask a follow-up**: new Q&A row with `parent_qa_id`,
       same anchor, parent Q&A embedded in the prompt, rendered indented
       under its parent, with a depth cap that trims the oldest
-      ancestors from the prompt beyond the cap. Verify a two-deep
-      follow-up answers in context and that the cap keeps prompt size
-      bounded.
+      ancestors from the prompt beyond the cap. `F` on the Q&A pane or
+      inside the answer pane opens the prompt on the selected row;
+      following up on a row that hasn't answered yet says to wait rather
+      than doing nothing. Two things fell out of building it:
+      - **A follow-up must not re-read the cursor.** `learning_ask` took
+        its anchor from wherever browsing had left the file list, so a
+        follow-up asked after navigating away would quote the wrong
+        file. Both the prompt context and the stored row now take an
+        `AskAnchor` captured from the parent (`learning_ask_at` /
+        `learning_prompt_context_at`), and surrounding-file context is
+        only attached while the loaded file is still the one being asked
+        about. `learning_submit_question` now honours the capture the
+        prompt editor was already making, which it had been ignoring.
+      - **A follow-up must land under its thread.** Rows were appended,
+        so a follow-up on an older question rendered indented under
+        whatever happened to precede it. `thread_insert_index` places it
+        past the parent and every descendant.
+      Tests: `a_follow_up_carries_its_parents_question_and_answer_into_the_prompt`
+      (parent turn appears exactly once),
+      `a_two_deep_follow_up_keeps_the_whole_conversation` (both turns,
+      oldest first), `a_follow_up_asks_about_its_parents_code_not_wherever_browsing_ended_up`,
+      `a_follow_up_lands_under_the_thread_it_continues`,
+      `a_thread_insert_lands_past_every_descendant`,
+      `following_up_on_an_unanswered_question_says_to_wait`, and the
+      handler-level `f_asks_a_follow_up_from_the_answer_you_are_reading`.
+      The depth cap itself was already built and tested in Epic 3
+      (`follow_up_context_is_capped_at_the_configured_depth`).
 - [ ] Implement **deep dive**: rerun the selected Q&A through
       `HeadlessRunner::run_read_only` in the feature's `workdir`,
       preserving intent and level, stored as its own row with

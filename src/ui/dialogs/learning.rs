@@ -131,7 +131,10 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
 
     let mut settings = vec![
         Span::raw("  "),
-        Span::styled("Showing: ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            "Showing: ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled(
             state.scope.description(),
             Style::default().fg(theme.info.to_color()),
@@ -285,7 +288,13 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &mut LearningViewState, 
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
 
-    draw_scrollbar(frame, inner, state.entries.len(), state.list_scroll, visible);
+    draw_scrollbar(
+        frame,
+        inner,
+        state.entries.len(),
+        state.list_scroll,
+        visible,
+    );
 }
 
 fn file_row(
@@ -355,7 +364,10 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &mut LearningViewState, th
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" Asking about: ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                " Asking about: ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
             Span::styled(
                 state.anchor.describe(state.content_path.as_deref()),
                 Style::default()
@@ -784,7 +796,10 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" scroll  ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                " scroll  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
             Span::styled("PgUp/PgDn", Style::default().fg(theme.warning.to_color())),
             Span::styled(" page  ", Style::default().fg(theme.text_muted.to_color())),
             Span::styled("g/G", Style::default().fg(theme.warning.to_color())),
@@ -835,14 +850,9 @@ fn draw_question(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
+                Span::styled(" About: ", Style::default().fg(theme.text_muted.to_color())),
                 Span::styled(
-                    " About: ",
-                    Style::default().fg(theme.text_muted.to_color()),
-                ),
-                Span::styled(
-                    question
-                        .anchor
-                        .describe(question.file_path.as_deref()),
+                    question.anchor.describe(question.file_path.as_deref()),
                     Style::default()
                         .fg(theme.info.to_color())
                         .add_modifier(Modifier::BOLD),
@@ -967,7 +977,10 @@ fn draw_starter_picker(frame: &mut Frame, picker: &LearningStarterPicker, theme:
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" choose  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " choose  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::styled(
             " put it in the prompt  ",
@@ -1071,7 +1084,10 @@ fn draw_help(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" scroll  ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                " scroll  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
             Span::styled("Esc/?", Style::default().fg(theme.warning.to_color())),
             Span::styled(
                 " start browsing",
@@ -1144,10 +1160,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ("v / V", "start a line range / drop back to one line"),
         ("f", "the whole file"),
         ("P", "the whole project"),
-        (
-            "x",
-            "the change under the cursor (branch changes only)",
-        ),
+        ("x", "the change under the cursor (branch changes only)"),
         ("z", "fold or unfold the Start here group"),
     ] {
         lines.push(key_row(k, text, key, body));
@@ -1286,9 +1299,15 @@ mod tests {
 
     #[test]
     fn truncation_keeps_the_end_of_a_path_and_the_start_of_a_question() {
-        assert_eq!(truncate_left("src/app/learning.rs", 40), "src/app/learning.rs");
+        assert_eq!(
+            truncate_left("src/app/learning.rs", 40),
+            "src/app/learning.rs"
+        );
         assert_eq!(truncate_left("src/app/learning.rs", 10), "…arning.rs");
-        assert_eq!(truncate_right("what does this do?", 40), "what does this do?");
+        assert_eq!(
+            truncate_right("what does this do?", 40),
+            "what does this do?"
+        );
         assert_eq!(truncate_right("what does this do?", 10), "what does…");
     }
 
@@ -1386,7 +1405,10 @@ let files = list_repo_files(workdir)?;
         let rendered = render(&mut state);
 
         assert!(rendered.contains("Learning Mode"));
-        assert!(rendered.contains("read-only"), "the promise has to be visible");
+        assert!(
+            rendered.contains("read-only"),
+            "the promise has to be visible"
+        );
         assert!(rendered.contains("Showing:"), "browse scope");
         assert!(rendered.contains("Explaining for:"), "level");
         assert!(rendered.contains("Agent:"), "harness");
@@ -1488,7 +1510,10 @@ let files = list_repo_files(workdir)?;
 
         let rendered = render(&mut state);
         assert!(rendered.contains("And why the sort?"));
-        assert!(rendered.contains("└"), "the thread marker shows the nesting");
+        assert!(
+            rendered.contains("└"),
+            "the thread marker shows the nesting"
+        );
     }
 
     #[test]

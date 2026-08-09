@@ -145,6 +145,17 @@ impl LearningViewState {
         }
     }
 
+    /// Whether the current anchor's text is a diff excerpt rather than plain
+    /// source. True only for a hunk or line selection inside branch-changes
+    /// scope — a whole-file anchor is the file itself in either scope.
+    pub fn selection_is_diff(&self) -> bool {
+        self.scope == BrowseScope::BranchChanges
+            && matches!(
+                self.anchor,
+                LearningAnchor::Hunk { .. } | LearningAnchor::Lines { .. }
+            )
+    }
+
     /// The inclusive cursor span, as indices into the content pane.
     pub fn selected_span(&self) -> (usize, usize) {
         match self.selection_anchor {
@@ -250,9 +261,8 @@ impl App {
                 .map(|_| (*pi, 0)),
         };
         let Some((pi, fi)) = target else {
-            self.message = Some(
-                "Add a feature first — Learning Mode reads that feature's files".to_string(),
-            );
+            self.message =
+                Some("Add a feature first — Learning Mode reads that feature's files".to_string());
             return Ok(());
         };
         self.open_learning_mode(pi, fi)
@@ -306,7 +316,7 @@ impl App {
             return Vec::new();
         };
         match db.learning_qa(session_id) {
-            Ok(rows) => rows,
+            Ok(rows) => self.reconcile_interrupted_qa(rows),
             Err(e) => {
                 self.log_error(
                     "learning",
@@ -315,6 +325,46 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    /// Fail the rows a previous process left mid-run.
+    ///
+    /// A queued or running row is only meaningful while the thread that would
+    /// deliver its answer is alive. After a quit or a crash there is no such
+    /// thread, but the row is still stored as in-flight — so it would show
+    /// "thinking…" and count towards the in-flight total forever. Rows this
+    /// process is genuinely still waiting on (the overlay was closed and
+    /// reopened mid-run) are left alone.
+    fn reconcile_interrupted_qa(&mut self, mut rows: Vec<LearningQa>) -> Vec<LearningQa> {
+        let stranded: Vec<LearningQa> = rows
+            .iter_mut()
+            .filter(|row| {
+                row.status.is_in_flight() && !self.learning_runs_in_flight.contains(&row.id)
+            })
+            .map(|row| {
+                row.status = crate::app::LearningQaStatus::Failed;
+                row.error = Some(
+                    "AMF stopped while this question was still being answered, \
+                     so the answer never arrived. Ask it again."
+                        .to_string(),
+                );
+                row.updated_at = crate::db::learning::now_timestamp();
+                row.clone()
+            })
+            .collect();
+        if !stranded.is_empty() {
+            self.log_info(
+                "learning",
+                format!(
+                    "reset {} unfinished question(s) left behind by an earlier session",
+                    stranded.len()
+                ),
+            );
+        }
+        for row in &stranded {
+            self.persist_learning_qa(row);
+        }
+        rows
     }
 
     /// Switch between "all files in this project" and "files changed on this
@@ -360,23 +410,21 @@ impl App {
         let mut load_error: Option<String> = None;
         let mut diff_files: Vec<DiffFile> = Vec::new();
         let entries = match scope {
-            BrowseScope::BranchChanges => {
-                match crate::diff::load_snapshot(&workdir, None, false) {
-                    Ok(snapshot) => {
-                        diff_files = snapshot.files;
-                        build_changed_entries(&diff_files)
-                    }
-                    Err(e) => {
-                        load_error = Some(format!(
-                            "Couldn't list this branch's changes: {e}. \
-                             Press the scope key to browse all files instead."
-                        ));
-                        Vec::new()
-                    }
+            BrowseScope::BranchChanges => match crate::diff::load_snapshot(&workdir, None, false) {
+                Ok(snapshot) => {
+                    diff_files = snapshot.files;
+                    build_changed_entries(&diff_files)
                 }
-            }
+                Err(e) => {
+                    load_error = Some(format!(
+                        "Couldn't list this branch's changes: {e}. \
+                             Press the scope key to browse all files instead."
+                    ));
+                    Vec::new()
+                }
+            },
             BrowseScope::RepoTree => {
-                let files = if is_git {
+                let mut files = if is_git {
                     match crate::diff::list_repo_files(&workdir) {
                         Ok(files) => files,
                         Err(e) => {
@@ -390,6 +438,12 @@ impl App {
                 } else {
                     walk_files_capped(&workdir, MAX_REPO_ENTRIES, MAX_WALK_DEPTH)
                 };
+                if let Some(total) = cap_repo_entries(&mut files, MAX_REPO_ENTRIES) {
+                    load_error.get_or_insert(format!(
+                        "This project has {total} files — showing the first {MAX_REPO_ENTRIES}. \
+                         Switch to branch changes to see what's actually changed."
+                    ));
+                }
                 let start_here = if has_history {
                     Vec::new()
                 } else {
@@ -415,7 +469,10 @@ impl App {
     /// Show or hide the pinned orientation group.
     pub fn learning_toggle_start_here(&mut self) {
         let selected_path = match &self.mode {
-            AppMode::Learning(state) => state.selected_entry().and_then(|e| e.path()).map(str::to_string),
+            AppMode::Learning(state) => state
+                .selected_entry()
+                .and_then(|e| e.path())
+                .map(str::to_string),
             _ => return,
         };
         if let AppMode::Learning(state) = &mut self.mode {
@@ -459,11 +516,36 @@ impl App {
     /// Load the content for whatever the file-list cursor is on, resetting the
     /// content cursor and anchor to the top of the new file.
     pub fn learning_load_selected_content(&mut self) {
-        let Some((entry, workdir, scope)) = (match &self.mode {
-            AppMode::Learning(state) => state
-                .selected_entry()
-                .cloned()
-                .map(|e| (e, state.workdir.clone(), state.scope)),
+        let Some((entry, workdir, scope, diff_lines)) = (match &self.mode {
+            AppMode::Learning(state) => state.selected_entry().map(|entry| {
+                // Branch-changes scope renders the diff, but the *prompt* still
+                // needs the file the diff sits in: without it a whole-file
+                // anchor would carry only the lines the hunks happen to touch,
+                // and a line anchor would have no surrounding context at all.
+                // The snapshot already hydrated both sides, so this costs no
+                // extra read — and it works for a deleted file, which the
+                // working tree no longer has.
+                let diff_lines = match (state.scope, entry) {
+                    (
+                        BrowseScope::BranchChanges,
+                        LearningListEntry::File {
+                            diff_index: Some(index),
+                            ..
+                        },
+                    ) => state
+                        .diff_files
+                        .get(*index)
+                        .map(diff_file_lines)
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                (
+                    entry.clone(),
+                    state.workdir.clone(),
+                    state.scope,
+                    diff_lines,
+                )
+            }),
             _ => None,
         }) else {
             return;
@@ -485,10 +567,10 @@ impl App {
                 }
             }
             LearningListEntry::File { path, .. } => {
-                // In branch-changes scope the diff itself is the content; the
-                // file on disk is only read for repo-tree browsing.
+                // The pane renders the diff in branch-changes scope, so the
+                // file there comes from the snapshot rather than from disk.
                 let loaded = match scope {
-                    BrowseScope::BranchChanges => Ok(Vec::new()),
+                    BrowseScope::BranchChanges => Ok(diff_lines),
                     BrowseScope::RepoTree => load_file_lines(&workdir.join(&path)),
                 };
                 if let AppMode::Learning(state) = &mut self.mode {
@@ -668,11 +750,22 @@ pub fn build_changed_entries(files: &[DiffFile]) -> Vec<LearningListEntry> {
         .collect()
 }
 
+/// The whole file a diff entry covers, current side where there is one. A
+/// deletion only has a base side, and a binary file has neither — an empty
+/// result simply means "no surrounding file to offer".
+pub fn diff_file_lines(file: &DiffFile) -> Vec<String> {
+    file.new_content
+        .as_deref()
+        .or(file.old_content.as_deref())
+        .map(|text| text.lines().map(ToOwned::to_owned).collect())
+        .unwrap_or_default()
+}
+
 /// Read a file for the content pane, or say why it can't be shown. The message
 /// is user-facing, so it names the limit rather than the errno.
 pub fn load_file_lines(path: &Path) -> Result<Vec<String>, String> {
-    let meta = std::fs::metadata(path)
-        .map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
     if meta.len() > MAX_FILE_BYTES {
         return Err(format!(
             "This file is {} — too big to show here (the limit is {} MB).",
@@ -680,7 +773,8 @@ pub fn load_file_lines(path: &Path) -> Result<Vec<String>, String> {
             MAX_FILE_BYTES / (1024 * 1024)
         ));
     }
-    let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
     if looks_binary(&bytes) {
         return Err("This looks like a binary file, so there's nothing to read here.".to_string());
     }
@@ -690,10 +784,7 @@ pub fn load_file_lines(path: &Path) -> Result<Vec<String>, String> {
 
 /// A NUL byte in the first few KB is the same heuristic git uses.
 fn looks_binary(bytes: &[u8]) -> bool {
-    bytes
-        .iter()
-        .take(BINARY_SNIFF_BYTES)
-        .any(|byte| *byte == 0)
+    bytes.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0)
 }
 
 fn human_bytes(len: u64) -> String {
@@ -739,6 +830,19 @@ pub fn walk_files_capped(root: &Path, max_entries: usize, max_depth: usize) -> V
     out
 }
 
+/// Trim a repo-tree listing to `max_entries`, returning the original count
+/// when anything was dropped so the caller can say so. A monorepo browsed by
+/// someone unfamiliar with it is the worst case for both listing cost and
+/// usefulness, and silently showing a partial list would read as a bug.
+pub fn cap_repo_entries(files: &mut Vec<String>, max_entries: usize) -> Option<usize> {
+    let total = files.len();
+    if total <= max_entries {
+        return None;
+    }
+    files.truncate(max_entries);
+    Some(total)
+}
+
 /// The anchor implied by the content cursor and any in-progress range: a
 /// 1-based, inclusive line range in the file.
 pub fn anchor_for_cursor(state: &LearningViewState) -> LearningAnchor {
@@ -765,7 +869,9 @@ pub fn anchor_for_cursor(state: &LearningViewState) -> LearningAnchor {
             let start = lines
                 .get(from.min(lines.len() - 1))
                 .and_then(diff_line_number);
-            let end = lines.get(to.min(lines.len() - 1)).and_then(diff_line_number);
+            let end = lines
+                .get(to.min(lines.len() - 1))
+                .and_then(diff_line_number);
             match (start, end) {
                 (Some(start), Some(end)) => LearningAnchor::Lines {
                     start: start.min(end),
@@ -790,7 +896,11 @@ pub fn hunk_index_for_line(hunk_starts: &[usize], line: usize) -> Option<usize> 
     hunk_starts
         .iter()
         .rposition(|start| *start <= line)
-        .or(if hunk_starts.is_empty() { None } else { Some(0) })
+        .or(if hunk_starts.is_empty() {
+            None
+        } else {
+            Some(0)
+        })
 }
 
 /// The `(first, last)` addressable-line indices of hunk `index`.
@@ -805,22 +915,24 @@ fn hunk_span(file: &DiffFile, index: usize) -> Option<(usize, usize)> {
 }
 
 /// The text covered by `state.anchor`.
+///
+/// A file anchor always yields the whole file, in either scope — that is what
+/// the anchor promises. A hunk or line anchor in branch-changes scope yields
+/// *diff* rows, markers included, because that is what the user selected;
+/// [`LearningViewState::selection_is_diff`] tells the prompt builder to label
+/// it as such.
 pub fn selection_text(state: &LearningViewState) -> String {
     match state.anchor {
         // The project anchor has no text: the question is about the repo.
         LearningAnchor::Project => String::new(),
-        LearningAnchor::File => match state.scope {
-            BrowseScope::RepoTree => state.content.join("\n"),
-            BrowseScope::BranchChanges => state
-                .selected_diff_file()
-                .map(|f| f.addressable_line_texts().join("\n"))
-                .unwrap_or_default(),
-        },
+        // `content` is the file on disk in repo-tree scope and the snapshot's
+        // copy of it in branch-changes scope, so the whole file either way.
+        LearningAnchor::File => state.content.join("\n"),
         LearningAnchor::Hunk { index } => {
             let Some(file) = state.selected_diff_file() else {
                 return String::new();
             };
-            let texts = file.addressable_line_texts();
+            let texts = file.addressable_line_diff_texts();
             match hunk_span(file, index) {
                 Some((start, end)) => texts
                     .get(start..=end.min(texts.len().saturating_sub(1)))
@@ -841,7 +953,7 @@ pub fn selection_text(state: &LearningViewState) -> String {
                     let Some(file) = state.selected_diff_file() else {
                         return String::new();
                     };
-                    let texts = file.addressable_line_texts();
+                    let texts = file.addressable_line_diff_texts();
                     texts
                         .get(from..=to.min(texts.len().saturating_sub(1)))
                         .map(|slice| slice.join("\n"))
@@ -891,6 +1003,11 @@ pub struct LearningPromptContext {
     pub anchor: LearningAnchor,
     /// The text the anchor covers.
     pub selection_text: String,
+    /// Whether [`selection_text`](Self::selection_text) is a unified-diff
+    /// excerpt. The block is presented differently when it is: markers
+    /// explained, and no line numbers, since removed lines have none on the
+    /// current side.
+    pub selection_is_diff: bool,
     /// The whole file the selection came from, for surrounding context.
     pub file_lines: Vec<String>,
     /// 1-based line the selection starts at, when it has one.
@@ -923,16 +1040,25 @@ pub fn build_prompt(ctx: &LearningPromptContext) -> String {
     ));
 
     if matches!(ctx.anchor, LearningAnchor::Project) {
-        out.push_str(
-            "Their question is about the project as a whole, not about one file.\n\n",
-        );
+        out.push_str("Their question is about the project as a whole, not about one file.\n\n");
     } else if !ctx.selection_text.trim().is_empty() {
-        out.push_str("--- The code they are asking about ---\n");
-        out.push_str(&numbered_block(
-            &ctx.selection_text,
-            ctx.selection_start_line.unwrap_or(1),
-            MAX_SELECTION_LINES,
-        ));
+        if ctx.selection_is_diff {
+            // Unnumbered on purpose: these rows come from a unified diff, where
+            // a removed line has no number on the current side and the numbers
+            // that do exist are not consecutive.
+            out.push_str(
+                "--- The change they are asking about (unified diff — lines starting \
+                 with '+' were added, '-' were removed, ' ' are unchanged context) ---\n",
+            );
+            out.push_str(&plain_block(&ctx.selection_text, MAX_SELECTION_LINES));
+        } else {
+            out.push_str("--- The code they are asking about ---\n");
+            out.push_str(&numbered_block(
+                &ctx.selection_text,
+                ctx.selection_start_line.unwrap_or(1),
+                MAX_SELECTION_LINES,
+            ));
+        }
         out.push_str("\n\n");
     }
 
@@ -1018,10 +1144,7 @@ fn surrounding_context(ctx: &LearningPromptContext) -> Option<String> {
     if ctx.file_lines.is_empty() {
         return None;
     }
-    if matches!(
-        ctx.anchor,
-        LearningAnchor::Project | LearningAnchor::File
-    ) {
+    if matches!(ctx.anchor, LearningAnchor::Project | LearningAnchor::File) {
         return None;
     }
     let path = ctx.file_path.as_deref().unwrap_or("the file");
@@ -1039,6 +1162,27 @@ fn surrounding_context(ctx: &LearningPromptContext) -> Option<String> {
         "--- Surrounding context: {path}, lines {first}-{last} ---\n{}",
         numbered_block(&block.join("\n"), first, MAX_CONTEXT_LINES)
     ))
+}
+
+/// Text carried through verbatim, under the same truncation rule as
+/// [`numbered_block`]. For excerpts whose own leading characters are the
+/// point — a diff — where a line-number gutter would only be misleading.
+fn plain_block(text: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = lines
+        .iter()
+        .take(max_lines)
+        .map(|line| format!("{line}\n"))
+        .collect::<String>();
+    if lines.len() > max_lines {
+        out.push_str(&format!(
+            "… {} more lines not shown\n",
+            lines.len() - max_lines
+        ));
+    }
+    // Trailing newline is added by the caller's separator.
+    out.pop();
+    out
 }
 
 /// Line-numbered text, truncated with an explicit marker so the model can tell
@@ -1089,6 +1233,7 @@ impl App {
             },
             anchor: state.anchor,
             selection_text: selection_text(state),
+            selection_is_diff: state.selection_is_diff(),
             file_lines: state.content.clone(),
             selection_start_line,
             question: question.to_string(),
@@ -1134,6 +1279,9 @@ impl App {
         };
         let (line_start, _) = state.anchor.line_range();
         let _ = line_start;
+        // Recorded as what will actually run: a harness with no no-tools mode
+        // is a deep dive whatever was asked for (see `effective_for`).
+        let run_mode = crate::app::LearningRunMode::NoTools.effective_for(&state.harness);
         let qa = LearningQa {
             id: uuid::Uuid::new_v4().to_string(),
             session_id: state.session_id.clone(),
@@ -1146,7 +1294,7 @@ impl App {
             level: state.level,
             answer: None,
             harness: state.harness.clone(),
-            run_mode: crate::app::LearningRunMode::NoTools,
+            run_mode,
             status: crate::app::LearningQaStatus::Pending,
             error: None,
             todo_id: None,
@@ -1163,13 +1311,7 @@ impl App {
         state.selected_qa = state.qa.len() - 1;
 
         self.persist_learning_qa(&qa);
-        self.spawn_learning_run(
-            &qa_id,
-            harness,
-            workdir,
-            build_prompt(&ctx),
-            crate::app::LearningRunMode::NoTools,
-        );
+        self.spawn_learning_run(&qa_id, harness, workdir, build_prompt(&ctx), run_mode);
         Some(qa_id)
     }
 
@@ -1182,6 +1324,9 @@ impl App {
         prompt: String,
         run_mode: crate::app::LearningRunMode,
     ) {
+        // The dispatch below and the mode stored on the row must agree, so both
+        // go through `effective_for` rather than trusting the caller's ask.
+        let run_mode = run_mode.effective_for(&harness);
         let tx = self.learning_answer_tx.clone();
         let id = qa_id.to_string();
         self.log_info(
@@ -1193,6 +1338,10 @@ impl App {
                 prompt.len()
             ),
         );
+        // Remembered so a reopen of this overlay doesn't mistake a run this
+        // process is still waiting on for one stranded by an earlier one (see
+        // `reconcile_interrupted_qa`).
+        self.learning_runs_in_flight.insert(id.clone());
         // Tests drive the same channel by hand (see `deliver`). Launching a
         // real agent CLI from a unit test would be slow, flaky, and would spend
         // the developer's tokens, so the row still transitions to Running but
@@ -1227,32 +1376,83 @@ impl App {
         let mut changed = false;
         while let Ok(answer) = self.learning_answer_rx.try_recv() {
             changed = true;
-            match answer.result {
-                Ok(text) => {
-                    let text = text.trim().to_string();
-                    if let AppMode::Learning(state) = &mut self.mode
-                        && let Some(row) = state.qa.iter_mut().find(|r| r.id == answer.qa_id)
-                    {
-                        row.answer = Some(text);
-                        row.status = crate::app::LearningQaStatus::Answered;
-                        row.error = None;
-                        row.updated_at = crate::db::learning::now_timestamp();
-                    }
-                }
+            self.learning_runs_in_flight.remove(&answer.qa_id);
+            let outcome = match answer.result {
+                Ok(text) => Ok(text.trim().to_string()),
                 Err(message) => {
                     self.log_error("learning", format!("question failed: {message}"));
-                    if let AppMode::Learning(state) = &mut self.mode
-                        && let Some(row) = state.qa.iter_mut().find(|r| r.id == answer.qa_id)
-                    {
+                    Err(message)
+                }
+            };
+            let mut applied = false;
+            if let AppMode::Learning(state) = &mut self.mode
+                && let Some(row) = state.qa.iter_mut().find(|r| r.id == answer.qa_id)
+            {
+                match &outcome {
+                    Ok(text) => {
+                        row.answer = Some(text.clone());
+                        row.status = crate::app::LearningQaStatus::Answered;
+                        row.error = None;
+                    }
+                    // A failure leaves any earlier answer in place: a rerun
+                    // that couldn't start is no reason to lose what the first
+                    // run already said.
+                    Err(message) => {
                         row.status = crate::app::LearningQaStatus::Failed;
-                        row.error = Some(message);
-                        row.updated_at = crate::db::learning::now_timestamp();
+                        row.error = Some(message.clone());
                     }
                 }
+                row.updated_at = crate::db::learning::now_timestamp();
+                applied = true;
             }
-            self.persist_learning_qa_by_id(&answer.qa_id);
+            if applied {
+                self.persist_learning_qa_by_id(&answer.qa_id);
+            } else {
+                self.finish_learning_qa_in_db(&answer.qa_id, &outcome);
+            }
         }
         changed
+    }
+
+    /// Complete a row straight in the DB, for a run that finished after the
+    /// overlay that started it closed or moved to another project.
+    ///
+    /// The in-memory row is the overlay's source of truth, so once the overlay
+    /// is gone there is nothing for `persist_learning_qa` to write and the row
+    /// would sit at `running` in the database for good — reopening the session
+    /// would show a question that never finishes.
+    fn finish_learning_qa_in_db(&mut self, qa_id: &str, outcome: &Result<String, String>) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let result = match outcome {
+            Ok(text) => db.finish_learning_qa(
+                qa_id,
+                Some(text),
+                crate::app::LearningQaStatus::Answered,
+                None,
+            ),
+            Err(message) => db.finish_learning_qa(
+                qa_id,
+                None,
+                crate::app::LearningQaStatus::Failed,
+                Some(message),
+            ),
+        };
+        match result {
+            Ok(true) => self.log_info(
+                "learning",
+                format!("saved an answer that finished after its overlay closed ({qa_id})"),
+            ),
+            Ok(false) => self.log_warn(
+                "learning",
+                format!("an answer arrived for a question that no longer exists ({qa_id})"),
+            ),
+            Err(e) => self.log_warn(
+                "learning",
+                format!("couldn't save an answer that finished after its overlay closed: {e}"),
+            ),
+        }
     }
 
     /// The chain of earlier turns leading to `parent_qa_id`, oldest first.
@@ -1574,7 +1774,11 @@ impl App {
         let (text, intent, parent) = match &self.mode {
             AppMode::Learning(state) => {
                 let q = state.question.as_ref()?;
-                (q.editor.text().to_string(), q.intent, q.parent_qa_id.clone())
+                (
+                    q.editor.text().to_string(),
+                    q.intent,
+                    q.parent_qa_id.clone(),
+                )
             }
             _ => return None,
         };
@@ -1721,11 +1925,7 @@ impl App {
         let Some((session_id, harness, level)) = (match &mut self.mode {
             AppMode::Learning(state) => {
                 state.level = state.level.toggled();
-                Some((
-                    state.session_id.clone(),
-                    state.harness.clone(),
-                    state.level,
-                ))
+                Some((state.session_id.clone(), state.harness.clone(), state.level))
             }
             _ => None,
         }) else {
@@ -1835,8 +2035,8 @@ fn headless_failure_message(harness: &AgentKind, err: &anyhow::Error) -> String 
 pub(crate) mod tests {
     use super::*;
     use crate::app::{ProjectStatus, ProjectStore};
-    use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use crate::project::{Feature, Project, VibeMode};
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -1923,7 +2123,11 @@ pub(crate) mod tests {
         git(repo.path(), &["add", "."]);
         git(repo.path(), &["commit", "-m", "initial"]);
         git(repo.path(), &["checkout", "-b", "my-feat"]);
-        std::fs::write(repo.path().join("src/main.rs"), "fn main() {\n    ok();\n}\n").unwrap();
+        std::fs::write(
+            repo.path().join("src/main.rs"),
+            "fn main() {\n    ok();\n}\n",
+        )
+        .unwrap();
         git(repo.path(), &["commit", "-am", "call ok"]);
         repo
     }
@@ -2117,6 +2321,7 @@ pub(crate) mod tests {
             file_path: Some("src/app/learning.rs".to_string()),
             anchor: LearningAnchor::Lines { start: 3, end: 4 },
             selection_text: "let x = 1;\nlet y = 2;".to_string(),
+            selection_is_diff: false,
             file_lines: (1..=10).map(|i| format!("line {i}")).collect(),
             selection_start_line: Some(3),
             question: "What does this do?".to_string(),
@@ -2131,7 +2336,10 @@ pub(crate) mod tests {
         let prompt = build_prompt(&sample_context());
 
         assert!(prompt.contains("Project: my-project"), "{prompt}");
-        assert!(prompt.contains("Branch / feature: learning-mode"), "{prompt}");
+        assert!(
+            prompt.contains("Branch / feature: learning-mode"),
+            "{prompt}"
+        );
         assert!(prompt.contains("File: src/app/learning.rs"), "{prompt}");
         assert!(
             prompt.contains("lines 3-4 of src/app/learning.rs"),
@@ -2169,19 +2377,28 @@ pub(crate) mod tests {
     #[test]
     fn the_newcomer_overlay_is_present_by_default_and_absent_when_familiar() {
         let newcomer = build_prompt(&sample_context());
-        assert!(newcomer.contains("Define every technical term"), "{newcomer}");
+        assert!(
+            newcomer.contains("Define every technical term"),
+            "{newcomer}"
+        );
         assert!(newcomer.contains("Where to look next"), "{newcomer}");
         assert!(newcomer.contains("No question is too basic"), "{newcomer}");
 
         let mut ctx = sample_context();
         ctx.level = LearningLevel::Familiar;
         let familiar = build_prompt(&ctx);
-        assert!(!familiar.contains("Define every technical term"), "{familiar}");
+        assert!(
+            !familiar.contains("Define every technical term"),
+            "{familiar}"
+        );
         assert!(
             !familiar.contains("Finish with a section headed"),
             "{familiar}"
         );
-        assert!(familiar.contains("Be dense and skip the basics"), "{familiar}");
+        assert!(
+            familiar.contains("Be dense and skip the basics"),
+            "{familiar}"
+        );
     }
 
     #[test]
@@ -2239,10 +2456,7 @@ pub(crate) mod tests {
         assert!(prompt.contains("this whole project"), "{prompt}");
         assert!(!prompt.contains("File: "), "{prompt}");
         assert!(!prompt.contains("Surrounding context"), "{prompt}");
-        assert!(
-            prompt.contains("about the project as a whole"),
-            "{prompt}"
-        );
+        assert!(prompt.contains("about the project as a whole"), "{prompt}");
     }
 
     /// A whole-file anchor already carries the file, so repeating it as
@@ -2318,7 +2532,10 @@ pub(crate) mod tests {
 
         let offered = starters_for(LearningAnchor::Project);
         for text in &project_only {
-            assert!(offered.contains(text), "{text} missing at the project anchor");
+            assert!(
+                offered.contains(text),
+                "{text} missing at the project anchor"
+            );
         }
         for anchor in [
             LearningAnchor::File,
@@ -2511,10 +2728,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_missing_cli_failure_points_at_the_harness_wizard() {
-        let msg = headless_failure_message(
-            &AgentKind::Claude,
-            &anyhow::anyhow!("claude CLI not found"),
-        );
+        let msg =
+            headless_failure_message(&AgentKind::Claude, &anyhow::anyhow!("claude CLI not found"));
         assert!(msg.contains("Press A"), "{msg}");
         assert!(msg.contains("Claude"), "{msg}");
     }
@@ -2633,7 +2848,12 @@ pub(crate) mod tests {
             .unwrap();
         let expected = learning(&app).harness.clone();
         assert_eq!(
-            learning(&app).qa.iter().find(|r| r.id == id).unwrap().harness,
+            learning(&app)
+                .qa
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .harness,
             expected
         );
     }
@@ -2697,10 +2917,12 @@ pub(crate) mod tests {
         let paths: Vec<&str> = state.entries.iter().filter_map(|e| e.path()).collect();
         assert_eq!(paths, vec!["src/main.rs"], "only the changed file");
         // No orientation group in this scope.
-        assert!(!state
-            .entries
-            .iter()
-            .any(|e| matches!(e, LearningListEntry::StartHereHeader)));
+        assert!(
+            !state
+                .entries
+                .iter()
+                .any(|e| matches!(e, LearningListEntry::StartHereHeader))
+        );
 
         app.learning_toggle_scope();
         assert_eq!(learning(&app).scope, BrowseScope::RepoTree);
@@ -2808,5 +3030,72 @@ pub(crate) mod tests {
         // The depth cap keeps the walk shallow.
         assert_eq!(walk_files_capped(dir.path(), 100, 0), vec!["main.py"]);
     }
-}
 
+    #[test]
+    fn a_huge_repo_listing_is_capped_and_says_so() {
+        let mut small: Vec<String> = (0..5).map(|i| format!("f{i}.rs")).collect();
+        assert_eq!(
+            cap_repo_entries(&mut small, 10),
+            None,
+            "a list under the cap is left alone and reports nothing"
+        );
+        assert_eq!(small.len(), 5);
+
+        let mut big: Vec<String> = (0..50).map(|i| format!("f{i}.rs")).collect();
+        assert_eq!(
+            cap_repo_entries(&mut big, 10),
+            Some(50),
+            "the original total comes back so the user can be told"
+        );
+        assert_eq!(big.len(), 10);
+    }
+
+    #[test]
+    fn a_codex_question_is_recorded_as_the_deep_dive_it_will_actually_be() {
+        use crate::app::LearningRunMode;
+
+        // Codex has no no-tools headless mode, so a row claiming "this file
+        // only" would misdescribe the command that ran.
+        assert_eq!(
+            LearningRunMode::NoTools.effective_for(&AgentKind::Codex),
+            LearningRunMode::DeepDive
+        );
+        assert_eq!(
+            LearningRunMode::DeepDive.effective_for(&AgentKind::Codex),
+            LearningRunMode::DeepDive
+        );
+        for harness in [AgentKind::Claude, AgentKind::Opencode, AgentKind::Pi] {
+            assert_eq!(
+                LearningRunMode::NoTools.effective_for(&harness),
+                LearningRunMode::NoTools,
+                "{harness:?} answers without tools when asked to"
+            );
+        }
+    }
+
+    #[test]
+    fn a_question_stranded_by_a_previous_run_reloads_as_failed_not_thinking() {
+        let (_repo, mut app) = opened_app();
+        app.learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        let stranded = learning(&app).qa[0].clone();
+        assert!(stranded.status.is_in_flight());
+
+        // A fresh process knows about no live runs, so the row is stranded.
+        app.learning_runs_in_flight.clear();
+        let rows = app.reconcile_interrupted_qa(vec![stranded.clone()]);
+        assert_eq!(rows[0].status, crate::app::LearningQaStatus::Failed);
+        assert_eq!(
+            rows[0].question, stranded.question,
+            "the question survives so it can be asked again"
+        );
+        let reason = rows[0].error.as_deref().unwrap_or_default();
+        assert!(reason.contains("Ask it again"), "{reason}");
+
+        // A run this process is genuinely still waiting on is left alone.
+        app.learning_runs_in_flight.insert(stranded.id.clone());
+        let rows = app.reconcile_interrupted_qa(vec![stranded.clone()]);
+        assert_eq!(rows[0].status, stranded.status);
+        assert!(rows[0].error.is_none());
+    }
+}

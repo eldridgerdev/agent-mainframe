@@ -3214,6 +3214,22 @@ impl LearningRunMode {
         }
     }
 
+    /// The mode `harness` can actually deliver.
+    ///
+    /// Codex has no no-tools headless invocation: `codex exec` is always an
+    /// ephemeral read-only sandbox that can read the whole repository, and
+    /// `HeadlessRunner::run` ignores `restricted` for it. Asking for
+    /// [`NoTools`](Self::NoTools) there would run a repo-reading agent while
+    /// the row claimed "this file only", so the request is downgraded to
+    /// [`DeepDive`](Self::DeepDive) before it is recorded or run — the label,
+    /// the stored row, and the command then all say the same thing.
+    pub fn effective_for(self, harness: &AgentKind) -> Self {
+        match (self, harness) {
+            (LearningRunMode::NoTools, AgentKind::Codex) => LearningRunMode::DeepDive,
+            _ => self,
+        }
+    }
+
     /// What the mode does, in the user's terms rather than AMF's.
     pub fn description(self) -> &'static str {
         match self {
@@ -3520,7 +3536,8 @@ impl LearningViewState {
     pub fn selected_diff_file(&self) -> Option<&crate::diff::DiffFile> {
         match self.entries.get(self.selected_entry) {
             Some(LearningListEntry::File {
-                diff_index: Some(i), ..
+                diff_index: Some(i),
+                ..
             }) => self.diff_files.get(*i),
             _ => None,
         }

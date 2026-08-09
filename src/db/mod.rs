@@ -399,6 +399,17 @@ impl AmfDb {
         learning::upsert_qa(&self.conn, qa)
     }
 
+    /// Record a finished run against one row by id, without the whole row.
+    pub fn finish_learning_qa(
+        &self,
+        qa_id: &str,
+        answer: Option<&str>,
+        status: crate::app::LearningQaStatus,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        learning::finish_qa(&self.conn, qa_id, answer, status, error)
+    }
+
     /// Delete one Q&A row; its follow-up thread cascades away with it.
     pub fn delete_learning_qa(&self, qa_id: &str) -> Result<()> {
         learning::delete_qa(&self.conn, qa_id)

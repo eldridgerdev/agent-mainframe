@@ -1,8 +1,11 @@
 # Learning Mode
 
-- **Status:** In progress — Epics 1 (foundations), 2 (browsing), and 3
-  (asking) complete; Epic 4 (surface: rendering, keys, entry point) next.
-  Learning Mode is not yet reachable from the dashboard.
+- **Status:** In progress — Epics 1 (foundations), 2 (browsing), 3
+  (asking), and 4 (surface) complete, plus a first pass of Epic 6
+  hardening. Learning Mode is reachable from the dashboard with `K` and
+  usable end to end: browse, select, ask, read the answer. Epic 5
+  (acting on an answer — follow-up, deep dive, relabel, make actionable,
+  escalate) is next and entirely unbuilt.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -678,6 +681,34 @@ closes out.
 
 ### Epic 6 — Hardening and docs
 
+- [x] Close the honesty gaps found by using the finished surface — each
+      one a case where the UI stated something the code didn't
+      guarantee:
+      - **A run interrupted by AMF exiting reloaded as "thinking…"
+        forever.** `App::reconcile_interrupted_qa` (called from the
+        history load) fails any row that is stored in-flight but has no
+        live run in this process, keeping the question so it can be
+        asked again; `App::learning_runs_in_flight` is what distinguishes
+        a genuinely-still-running row from a stranded one. Covered by
+        `a_question_stranded_by_a_previous_run_reloads_as_failed_not_thinking`.
+      - **Codex rows claimed "this file only" while reading the repo.**
+        `codex exec` has no no-tools mode, so
+        `LearningRunMode::effective_for` downgrades the request to
+        `DeepDive` *before* the row is written — label, stored row, and
+        command now agree. Covered by
+        `a_codex_question_is_recorded_as_the_deep_dive_it_will_actually_be`.
+      - **A diff selection was quoted with its `+`/`-` markers
+        stripped**, so an addition and the line it replaced read as two
+        adjacent lines of source. `DiffFile::addressable_line_diff_texts`
+        keeps the markers and `LearningViewState::selection_is_diff`
+        tells the prompt builder it is looking at a diff.
+      - **A capped repo listing looked complete.** `cap_repo_entries`
+        returns the pre-truncation total so the overlay can say how many
+        files it is not showing, and point at branch-changes scope.
+        Covered by `a_huge_repo_listing_is_capped_and_says_so`.
+      - `AmfDb::finish_learning_qa` persists a finished run by id rather
+        than rewriting the whole row, so a completion can't overwrite an
+        edit made while the answer was generating.
 - [ ] Add error handling and debug logging (`log_info` / `log_warn` /
       `log_error` with a `"learning"` context) for file load failures,
       headless run failures, and DB errors. User-facing errors must say

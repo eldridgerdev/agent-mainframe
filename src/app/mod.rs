@@ -716,6 +716,10 @@ pub struct App {
     /// run) is what lets several questions be in flight at once.
     pub learning_answer_tx: Sender<learning::LearningAnswer>,
     pub learning_answer_rx: Receiver<learning::LearningAnswer>,
+    /// `learning_qa` ids this process has a live run for. Only the ids not in
+    /// here are safe to treat as stranded when a session's history is loaded —
+    /// see `App::reconcile_interrupted_qa`.
+    pub learning_runs_in_flight: std::collections::HashSet<String>,
     sidebar_load_executor: Option<SidebarLoadExecutor>,
     sidebar_load_signatures: HashMap<String, u64>,
     pending_sidebar_loads: std::collections::HashSet<String>,
@@ -2154,6 +2158,7 @@ impl App {
             sidebar_load_rx,
             learning_answer_tx,
             learning_answer_rx,
+            learning_runs_in_flight: std::collections::HashSet::new(),
             sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
@@ -2374,6 +2379,7 @@ impl App {
             sidebar_load_rx,
             learning_answer_tx,
             learning_answer_rx,
+            learning_runs_in_flight: std::collections::HashSet::new(),
             sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),

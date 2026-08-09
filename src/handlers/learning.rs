@@ -261,7 +261,9 @@ mod tests {
             "nothing to read, so the overlay must not open"
         );
         assert!(
-            app.message.as_deref().is_some_and(|m| m.contains("feature")),
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.contains("feature")),
             "the keypress has to say why nothing happened, got {:?}",
             app.message
         );
@@ -291,7 +293,10 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
 
-        assert!(rendered.contains("Learning Mode"), "the overlay is on screen");
+        assert!(
+            rendered.contains("Learning Mode"),
+            "the overlay is on screen"
+        );
         assert!(rendered.contains("read-only"));
     }
 
@@ -304,7 +309,10 @@ mod tests {
         handle_learning_key(&mut app, key(KeyCode::Char('q'))).unwrap();
 
         assert!(matches!(app.mode, AppMode::Normal));
-        assert!(matches!(app.selection, crate::app::Selection::Feature(0, 0)));
+        assert!(matches!(
+            app.selection,
+            crate::app::Selection::Feature(0, 0)
+        ));
     }
 
     #[test]
@@ -326,7 +334,10 @@ mod tests {
 
         handle_learning_key(&mut app, key(KeyCode::Esc)).unwrap();
         assert!(!learning(&app).help_open);
-        assert!(matches!(app.mode, AppMode::Learning(_)), "still in the mode");
+        assert!(
+            matches!(app.mode, AppMode::Learning(_)),
+            "still in the mode"
+        );
     }
 
     #[test]
@@ -339,15 +350,7 @@ mod tests {
         // `q` is typing here, not a close.
         handle_learning_key(&mut app, key(KeyCode::Char('q'))).unwrap();
         assert!(matches!(app.mode, AppMode::Learning(_)));
-        assert_eq!(
-            learning(&app)
-                .question
-                .as_ref()
-                .unwrap()
-                .editor
-                .text(),
-            "q"
-        );
+        assert_eq!(learning(&app).question.as_ref().unwrap().editor.text(), "q");
 
         handle_learning_key(&mut app, key(KeyCode::Esc)).unwrap();
         assert!(learning(&app).question.is_none());

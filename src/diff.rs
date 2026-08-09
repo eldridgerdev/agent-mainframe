@@ -144,6 +144,26 @@ impl DiffFile {
         out
     }
 
+    /// The same lines as [`addressable_line_texts`](Self::addressable_line_texts),
+    /// with the `+`/`-`/space prefix left on.
+    ///
+    /// Quoting a mixed hunk verbatim needs the markers: stripped of them, an
+    /// addition and the line it replaced read as two adjacent lines of source.
+    /// Use this wherever the excerpt is presented as a *diff* rather than
+    /// pasted back as code.
+    pub fn addressable_line_diff_texts(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for hunk in &self.hunks {
+            for line in &hunk.lines {
+                if matches!(line.kind, DiffLineKind::NoNewlineMarker) {
+                    continue;
+                }
+                out.push(line.text.clone());
+            }
+        }
+        out
+    }
+
     /// Whether opening this file in `$EDITOR` can do anything useful. A deletion
     /// has no file left on disk and a binary blob has nothing an editor can show,
     /// so both footers use this to hide the `E` hint rather than advertise a key

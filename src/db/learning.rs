@@ -282,6 +282,35 @@ pub fn upsert_qa(conn: &Connection, qa: &LearningQa) -> Result<()> {
     Ok(())
 }
 
+/// Record the outcome of a finished run against one row, addressed by id.
+///
+/// Deliberately narrower than [`upsert_qa`]: a run can outlive the overlay
+/// that started it, and once the overlay is gone there is no in-memory row to
+/// write back — only the id the thread was launched with. Returns whether a
+/// row was actually updated, so a completion for a question that has since
+/// been deleted can be reported rather than silently dropped.
+///
+/// `answer` is coalesced, not overwritten: a failed rerun must not erase the
+/// answer an earlier run already produced.
+pub fn finish_qa(
+    conn: &Connection,
+    qa_id: &str,
+    answer: Option<&str>,
+    status: LearningQaStatus,
+    error: Option<&str>,
+) -> Result<bool> {
+    let updated = conn.execute(
+        "UPDATE learning_qa
+            SET answer = COALESCE(?2, answer),
+                status = ?3,
+                error = ?4,
+                updated_at = ?5
+          WHERE id = ?1",
+        params![qa_id, answer, status.as_str(), error, now_timestamp()],
+    )?;
+    Ok(updated > 0)
+}
+
 /// Delete one Q&A row; its follow-ups cascade away with it.
 pub fn delete_qa(conn: &Connection, qa_id: &str) -> Result<()> {
     conn.execute("DELETE FROM learning_qa WHERE id = ?1", params![qa_id])?;
@@ -462,7 +491,12 @@ mod tests {
             )
             .unwrap();
         db.set_learning_onboarding_seen(&session.id).unwrap();
-        assert!(db.learning_session("proj-1").unwrap().unwrap().onboarding_seen);
+        assert!(
+            db.learning_session("proj-1")
+                .unwrap()
+                .unwrap()
+                .onboarding_seen
+        );
     }
 
     #[test]

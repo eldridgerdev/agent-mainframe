@@ -35,6 +35,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("L", "Open prompt library"),
         ("G", "Open PR Triage (experimental)"),
         ("W", "Open AI Review for this feature (experimental)"),
+        (
+            "K",
+            "Open Learning Mode (read this codebase, ask questions)",
+        ),
         ("P", "Run a plan interview for this feature"),
         ("T", "Theme picker"),
         ("c", "Start feature (create tmux)"),

@@ -577,7 +577,13 @@ mod tests {
         )]);
         let live = LiveHarnesses::from_pairs([("amf-alpha", "claude")]);
 
-        let base = in_flight_headless_runs();
+        // Wait for any lease leaked by an earlier test to drain before reading
+        // the baseline. A run abandoned elsewhere in the suite (closing the
+        // changeset-overview modal, say) keeps its lease for
+        // `ABANDONED_RUN_GRACE` past the end of that test, so capturing the
+        // count directly can record a baseline that then falls away underneath
+        // the assertion below.
+        let base = wait_for_in_flight(0);
         let _lease = HeadlessLease::acquire();
         // One live harness session in the store, plus the lease just taken.
         assert_eq!(total_active_agents(&store, &live), 1 + base + 1);

@@ -12,6 +12,31 @@ are tagged.
 
 ### Added
 
+- **Learning Mode: read a codebase and ask an agent about it.** Press `K` on a
+  project or feature to open a read-only viewer. Browse every file in the
+  project or just the ones your branch changed, point at a whole file, a line
+  range, or a single change, and ask about it. Nothing in this mode edits your
+  files.
+- **Two kinds of question.** `e` asks for an explanation and gets a teaching
+  answer that proposes no changes; `c` asks for a concrete change you can act
+  on later. `t` offers starter questions matched to whatever you have
+  selected, for when you are not sure what to ask — each one lands in the
+  prompt as editable text rather than being sent for you.
+- **Answers are written for the reader you say you are.** `L` switches between
+  newcomer answers, which define their terms and end with what to read next,
+  and familiar answers, which skip the groundwork.
+- **Asking never blocks.** Questions are answered in the background and several
+  can be in flight at once, so you can keep reading while answers arrive. Your
+  questions and answers are kept per project and are still there next time you
+  open the mode.
+- **Pick which agent answers.** `m` chooses among the harnesses you have
+  enabled. Each question runs that agent's CLI, so questions cost whatever that
+  agent costs.
+
+Learning Mode opens its own help with `?`, and shows it once automatically the
+first time you open a project. No migration is required; the mode adds its own
+storage the first time it runs.
+
 - **AMF now warns before it fills the machine up, instead of after.** Starting
   an agent — a feature, or a new agent session — first checks how many agent
   sessions are already running across every project (plus any headless review

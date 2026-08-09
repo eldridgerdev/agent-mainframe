@@ -1050,6 +1050,13 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
+        // Learning Mode answers arrive one per finished question, and several
+        // can be in flight at once, so this drains rather than polling a
+        // single-shot slot.
+        if app.poll_learning_answers_bg() {
+            force_redraw = true;
+        }
+
         // Apply the one-shot VS Code availability check when it resolves.
         if let Ok(available) = vscode_check_rx.try_recv() {
             app.vscode_available = available;

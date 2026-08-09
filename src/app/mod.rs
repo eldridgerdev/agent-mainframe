@@ -14,6 +14,7 @@ pub(crate) mod dormant;
 pub(crate) mod editor_ops;
 mod feature_ops;
 mod hooks;
+pub(crate) mod learning;
 mod navigation;
 mod notifications;
 mod opencode;
@@ -798,6 +799,15 @@ pub struct App {
     pub opencode_sidebar_cache: HashMap<String, opencode_storage::OpencodeSidebarData>,
     sidebar_load_tx: Sender<SidebarLoadResult>,
     sidebar_load_rx: Receiver<SidebarLoadResult>,
+    /// Finished Learning Mode answers, delivered from the per-question
+    /// threads. A persistent channel (rather than one `Option<Receiver>` per
+    /// run) is what lets several questions be in flight at once.
+    pub learning_answer_tx: Sender<learning::LearningAnswer>,
+    pub learning_answer_rx: Receiver<learning::LearningAnswer>,
+    /// `learning_qa` ids this process has a live run for. Only the ids not in
+    /// here are safe to treat as stranded when a session's history is loaded —
+    /// see `App::reconcile_interrupted_qa`.
+    pub learning_runs_in_flight: std::collections::HashSet<String>,
     sidebar_load_executor: Option<SidebarLoadExecutor>,
     sidebar_load_signatures: HashMap<String, u64>,
     pending_sidebar_loads: std::collections::HashSet<String>,
@@ -2157,6 +2167,7 @@ impl App {
         let store = db.load_store()?;
         setup::repair_unquoted_claude_hooks_for_store(&store);
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
+        let (learning_answer_tx, learning_answer_rx) = std::sync::mpsc::channel();
         // These caches are populated by the background sidebar-load tasks
         // scheduled in startup task 7 (schedule_sidebar_loads_for_all_features).
         // Building them synchronously here required reading every Claude JSONL
@@ -2239,6 +2250,9 @@ impl App {
             opencode_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
+            learning_answer_tx,
+            learning_answer_rx,
+            learning_runs_in_flight: std::collections::HashSet::new(),
             sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
@@ -2394,6 +2408,7 @@ impl App {
         // running them.
         crate::extension::set_test_global_extension_config(Some(ExtensionConfig::default()));
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
+        let (learning_answer_tx, learning_answer_rx) = std::sync::mpsc::channel();
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
@@ -2464,6 +2479,9 @@ impl App {
             opencode_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
+            learning_answer_tx,
+            learning_answer_rx,
+            learning_runs_in_flight: std::collections::HashSet::new(),
             sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),

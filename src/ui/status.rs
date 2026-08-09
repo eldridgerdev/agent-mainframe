@@ -791,6 +791,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" Esc", key_style()),
             Span::raw(" cancel plan interview"),
         ]),
+        // Learning Mode is a full-viewport overlay with its own footer, so
+        // like the plan interview this arm only keeps the match exhaustive.
+        AppMode::Learning(_) => Line::from(vec![
+            Span::styled(" Esc", key_style()),
+            Span::raw(" close Learning Mode"),
+        ]),
         AppMode::Dormant(_) => Line::from(vec![
             Span::styled(" Enter", key_style()),
             Span::raw(" open  "),

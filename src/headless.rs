@@ -1172,7 +1172,13 @@ mod tests {
     #[test]
     fn a_failed_headless_spawn_releases_its_lease() {
         let _guard = lock_lease_tests();
-        let base = in_flight_headless_runs();
+        // Wait for any lease leaked by an earlier test to drain before reading
+        // the baseline. A run abandoned elsewhere in the suite (closing the
+        // changeset-overview modal, say) keeps its lease for
+        // `ABANDONED_RUN_GRACE` past the end of that test, so capturing the
+        // count directly can record a baseline that then falls away underneath
+        // the assertion below.
+        let base = wait_for_in_flight(0);
         let spec = HeadlessCommand {
             binary: "amf-no-such-headless-binary".into(),
             args: vec!["-p"],
@@ -1209,7 +1215,13 @@ mod tests {
         // reviewer walks away from before it finishes. `& wait` gives it a
         // child of its own, the way a real harness has subprocesses: a kill
         // that only reached the top process would leave that behind.
-        let base = in_flight_headless_runs();
+        // Wait for any lease leaked by an earlier test to drain before reading
+        // the baseline. A run abandoned elsewhere in the suite (closing the
+        // changeset-overview modal, say) keeps its lease for
+        // `ABANDONED_RUN_GRACE` past the end of that test, so capturing the
+        // count directly can record a baseline that then falls away underneath
+        // the assertion below.
+        let base = wait_for_in_flight(0);
         let child = Command::new("sh")
             .args(["-c", "sleep 30 & wait"])
             .stdout(Stdio::null())
@@ -1242,7 +1254,13 @@ mod tests {
     #[test]
     fn dropping_a_finished_leased_child_reaps_it_without_a_kill() {
         let _guard = lock_lease_tests();
-        let base = in_flight_headless_runs();
+        // Wait for any lease leaked by an earlier test to drain before reading
+        // the baseline. A run abandoned elsewhere in the suite (closing the
+        // changeset-overview modal, say) keeps its lease for
+        // `ABANDONED_RUN_GRACE` past the end of that test, so capturing the
+        // count directly can record a baseline that then falls away underneath
+        // the assertion below.
+        let base = wait_for_in_flight(0);
         let child = Command::new("true")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1265,7 +1283,13 @@ mod tests {
     #[test]
     fn collecting_a_leased_child_releases_its_lease() {
         let _guard = lock_lease_tests();
-        let base = in_flight_headless_runs();
+        // Wait for any lease leaked by an earlier test to drain before reading
+        // the baseline. A run abandoned elsewhere in the suite (closing the
+        // changeset-overview modal, say) keeps its lease for
+        // `ABANDONED_RUN_GRACE` past the end of that test, so capturing the
+        // count directly can record a baseline that then falls away underneath
+        // the assertion below.
+        let base = wait_for_in_flight(0);
         let child = Command::new("true")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

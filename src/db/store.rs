@@ -12,7 +12,7 @@ use crate::token_tracking::TokenUsageSource;
 
 // ── enum ↔ str helpers ───────────────────────────────────────
 
-fn agent_to_str(a: &AgentKind) -> &'static str {
+pub(super) fn agent_to_str(a: &AgentKind) -> &'static str {
     match a {
         AgentKind::Claude => "claude",
         AgentKind::Opencode => "opencode",
@@ -21,7 +21,7 @@ fn agent_to_str(a: &AgentKind) -> &'static str {
     }
 }
 
-fn agent_from_str(s: &str) -> AgentKind {
+pub(super) fn agent_from_str(s: &str) -> AgentKind {
     match s {
         "opencode" => AgentKind::Opencode,
         "codex" => AgentKind::Codex,

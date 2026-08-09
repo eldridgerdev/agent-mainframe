@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 pub struct ClaudeLauncher;
 
@@ -171,7 +171,11 @@ impl ClaudeLauncher {
     /// single-purpose pass (a per-file walkthrough, an AI co-review) can run
     /// on a cheaper model than whatever the interactive session uses,
     /// independent of the feature's own harness/model.
-    pub fn spawn_headless(workdir: &Path, prompt: &str, model: Option<&str>) -> Result<Child> {
+    pub fn spawn_headless(
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> Result<crate::headless::LeasedChild> {
         let binary = Self::resolve_binary();
         let mut args = vec![
             "-p".to_string(),
@@ -198,7 +202,9 @@ impl ClaudeLauncher {
             });
         }
 
-        Ok(child)
+        // Wrapped so the run counts toward the agent concurrency limit for as
+        // long as the caller holds the child, however that ends.
+        Ok(crate::headless::LeasedChild::new(child))
     }
 }
 

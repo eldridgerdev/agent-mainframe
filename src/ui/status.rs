@@ -791,6 +791,24 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" Esc", key_style()),
             Span::raw(" cancel plan interview"),
         ]),
+        AppMode::Dormant(_) => Line::from(vec![
+            Span::styled(" Enter", key_style()),
+            Span::raw(" open  "),
+            Span::styled("x", key_style()),
+            Span::raw(" stop  "),
+            Span::styled("e", key_style()),
+            Span::raw(" close editor  "),
+            Span::styled("d", key_style()),
+            Span::raw(" delete  "),
+            Span::styled("q", key_style()),
+            Span::raw(" close"),
+        ]),
+        AppMode::ConfirmResourceStart(_) => Line::from(vec![
+            Span::styled(" y", key_style()),
+            Span::raw(" start anyway  "),
+            Span::styled("n/Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {

@@ -407,6 +407,17 @@ pub fn handle_delete_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+/// Pre-start resource warning. Confirming starts the agent anyway — the gate
+/// is advisory, so `y` must always be able to proceed.
+pub fn handle_resource_confirm_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('y') | KeyCode::Enter => app.confirm_pending_start()?,
+        KeyCode::Char('n') | KeyCode::Esc => app.cancel_pending_start(),
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Char('j') | KeyCode::Down => {

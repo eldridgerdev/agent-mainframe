@@ -206,6 +206,20 @@ impl App {
         fi: usize,
         codex_session_id: &str,
     ) -> Result<()> {
+        // Same launch this feature's own start would do, reached from the
+        // saved-transcript picker: gate it too. The picked session id lives in
+        // the picker's state, which the confirmation dialog would replace, so
+        // this warns rather than parks.
+        let already_running = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .is_some_and(|feature| self.tmux.session_exists(&feature.tmux_session));
+        if !already_running {
+            self.gate_launch(StartIntent::Warn("the resumed agent session"));
+        }
+
         let repo = self.store.projects[pi].repo.clone();
         let viewport = self.view_pane_viewport();
         // Resolve before the mutable borrow of `feature` below.

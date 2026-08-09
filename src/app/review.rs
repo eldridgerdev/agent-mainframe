@@ -3643,6 +3643,9 @@ impl App {
             fi,
             FINAL_REVIEW_SESSION_LABEL,
             Some(harness),
+            // The feedback file is already written and the harness already
+            // picked; warn rather than park, which would drop both.
+            StartIntent::Warn("the review agent"),
         ) {
             Ok(si) => si,
             Err(e) => {

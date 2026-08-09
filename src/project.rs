@@ -754,6 +754,19 @@ pub struct ProjectStore {
 }
 
 impl ProjectStore {
+    /// A store with nothing in it, at the current version — what a reader gets
+    /// when there is no database to read (`amf doctor` on a fresh machine).
+    pub fn empty() -> Self {
+        Self {
+            version: CURRENT_PROJECT_STORE_VERSION,
+            projects: Vec::new(),
+            session_bookmarks: default_session_bookmarks(),
+            available_harnesses: Vec::new(),
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        }
+    }
+
     pub fn has_any_harnesses(&self) -> bool {
         !self.available_harnesses.is_empty()
     }

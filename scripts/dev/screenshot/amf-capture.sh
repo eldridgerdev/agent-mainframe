@@ -11,6 +11,7 @@ KEEP=0
 SCENARIO=""
 SEED=""
 SEED_FEATURE=""
+CONFIG_FILE=""
 GIF=0
 GIF_PATH=""
 READY_TIMEOUT_SECS=15
@@ -52,6 +53,12 @@ Options:
                         skipped. Without --scenario, runs a small
                         built-in smoke test (dashboard-ready, press j,
                         after-j).
+  --config <file>       AMF config JSON copied into the scratch
+                        instance before it starts, for scenarios whose
+                        behavior depends on config (agent limits,
+                        dormancy thresholds, ...). AMF reads its config
+                        once at startup, so this cannot be done from a
+                        run: step.
   --seed <file>         Automation JSON payload (see docs/automation/)
                         applied against the scratch instance once the
                         dashboard is ready, before any --scenario steps
@@ -109,6 +116,10 @@ while [[ $# -gt 0 ]]; do
             SCENARIO="$2"
             shift 2
             ;;
+        --config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
         --seed)
             SEED="$2"
             shift 2
@@ -160,6 +171,11 @@ if [[ -n "$SCENARIO" && ! -f "$SCENARIO" ]]; then
     exit 1
 fi
 
+if [[ -n "$CONFIG_FILE" && ! -f "$CONFIG_FILE" ]]; then
+    echo "error: config file not found: $CONFIG_FILE" >&2
+    exit 1
+fi
+
 if [[ -n "$SEED" && ! -f "$SEED" ]]; then
     echo "error: seed file not found: $SEED" >&2
     exit 1
@@ -193,6 +209,12 @@ fi
 # dir must already exist before amf starts, or it will silently open the
 # user's real database instead of this scratch one.
 mkdir -p "$CONFIG_DIR/amf" "$STATE_DIR/amf" "$OUT_DIR"
+
+# Must land before amf starts: load_config() runs once, at startup.
+if [[ -n "$CONFIG_FILE" ]]; then
+    cp "$CONFIG_FILE" "$CONFIG_DIR/amf/config.json"
+    echo "seeded config: $CONFIG_FILE" >&2
+fi
 
 if [[ -z "$AMF_BIN" ]]; then
     AMF_BIN="$REPO_ROOT/target/debug/amf"

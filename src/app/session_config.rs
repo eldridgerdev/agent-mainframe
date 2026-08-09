@@ -242,7 +242,10 @@ impl App {
         ensure_plan_mode_instructions(&workdir, &next_agent, plan_mode);
 
         if was_running {
-            self.ensure_feature_running(pi, fi)?;
+            // Restarting what was already running under a different harness:
+            // the agent it replaces was counted a moment ago, so this is not a
+            // new claim on the machine.
+            self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
         }
 
         self.mode = AppMode::Normal;

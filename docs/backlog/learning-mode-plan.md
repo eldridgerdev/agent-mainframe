@@ -313,7 +313,12 @@ duplicating it.
   `action`), `level`, `answer`, `harness`, `run_mode` (`no_tools` /
   `deep_dive`), `status`, `todo_id` (nullable — set only when the user
   made it actionable), `spawned_session_id`, `created_at`,
-  `updated_at`.
+  `updated_at`, and `selection_is_diff` (added by `MIGRATION_018`).
+  `selection_is_diff` cannot be re-derived from the other columns: a
+  line anchor looks the same whether it came from the repo tree or from
+  a diff, and the browse scope that told them apart is not stored — so a
+  follow-up would otherwise label its parent's excerpt from wherever
+  browsing had since ended up. Rows written before it default to 0.
 - Append `("Add learning_sessions + learning_qa tables for Learning
   Mode", MIGRATION_017)` to the migration list in
   `src/db/migrations.rs` (current tail is `MIGRATION_016`, schema
@@ -725,7 +730,27 @@ closes out.
         stripped**, so an addition and the line it replaced read as two
         adjacent lines of source. `DiffFile::addressable_line_diff_texts`
         keeps the markers and `LearningViewState::selection_is_diff`
-        tells the prompt builder it is looking at a diff.
+        tells the prompt builder it is looking at a diff. Diff-ness is
+        now captured *with* the selection (`AskAnchor`,
+        `LearningQuestionEditor`, and the persisted `learning_qa` row)
+        rather than re-read at submit time, so a follow-up asked after
+        browsing back to the repo tree still labels its parent's excerpt
+        correctly. Covered by
+        `a_diff_selection_keeps_its_markers_and_says_it_is_a_diff` and
+        `a_follow_up_keeps_its_parents_diff_labelling_after_browsing_away`.
+      - **Browsing a diff narrowed what the agent could see.** In
+        branch-changes scope `learning_load_selected_content` hydrates
+        `state.content` from the snapshot's copy of the file, so a
+        whole-file anchor is the whole file and a line anchor still has
+        surrounding context — the pane keeps addressing diff rows only.
+        Covered by `a_changed_file_carries_its_whole_file_not_just_the_hunks`.
+      - **An answer that finished after its overlay closed was
+        discarded**, leaving the stored row at `running` for good.
+        `poll_learning_answers_bg` falls back to
+        `finish_learning_qa_in_db` when the row is no longer in the open
+        overlay. Covered by
+        `an_answer_arriving_after_the_overlay_closed_is_still_saved` and
+        `a_failure_arriving_after_the_overlay_closed_is_still_saved`.
       - **A capped repo listing looked complete.** `cap_repo_entries`
         returns the pre-truncation total so the overlay can say how many
         files it is not showing, and point at branch-changes scope.

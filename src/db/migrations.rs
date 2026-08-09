@@ -84,6 +84,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add learning_sessions + learning_qa tables for Learning Mode",
             MIGRATION_017,
         ),
+        (
+            "Record whether a learning Q&A's captured selection is a diff excerpt",
+            MIGRATION_018,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -402,6 +406,21 @@ CREATE INDEX IF NOT EXISTS idx_learning_qa_parent
     ON learning_qa(parent_qa_id);
 ";
 
+// Whether a row's captured `selection_text` is a unified-diff excerpt rather
+// than plain source.
+//
+// It cannot be re-derived from the row: a line anchor looks identical whether
+// it came from the repo tree or from a diff, and the browse scope that would
+// have told them apart isn't stored. Without it a follow-up asked after the
+// user browsed elsewhere would present its parent's diff excerpt as ordinary
+// numbered source (or the reverse), which is exactly the confusion the `+`/`-`
+// markers exist to prevent. Existing rows default to 0: plain source is the
+// safer wrong answer, since a marker-free block read as a diff would be.
+const MIGRATION_018: &str = "
+ALTER TABLE learning_qa
+    ADD COLUMN selection_is_diff INTEGER NOT NULL DEFAULT 0;
+";
+
 const MIGRATION_001: &str = "
 CREATE TABLE IF NOT EXISTS store_meta (
     key   TEXT PRIMARY KEY,
@@ -498,7 +517,9 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        // `run` doesn't stop at 017 — it carries on through every later
+        // migration, so the DB lands at the newest version, not at 17.
+        assert_eq!(version, 18);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -511,6 +532,43 @@ mod tests {
         }
     }
 
+    /// Migration 018 adds `selection_is_diff` to rows written before it
+    /// existed. They default to 0 — plain source — which is the safe wrong
+    /// answer: a marker-free block presented as a diff would confuse the agent,
+    /// whereas a diff presented as source is what those rows already got.
+    #[test]
+    fn migration_018_backfills_existing_qa_rows_as_plain_source() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_017).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (17, datetime('now'), 'seed');",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO learning_sessions
+                (id, project_id, feature_id, title, created_at, updated_at)
+             VALUES ('s1', 'p1', 'f1', 'amf', datetime('now'), datetime('now'));
+             INSERT INTO learning_qa
+                (id, learning_session_id, question, created_at, updated_at)
+             VALUES ('q1', 's1', 'What is this?', datetime('now'), datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let is_diff: i64 = conn
+            .query_row(
+                "SELECT selection_is_diff FROM learning_qa WHERE id = 'q1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(is_diff, 0, "an existing row is treated as plain source");
+    }
+
     /// A brand-new DB arrives at the same place in one pass.
     #[test]
     fn fresh_database_lands_at_the_latest_version() {
@@ -519,7 +577,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -532,7 +590,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 17);
+        assert_eq!(rows, 18);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

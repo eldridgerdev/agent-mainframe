@@ -3309,6 +3309,12 @@ pub struct LearningQa {
     /// The text the anchor covered when the question was asked. Kept verbatim
     /// so the answer stays readable even after the file moves on.
     pub selection_text: String,
+    /// Whether [`selection_text`](Self::selection_text) is a unified-diff
+    /// excerpt. Stored rather than re-derived: a line anchor from the repo tree
+    /// and one from a diff are indistinguishable once the browse scope is gone,
+    /// and a follow-up needs to label its parent's capture correctly however
+    /// far the file list has moved on since.
+    pub selection_is_diff: bool,
     pub question: String,
     pub intent: LearningQaIntent,
     /// The level this row was answered at, so a reloaded answer explains why
@@ -3434,6 +3440,10 @@ pub struct LearningQuestionEditor {
     pub file_path: Option<String>,
     /// The anchored text captured alongside `anchor`.
     pub selection_text: String,
+    /// Whether `selection_text` is a unified-diff excerpt, captured with it so
+    /// the prompt labels it the same way however the browse scope changes
+    /// before the question is submitted.
+    pub selection_is_diff: bool,
     pub scroll: usize,
     pub sync_to_cursor: bool,
 }

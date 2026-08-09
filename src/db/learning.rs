@@ -207,7 +207,7 @@ pub fn list_qa(conn: &Connection, session_id: &str) -> Result<Vec<LearningQa>> {
         "SELECT id, learning_session_id, parent_qa_id, file_path, anchor_kind,
                 line_start, line_end, selection_text, question, intent, level,
                 answer, harness, run_mode, status, error, todo_id,
-                spawned_session_id, created_at, updated_at
+                spawned_session_id, created_at, updated_at, selection_is_diff
          FROM learning_qa WHERE learning_session_id = ?1
          ORDER BY created_at ASC, rowid ASC",
     )?;
@@ -231,9 +231,9 @@ pub fn upsert_qa(conn: &Connection, qa: &LearningQa) -> Result<()> {
             (id, learning_session_id, parent_qa_id, file_path, anchor_kind,
              line_start, line_end, selection_text, question, intent, level,
              answer, harness, run_mode, status, error, todo_id,
-             spawned_session_id, created_at, updated_at)
+             spawned_session_id, created_at, updated_at, selection_is_diff)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                 ?15, ?16, ?17, ?18, ?19, ?20)
+                 ?15, ?16, ?17, ?18, ?19, ?20, ?21)
          ON CONFLICT(id) DO UPDATE SET
             parent_qa_id = excluded.parent_qa_id,
             file_path = excluded.file_path,
@@ -241,6 +241,7 @@ pub fn upsert_qa(conn: &Connection, qa: &LearningQa) -> Result<()> {
             line_start = excluded.line_start,
             line_end = excluded.line_end,
             selection_text = excluded.selection_text,
+            selection_is_diff = excluded.selection_is_diff,
             question = excluded.question,
             intent = excluded.intent,
             level = excluded.level,
@@ -277,6 +278,7 @@ pub fn upsert_qa(conn: &Connection, qa: &LearningQa) -> Result<()> {
                 qa.created_at.clone()
             },
             now_timestamp(),
+            qa.selection_is_diff as i64,
         ],
     )?;
     Ok(())
@@ -366,6 +368,7 @@ fn row_to_qa(row: &rusqlite::Row) -> rusqlite::Result<LearningQa> {
         spawned_session_id: row.get(17)?,
         created_at: row.get(18)?,
         updated_at: row.get(19)?,
+        selection_is_diff: row.get::<_, i64>(20)? != 0,
     })
 }
 
@@ -389,6 +392,7 @@ mod tests {
             file_path: Some("src/app/learning.rs".to_string()),
             anchor: LearningAnchor::Lines { start: 40, end: 58 },
             selection_text: "fn open_learning(&mut self) {}".to_string(),
+            selection_is_diff: true,
             question: question.to_string(),
             intent: LearningQaIntent::Explain,
             level: LearningLevel::Newcomer,

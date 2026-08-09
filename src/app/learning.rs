@@ -1212,6 +1212,9 @@ pub struct AskAnchor {
     pub anchor: LearningAnchor,
     pub file_path: Option<String>,
     pub selection_text: String,
+    /// Captured with the text, not re-read at submit time: browsing away from
+    /// branch-changes scope must not turn a quoted diff into numbered source.
+    pub selection_is_diff: bool,
 }
 
 impl App {
@@ -1274,7 +1277,10 @@ impl App {
                 Some(c) => c.selection_text.clone(),
                 None => selection_text(state),
             },
-            selection_is_diff: state.selection_is_diff(),
+            selection_is_diff: match captured {
+                Some(c) => c.selection_is_diff,
+                None => state.selection_is_diff(),
+            },
             file_lines,
             selection_start_line,
             question: question.to_string(),
@@ -1362,6 +1368,7 @@ impl App {
             file_path: ctx.file_path.clone(),
             anchor: ctx.anchor,
             selection_text: ctx.selection_text.clone(),
+            selection_is_diff: ctx.selection_is_diff,
             question: question.clone(),
             intent,
             level: state.level,
@@ -1812,8 +1819,8 @@ impl App {
         intent: LearningQaIntent,
         parent_qa_id: Option<String>,
     ) {
-        let text = match &self.mode {
-            AppMode::Learning(state) => selection_text(state),
+        let (text, is_diff) = match &self.mode {
+            AppMode::Learning(state) => (selection_text(state), state.selection_is_diff()),
             _ => return,
         };
         if let AppMode::Learning(state) = &mut self.mode {
@@ -1827,6 +1834,7 @@ impl App {
                     _ => state.content_path.clone(),
                 },
                 selection_text: text,
+                selection_is_diff: is_diff,
                 scroll: 0,
                 sync_to_cursor: true,
             });
@@ -1875,6 +1883,9 @@ impl App {
                 anchor: parent.anchor,
                 file_path: parent.file_path.clone(),
                 selection_text: parent.selection_text.clone(),
+                // From the parent row, not the live overlay: the user may have
+                // browsed out of branch-changes scope since it was answered.
+                selection_is_diff: parent.selection_is_diff,
                 scroll: 0,
                 sync_to_cursor: true,
             });
@@ -1910,6 +1921,7 @@ impl App {
                     anchor: q.anchor,
                     file_path: q.file_path.clone(),
                     selection_text: q.selection_text.clone(),
+                    selection_is_diff: q.selection_is_diff,
                 });
                 (
                     q.editor.text().to_string(),
@@ -3318,6 +3330,7 @@ pub(crate) mod tests {
             file_path: None,
             anchor: LearningAnchor::Project,
             selection_text: String::new(),
+            selection_is_diff: false,
             question: id.to_string(),
             intent: LearningQaIntent::Explain,
             level: LearningLevel::Newcomer,
@@ -3432,5 +3445,222 @@ pub(crate) mod tests {
         let rows = app.reconcile_interrupted_qa(vec![stranded.clone()]);
         assert_eq!(rows[0].status, stranded.status);
         assert!(rows[0].error.is_none());
+    }
+
+    // ── answers that outlive their overlay ───────────────────
+
+    /// An overlay backed by a real database, so history survives a close.
+    fn opened_app_with_db() -> (TempDir, TempDir, App) {
+        let repo = repo_with_branch_change();
+        let db_dir = TempDir::new().unwrap();
+        let mut app = app_at(repo.path(), true);
+        app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+        app.open_learning_mode(0, 0).unwrap();
+        while learning(&app).content_path.as_deref() != Some("src/main.rs") {
+            app.learning_select_next_entry();
+        }
+        (repo, db_dir, app)
+    }
+
+    /// A run outlives the overlay that started it: closing the overlay while a
+    /// question is generating must not leave the stored row at "running", which
+    /// would reload as a question that never finishes.
+    #[test]
+    fn an_answer_arriving_after_the_overlay_closed_is_still_saved() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        assert!(!learning(&app).session_id.is_empty(), "persisted session");
+
+        app.close_learning_mode();
+        assert!(matches!(app.mode, AppMode::Normal));
+        deliver(&mut app, &id, Ok("It is the entry point.".to_string()));
+
+        app.open_learning_mode(0, 0).unwrap();
+        let row = learning(&app)
+            .qa
+            .iter()
+            .find(|r| r.id == id)
+            .expect("the question is still in history")
+            .clone();
+        assert_eq!(row.status, crate::app::LearningQaStatus::Answered);
+        assert_eq!(row.answer.as_deref(), Some("It is the entry point."));
+        assert_eq!(
+            learning(&app).in_flight_count(),
+            0,
+            "and it no longer counts as generating"
+        );
+    }
+
+    /// The failure path takes the same route: a run that failed after its
+    /// overlay closed reloads as failed, not as still thinking.
+    #[test]
+    fn a_failure_arriving_after_the_overlay_closed_is_still_saved() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        app.close_learning_mode();
+        deliver(&mut app, &id, Err("Claude couldn't answer".to_string()));
+
+        app.open_learning_mode(0, 0).unwrap();
+        let row = learning(&app).qa.iter().find(|r| r.id == id).unwrap().clone();
+        assert_eq!(row.status, crate::app::LearningQaStatus::Failed);
+        let reason = row.error.as_deref().unwrap_or_default();
+        assert!(reason.contains("couldn't answer"), "{reason}");
+        assert!(
+            !reason.contains("AMF stopped"),
+            "a real failure keeps its own reason rather than being reconciled: {reason}"
+        );
+    }
+
+    // ── branch-changes context ───────────────────────────────
+
+    /// A repo whose branch changes one line deep inside a long file, so the
+    /// diff hunk and the file are very different sizes.
+    fn repo_with_a_small_change_in_a_big_file() -> TempDir {
+        let repo = TempDir::new().unwrap();
+        git(repo.path(), &["init", "--initial-branch=main"]);
+        git(repo.path(), &["config", "user.name", "AMF Test"]);
+        git(repo.path(), &["config", "user.email", "amf@example.com"]);
+        std::fs::create_dir_all(repo.path().join("src")).unwrap();
+        let base: String = (0..BIG_FILE_LINES)
+            .map(|i| format!("fn line_{i}() {{}}\n"))
+            .collect();
+        std::fs::write(repo.path().join("src/big.rs"), &base).unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+        git(repo.path(), &["checkout", "-b", "my-feat"]);
+        let changed = base.replace("fn line_30() {}", "fn line_30_renamed() {}");
+        std::fs::write(repo.path().join("src/big.rs"), changed).unwrap();
+        git(repo.path(), &["commit", "-am", "rename line 30"]);
+        repo
+    }
+
+    const BIG_FILE_LINES: usize = 60;
+
+    /// Open the big-file repo in branch-changes scope with the changed file
+    /// loaded and every addressable diff line selected.
+    fn app_on_the_changed_file() -> (TempDir, App) {
+        let repo = repo_with_a_small_change_in_a_big_file();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+        app.learning_toggle_scope();
+        while learning(&app).content_path.as_deref() != Some("src/big.rs") {
+            app.learning_select_next_entry();
+        }
+        (repo, app)
+    }
+
+    /// Browsing a diff must not narrow what the agent can see: the surrounding
+    /// file is hydrated from the snapshot, so a whole-file anchor really is the
+    /// whole file and a line anchor still has context around it.
+    #[test]
+    fn a_changed_file_carries_its_whole_file_not_just_the_hunks() {
+        let (_repo, mut app) = app_on_the_changed_file();
+
+        let state = learning(&app);
+        assert_eq!(state.scope, BrowseScope::BranchChanges);
+        assert_eq!(
+            state.content.len(),
+            BIG_FILE_LINES,
+            "the snapshot's copy of the file, not only the diff rows"
+        );
+        assert!(
+            state.selectable_line_count() < BIG_FILE_LINES,
+            "the pane itself still addresses diff rows only"
+        );
+
+        // "Whole file" means the whole file, in this scope too.
+        app.learning_select_whole_file();
+        assert_eq!(
+            app.learning_selection_text().lines().count(),
+            BIG_FILE_LINES
+        );
+
+        // And a line selection gets surrounding context to sit in.
+        app.learning_start_range();
+        app.learning_cursor_move(1000);
+        let ctx = app
+            .learning_prompt_context("What changed here?", LearningQaIntent::Explain, Vec::new())
+            .unwrap();
+        assert_eq!(ctx.file_lines.len(), BIG_FILE_LINES);
+        let prompt = build_prompt(&ctx);
+        assert!(prompt.contains("Surrounding context"), "{prompt}");
+        assert!(
+            prompt.contains("fn line_0() {}"),
+            "context reaches code the hunk never touched: {prompt}"
+        );
+    }
+
+    /// A diff excerpt must stay readable *as* a diff: markers intact, and the
+    /// prompt saying what they mean, so an addition and the line it replaced
+    /// can't read as two adjacent source lines.
+    #[test]
+    fn a_diff_selection_keeps_its_markers_and_says_it_is_a_diff() {
+        let (_repo, mut app) = app_on_the_changed_file();
+        app.learning_start_range();
+        app.learning_cursor_move(1000);
+
+        let selection = app.learning_selection_text();
+        assert!(
+            selection.lines().any(|l| l.starts_with("+fn line_30_renamed")),
+            "the addition keeps its marker: {selection}"
+        );
+        assert!(
+            selection.lines().any(|l| l.starts_with("-fn line_30()")),
+            "and so does the line it replaced: {selection}"
+        );
+
+        let ctx = app
+            .learning_prompt_context("What changed here?", LearningQaIntent::Explain, Vec::new())
+            .unwrap();
+        assert!(ctx.selection_is_diff);
+        let prompt = build_prompt(&ctx);
+        assert!(prompt.contains("unified diff"), "{prompt}");
+        assert!(
+            prompt.contains("+fn line_30_renamed() {}"),
+            "quoted verbatim, with no line-number gutter to hide the marker: {prompt}"
+        );
+        assert!(
+            !prompt.contains("--- The code they are asking about ---"),
+            "a diff is never presented as plain source: {prompt}"
+        );
+    }
+
+    /// Diff-ness is captured with the selection, not re-read at submit time:
+    /// following up after browsing back to the repo tree must still label the
+    /// parent's excerpt as a diff.
+    #[test]
+    fn a_follow_up_keeps_its_parents_diff_labelling_after_browsing_away() {
+        let (_repo, mut app) = app_on_the_changed_file();
+        app.learning_start_range();
+        app.learning_cursor_move(1000);
+        let parent = ask_and_answer(&mut app, "What changed here?", "A function was renamed.");
+        assert!(
+            learning(&app)
+                .qa
+                .iter()
+                .find(|r| r.id == parent)
+                .unwrap()
+                .selection_is_diff
+        );
+
+        // Browse back to plain source before following up.
+        app.learning_toggle_scope();
+        assert_eq!(learning(&app).scope, BrowseScope::RepoTree);
+        assert!(
+            !learning(&app).selection_is_diff(),
+            "the live cursor is on ordinary source now"
+        );
+
+        let child = follow_up(&mut app, "Why would you rename it?");
+        let row = learning(&app).qa.iter().find(|r| r.id == child).unwrap();
+        assert!(
+            row.selection_is_diff,
+            "the follow-up quotes its parent's diff, so it is still a diff"
+        );
+        assert!(row.selection_text.lines().any(|l| l.starts_with('+')));
     }
 }

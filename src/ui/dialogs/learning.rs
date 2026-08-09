@@ -1382,6 +1382,7 @@ let files = list_repo_files(workdir)?;
             file_path: Some("src/main.rs".to_string()),
             anchor: LearningAnchor::Lines { start: 1, end: 2 },
             selection_text: "fn main() {}".to_string(),
+            selection_is_diff: false,
             question: "What does this do?".to_string(),
             intent: LearningQaIntent::Explain,
             level: LearningLevel::Newcomer,

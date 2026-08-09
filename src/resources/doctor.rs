@@ -13,7 +13,7 @@ use serde::Serialize;
 use crate::app::AppConfig;
 use crate::db::editors::LaunchedEditor;
 use crate::project::{ProjectStatus, ProjectStore};
-use crate::resources::limits::{ActiveHarness, LiveWindows, active_harness_sessions};
+use crate::resources::limits::{ActiveHarness, LiveHarnesses, active_harness_sessions};
 use crate::resources::mem::MemorySnapshot;
 use crate::resources::procs;
 
@@ -121,8 +121,9 @@ impl Report {
 pub struct Inputs<'a> {
     pub config: &'a AppConfig,
     pub store: &'a ProjectStore,
-    /// Live tmux windows, for the harness census.
-    pub live: &'a LiveWindows,
+    /// Which tmux windows actually have a process running, for the harness
+    /// census.
+    pub live: &'a LiveHarnesses,
     /// Every `amf-*` tmux session on the server.
     pub tmux_sessions: &'a [String],
     pub memory: Option<MemorySnapshot>,
@@ -546,7 +547,7 @@ mod tests {
     struct Fixture {
         config: AppConfig,
         store: ProjectStore,
-        live: LiveWindows,
+        live: LiveHarnesses,
         sessions: Vec<String>,
         worktrees: Vec<PathBuf>,
         editors: Vec<LaunchedEditor>,
@@ -559,7 +560,7 @@ mod tests {
             Self {
                 config: AppConfig::default(),
                 store: store(vec![feature("alpha", ProjectStatus::Active)]),
-                live: LiveWindows::default(),
+                live: LiveHarnesses::default(),
                 sessions: vec!["amf-alpha".to_string()],
                 worktrees: vec![PathBuf::from("/tmp/alpha")],
                 editors: Vec::new(),
@@ -601,6 +602,7 @@ mod tests {
             worktree_path: PathBuf::from("/tmp/alpha"),
             dedicated,
             command: "code --new-window /tmp/alpha".into(),
+            proc_started_at: String::new(),
             started_at: Utc::now(),
         }
     }
@@ -624,7 +626,7 @@ mod tests {
         let mut fixture = Fixture::new();
         fixture.store.projects[0].features[0]
             .add_session_named(SessionKind::Claude, "Claude 1".into());
-        fixture.live = LiveWindows::from_pairs([("amf-alpha", "claude")]);
+        fixture.live = LiveHarnesses::from_pairs([("amf-alpha", "claude")]);
         fixture.config.max_concurrent_agents = 1;
 
         let report = fixture.run(&|_| false);

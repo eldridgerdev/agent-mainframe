@@ -4,11 +4,15 @@
 //! is about what the host is carrying, not what one project is doing. Only
 //! agent-harness sessions count — terminals, editors, and TODOs sessions cost
 //! the machine little and are not what the gate is protecting against.
+//!
+//! "Running" means a process is alive in the session's tmux pane, not merely
+//! that the pane exists — see [`LiveHarnesses`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::project::{ProjectStatus, ProjectStore, SessionKind};
+use crate::resources::procs::{self, ProcInfo};
 use crate::traits::TmuxOps;
 
 /// In-flight headless harness runs (plan interviews, AI review, final review).
@@ -89,39 +93,72 @@ pub(crate) fn wait_for_in_flight(target: usize) -> usize {
     }
 }
 
-/// The tmux windows that exist right now, grouped by session.
+/// The tmux windows that have something running in them right now, grouped by
+/// session.
 ///
 /// A feature's stored session list is a record of what was *created*, not what
-/// is *running*: a stopped feature keeps its sessions, and a started feature
-/// only auto-launches up to `max_agent_autostart_sessions` of them, leaving
-/// the rest as windows at a shell prompt. Checking the live window list keeps
-/// the census from counting harnesses that were never launched.
+/// is *running*, and neither is the window list: feature startup creates a
+/// window for every saved session even when
+/// `max_agent_autostart_sessions` stops it short of launching the harness in
+/// them, and an agent the user quit leaves its window behind at a shell
+/// prompt. Both look identical to `list-windows`.
+///
+/// What separates them is the pane's process tree. tmux starts a shell in each
+/// pane and reports its pid; AMF launches a harness as a child of that shell
+/// (`sh /tmp/amf-agent-launch-*.sh`, which in turn runs the agent), so the
+/// shell has a child for exactly as long as the harness lives. A pane sitting
+/// at a prompt — never launched, or exited — has none.
+///
+/// The test is deliberately "any child" rather than "a process that looks like
+/// a harness": harness binaries are not reliably identifiable from their argv
+/// (Claude Code execs a version-numbered path), and a user who quits and
+/// re-runs the agent by hand is still running an agent. Something else being
+/// run in an agent window counts too, which is the safe direction to be wrong
+/// in for a gate that only ever warns.
 #[derive(Debug, Default, Clone)]
-pub struct LiveWindows {
+pub struct LiveHarnesses {
     windows: HashMap<String, HashSet<String>>,
 }
 
-impl LiveWindows {
-    /// Ask tmux which windows exist: one `list-sessions` plus one
-    /// `list-windows` per AMF session.
+impl LiveHarnesses {
+    /// Ask tmux for every pane on the server, then ask `ps` which of those
+    /// panes is running something: two process spawns, regardless of how many
+    /// sessions exist.
     pub fn probe(tmux: &dyn TmuxOps) -> Self {
-        let sessions = tmux.list_sessions().unwrap_or_default();
-        let windows = sessions
-            .into_iter()
-            .map(|session| {
-                let names = tmux.list_windows(&session).into_iter().collect();
-                (session, names)
-            })
-            .collect();
+        Self::from_census(&tmux.list_panes(), &procs::list_processes())
+    }
+
+    /// Decide which windows are busy from an already-gathered census.
+    ///
+    /// An empty process list means `ps` could not be reached, not that the
+    /// machine is idle — there is no signal to filter with, so every live pane
+    /// counts. That is the pre-existing over-counting answer, and the right
+    /// direction to fail in when the alternative is a gate that silently never
+    /// fires.
+    pub fn from_census(panes: &[(String, String, i64)], processes: &[ProcInfo]) -> Self {
+        let no_process_signal = processes.is_empty();
+        let parents: HashSet<i64> = processes.iter().map(|proc| proc.ppid).collect();
+
+        let mut windows: HashMap<String, HashSet<String>> = HashMap::new();
+        for (session, window, pane_pid) in panes {
+            if no_process_signal || parents.contains(pane_pid) {
+                windows
+                    .entry(session.clone())
+                    .or_default()
+                    .insert(window.clone());
+            }
+        }
         Self { windows }
     }
 
-    pub fn contains(&self, session: &str, window: &str) -> bool {
+    /// Whether this window has a live process in it.
+    pub fn is_running(&self, session: &str, window: &str) -> bool {
         self.windows
             .get(session)
             .is_some_and(|names| names.contains(window))
     }
 
+    /// Test helper: these windows are running something.
     #[cfg(test)]
     pub fn from_pairs<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
         let mut windows: HashMap<String, HashSet<String>> = HashMap::new();
@@ -148,7 +185,7 @@ pub struct ActiveHarness {
 }
 
 /// Every agent-harness session that is actually running.
-pub fn active_harness_sessions(store: &ProjectStore, live: &LiveWindows) -> Vec<ActiveHarness> {
+pub fn active_harness_sessions(store: &ProjectStore, live: &LiveHarnesses) -> Vec<ActiveHarness> {
     let mut active = Vec::new();
     for project in &store.projects {
         for feature in &project.features {
@@ -159,7 +196,7 @@ pub fn active_harness_sessions(store: &ProjectStore, live: &LiveWindows) -> Vec<
             }
             for session in &feature.sessions {
                 if !session.kind.is_agent_harness()
-                    || !live.contains(&feature.tmux_session, &session.tmux_window)
+                    || !live.is_running(&feature.tmux_session, &session.tmux_window)
                 {
                     continue;
                 }
@@ -178,14 +215,14 @@ pub fn active_harness_sessions(store: &ProjectStore, live: &LiveWindows) -> Vec<
 }
 
 /// Count of running agent-harness sessions across all projects.
-pub fn count_active_harness_sessions(store: &ProjectStore, live: &LiveWindows) -> usize {
+pub fn count_active_harness_sessions(store: &ProjectStore, live: &LiveHarnesses) -> usize {
     active_harness_sessions(store, live).len()
 }
 
 /// Upper bound on running harnesses, from the store alone.
 ///
 /// Every session counted by [`count_active_harness_sessions`] is also counted
-/// here — the live-window check can only ever remove sessions — so a caller
+/// here — the live-pane check can only ever remove sessions — so a caller
 /// whose bound is already under the limit can skip asking tmux entirely.
 pub fn max_possible_harness_sessions(store: &ProjectStore) -> usize {
     store
@@ -200,7 +237,7 @@ pub fn max_possible_harness_sessions(store: &ProjectStore) -> usize {
 
 /// Everything the concurrency limit is measured against: interactive harness
 /// sessions plus the headless runs currently executing.
-pub fn total_active_agents(store: &ProjectStore, live: &LiveWindows) -> usize {
+pub fn total_active_agents(store: &ProjectStore, live: &LiveHarnesses) -> usize {
     count_active_harness_sessions(store, live) + in_flight_headless_runs()
 }
 
@@ -296,7 +333,7 @@ mod tests {
                 session("s7", SessionKind::Todos, "todos"),
             ],
         );
-        let live = LiveWindows::from_pairs([
+        let live = LiveHarnesses::from_pairs([
             ("amf-alpha", "claude"),
             ("amf-alpha", "codex"),
             ("amf-alpha", "terminal"),
@@ -337,7 +374,7 @@ mod tests {
                 )],
             ),
         ]);
-        let live = LiveWindows::from_pairs([
+        let live = LiveHarnesses::from_pairs([
             ("amf-alpha", "claude"),
             ("amf-beta", "opencode"),
             ("amf-gamma", "pi"),
@@ -357,15 +394,15 @@ mod tests {
             )],
         )]);
         // Even if a stale window were reported, a stopped feature never counts.
-        let live = LiveWindows::from_pairs([("amf-alpha", "claude")]);
+        let live = LiveHarnesses::from_pairs([("amf-alpha", "claude")]);
 
         assert_eq!(count_active_harness_sessions(&store, &live), 0);
     }
 
     #[test]
-    fn skips_saved_sessions_whose_window_never_launched() {
+    fn skips_saved_sessions_whose_harness_is_not_running() {
         // Second harness pane was recreated but left at a shell prompt, or was
-        // never recreated at all: only live windows count.
+        // never recreated at all: only panes with a process count.
         let store = store(vec![project(
             "p",
             vec![feature(
@@ -377,9 +414,89 @@ mod tests {
                 ],
             )],
         )]);
-        let live = LiveWindows::from_pairs([("amf-alpha", "claude")]);
+        let live = LiveHarnesses::from_pairs([("amf-alpha", "claude")]);
 
         assert_eq!(count_active_harness_sessions(&store, &live), 1);
+    }
+
+    fn proc(pid: i64, ppid: i64, args: &str) -> ProcInfo {
+        ProcInfo {
+            pid,
+            ppid,
+            args: args.to_string(),
+        }
+    }
+
+    /// The census's whole job: three windows that all exist, only one of which
+    /// has a harness in it. The other two are the two ways a window outlives
+    /// its agent — created past `max_agent_autostart_sessions` and so never
+    /// launched, and launched but since exited back to the prompt.
+    #[test]
+    fn an_idle_pane_is_not_a_running_harness() {
+        let panes = vec![
+            ("amf-alpha".to_string(), "claude".to_string(), 100),
+            ("amf-alpha".to_string(), "claude-2".to_string(), 200),
+            ("amf-alpha".to_string(), "claude-3".to_string(), 300),
+        ];
+        let processes = vec![
+            proc(100, 1, "-zsh"),
+            proc(101, 100, "sh /tmp/amf-agent-launch-abc.sh"),
+            proc(102, 101, "/home/me/.local/share/claude/versions/2.1.226"),
+            // Never launched: tmux made the window, nothing was ever run.
+            proc(200, 1, "-zsh"),
+            // Launched once, then quit: the shell is back in the foreground.
+            proc(300, 1, "-zsh"),
+        ];
+
+        let live = LiveHarnesses::from_census(&panes, &processes);
+
+        assert!(live.is_running("amf-alpha", "claude"));
+        assert!(!live.is_running("amf-alpha", "claude-2"));
+        assert!(!live.is_running("amf-alpha", "claude-3"));
+    }
+
+    #[test]
+    fn a_window_tmux_no_longer_reports_is_not_running() {
+        let live = LiveHarnesses::from_census(&[], &[proc(100, 1, "-zsh")]);
+
+        assert!(!live.is_running("amf-alpha", "claude"));
+    }
+
+    /// A window with several panes counts as busy when any one of them is.
+    #[test]
+    fn a_split_window_counts_once_if_either_pane_is_busy() {
+        let panes = vec![
+            ("amf-alpha".to_string(), "claude".to_string(), 100),
+            ("amf-alpha".to_string(), "claude".to_string(), 200),
+        ];
+        let processes = vec![
+            proc(100, 1, "-zsh"),
+            proc(200, 1, "-zsh"),
+            proc(201, 200, "sh /tmp/amf-agent-launch-abc.sh"),
+        ];
+
+        let store = store(vec![project(
+            "p",
+            vec![feature(
+                "alpha",
+                ProjectStatus::Active,
+                vec![session("s1", SessionKind::Claude, "claude")],
+            )],
+        )]);
+
+        let live = LiveHarnesses::from_census(&panes, &processes);
+        assert_eq!(count_active_harness_sessions(&store, &live), 1);
+    }
+
+    /// No `ps` means no signal, which must not read as "nothing is running" —
+    /// that would silently switch the gate off.
+    #[test]
+    fn an_unreadable_process_list_falls_back_to_pane_existence() {
+        let panes = vec![("amf-alpha".to_string(), "claude".to_string(), 100)];
+
+        let live = LiveHarnesses::from_census(&panes, &[]);
+
+        assert!(live.is_running("amf-alpha", "claude"));
     }
 
     #[test]
@@ -392,7 +509,7 @@ mod tests {
                 vec![session("s1", SessionKind::Claude, "claude")],
             )],
         )]);
-        let live = LiveWindows::from_pairs([("amf-alpha", "claude")]);
+        let live = LiveHarnesses::from_pairs([("amf-alpha", "claude")]);
 
         let active = active_harness_sessions(&store, &live);
         assert_eq!(active.len(), 1);
@@ -458,7 +575,7 @@ mod tests {
                 vec![session("s1", SessionKind::Claude, "claude")],
             )],
         )]);
-        let live = LiveWindows::from_pairs([("amf-alpha", "claude")]);
+        let live = LiveHarnesses::from_pairs([("amf-alpha", "claude")]);
 
         let base = in_flight_headless_runs();
         let _lease = HeadlessLease::acquire();
@@ -471,7 +588,7 @@ mod tests {
     #[test]
     fn empty_store_counts_zero() {
         assert_eq!(
-            count_active_harness_sessions(&store(Vec::new()), &LiveWindows::default()),
+            count_active_harness_sessions(&store(Vec::new()), &LiveHarnesses::default()),
             0
         );
     }

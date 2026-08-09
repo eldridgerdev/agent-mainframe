@@ -10,7 +10,7 @@
 
 use crate::app::{App, AppConfig};
 use crate::app::{AppMode, PendingStart, ResourceConfirmState, ViewState};
-use crate::resources::limits::{self, LiveWindows};
+use crate::resources::limits::{self, LiveHarnesses};
 use crate::resources::mem::{self, MemorySnapshot};
 
 /// The concurrency half of the gate: how many agents are already running
@@ -41,10 +41,68 @@ pub enum StartPreconditions {
     },
 }
 
+/// What the gate should do when a start would push the machine past its
+/// limits.
+///
+/// Every primitive that can spawn a harness takes one of these, so adding a
+/// new way to start an agent means *choosing* a policy — the previous design
+/// gated a handful of entry points and let everything reaching the primitives
+/// by another route through unwarned.
+pub(crate) enum StartIntent {
+    /// A gate upstream already cleared this start: the dashboard's
+    /// confirmation, [`App::autostart_allowed`] on a creation path, or the
+    /// outer half of an operation that gates once and then calls several
+    /// primitives. Asking again would ask twice for the same agent.
+    Approved,
+    /// Park the operation and replay `PendingStart` if the user confirms.
+    /// Only for operations that can be resumed from stashed state.
+    Ask(PendingStart),
+    /// Warn and carry on, naming the thing being started.
+    ///
+    /// For starts buried inside a longer flow — a session picker, a review
+    /// hand-off, spawning an agent from a TODO — whose resume state lives in
+    /// the very `AppMode` the dialog would replace. Parking those would strand
+    /// the flow, so the user gets a toast instead of a modal. Still a warning:
+    /// no path spawns a harness silently.
+    Warn(&'static str),
+}
+
+/// Whether a start went ahead or was parked on the confirmation dialog.
+///
+/// A caller that passes [`StartIntent::Ask`] must handle `Parked` by returning
+/// immediately: nothing was spawned, and the dialog owns what happens next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Started {
+    Yes,
+    Parked,
+}
+
 /// "1 agent" / "3 agents" — this shows up in a dialog and a warning, and
 /// "1 agents already running" reads like a bug in the code that wrote it.
 fn agents_running(count: usize) -> String {
     format!("{count} agent{}", if count == 1 { "" } else { "s" })
+}
+
+/// One phrase naming whichever half of the gate tripped, for the warnings that
+/// have no dialog to lay it out in.
+fn describe_tripped(over_limit: Option<OverLimit>, low_memory: Option<LowMemory>) -> String {
+    match (over_limit, low_memory) {
+        (Some(over), Some(low)) => format!(
+            "{} already running (limit {}) and only {} MiB free",
+            agents_running(over.active),
+            over.limit,
+            low.snapshot.available_mb
+        ),
+        (Some(over), None) => format!(
+            "{} already running (limit {})",
+            agents_running(over.active),
+            over.limit
+        ),
+        (None, Some(low)) => {
+            format!("only {} MiB memory available", low.snapshot.available_mb)
+        }
+        (None, None) => unreachable!("NeedsConfirm always carries a tripped gate"),
+    }
 }
 
 /// Decide the outcome from already-gathered inputs.
@@ -89,8 +147,8 @@ pub fn evaluate_start_preconditions(
 impl App {
     /// Gather the live inputs and run the pre-start gate.
     ///
-    /// Costs a tmux census plus a `/proc` read, so it belongs on start paths,
-    /// not in the render loop.
+    /// Costs a tmux census, a `ps`, and a `/proc` read, so it belongs on start
+    /// paths, not in the render loop.
     pub fn check_start_preconditions(&self) -> StartPreconditions {
         let memory = mem::probe();
         let memory_is_fine = self
@@ -99,7 +157,7 @@ impl App {
             .zip(memory)
             .is_none_or(|(threshold, snapshot)| !snapshot.is_low(threshold));
 
-        // The census costs a couple of tmux calls, and most starts happen on a
+        // The census costs a tmux call and a `ps`, and most starts happen on a
         // quiet machine. The store gives a free upper bound on running
         // harnesses — if even that is under the limit, and memory is fine,
         // there is nothing to ask about.
@@ -113,9 +171,47 @@ impl App {
             return StartPreconditions::Ok;
         }
 
-        let live = LiveWindows::probe(self.tmux.as_ref());
+        let live = LiveHarnesses::probe(self.tmux.as_ref());
         let active = limits::total_active_agents(&self.store, &live);
         evaluate_start_preconditions(&self.config, active, memory)
+    }
+
+    /// Consult the gate for a start that is about to spawn a harness.
+    ///
+    /// Called from the launch primitives themselves, immediately before the
+    /// tmux session or window is created, so it fires for every route into
+    /// them and never for a call that turns out to be a no-op.
+    pub(crate) fn gate_launch(&mut self, intent: StartIntent) -> Started {
+        match intent {
+            StartIntent::Approved => Started::Yes,
+            StartIntent::Ask(pending) => {
+                if self.gate_start(pending) {
+                    Started::Parked
+                } else {
+                    Started::Yes
+                }
+            }
+            StartIntent::Warn(what) => {
+                self.warn_start_over_budget(what);
+                Started::Yes
+            }
+        }
+    }
+
+    /// Say that a start is going ahead over budget, for flows that cannot be
+    /// parked. Silent when nothing has tripped.
+    fn warn_start_over_budget(&mut self, what: &str) {
+        let StartPreconditions::NeedsConfirm {
+            over_limit,
+            low_memory,
+        } = self.check_start_preconditions()
+        else {
+            return;
+        };
+        let reason = describe_tripped(over_limit, low_memory);
+        let notice = format!("Starting {what} anyway: {reason}. Press z to reclaim idle features.");
+        self.log_warn("limits", notice.clone());
+        self.push_toast_warning(notice);
     }
 
     /// Run the gate for `pending`. Returns `true` when the caller should stop
@@ -181,23 +277,7 @@ impl App {
                 over_limit,
                 low_memory,
             } => {
-                let reason = match (over_limit, low_memory) {
-                    (Some(over), Some(low)) => format!(
-                        "{} already running (limit {}) and only {} MiB free",
-                        agents_running(over.active),
-                        over.limit,
-                        low.snapshot.available_mb
-                    ),
-                    (Some(over), None) => format!(
-                        "{} already running (limit {})",
-                        agents_running(over.active),
-                        over.limit
-                    ),
-                    (None, Some(low)) => {
-                        format!("only {} MiB memory available", low.snapshot.available_mb)
-                    }
-                    (None, None) => unreachable!("NeedsConfirm always carries a tripped gate"),
-                };
+                let reason = describe_tripped(over_limit, low_memory);
                 let notice = format!(
                     "'{feature_name}' created but not started: {reason}. Press c to start it."
                 );
@@ -253,6 +333,13 @@ impl App {
                     self.push_toast_success(format!("Added '{name}'"));
                 }
                 added
+            }
+            // Both replay their operation from the top with the gate already
+            // satisfied, rather than re-entering the asking variant and
+            // parking the user in the same dialog they just answered.
+            PendingStart::EnterView { auto_compose } => self.enter_view_approved(auto_compose),
+            PendingStart::SwitchViewToFeature { pi, fi } => {
+                self.switch_view_to_feature_approved(pi, fi)
             }
         };
 

@@ -32,7 +32,12 @@ are tagged.
   with `--new-window` and remembers which window it created, and stopping (or
   deleting) the feature ends that window and its children. It only ever closes
   a window it can prove it opened and can still identify; anything else is
-  reported as left alone, never guessed at. Set `kill_editor_on_stop` to
+  reported as left alone, never guessed at. Because VS Code runs one
+  application process for the whole machine, a window that has since become
+  home to other windows you opened is also left alone — reclaiming memory is
+  never worth closing your other editors. Stopping a feature in the seconds
+  before its window finishes opening is handled too: the window is closed as
+  soon as it appears, and the stop says so. Set `kill_editor_on_stop` to
   `false` to keep the old behavior. Note that under WSL, `code` hands off to
   the Windows side and no local window process exists for AMF to own, so it
   will report a skip there.
@@ -55,7 +60,11 @@ are tagged.
   — and when the pre-start warning fires on memory it names the open editors
   for the same reason. `--json` emits the same findings for
   scripting. It is advice only — it stops nothing, kills nothing, deletes
-  nothing, and always exits `0`. Under WSL it points at where swap is
+  nothing, and always exits `0`. That extends to its own files: it opens the
+  database strictly read-only, so unlike launching AMF it will not create it,
+  migrate its schema, or rewrite a byte of it, and it will not create a
+  `config.json` on a machine that has none. On a machine AMF has never run on
+  it reports on the machine alone and says so. Under WSL it points at where swap is
   configured while being explicit that adding swap trades an out-of-memory kill
   for heavy paging, and that lowering `max_concurrent_agents` is the fix for
   the cause.

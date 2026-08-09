@@ -6,37 +6,87 @@ use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use crate::project::AgentKind;
 use crate::resources::limits::HeadlessLease;
 
+/// How long an abandoned run gets to exit on `SIGTERM` before it is killed.
+/// Spent on a background thread, never on the UI thread.
+const ABANDONED_RUN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A headless harness process whose lifetime outlives the call that started
 /// it — the poll-driven runs (Final Review walkthroughs and co-reviews, the
 /// changeset overview, the diff-review explanation) that park a `Child` in app
 /// state and check on it each tick.
 ///
 /// The concurrency lease rides along with the child instead of being scoped to
-/// a function, so a run that is abandoned mid-flight releases its slot when the
+/// a function, so a run that is abandoned mid-flight — the reviewer closes the
+/// diff viewer, dismisses the overlay, walks away — is cleaned up when the
 /// state holding it is dropped.
+///
+/// **Dropping this kills the run.** `std::process::Child` deliberately does
+/// not: dropping its handle detaches the process, which would leave an
+/// abandoned harness burning CPU and memory while no longer counting against
+/// the limit — exactly the accounting lie the limit exists to prevent. So
+/// `Drop` terminates the process *tree* (a harness spawns its own children)
+/// and reaps it, and holds the lease until the process is actually gone rather
+/// than releasing the slot to a process that is still dying.
+///
+/// The termination runs on a detached thread because the grace period is
+/// measured in seconds and drops happen on the UI thread.
 #[derive(Debug)]
 pub struct LeasedChild {
-    child: Child,
-    _lease: HeadlessLease,
+    /// `None` only after [`Self::wait_with_output`] has taken the child,
+    /// which is the one path where the run finished on its own terms.
+    child: Option<Child>,
+    lease: Option<HeadlessLease>,
 }
 
 impl LeasedChild {
     pub fn new(child: Child) -> Self {
         Self {
-            child,
-            _lease: HeadlessLease::acquire(),
+            child: Some(child),
+            lease: Some(HeadlessLease::acquire()),
         }
     }
 
     /// Non-blocking status check; `Ok(None)` while the run is still going.
     pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
+        match self.child.as_mut() {
+            Some(child) => child.try_wait(),
+            None => Ok(None),
+        }
     }
 
     /// Collect the finished run's output, releasing the lease afterwards.
-    pub fn wait_with_output(self) -> std::io::Result<Output> {
-        let Self { child, _lease } = self;
-        child.wait_with_output()
+    pub fn wait_with_output(mut self) -> std::io::Result<Output> {
+        match self.child.take() {
+            // `self` still drops here, but with no child left to terminate.
+            Some(child) => child.wait_with_output(),
+            // Unreachable: this method consumes `self`, so it cannot run
+            // twice. An error rather than a fabricated empty success, which
+            // would read as "the run produced nothing".
+            None => Err(std::io::Error::other("headless run already collected")),
+        }
+    }
+}
+
+impl Drop for LeasedChild {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        // Finished on its own: reaping is all that is left, and `Child`'s own
+        // drop cannot do even that.
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+
+        let pid = child.id() as i64;
+        // The lease travels with the doomed process so the slot frees up when
+        // the memory does, not when the handle went out of scope.
+        let lease = self.lease.take();
+        std::thread::spawn(move || {
+            crate::resources::procs::terminate_tree(pid, ABANDONED_RUN_GRACE);
+            let _ = child.wait();
+            drop(lease);
+        });
     }
 }
 
@@ -1140,23 +1190,75 @@ mod tests {
         assert_eq!(wait_for_in_flight(base), base);
     }
 
+    /// Poll until `pid` is gone, or give up after `secs`.
+    fn wait_for_exit(pid: i64, secs: u64) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        while std::time::Instant::now() < deadline {
+            if !crate::resources::procs::pid_alive(pid) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        !crate::resources::procs::pid_alive(pid)
+    }
+
     #[test]
-    fn dropping_an_abandoned_leased_child_releases_its_lease() {
+    fn dropping_an_abandoned_leased_child_kills_the_run_and_releases_its_lease() {
         let _guard = lock_lease_tests();
         // Stands in for a poll-driven run (walkthrough, co-review) that the
-        // reviewer walks away from before it finishes.
+        // reviewer walks away from before it finishes. `& wait` gives it a
+        // child of its own, the way a real harness has subprocesses: a kill
+        // that only reached the top process would leave that behind.
         let base = in_flight_headless_runs();
-        let child = Command::new("sleep")
-            .arg("30")
+        let child = Command::new("sh")
+            .args(["-c", "sleep 30 & wait"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .expect("sleep should be available");
+            .expect("sh should be available");
+        let pid = child.id() as i64;
         let mut leased = LeasedChild::new(child);
         assert!(in_flight_headless_runs() > base);
         assert!(leased.try_wait().expect("try_wait").is_none());
+        // Let the shell fork before the tree is walked.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let tree =
+            crate::resources::procs::process_tree(&crate::resources::procs::list_processes(), pid);
+        assert!(tree.len() > 1, "expected a subprocess, got {tree:?}");
 
         drop(leased);
+
+        // The process is really gone, not merely detached and uncounted.
+        for pid in &tree {
+            assert!(
+                wait_for_exit(*pid, 10),
+                "pid {pid} survived the abandoned run"
+            );
+        }
+        // And the slot comes back only once it is.
+        assert_eq!(wait_for_in_flight(base), base);
+    }
+
+    #[test]
+    fn dropping_a_finished_leased_child_reaps_it_without_a_kill() {
+        let _guard = lock_lease_tests();
+        let base = in_flight_headless_runs();
+        let child = Command::new("true")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("true should be available");
+        let pid = child.id() as i64;
+        let leased = LeasedChild::new(child);
+        // Give it time to exit. Nothing has reaped it, so it is a zombie and
+        // still answers `kill(pid, 0)`.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        drop(leased);
+
+        // Dropping reaps it. `Child`'s own drop would have left the zombie
+        // behind, which is the other half of what it does not do for us.
+        assert!(wait_for_exit(pid, 5), "pid {pid} was never reaped");
         assert_eq!(wait_for_in_flight(base), base);
     }
 

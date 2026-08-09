@@ -61,6 +61,11 @@ pub struct LaunchedEditor {
     pub dedicated: bool,
     /// The argv AMF spawned, used to prove a live PID is still this process.
     pub command: String,
+    /// When the attributed process itself started, as `ps -o lstart=` reports
+    /// it. Empty until ownership is resolved (and for rows written before
+    /// `MIGRATION_018`); non-empty, it is the check argv cannot make — a
+    /// recycled PID cannot reproduce it.
+    pub proc_started_at: String,
     pub started_at: DateTime<Utc>,
 }
 
@@ -86,13 +91,15 @@ pub fn record_launch(
         worktree_path: worktree_path.to_path_buf(),
         dedicated,
         command: command.to_string(),
+        proc_started_at: String::new(),
         started_at: Utc::now(),
     };
 
     conn.execute(
         "INSERT INTO launched_editors
-            (id, feature_id, session_id, kind, pid, worktree_path, dedicated, command, started_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            (id, feature_id, session_id, kind, pid, worktree_path, dedicated, command,
+             proc_started_at, started_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             editor.id,
             editor.feature_id,
@@ -102,6 +109,7 @@ pub fn record_launch(
             editor.worktree_path.to_string_lossy(),
             editor.dedicated as i64,
             editor.command,
+            editor.proc_started_at,
             editor.started_at.to_rfc3339(),
         ],
     )?;
@@ -112,7 +120,8 @@ pub fn record_launch(
 /// Editors recorded for one feature, oldest launch first.
 pub fn list_for_feature(conn: &Connection, feature_id: &str) -> Result<Vec<LaunchedEditor>> {
     let mut stmt = conn.prepare(
-        "SELECT id, feature_id, session_id, kind, pid, worktree_path, dedicated, command, started_at
+        "SELECT id, feature_id, session_id, kind, pid, worktree_path, dedicated, command,
+                proc_started_at, started_at
          FROM launched_editors
          WHERE feature_id = ?1
          ORDER BY started_at",
@@ -124,7 +133,8 @@ pub fn list_for_feature(conn: &Connection, feature_id: &str) -> Result<Vec<Launc
 /// Every recorded editor, oldest launch first — the `amf doctor` view.
 pub fn list_all(conn: &Connection) -> Result<Vec<LaunchedEditor>> {
     let mut stmt = conn.prepare(
-        "SELECT id, feature_id, session_id, kind, pid, worktree_path, dedicated, command, started_at
+        "SELECT id, feature_id, session_id, kind, pid, worktree_path, dedicated, command,
+                proc_started_at, started_at
          FROM launched_editors
          ORDER BY started_at",
     )?;
@@ -138,10 +148,18 @@ pub fn list_all(conn: &Connection) -> Result<Vec<LaunchedEditor>> {
 /// off and exits, so the window process only appears seconds later — and may
 /// never appear as a local process at all (a remote/WSL window lives on the
 /// other side). Until this runs, the record stands as not-owned.
-pub fn set_owner(conn: &Connection, id: &str, pid: i64, dedicated: bool) -> Result<()> {
+/// `proc_started_at` is the owner process's own start time, stored so that a
+/// later process inheriting its PID cannot pass the kill-time identity check.
+pub fn set_owner(
+    conn: &Connection,
+    id: &str,
+    pid: i64,
+    dedicated: bool,
+    proc_started_at: &str,
+) -> Result<()> {
     conn.execute(
-        "UPDATE launched_editors SET pid = ?2, dedicated = ?3 WHERE id = ?1",
-        params![id, pid, dedicated as i64],
+        "UPDATE launched_editors SET pid = ?2, dedicated = ?3, proc_started_at = ?4 WHERE id = ?1",
+        params![id, pid, dedicated as i64, proc_started_at],
     )?;
     Ok(())
 }
@@ -165,7 +183,7 @@ fn row_to_editor(row: &rusqlite::Row<'_>) -> rusqlite::Result<LaunchedEditor> {
     let kind: String = row.get(3)?;
     let worktree_path: String = row.get(5)?;
     let dedicated: i64 = row.get(6)?;
-    let started_at: String = row.get(8)?;
+    let started_at: String = row.get(9)?;
     Ok(LaunchedEditor {
         id: row.get(0)?,
         feature_id: row.get(1)?,
@@ -175,6 +193,7 @@ fn row_to_editor(row: &rusqlite::Row<'_>) -> rusqlite::Result<LaunchedEditor> {
         worktree_path: PathBuf::from(worktree_path),
         dedicated: dedicated != 0,
         command: row.get(7)?,
+        proc_started_at: row.get(8)?,
         started_at: DateTime::parse_from_rfc3339(&started_at)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
@@ -337,6 +356,34 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(db.launched_editors_for_feature("feat-2").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn resolving_an_owner_records_the_process_start_time() {
+        let (_tmp, db) = open_temp_db();
+        let record = db
+            .record_launched_editor(
+                "feat-1",
+                None,
+                EditorKind::Vscode,
+                0,
+                Path::new("/tmp/wt"),
+                false,
+                "code --new-window /tmp/wt",
+            )
+            .unwrap();
+        assert!(
+            record.proc_started_at.is_empty(),
+            "nothing is owned until the window is attributed"
+        );
+
+        db.set_launched_editor_owner(&record.id, 4242, true, "Sat Aug 9 12:00:00 2026")
+            .unwrap();
+
+        let loaded = db.launched_editors_for_feature("feat-1").unwrap();
+        assert_eq!(loaded[0].pid, 4242);
+        assert!(loaded[0].dedicated);
+        assert_eq!(loaded[0].proc_started_at, "Sat Aug 9 12:00:00 2026");
     }
 
     #[test]

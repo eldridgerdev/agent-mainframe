@@ -496,20 +496,50 @@ fn read_json_input(file: Option<&PathBuf>) -> Result<String> {
 /// right thing here — the no-`println!` rule is about corrupting the terminal
 /// while ratatui owns it.
 ///
-/// Read-only by construction: it opens the database, reads the store and the
-/// editor records, asks tmux what exists, and probes memory. Nothing here
-/// writes, signals, or deletes.
+/// Read-only by construction, down to how the database is opened: `doctor` uses
+/// [`db::AmfDb::open_read_only`], which will not create the file, will not
+/// migrate the schema, and will not switch the journal mode — the ordinary
+/// `open` does all three, which would make "nothing was changed" untrue before
+/// the first check even ran. A database that does not exist yet, or that cannot
+/// be read, degrades to a report without the store rather than to a write.
 fn run_doctor(json: bool) -> Result<()> {
     use resources::doctor;
 
-    let config = app::setup::load_config();
+    // `load_config` would create `config.json` on a machine that has none, and
+    // rewrite it on a key migration. Read it instead.
+    let config = app::setup::read_config();
     let db_path = project::db_path();
-    let db = db::AmfDb::open(&db_path).context("Failed to open the AMF database")?;
-    let store = db.load_store()?;
+    let db = match db::AmfDb::open_read_only(&db_path) {
+        Ok(db) => Some(db),
+        Err(err) => {
+            if !json {
+                println!(
+                    "Note: {} ({err}) - reporting on the machine only.\n",
+                    db_path.display()
+                );
+            }
+            None
+        }
+    };
+    let store = match db.as_ref().map(|db| db.load_store()) {
+        Some(Ok(store)) => store,
+        Some(Err(err)) => {
+            if !json {
+                println!(
+                    "Note: could not read the AMF store ({err}) - run amf once to migrate it.\n"
+                );
+            }
+            project::ProjectStore::empty()
+        }
+        None => project::ProjectStore::empty(),
+    };
 
     let tmux_sessions = tmux::TmuxManager::list_sessions().unwrap_or_default();
-    let live = resources::limits::LiveWindows::probe(&tmux::TmuxManager);
-    let editors = db.all_launched_editors().unwrap_or_default();
+    let live = resources::limits::LiveHarnesses::probe(&tmux::TmuxManager);
+    let editors = db
+        .as_ref()
+        .and_then(|db| db.all_launched_editors().ok())
+        .unwrap_or_default();
     let worktrees = doctor::worktrees_on_disk(&store);
 
     let report = doctor::diagnose(&doctor::Inputs {

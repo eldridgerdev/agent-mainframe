@@ -47,6 +47,22 @@ impl App {
     }
 
     fn enter_view_with_options(&mut self, auto_compose: bool) -> Result<()> {
+        // Opening a stopped feature starts it, which launches its saved
+        // agents — the same claim on the machine that `c` makes, so it asks
+        // the same question.
+        self.enter_view_gated(
+            auto_compose,
+            StartIntent::Ask(PendingStart::EnterView { auto_compose }),
+        )
+    }
+
+    /// Replay of [`Self::enter_view_with_options`] after the user answered the
+    /// resource confirmation.
+    pub(crate) fn enter_view_approved(&mut self, auto_compose: bool) -> Result<()> {
+        self.enter_view_gated(auto_compose, StartIntent::Approved)
+    }
+
+    fn enter_view_gated(&mut self, auto_compose: bool, intent: StartIntent) -> Result<()> {
         let (pi, fi, target_si) = match &self.selection {
             Selection::Session(pi, fi, si) => (*pi, *fi, Some(*si)),
             Selection::Feature(pi, fi) => (*pi, *fi, None),
@@ -79,7 +95,11 @@ impl App {
             .and_then(|p| p.features.get(fi))
             .is_some_and(|feature| feature.status == ProjectStatus::Stopped);
 
-        self.ensure_feature_running(pi, fi)?;
+        if self.ensure_feature_running(pi, fi, intent)? == Started::Parked {
+            // The confirmation dialog owns the screen now; it replays this
+            // call if the user says yes.
+            return Ok(());
+        }
 
         let (
             project_name,
@@ -947,8 +967,35 @@ impl App {
     }
 
     pub(crate) fn switch_view_to_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
-        self.ensure_feature_running(pi, fi)?;
+        // Jumping to a stopped feature starts it. Remember the view being left
+        // so cancelling puts the user back where they were instead of on the
+        // dashboard.
+        let from_view = match &self.mode {
+            AppMode::Viewing(view) => Some(view.clone()),
+            _ => None,
+        };
+        let started = self.ensure_feature_running(
+            pi,
+            fi,
+            StartIntent::Ask(PendingStart::SwitchViewToFeature { pi, fi }),
+        )?;
+        if started == Started::Parked {
+            self.set_resource_confirm_return_view(from_view);
+            return Ok(());
+        }
 
+        self.switch_view_to_feature_started(pi, fi)
+    }
+
+    /// Replay of [`Self::switch_view_to_feature`] after the user answered the
+    /// resource confirmation.
+    pub(crate) fn switch_view_to_feature_approved(&mut self, pi: usize, fi: usize) -> Result<()> {
+        self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
+        self.switch_view_to_feature_started(pi, fi)
+    }
+
+    /// Attach the view to `(pi, fi)`, whose session is already up.
+    fn switch_view_to_feature_started(&mut self, pi: usize, fi: usize) -> Result<()> {
         let project = &self.store.projects[pi];
         let feature = &project.features[fi];
         let project_name = project.name.clone();

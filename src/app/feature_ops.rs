@@ -479,7 +479,8 @@ impl App {
             // rather than a modal in the middle of the creation flow.
             started = self.autostart_allowed(&prepared.branch);
             if started {
-                self.ensure_feature_running(pi, fi)?;
+                // `autostart_allowed` above is this path's gate.
+                self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
             }
             self.save()?;
             if started && prepared.steering_enabled {
@@ -665,8 +666,20 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
-        self.ensure_feature_running_with_launch_override(pi, fi, None, None)
+    /// Bring `(pi, fi)`'s tmux session up, launching its saved agent
+    /// harnesses.
+    ///
+    /// This is where every "start a feature" route converges, so it is where
+    /// the resource gate lives: `intent` says what to do if the machine is
+    /// already loaded. A call that finds the session already running launches
+    /// nothing and is never gated.
+    pub(crate) fn ensure_feature_running(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        intent: StartIntent,
+    ) -> Result<Started> {
+        self.ensure_feature_running_with_launch_override(pi, fi, None, None, intent)
     }
 
     pub(crate) fn ensure_feature_running_for_recovery(
@@ -676,12 +689,14 @@ impl App {
         session_id: String,
         resume_id: Option<String>,
         created_session: &mut bool,
-    ) -> Result<()> {
+        intent: StartIntent,
+    ) -> Result<Started> {
         self.ensure_feature_running_with_launch_override(
             pi,
             fi,
             Some((session_id, resume_id)),
             Some(created_session),
+            intent,
         )
     }
 
@@ -691,12 +706,29 @@ impl App {
         fi: usize,
         launch_override: Option<(String, Option<String>)>,
         created_session: Option<&mut bool>,
-    ) -> Result<()> {
+        intent: StartIntent,
+    ) -> Result<Started> {
+        // Ask before any of the setup below runs, and only when this call will
+        // really start something: an already-running session means the harness
+        // is already counted, and re-entering its feature must not prompt.
+        let existing_session = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|feature| feature.tmux_session.clone());
+        let already_running = existing_session
+            .as_deref()
+            .is_some_and(|session| self.tmux.session_exists(session));
+        if !already_running && self.gate_launch(intent) == Started::Parked {
+            return Ok(Started::Parked);
+        }
+
         let repo = self.store.projects[pi].repo.clone();
         let viewport = self.view_pane_viewport();
         let (agent, mode) = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(feature) => (feature.agent.clone(), feature.mode.clone()),
-            None => return Ok(()),
+            None => return Ok(Started::Yes),
         };
         self.ensure_agent_mode_supported(&agent, &mode)?;
         // Resolve before the mutable borrow of `feature` below.
@@ -708,7 +740,7 @@ impl App {
             .and_then(|p| p.features.get_mut(fi))
         {
             Some(f) => f,
-            None => return Ok(()),
+            None => return Ok(Started::Yes),
         };
 
         ensure_notification_hooks(
@@ -723,8 +755,8 @@ impl App {
 
         Self::initialize_feature_sessions(feature, false, None);
 
-        if self.tmux.session_exists(&feature.tmux_session) {
-            return Ok(());
+        if already_running {
+            return Ok(Started::Yes);
         }
 
         self.tmux.create_session_with_window(
@@ -944,7 +976,7 @@ impl App {
         feature.status = ProjectStatus::Idle;
         feature.touch();
 
-        Ok(())
+        Ok(Started::Yes)
     }
 
     pub fn start_feature(&mut self) -> Result<()> {
@@ -1013,7 +1045,8 @@ impl App {
             return Ok(());
         }
 
-        self.ensure_feature_running(pi, fi)?;
+        // `start_feature` gated this start before parking or proceeding.
+        self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
 
         // Fire on_start lifecycle hook (plain script) if configured.
         if let Some(ref cfg) = on_start {
@@ -1034,9 +1067,10 @@ impl App {
         Ok(())
     }
 
-    /// Inner start logic called after a hook prompt is confirmed.
+    /// Inner start logic called after a hook prompt is confirmed. The gate
+    /// ran back in `start_feature`, before the prompt was raised.
     pub fn do_start_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
-        self.ensure_feature_running(pi, fi)?;
+        self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
         let name = self
             .store
             .projects
@@ -1707,7 +1741,8 @@ impl App {
                 self.save()?;
                 return Ok(());
             }
-            self.ensure_feature_running(pi, fi)?;
+            // `autostart_allowed` above is this path's gate.
+            self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
             self.save()?;
         }
 

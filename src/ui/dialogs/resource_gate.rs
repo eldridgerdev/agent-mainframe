@@ -100,9 +100,11 @@ fn pending_summary(pending: &PendingStart) -> String {
     match pending {
         PendingStart::Feature { .. } => "Starting a feature's agent".to_string(),
         PendingStart::BuiltinSession { label, .. } => match label {
-            Some(label) => format!("Adding agent session '{label}'"),
-            None => "Adding an agent session".to_string(),
+            Some(label) => format!("Adding session '{label}'"),
+            None => "Adding a session".to_string(),
         },
+        PendingStart::EnterView { .. } => "Opening a stopped feature".to_string(),
+        PendingStart::SwitchViewToFeature { .. } => "Jumping to a stopped feature".to_string(),
     }
 }
 

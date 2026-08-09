@@ -350,7 +350,7 @@ impl App {
         // response says so.
         let started = self.autostart_allowed(&request.branch);
         if started {
-            self.ensure_feature_running(pi, fi)?;
+            self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
         }
         self.save()?;
 
@@ -522,7 +522,7 @@ impl App {
             // than queueing a confirmation dialog for every one of them.
             let started = self.autostart_allowed(branch);
             if started {
-                self.ensure_feature_running(pi, fi)?;
+                self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
             }
             if let Some(result) = response_features
                 .iter_mut()

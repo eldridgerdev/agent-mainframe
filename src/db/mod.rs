@@ -36,6 +36,44 @@ impl AmfDb {
         })
     }
 
+    /// Open an existing database for reading only.
+    ///
+    /// [`Self::open`] is a write: it creates `~/.config/amf/`, creates the file,
+    /// switches the journal to WAL, and applies any pending migration. That is
+    /// right for launching AMF and wrong for `amf doctor`, which promises to
+    /// change nothing — a diagnostic that has to modify the thing it inspects
+    /// can't report on it honestly, and on an older schema it would silently
+    /// upgrade the database out from under whatever AMF version the user is
+    /// still running.
+    ///
+    /// So: no `CREATE` flag (a missing database is an error, not a new file),
+    /// no migrations, no journal change, and `SQLITE_OPEN_READ_ONLY` — which
+    /// matters beyond intent. A read-write handle, even one that runs no
+    /// `INSERT`, checkpoints the write-ahead log into the main file when it is
+    /// the last connection to close, rewriting the very bytes the command
+    /// promised not to touch. A read-only handle cannot, so `doctor` leaves the
+    /// file identical. `query_only` is belt and braces on top.
+    ///
+    /// The cost is that a WAL database whose shared-memory index is missing —
+    /// a writer died without checkpointing — cannot be read at all. That is
+    /// reported like a missing database (advice about the machine, nothing
+    /// about the store), which is the right trade for a command whose only
+    /// promise is that it changes nothing.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            anyhow::bail!("no AMF database at {}", path.display());
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.execute_batch("PRAGMA query_only=ON;")?;
+        Ok(Self {
+            conn,
+            path: path.to_path_buf(),
+        })
+    }
+
     /// Open `path`, seeding or merging legacy stores first if needed.
     ///
     /// Merge priority:
@@ -291,8 +329,14 @@ impl AmfDb {
         editors::list_all(&self.conn)
     }
 
-    pub fn set_launched_editor_owner(&self, id: &str, pid: i64, dedicated: bool) -> Result<()> {
-        editors::set_owner(&self.conn, id, pid, dedicated)
+    pub fn set_launched_editor_owner(
+        &self,
+        id: &str,
+        pid: i64,
+        dedicated: bool,
+        proc_started_at: &str,
+    ) -> Result<()> {
+        editors::set_owner(&self.conn, id, pid, dedicated, proc_started_at)
     }
 
     pub fn delete_launched_editor(&self, id: &str) -> Result<()> {
@@ -504,4 +548,100 @@ fn load_legacy_worktree_store() -> Option<crate::project::ProjectStore> {
     }
 
     merged
+}
+
+#[cfg(test)]
+mod read_only_tests {
+    use super::*;
+
+    /// `amf doctor` promises to change nothing, so its handle must not create
+    /// the database, migrate it, or switch its journal mode.
+    #[test]
+    fn a_read_only_handle_refuses_to_create_the_database() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("missing").join("amf.db");
+
+        assert!(AmfDb::open_read_only(&path).is_err());
+        assert!(!path.exists(), "doctor must not create the database");
+        assert!(
+            !path.parent().unwrap().exists(),
+            "doctor must not create ~/.config/amf either"
+        );
+    }
+
+    #[test]
+    fn a_read_only_handle_neither_migrates_nor_writes() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // A database at an older schema: opening it normally would upgrade it
+        // out from under whatever AMF version the user is still running.
+        {
+            let conn = Connection::open(tmp.path()).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL, description TEXT NOT NULL);
+                 INSERT INTO schema_version VALUES (3, datetime('now'), 'seed');",
+            )
+            .unwrap();
+        }
+
+        let db = AmfDb::open_read_only(tmp.path()).unwrap();
+        let version: i64 = db
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 3, "the schema must be left exactly as it was");
+
+        assert!(
+            db.conn
+                .execute("INSERT INTO schema_version VALUES (99, 'now', 'x')", [])
+                .is_err(),
+            "query_only must reject writes"
+        );
+
+        let journal: String = db
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_ne!(
+            journal.to_lowercase(),
+            "wal",
+            "the journal mode must not be switched by a read"
+        );
+    }
+
+    /// The subtle half: a read-write handle that runs no statement at all still
+    /// rewrites the database, because closing the last connection to a WAL
+    /// database checkpoints the log into the main file. Only a genuinely
+    /// read-only handle leaves the bytes alone.
+    #[test]
+    fn reading_a_wal_database_leaves_its_bytes_untouched() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("amf.db");
+
+        // A writer left open, so the log is still un-checkpointed while the
+        // read happens — the state `amf doctor` finds while AMF is running.
+        let writer = AmfDb::open(&path).unwrap();
+        writer
+            .save_store(&crate::project::ProjectStore::empty())
+            .unwrap();
+        assert!(
+            path.with_extension("db-wal").exists(),
+            "expected an un-checkpointed write-ahead log"
+        );
+        let before = std::fs::read(&path).unwrap();
+
+        {
+            let reader = AmfDb::open_read_only(&path).unwrap();
+            reader.load_store().unwrap();
+        }
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "the read must not checkpoint the log into the database file"
+        );
+        drop(writer);
+    }
 }

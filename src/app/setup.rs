@@ -632,6 +632,23 @@ pub(crate) fn migrate_app_config(config: &mut AppConfig) -> bool {
     changed
 }
 
+/// The configuration exactly as it is on disk, touching nothing.
+///
+/// [`load_config`] is a write path in three ways: it creates `config.json` when
+/// it is missing, rewrites it when a key migrates, and pushes the configured
+/// theme into opencode's own config. `amf doctor` needs the same settings and
+/// must leave all of that alone, so it reads through here instead — migrations
+/// are applied in memory only.
+pub fn read_config() -> AppConfig {
+    let config_path = crate::project::amf_config_dir().join("config.json");
+    let mut config: AppConfig = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    migrate_app_config(&mut config);
+    config
+}
+
 pub fn load_config() -> AppConfig {
     let config_path = crate::project::amf_config_dir().join("config.json");
 

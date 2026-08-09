@@ -84,6 +84,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Track editors AMF launched per feature so they can be reclaimed on stop",
             MIGRATION_017,
         ),
+        (
+            "Record the editor process's own start time to survive PID recycling",
+            MIGRATION_018,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -449,6 +453,16 @@ CREATE TABLE IF NOT EXISTS launched_editors (
 
 CREATE INDEX IF NOT EXISTS idx_launched_editors_feature
     ON launched_editors(feature_id);
+";
+
+/// The argv identity check of `MIGRATION_017` is not enough on its own: argv is
+/// reproducible, so a recycled PID belonging to a *user-opened* window on the
+/// same worktree passes it. `proc_started_at` records when the attributed
+/// process itself started (`ps -o lstart=`), which the next holder of that PID
+/// cannot match. Empty for rows written before this migration and for launches
+/// whose owner was never resolved — both fall back to the argv check alone.
+const MIGRATION_018: &str = "
+ALTER TABLE launched_editors ADD COLUMN proc_started_at TEXT NOT NULL DEFAULT '';
 ";
 
 #[cfg(test)]

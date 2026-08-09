@@ -83,6 +83,7 @@ pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;
 pub(crate) use config_wizard::agent_toggles_to_allowed;
 pub(crate) use diff::context_level_label;
+pub(crate) use resource_gate::{StartIntent, Started};
 pub(crate) use session_ops::session_kind_for_agent;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};
@@ -937,6 +938,12 @@ pub struct App {
     pub last_file_notification_count: usize,
     pub last_file_notification_fingerprint: Option<u64>,
     pub vscode_available: bool,
+    /// VS Code launches whose window has not been attributed yet. Ownership is
+    /// resolved on a background thread seconds after the launch, so a feature
+    /// stopped in the meantime has nothing to kill; these entries let the stop
+    /// hand the job to the resolver instead of silently skipping it. See
+    /// [`editor_ops::PendingEditorLaunch`].
+    pub(crate) pending_editor_launches: Vec<editor_ops::PendingEditorLaunch>,
     view_snapshot_tx: SnapshotSender,
     view_snapshot_wakeup_rx: Option<OwnedFd>,
     view_snapshot_stop: Option<Arc<AtomicBool>>,
@@ -2287,6 +2294,7 @@ impl App {
             last_file_notification_fingerprint: None,
             // Checked asynchronously — defaults to false until confirmed.
             vscode_available: false,
+            pending_editor_launches: Vec::new(),
             view_snapshot_tx,
             view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,
@@ -2510,6 +2518,7 @@ impl App {
             last_file_notification_count: 0,
             last_file_notification_fingerprint: None,
             vscode_available: false,
+            pending_editor_launches: Vec::new(),
             view_snapshot_tx,
             view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,

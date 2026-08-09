@@ -1507,6 +1507,27 @@ impl TmuxManager {
             .unwrap_or_default()
     }
 
+    /// `(session, window, pane pid)` for every pane on the server, in one
+    /// call.
+    ///
+    /// The pid is the pane's *own* process — the shell tmux started there —
+    /// not whatever that shell is currently running. Callers that want to know
+    /// if something is running look for children of this pid.
+    pub fn list_panes() -> Vec<(String, String, i64)> {
+        Self::command()
+            .args([
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}\t#{window_name}\t#{pane_pid}",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| parse_pane_list(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default()
+    }
+
     /// Whether a specific window is still present in a tmux session.
     ///
     /// A live session is not a live window: any other window — the terminal, a
@@ -2101,6 +2122,21 @@ fn parse_window_activity(raw: &str) -> Vec<(String, String, i64)> {
         .collect()
 }
 
+/// Parse tab-separated `session\twindow\tpane-pid` rows. A row whose pid tmux
+/// could not fill in is dropped: no pid means no way to tell what is running
+/// in that pane.
+fn parse_pane_list(raw: &str) -> Vec<(String, String, i64)> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let session = parts.next()?.to_string();
+            let window = parts.next()?.to_string();
+            let pane_pid = parts.next()?.trim().parse().ok()?;
+            Some((session, window, pane_pid))
+        })
+        .collect()
+}
+
 // ── TmuxOps trait implementation ─────────────────────────────────────────────
 
 impl TmuxOps for TmuxManager {
@@ -2120,12 +2156,12 @@ impl TmuxOps for TmuxManager {
         TmuxManager::list_sessions()
     }
 
-    fn list_windows(&self, session: &str) -> Vec<String> {
-        TmuxManager::list_windows(session)
-    }
-
     fn window_activity(&self) -> Vec<(String, String, i64)> {
         TmuxManager::window_activity()
+    }
+
+    fn list_panes(&self) -> Vec<(String, String, i64)> {
+        TmuxManager::list_panes()
     }
 
     fn create_session_with_window(
@@ -2619,6 +2655,22 @@ mod tests {
         assert!(prefix.contains("AMF_TMUX_WINDOW='codex'"));
         assert!(prefix.contains("AMF_FEATURE_SESSION_ID='session-123'"));
         assert!(prefix.contains("PATH="));
+    }
+
+    #[test]
+    fn parses_pane_rows_and_drops_ones_without_a_pid() {
+        let raw = "amf-alpha\tclaude\t1234\n\
+                   amf-alpha\tterminal\t1235\n\
+                   amf-beta\tclaude\t\n\
+                   garbage\n";
+
+        assert_eq!(
+            super::parse_pane_list(raw),
+            vec![
+                ("amf-alpha".to_string(), "claude".to_string(), 1234),
+                ("amf-alpha".to_string(), "terminal".to_string(), 1235),
+            ]
+        );
     }
 
     #[test]

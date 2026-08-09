@@ -8,7 +8,7 @@
 use anyhow::Result;
 use uuid::Uuid;
 
-use crate::app::{App, AppMode, Selection, TodoViewState, TodosHostReassignState};
+use crate::app::{App, AppMode, Selection, StartIntent, TodoViewState, TodosHostReassignState};
 use crate::db::todos::{Todo, TodoPriority};
 
 impl App {
@@ -566,7 +566,16 @@ impl App {
                     .map(|f| f.agent.clone())
                     .unwrap_or_default();
                 let label = Self::todo_session_label(&todo.title);
-                let si = match self.create_agent_session_labeled(pi, fi, &label, Some(agent)) {
+                // The link back to the TODO is recorded from inside the
+                // Todos overlay, which the confirmation dialog would replace,
+                // so this start warns instead of parking.
+                let si = match self.create_agent_session_labeled(
+                    pi,
+                    fi,
+                    &label,
+                    Some(agent),
+                    StartIntent::Warn("the agent for this TODO"),
+                ) {
                     Ok(si) => si,
                     Err(e) => {
                         self.push_toast_error(format!("Failed to launch agent: {e}"));

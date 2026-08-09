@@ -3500,13 +3500,20 @@ impl DormantViewState {
 pub enum PendingStart {
     /// Starting a stopped feature (`c` on the dashboard).
     Feature { pi: usize, fi: usize },
-    /// Adding an agent-harness session to a running feature (session picker).
+    /// Adding a session to a feature (session picker) that will spawn a
+    /// harness — either the session itself, or the stopped feature's saved
+    /// agents coming up underneath it.
     BuiltinSession {
         pi: usize,
         fi: usize,
         kind: SessionKind,
         label: Option<String>,
     },
+    /// Opening a stopped feature or session from the dashboard (`Enter`).
+    /// Replayed against the current selection, which the dialog leaves alone.
+    EnterView { auto_compose: bool },
+    /// Jumping to a stopped feature from inside a session view (leader n/p).
+    SwitchViewToFeature { pi: usize, fi: usize },
 }
 
 /// The pre-start warning: what tripped, what it was about to do, and where to

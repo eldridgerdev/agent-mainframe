@@ -5492,7 +5492,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists()
         .withf(|session| session == "amf-restore-me")
-        .times(2)
+        .times(3)
         .return_const(false);
     tmux.expect_create_session_with_window()
         .times(1)
@@ -6846,6 +6846,11 @@ fn new_session_name_rejects_empty_input() {
 fn adding_session_starts_stopped_feature() {
     let mut tmux = MockTmuxOps::new();
     let mut sequence = mockall::Sequence::new();
+    // The gate asks first whether this add will start the feature.
+    tmux.expect_session_exists()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .return_const(false);
     tmux.expect_session_exists()
         .times(1)
         .in_sequence(&mut sequence)
@@ -6937,7 +6942,7 @@ fn starting_stopped_feature_limits_saved_agent_autostart() {
 #[test]
 fn adding_session_start_failure_shows_error_toast() {
     let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists().times(2).return_const(false);
+    tmux.expect_session_exists().times(3).return_const(false);
     tmux.expect_create_session_with_window()
         .times(1)
         .returning(|_, _, _| anyhow::bail!("tmux failed"));
@@ -19133,12 +19138,48 @@ fn store_with_running_and_stopped_features() -> ProjectStore {
     store
 }
 
-/// Census expectations: the running feature's `claude` window is live.
-fn expect_one_live_harness(tmux: &mut MockTmuxOps) {
+/// A real shell with a real child, standing in for a tmux pane that has a
+/// harness running in it. The census asks `ps` whether the pane's shell has
+/// anything under it, so a made-up pid would read as an idle prompt — which is
+/// exactly the distinction being tested elsewhere.
+struct BusyPane(std::process::Child);
+
+impl Drop for BusyPane {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Census expectations: the running feature's `claude` window has a live
+/// harness in it. The returned guard must be held for the test's duration.
+#[must_use]
+fn expect_one_live_harness(tmux: &mut MockTmuxOps) -> BusyPane {
     tmux.expect_list_sessions()
         .returning(|| Ok(vec!["amf-my-feat".to_string()]));
-    tmux.expect_list_windows()
-        .returning(|_| vec!["claude".to_string()]);
+
+    // `& wait` keeps the shell itself alive as the parent instead of exec'ing
+    // away, so the pane pid really does have a child.
+    let child = std::process::Command::new("sh")
+        .args(["-c", "sleep 60 & wait"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("sh should be available");
+    let pane_pid = child.id() as i64;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let procs = crate::resources::procs::list_processes();
+        if crate::resources::procs::process_tree(&procs, pane_pid).len() > 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    tmux.expect_list_panes()
+        .returning(move || vec![("amf-my-feat".to_string(), "claude".to_string(), pane_pid)]);
+    BusyPane(child)
 }
 
 /// Everything `ensure_feature_running` needs to bring the stopped feature up.
@@ -19155,7 +19196,7 @@ fn expect_feature_start(tmux: &mut MockTmuxOps) {
 #[test]
 fn starting_a_feature_past_the_agent_limit_asks_first() {
     let mut tmux = MockTmuxOps::new();
-    expect_one_live_harness(&mut tmux);
+    let _pane = expect_one_live_harness(&mut tmux);
 
     let mut app = App::new_for_test(
         store_with_running_and_stopped_features(),
@@ -19193,7 +19234,7 @@ fn starting_a_feature_past_the_agent_limit_asks_first() {
 #[test]
 fn confirming_the_resource_warning_starts_the_feature() {
     let mut tmux = MockTmuxOps::new();
-    expect_one_live_harness(&mut tmux);
+    let _pane = expect_one_live_harness(&mut tmux);
     expect_feature_start(&mut tmux);
 
     let mut app = App::new_for_test(
@@ -19220,7 +19261,7 @@ fn confirming_the_resource_warning_starts_the_feature() {
 #[test]
 fn cancelling_the_resource_warning_starts_nothing() {
     let mut tmux = MockTmuxOps::new();
-    expect_one_live_harness(&mut tmux);
+    let _pane = expect_one_live_harness(&mut tmux);
     // No start expectations: cancelling must not touch tmux at all.
 
     let mut app = App::new_for_test(
@@ -19245,7 +19286,7 @@ fn cancelling_the_resource_warning_starts_nothing() {
 #[test]
 fn starting_a_feature_under_the_limit_does_not_ask() {
     let mut tmux = MockTmuxOps::new();
-    expect_one_live_harness(&mut tmux);
+    let _pane = expect_one_live_harness(&mut tmux);
     expect_feature_start(&mut tmux);
 
     let mut app = App::new_for_test(
@@ -19269,7 +19310,7 @@ fn starting_a_feature_under_the_limit_does_not_ask() {
 #[test]
 fn adding_an_agent_session_past_the_limit_asks_first() {
     let mut tmux = MockTmuxOps::new();
-    expect_one_live_harness(&mut tmux);
+    let _pane = expect_one_live_harness(&mut tmux);
 
     let mut app = App::new_for_test(
         store_with_running_and_stopped_features(),
@@ -19302,9 +19343,10 @@ fn adding_an_agent_session_past_the_limit_asks_first() {
 }
 
 #[test]
-fn adding_a_terminal_session_skips_the_gate() {
-    // Terminals cost the machine little, so they never raise the warning —
-    // note there are no census expectations on the mock at all here.
+fn adding_a_terminal_session_to_a_running_feature_skips_the_gate() {
+    // Terminals cost the machine little, and this feature is already up, so
+    // the add launches nothing — note there are no census expectations on the
+    // mock at all here.
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().return_const(true);
     tmux.expect_create_window().returning(|_, _, _| Ok(()));
@@ -19324,10 +19366,223 @@ fn adding_a_terminal_session_skips_the_gate() {
     assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
 }
 
+/// The gate lives in the launch primitives, not on the `c` keybinding, so
+/// every other way of reaching them is covered too. These four are the routes
+/// that used to start harnesses silently.
+#[test]
+fn adding_a_terminal_to_a_stopped_feature_asks_first() {
+    // A terminal is not an agent, but bringing a stopped feature up to host
+    // one launches every agent that feature has saved.
+    let mut tmux = MockTmuxOps::new();
+    let _pane = expect_one_live_harness(&mut tmux);
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-other-feat")
+        .return_const(false);
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+
+    app.add_builtin_session_with_label(0, 1, SessionKind::Terminal, "Shell".into())
+        .unwrap();
+
+    match &app.mode {
+        AppMode::ConfirmResourceStart(state) => assert_eq!(
+            state.pending,
+            PendingStart::BuiltinSession {
+                pi: 0,
+                fi: 1,
+                kind: SessionKind::Terminal,
+                label: Some("Shell".into()),
+            }
+        ),
+        other => panic!(
+            "expected a resource confirm, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+    assert!(app.store.projects[0].features[1].sessions.is_empty());
+}
+
+#[test]
+fn entering_a_stopped_feature_asks_first() {
+    let mut tmux = MockTmuxOps::new();
+    let _pane = expect_one_live_harness(&mut tmux);
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-other-feat")
+        .return_const(false);
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+    app.selection = Selection::Feature(0, 1);
+
+    app.enter_view().unwrap();
+
+    match &app.mode {
+        AppMode::ConfirmResourceStart(state) => assert_eq!(
+            state.pending,
+            PendingStart::EnterView { auto_compose: true }
+        ),
+        other => panic!(
+            "expected a resource confirm, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+    assert_eq!(
+        app.store.projects[0].features[1].status,
+        ProjectStatus::Stopped,
+        "nothing should have started while the question is on screen"
+    );
+}
+
+#[test]
+fn entering_a_running_feature_never_asks() {
+    // The harness is already up and already counted: re-entering its view must
+    // not put a question in the way.
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = u64::MAX;
+    app.selection = Selection::Feature(0, 0);
+
+    app.enter_view_without_auto_compose().unwrap();
+
+    assert!(
+        matches!(app.mode, AppMode::Viewing(_)),
+        "got {:?}",
+        std::mem::discriminant(&app.mode)
+    );
+}
+
+#[test]
+fn confirming_the_warning_opens_the_stopped_feature() {
+    let mut tmux = MockTmuxOps::new();
+    let _pane = expect_one_live_harness(&mut tmux);
+    // False while the gate looks, true once the session has been created.
+    let created = std::sync::Arc::new(AtomicBool::new(false));
+    let seen = created.clone();
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-other-feat")
+        .returning(move |_| seen.load(Ordering::SeqCst));
+    tmux.expect_create_session_with_window()
+        .returning(move |_, _, _| {
+            created.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+    tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+    app.selection = Selection::Feature(0, 1);
+
+    app.enter_view_without_auto_compose().unwrap();
+    match &app.mode {
+        // The flag the caller opened with travels through the dialog, so the
+        // replay is the same operation and not a lookalike.
+        AppMode::ConfirmResourceStart(state) => assert_eq!(
+            state.pending,
+            PendingStart::EnterView {
+                auto_compose: false
+            }
+        ),
+        other => panic!(
+            "expected a resource confirm, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+
+    app.confirm_pending_start().unwrap();
+
+    // Replayed as the original operation, not just as a bare feature start:
+    // the user asked to open the feature, so they land in its view.
+    assert!(
+        matches!(app.mode, AppMode::Viewing(_)),
+        "got {:?}",
+        std::mem::discriminant(&app.mode)
+    );
+    assert_eq!(
+        app.store.projects[0].features[1].status,
+        ProjectStatus::Active
+    );
+}
+
+#[test]
+fn a_start_that_cannot_be_parked_warns_and_goes_ahead() {
+    // Spawning an agent from a TODO, the PR-triage hand-off, and the
+    // saved-transcript pickers all keep the state they need to resume in the
+    // very mode the dialog would replace. They get a toast instead of a modal
+    // — but never silence.
+    let mut tmux = MockTmuxOps::new();
+    let _pane = expect_one_live_harness(&mut tmux);
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .returning(|_, _, _, _, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_running_and_stopped_features(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+
+    let si = app
+        .create_agent_session_labeled(
+            0,
+            0,
+            "TODO: rename things",
+            None,
+            StartIntent::Warn("the agent for this TODO"),
+        )
+        .expect("the start should go ahead");
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+    assert_eq!(si, 1);
+    let toast = app
+        .toasts
+        .last()
+        .map(|toast| toast.message.clone())
+        .unwrap_or_default();
+    assert!(
+        toast.contains("the agent for this TODO"),
+        "the warning should name what it is starting, got {toast:?}"
+    );
+    assert!(toast.contains("1 agent already running"), "got {toast:?}");
+}
+
 #[test]
 fn low_memory_alone_raises_the_warning() {
     let mut tmux = MockTmuxOps::new();
-    expect_one_live_harness(&mut tmux);
+    let _pane = expect_one_live_harness(&mut tmux);
 
     let mut app = App::new_for_test(
         store_with_running_and_stopped_features(),
@@ -19362,7 +19617,7 @@ fn low_memory_alone_raises_the_warning() {
 #[test]
 fn autostart_skips_with_a_warning_instead_of_prompting() {
     let mut tmux = MockTmuxOps::new();
-    expect_one_live_harness(&mut tmux);
+    let _pane = expect_one_live_harness(&mut tmux);
 
     let mut app = App::new_for_test(
         store_with_running_and_stopped_features(),
@@ -19393,7 +19648,7 @@ fn autostart_skips_with_a_warning_instead_of_prompting() {
 #[test]
 fn autostart_proceeds_when_there_is_room() {
     let mut tmux = MockTmuxOps::new();
-    expect_one_live_harness(&mut tmux);
+    let _pane = expect_one_live_harness(&mut tmux);
 
     let mut app = App::new_for_test(
         store_with_running_and_stopped_features(),
@@ -19417,17 +19672,64 @@ fn autostart_proceeds_when_there_is_room() {
 fn spawn_fake_editor(dir: &std::path::Path, workdir: &std::path::Path) -> std::process::Child {
     let fake = dir.join("code");
     std::fs::copy("/bin/sh", &fake).expect("copy sh");
-    std::process::Command::new(&fake)
-        .args([
-            "-c".as_ref(),
-            "sleep 60 & wait".as_ref(),
-            "--new-window".as_ref(),
-            workdir.as_os_str(),
-        ])
+    spawn_stand_in(std::process::Command::new(&fake).args([
+        "-c".as_ref(),
+        "sleep 60 & wait".as_ref(),
+        "--new-window".as_ref(),
+        workdir.as_os_str(),
+    ]))
+}
+
+/// Spawn a stand-in binary, retrying `ETXTBSY`.
+///
+/// These helpers copy `/bin/sh` and immediately execute the copy; a concurrent
+/// test forking in that window inherits the write descriptor and makes the exec
+/// fail with "text file busy". It is an artefact of the fixture, not of
+/// anything under test.
+fn spawn_stand_in(command: &mut std::process::Command) -> std::process::Child {
+    command
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("fake editor should launch")
+        .stderr(std::process::Stdio::null());
+    for _ in 0..40 {
+        match command.spawn() {
+            Ok(child) => return child,
+            Err(err) if err.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(err) => panic!("stand-in should launch: {err}"),
+        }
+    }
+    panic!("stand-in stayed busy");
+}
+
+/// The same stand-in, holding `windows` renderer subprocesses — how a real VS
+/// Code instance carries the windows open inside it.
+fn spawn_fake_editor_hosting_windows(
+    dir: &std::path::Path,
+    workdir: &std::path::Path,
+    windows: usize,
+) -> std::process::Child {
+    let fake = dir.join("code");
+    std::fs::copy("/bin/sh", &fake).expect("copy sh");
+    // The renderers are spawned from a script file rather than an inline `-c`
+    // string: an inline one would put `--type=renderer` in the *parent's* argv,
+    // which is exactly what marks a process as a helper rather than a window.
+    let mut script = String::new();
+    for id in 1..=windows {
+        script.push_str(&format!(
+            "{} -c 'sleep 60' --type=renderer --window-id={id} &\n",
+            fake.display()
+        ));
+    }
+    script.push_str("wait\n");
+    let script_path = dir.join("windows.sh");
+    std::fs::write(&script_path, script).expect("write window script");
+
+    spawn_stand_in(std::process::Command::new(&fake).args([
+        script_path.as_os_str(),
+        "--new-window".as_ref(),
+        workdir.as_os_str(),
+    ]))
 }
 
 /// An app whose feature lives in `workdir`, with a temp DB attached.
@@ -19635,4 +19937,185 @@ fn a_recycled_pid_is_never_signalled() {
 
     let _ = bystander.kill();
     let _ = bystander.wait();
+}
+
+#[test]
+fn a_window_sharing_its_instance_with_others_is_left_alone() {
+    // AMF's launch started VS Code, so it owns the process — but the user has
+    // since opened other windows in it. Killing the process would close their
+    // work, which no amount of memory is worth.
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let mut editor = spawn_fake_editor_hosting_windows(tmp.path(), &workdir, 2);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let editor_pid = editor.id() as i64;
+
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = app_with_db(&workdir, &db_file);
+    app.db
+        .as_ref()
+        .unwrap()
+        .record_launched_editor(
+            "feat-1",
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            editor_pid,
+            &workdir,
+            true,
+            "code --new-window",
+        )
+        .unwrap();
+
+    let report = app.kill_tracked_editors("feat-1");
+
+    assert!(report.killed.is_empty());
+    assert_eq!(
+        report.skipped,
+        vec![(
+            "VS Code".to_string(),
+            crate::app::editor_ops::SkipReason::SharedInstance
+        )]
+    );
+    assert!(
+        crate::resources::procs::pid_alive(editor_pid),
+        "a shared instance must survive the stop"
+    );
+
+    let _ = editor.kill();
+    let _ = editor.wait();
+}
+
+#[test]
+fn a_window_of_its_own_is_still_closed() {
+    // The counterpart to the test above: one window in the instance is exactly
+    // the case ownership was resolved for, and it must not be skipped.
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let mut editor = spawn_fake_editor_hosting_windows(tmp.path(), &workdir, 1);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let editor_pid = editor.id() as i64;
+
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = app_with_db(&workdir, &db_file);
+    app.db
+        .as_ref()
+        .unwrap()
+        .record_launched_editor(
+            "feat-1",
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            editor_pid,
+            &workdir,
+            true,
+            "code --new-window",
+        )
+        .unwrap();
+
+    let report = app.kill_tracked_editors("feat-1");
+    let _ = editor.wait();
+
+    assert_eq!(report.killed.len(), 1);
+    assert!(!crate::resources::procs::pid_alive(editor_pid));
+}
+
+#[test]
+fn stopping_while_the_window_is_still_opening_hands_it_to_the_resolver() {
+    use crate::app::editor_ops::{PendingEditorLaunch, PendingLaunchState, lock_state};
+
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = app_with_db(&workdir, &db_file);
+    // The state a launch is in for the first seconds: recorded, not yet owned.
+    let record = app
+        .db
+        .as_ref()
+        .unwrap()
+        .record_launched_editor(
+            "feat-1",
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            0,
+            &workdir,
+            false,
+            "code --new-window",
+        )
+        .unwrap();
+    let state = std::sync::Arc::new(std::sync::Mutex::new(PendingLaunchState::Resolving));
+    app.pending_editor_launches.push(PendingEditorLaunch {
+        feature_id: "feat-1".to_string(),
+        record_id: record.id.clone(),
+        kind: crate::db::editors::EditorKind::Vscode,
+        state: state.clone(),
+    });
+
+    let report = app.kill_tracked_editors("feat-1");
+
+    assert_eq!(report.pending, vec!["VS Code".to_string()]);
+    assert!(
+        report.skipped.is_empty(),
+        "a window still opening is not a window AMF does not own, got {:?}",
+        report.skipped
+    );
+    assert_eq!(
+        *lock_state(&state),
+        PendingLaunchState::Reclaim,
+        "the resolver must be told to close the window it finds"
+    );
+    assert_eq!(
+        report.summary().as_deref(),
+        Some("VS Code will close once its window opens")
+    );
+}
+
+#[test]
+fn a_launch_that_resolved_before_the_stop_is_closed_by_the_stop() {
+    // The other side of the race: the resolver won, so the row is owned and the
+    // stop kills it directly. The pending entry must not swallow it.
+    use crate::app::editor_ops::{PendingEditorLaunch, PendingLaunchState};
+
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("worktree");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let mut editor = spawn_fake_editor(tmp.path(), &workdir);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let editor_pid = editor.id() as i64;
+
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = app_with_db(&workdir, &db_file);
+    let record = app
+        .db
+        .as_ref()
+        .unwrap()
+        .record_launched_editor(
+            "feat-1",
+            None,
+            crate::db::editors::EditorKind::Vscode,
+            editor_pid,
+            &workdir,
+            true,
+            "code --new-window",
+        )
+        .unwrap();
+    app.pending_editor_launches.push(PendingEditorLaunch {
+        feature_id: "feat-1".to_string(),
+        record_id: record.id,
+        kind: crate::db::editors::EditorKind::Vscode,
+        state: std::sync::Arc::new(std::sync::Mutex::new(PendingLaunchState::Done)),
+    });
+
+    let report = app.kill_tracked_editors("feat-1");
+    let _ = editor.wait();
+
+    assert!(report.pending.is_empty());
+    assert_eq!(report.killed.len(), 1);
+    assert!(!crate::resources::procs::pid_alive(editor_pid));
+    assert!(
+        app.pending_editor_launches.is_empty(),
+        "a resolved launch should be pruned"
+    );
 }

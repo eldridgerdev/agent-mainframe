@@ -15,11 +15,12 @@ pub trait TmuxOps: Send + Sync {
     fn session_exists(&self, session: &str) -> bool;
     fn window_exists(&self, session: &str, window: &str) -> bool;
     fn list_sessions(&self) -> Result<Vec<String>>;
-    /// Window names in one session; empty when the session is gone.
-    fn list_windows(&self, session: &str) -> Vec<String>;
     /// `(session, window, last-activity unix seconds)` for every window tmux
     /// knows about, in one call. Empty when tmux cannot be reached.
     fn window_activity(&self) -> Vec<(String, String, i64)>;
+    /// `(session, window, pane pid)` for every pane on the server, in one
+    /// call. The pid is the pane's own shell, not what it is running.
+    fn list_panes(&self) -> Vec<(String, String, i64)>;
     fn create_session_with_window(
         &self,
         session: &str,

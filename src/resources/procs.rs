@@ -71,6 +71,36 @@ pub fn args_for_pid(pid: i64) -> Option<String> {
     (!args.is_empty()).then_some(args)
 }
 
+/// When a PID started, as an opaque string (`ps -o lstart=`), whitespace
+/// normalized so two readings of the same process compare equal.
+///
+/// This is the half of process identity that argv cannot provide: argv is
+/// whatever a process chooses to look like and can be reproduced exactly by a
+/// later process on the same worktree, whereas the start time distinguishes
+/// *that* process from the one holding the number now. `None` when the process
+/// is gone or `ps` has no `lstart` (some busybox builds) — callers must treat
+/// that as "cannot tell", never as a match.
+pub fn start_time_for_pid(pid: i64) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(normalize_start_time(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+    .filter(|s| !s.is_empty())
+}
+
+fn normalize_start_time(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// `root` plus every descendant, depth-first, parents before children.
 pub fn process_tree(processes: &[ProcInfo], root: i64) -> Vec<i64> {
     let mut tree = vec![root];
@@ -159,8 +189,61 @@ pub fn is_vscode_for_workdir(args: &str, workdir: &Path) -> bool {
     if args.contains("--type=") {
         return false;
     }
-    let path = workdir.to_string_lossy();
-    !path.is_empty() && args.contains(path.as_ref())
+    mentions_path(args, workdir.to_string_lossy().as_ref())
+}
+
+/// Whether `args` names `path` as a path, rather than merely containing its
+/// characters.
+///
+/// A plain substring test makes `/repo/feature-two` an occurrence of
+/// `/repo/feat`, which at kill time means signalling a window the user opened
+/// on a neighbouring worktree. The match must therefore start and end on a path
+/// boundary; a trailing `/` still counts, so a window opened on a directory
+/// *inside* the worktree is still that worktree's window.
+fn mentions_path(args: &str, path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let bytes = args.as_bytes();
+    let mut from = 0;
+    while let Some(offset) = args[from..].find(path) {
+        let start = from + offset;
+        let end = start + path.len();
+        let starts_clean =
+            start == 0 || matches!(bytes[start - 1], b' ' | b'\t' | b'"' | b'\'' | b'=');
+        let ends_clean = match args[end..].chars().next() {
+            None => true,
+            Some(c) => c.is_whitespace() || c == '/' || c == '"' || c == '\'',
+        };
+        if starts_clean && ends_clean {
+            return true;
+        }
+        // Step by one character (not one byte) so a multi-byte path stays on
+        // char boundaries.
+        from = start + args[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
+/// How many editor windows a VS Code main process is currently hosting.
+///
+/// VS Code is a singleton application: `--new-window` gives AMF its own window,
+/// but if that launch was the one that *started* VS Code, every window the user
+/// opens afterwards lives in the same process tree. Killing the main process
+/// then closes their work too, so ownership of the process is not on its own a
+/// licence to end it — the window count is what says whether it is still only
+/// AMF's.
+///
+/// Counted from Chromium renderer subprocesses, one per window (helpers such as
+/// the GPU process, utility processes, and the zygote carry a different
+/// `--type`). Returns `0` when nothing can be read, which callers must treat as
+/// "cannot tell".
+pub fn vscode_window_count(processes: &[ProcInfo], root: i64) -> usize {
+    let tree = process_tree(processes, root);
+    processes
+        .iter()
+        .filter(|proc| tree.contains(&proc.pid) && proc.args.contains("--type=renderer"))
+        .count()
 }
 
 /// Find the VS Code window process AMF just opened on `workdir`.
@@ -302,6 +385,98 @@ mod tests {
             "/usr/share/code/code --type=renderer /home/me/repo/.worktrees/feat",
             &wt
         ));
+    }
+
+    #[test]
+    fn a_neighbouring_worktree_is_not_this_worktree() {
+        // The prefix case: `/repo/feat` is a substring of `/repo/feature-two`,
+        // and a substring test would hand AMF a licence to kill the user's
+        // window on the neighbouring worktree.
+        let wt = PathBuf::from("/home/me/repo/.worktrees/feat");
+        assert!(!is_vscode_for_workdir(
+            "/usr/share/code/code /home/me/repo/.worktrees/feature-two",
+            &wt
+        ));
+        // A different repo whose path merely ends with ours.
+        assert!(!is_vscode_for_workdir(
+            "/usr/share/code/code /mnt/backup/home/me/repo/.worktrees/feat",
+            &wt
+        ));
+        // Quoted, and a directory inside the worktree, both still count.
+        assert!(is_vscode_for_workdir(
+            "/usr/share/code/code \"/home/me/repo/.worktrees/feat\"",
+            &wt
+        ));
+        assert!(is_vscode_for_workdir(
+            "/usr/share/code/code /home/me/repo/.worktrees/feat/src",
+            &wt
+        ));
+    }
+
+    #[test]
+    fn counts_the_windows_a_vscode_instance_is_hosting() {
+        let procs = vec![
+            ProcInfo {
+                pid: 10,
+                ppid: 1,
+                args: "/usr/share/code/code --new-window /wt".into(),
+            },
+            ProcInfo {
+                pid: 11,
+                ppid: 10,
+                args: "/usr/share/code/code --type=zygote".into(),
+            },
+            ProcInfo {
+                pid: 12,
+                ppid: 11,
+                args: "/usr/share/code/code --type=renderer --window-id=1".into(),
+            },
+            ProcInfo {
+                pid: 13,
+                ppid: 10,
+                args: "/usr/share/code/code --type=gpu-process".into(),
+            },
+            ProcInfo {
+                pid: 14,
+                ppid: 10,
+                args: "/usr/share/code/code --type=utility".into(),
+            },
+        ];
+        assert_eq!(vscode_window_count(&procs, 10), 1);
+
+        // A second window opened by the user in the same instance: renderers
+        // are forked from the zygote, so they are descendants either way.
+        let mut shared = procs.clone();
+        shared.push(ProcInfo {
+            pid: 15,
+            ppid: 11,
+            args: "/usr/share/code/code --type=renderer --window-id=2".into(),
+        });
+        assert_eq!(vscode_window_count(&shared, 10), 2);
+    }
+
+    #[test]
+    fn window_count_of_an_unreadable_process_list_is_zero() {
+        // "Cannot tell", which callers must not read as "no other windows".
+        assert_eq!(vscode_window_count(&[], 10), 0);
+    }
+
+    #[test]
+    fn start_time_is_stable_and_absent_for_dead_pids() {
+        let me = std::process::id() as i64;
+        let first = start_time_for_pid(me);
+        assert!(first.is_some(), "this process should have a start time");
+        assert_eq!(first, start_time_for_pid(me), "start time must not drift");
+        assert!(start_time_for_pid(0).is_none());
+        assert!(start_time_for_pid(-1).is_none());
+    }
+
+    #[test]
+    fn start_times_normalize_ps_column_padding() {
+        assert_eq!(
+            normalize_start_time("  Sat Aug  9 12:00:00 2026\n"),
+            "Sat Aug 9 12:00:00 2026"
+        );
     }
 
     #[test]

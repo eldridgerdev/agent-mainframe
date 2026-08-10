@@ -3553,6 +3553,11 @@ pub struct LearningViewState {
     pub help_scroll: usize,
     /// Transient error banner (file load, DB, run dispatch).
     pub error: Option<String>,
+    /// Transient confirmation banner — what a key just *did*, as opposed to
+    /// why it refused. Shares the error's line but not its colour: telling
+    /// someone their entry was re-filed in the failure red is its own small
+    /// lie, and this mode's audience is the least equipped to discount it.
+    pub notice: Option<String>,
 }
 
 #[allow(dead_code)]

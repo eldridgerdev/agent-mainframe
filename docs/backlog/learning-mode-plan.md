@@ -4,11 +4,12 @@
   (asking), and 4 (surface) complete, plus a first pass of Epic 6
   hardening. Learning Mode is reachable from the dashboard with `K` and
   usable end to end: browse, select, ask, read the answer, ask a
-  follow-up, send a doubtful answer back with the repo readable. Epic
-  5's remaining items (relabel intent, make actionable, escalate to a
-  live session) are next. Epic 7 (a collapsible file tree, so the file
-  list teaches the repo's layout instead of hiding it behind truncated
-  paths) is new, blocks on nothing, and can run in parallel.
+  follow-up, send a doubtful answer back with the repo readable, and
+  re-file an entry as the other kind of question. Epic 5's remaining
+  items (make actionable, escalate to a live session) are next. Epic 7
+  (a collapsible file tree, so the file list teaches the repo's layout
+  instead of hiding it behind truncated paths) is new, blocks on
+  nothing, and can run in parallel.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -794,10 +795,67 @@ picked up in parallel with whatever is left of Epics 5 and 6.
         entirely on a row that would refuse them.
         (`the_answer_footer_keeps_the_way_out_and_the_actions_when_narrow`,
         `the_answer_footer_only_offers_keys_the_row_can_act_on`.)
-- [ ] Implement **relabel intent** on an existing entry (explain ⇄
-      change), persisted, with the answer text left untouched. Verify a
-      relabeled entry re-renders with the new marker and re-orders its
-      action affordances.
+- [x] Implement **relabel intent** on an existing entry (explain ⇄
+      change), persisted, with the answer text left untouched. `i` on the
+      Q&A pane or inside the answer pane; a follow-up asked afterwards
+      inherits the new intent, which is what keeps the label from being
+      decoration. Three decisions came out of building it:
+      - **The banner has to say the answer wasn't rewritten.** A marker
+        that changes by itself invites exactly the reading a newcomer
+        will make — that the answer below it was regenerated to match.
+        The confirmation states the text is unchanged and points at `F`,
+        which is the key that actually gets an answer written the other
+        way. (`re_filing_says_the_answer_was_not_rewritten`.)
+      - **A confirmation must not be painted as a failure.** The overlay
+        had one banner channel, `error`, rendered in the danger colour,
+        and it was already carrying non-failures ("you already sent that
+        one deeper"). Re-filing needed to report success, so
+        `LearningViewState::notice` now shares the line in the info
+        colour; each channel clears the other, and the notice clears when
+        the Q&A cursor moves, since it names one row.
+        (`a_confirmation_is_not_painted_as_a_failure`,
+        `the_re_filing_banner_clears_when_the_cursor_moves_on`.)
+      - **An in-flight row can be re-filed.** The prompt is already
+        dispatched under the old framing whether or not it has landed, so
+        refusing would withhold the label for nothing — but the banner
+        branches so it never describes an answer that doesn't exist yet.
+        (`a_question_still_generating_can_be_re_filed`.)
+      Action affordances re-order in the answer footer: a change request
+      leads with `D`, because a change proposed without the repository
+      open is the least trustworthy kind of answer, while an explanation
+      leads with `F`. The `i` hint's own label flips with the intent
+      ("file as a change" / "file as a note"). Fitting it in cost the
+      footer its `g/G top/bottom` hint even at 140 columns, so the drop
+      policy became an explicit rank rather than a droppable prefix:
+      `g/G` goes, then `PgUp/PgDn`, then `i` itself, and only then `j/k`
+      — `F`, `D`, and `Esc` never drop.
+      Tests: `re_filing_an_explanation_as_a_change_keeps_its_answer`,
+      `re_filing_goes_both_ways`,
+      `a_follow_up_after_re_filing_inherits_the_new_intent`,
+      `re_filing_with_nothing_asked_says_so`,
+      `a_re_filed_entry_reloads_the_way_it_was_filed` (DB-backed),
+      `a_re_filed_entry_carries_the_other_marker`,
+      `the_answer_footer_leads_with_what_the_entry_kind_makes_likely`,
+      and the handler-level `i_re_files_the_answer_you_are_reading`.
+      **Verified by driving the built binary** in a 140×44 tmux against a
+      throwaway copy of `~/.config/amf/amf.db` with real history: `i`
+      flipped the row to `! change` and the pane title to *Ask for a
+      change*, the answer text and question were untouched, the footer
+      re-ordered to `D` before `F` with the hint reading *file as a
+      note*, the banner cleared when the cursor moved to the next
+      question, and the new label was still there after closing and
+      reopening the overlay. One fix came out of it: the first draft of
+      the confirmation was 155 characters and the banner is a single
+      unwrapped line, so at 140 columns it lost the "ask a follow-up (F)"
+      clause — the one part that stops the new marker implying the answer
+      was rewritten. The messages are now short enough to fit, guarded by
+      a length assertion in
+      `re_filing_says_the_answer_was_not_rewritten`.
+      The run is reproducible:
+      `scripts/dev/screenshot/scenarios/learning-mode-refile.txt` drives
+      the whole path (open, browse, select a range, ask, wait for a real
+      headless answer, re-file, help overlay) against a seeded throwaway
+      repo, and is the first captured scenario for this feature.
 - [ ] Implement **make actionable** as an explicit, confirmable action
       on any entry: `load_or_create_todo_list(project_id, feature_id)`,
       pre-fill an editable title (action lead line, or truncated first
@@ -896,8 +954,8 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       **`CHANGELOG.md` is done** — an `Added` block under `[Unreleased]`
       covering `K`, the two ask keys, starter questions, the levels, the
       non-blocking queue, per-project history, harness choice, and now
-      `F` (follow-ups) and `D` (deep dive). It still claims nothing that
-      isn't built: relabel intent, make actionable, and escalate to a
+      `F` (follow-ups), `D` (deep dive), and `i` (re-file). It still
+      claims nothing that isn't built: make actionable and escalate to a
       live session are absent because they are the remaining Epic 5
       items. `README.md` and `CLAUDE.md` are still open.
 - [ ] File follow-up items for the deferred work: anchor-drift

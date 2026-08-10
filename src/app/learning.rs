@@ -130,6 +130,7 @@ impl LearningViewState {
             help_open: false,
             help_scroll: 0,
             error: None,
+            notice: None,
         }
     }
 
@@ -1602,10 +1603,78 @@ impl App {
         Some(ctx)
     }
 
+    /// Re-file the selected entry as the other intent: an explanation that
+    /// turned out to reveal a problem becomes a change request, and a change
+    /// request that only ever produced an explanation goes back to being a
+    /// note.
+    ///
+    /// The answer is left exactly as it was, and the banner says so. Intent is
+    /// the user's filing label; the text below it was written under whatever
+    /// framing was chosen when the question was asked, and re-labelling cannot
+    /// retroactively change that. Saying it out loud is what stops the new
+    /// marker from implying the answer was regenerated — the follow-up key is
+    /// what actually gets an answer written the other way.
+    ///
+    /// Allowed on an in-flight row for the same reason: the prompt is already
+    /// dispatched either way, so refusing would only withhold the label.
+    ///
+    /// Returns the intent the row now carries.
+    pub fn learning_relabel_intent(&mut self) -> Option<LearningQaIntent> {
+        let Some((qa_id, now, answered)) = (match &self.mode {
+            AppMode::Learning(state) => state
+                .qa
+                .get(state.selected_qa)
+                .map(|row| (row.id.clone(), row.intent.toggled(), row.answer.is_some())),
+            _ => return None,
+        }) else {
+            self.learning_error(
+                "Ask something first — re-filing changes how a question you already asked is labelled.",
+            );
+            return None;
+        };
+
+        if let AppMode::Learning(state) = &mut self.mode
+            && let Some(row) = state.qa.iter_mut().find(|r| r.id == qa_id)
+        {
+            row.intent = now;
+            row.updated_at = crate::db::learning::now_timestamp();
+        }
+        self.persist_learning_qa_by_id(&qa_id);
+
+        // Kept short on purpose: the banner is one unwrapped line, and at a
+        // 140-column terminal a longer sentence loses its tail — which here is
+        // the part that says the answer wasn't rewritten.
+        self.learning_notice(match (now, answered) {
+            (LearningQaIntent::Action, true) => {
+                "Re-filed as a change request. The answer is unchanged — ask a follow-up (F) to get the change spelled out."
+            }
+            (LearningQaIntent::Explain, true) => {
+                "Re-filed as an explanation. The answer is unchanged — it was written as a change proposal."
+            }
+            (LearningQaIntent::Action, false) => {
+                "Re-filed as a change request. The answer on its way was asked for as an explanation."
+            }
+            (LearningQaIntent::Explain, false) => {
+                "Re-filed as an explanation. The answer on its way was asked for as a change."
+            }
+        });
+        Some(now)
+    }
+
     /// Set the overlay's banner — the "why nothing happened" channel.
     fn learning_error(&mut self, message: impl Into<String>) {
         if let AppMode::Learning(state) = &mut self.mode {
             state.error = Some(message.into());
+            state.notice = None;
+        }
+    }
+
+    /// Set the overlay's banner to something that *did* happen. Clears any
+    /// standing refusal, which the successful key has just answered.
+    fn learning_notice(&mut self, message: impl Into<String>) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.notice = Some(message.into());
+            state.error = None;
         }
     }
 
@@ -1854,8 +1923,14 @@ impl App {
             if len == 0 {
                 return;
             }
-            state.selected_qa =
-                (state.selected_qa as isize + delta).clamp(0, len as isize - 1) as usize;
+            let moved_to = (state.selected_qa as isize + delta).clamp(0, len as isize - 1) as usize;
+            // A notice describes the row it was raised on ("re-filed as a
+            // change request"), so it must not follow the cursor onto a
+            // different entry and appear to describe that one instead.
+            if moved_to != state.selected_qa {
+                state.notice = None;
+            }
+            state.selected_qa = moved_to;
         }
     }
 
@@ -3963,6 +4038,161 @@ pub(crate) mod tests {
         );
     }
 
+    // ── re-filing an entry ───────────────────────────────────
+
+    /// The case the feature exists for: you asked what something did, the
+    /// answer told you it was broken, and the entry should now be filed as a
+    /// change without losing the explanation that got you there.
+    #[test]
+    fn re_filing_an_explanation_as_a_change_keeps_its_answer() {
+        let (_repo, mut app) = opened_app();
+        let id = ask_and_answer(
+            &mut app,
+            "What does this do?",
+            "It retries forever, which is probably a bug.",
+        );
+
+        assert_eq!(
+            app.learning_relabel_intent(),
+            Some(LearningQaIntent::Action)
+        );
+
+        let state = learning(&app);
+        let row = state.qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row.intent, LearningQaIntent::Action);
+        assert_eq!(
+            row.answer.as_deref(),
+            Some("It retries forever, which is probably a bug."),
+            "the answer is a record of what was said, not something re-filing rewrites"
+        );
+        assert_eq!(
+            row.question, "What does this do?",
+            "and neither is the question"
+        );
+    }
+
+    /// Re-filing is a two-way gesture: an answer that proposed no change at
+    /// all goes back to being a note.
+    #[test]
+    fn re_filing_goes_both_ways() {
+        let (_repo, mut app) = opened_app();
+        let id = app
+            .learning_ask("Make this clearer", LearningQaIntent::Action, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("Nothing to change here.".to_string()));
+
+        assert_eq!(
+            app.learning_relabel_intent(),
+            Some(LearningQaIntent::Explain)
+        );
+        assert_eq!(
+            app.learning_relabel_intent(),
+            Some(LearningQaIntent::Action),
+            "and back again"
+        );
+    }
+
+    /// The new marker must not be read as "the answer was rewritten to match",
+    /// which is exactly what a newcomer would assume from a label that changed
+    /// on its own.
+    #[test]
+    fn re_filing_says_the_answer_was_not_rewritten() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It retries forever.");
+
+        app.learning_relabel_intent();
+
+        let state = learning(&app);
+        assert!(
+            state.error.is_none(),
+            "nothing went wrong: {:?}",
+            state.error
+        );
+        let notice = state.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("The answer is unchanged"),
+            "the banner has to say the text stayed put: {notice}"
+        );
+        assert!(
+            notice.contains("(F)"),
+            "and point at the key that does get an answer written the other way: {notice}"
+        );
+        // The banner is a single unwrapped line at the foot of the overlay, so
+        // a sentence longer than a standard terminal loses exactly the tail
+        // that carries the point.
+        assert!(
+            notice.chars().count() <= 130,
+            "the banner has to fit a 140-column terminal, got {}: {notice}",
+            notice.chars().count()
+        );
+    }
+
+    /// The banner names one row, so it must not linger over another.
+    #[test]
+    fn the_re_filing_banner_clears_when_the_cursor_moves_on() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It retries forever.");
+        ask_and_answer(&mut app, "And this?", "It gives up.");
+
+        app.learning_relabel_intent();
+        assert!(learning(&app).notice.is_some());
+
+        app.learning_select_qa(-1);
+        assert!(
+            learning(&app).notice.is_none(),
+            "the confirmation described the row that was selected, not this one"
+        );
+    }
+
+    /// A follow-up inherits its parent's intent, so re-filing has to change
+    /// what the next question defaults to — otherwise the label is decoration.
+    #[test]
+    fn a_follow_up_after_re_filing_inherits_the_new_intent() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It retries forever.");
+
+        app.learning_relabel_intent();
+        app.learning_open_follow_up();
+
+        assert_eq!(
+            learning(&app).question.as_ref().unwrap().intent,
+            LearningQaIntent::Action
+        );
+    }
+
+    #[test]
+    fn re_filing_with_nothing_asked_says_so() {
+        let (_repo, mut app) = opened_app();
+
+        assert_eq!(app.learning_relabel_intent(), None);
+
+        let error = learning(&app).error.clone().unwrap_or_default();
+        assert!(error.contains("Ask something first"), "{error}");
+    }
+
+    /// The prompt is already dispatched under the old framing whether the run
+    /// has landed or not, so refusing mid-flight would withhold the label for
+    /// no gain — but the banner must not claim there is an answer to keep.
+    #[test]
+    fn a_question_still_generating_can_be_re_filed() {
+        let (_repo, mut app) = opened_app();
+        app.learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        assert_eq!(
+            app.learning_relabel_intent(),
+            Some(LearningQaIntent::Action)
+        );
+
+        let state = learning(&app);
+        assert_eq!(state.qa[0].intent, LearningQaIntent::Action);
+        let notice = state.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("on its way"),
+            "an unfinished run has no answer to describe as kept: {notice}"
+        );
+    }
+
     /// A bare row, for the ordering helpers that only look at ids and parents.
     fn qa_row(id: &str, parent: Option<&str>) -> LearningQa {
         LearningQa {
@@ -4160,6 +4390,34 @@ pub(crate) mod tests {
         assert!(
             !reason.contains("AMF stopped"),
             "a real failure keeps its own reason rather than being reconciled: {reason}"
+        );
+    }
+
+    /// Re-filing is a durable decision about how an entry is kept, so it has
+    /// to be there on the next open rather than only until the overlay closes.
+    #[test]
+    fn a_re_filed_entry_reloads_the_way_it_was_filed() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("It retries forever.".to_string()));
+        app.learning_relabel_intent();
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let row = learning(&app)
+            .qa
+            .iter()
+            .find(|r| r.id == id)
+            .expect("still in history")
+            .clone();
+        assert_eq!(row.intent, LearningQaIntent::Action);
+        assert_eq!(
+            row.answer.as_deref(),
+            Some("It retries forever."),
+            "and the answer came back with it"
         );
     }
 

@@ -407,11 +407,13 @@ storage the first time it runs.
 - **The theme picker groups large theme families.** Catppuccin and Gruvbox
   Material now open into their own variant screens, keeping the top-level
   picker short while preserving live previews and existing shortcuts.
-- **Codex sessions can capture AMF UI proof.** New Codex feature setup includes
-  the `amf-screenshot` skill for isolated PNG and GIF capture without touching
-  the user's real AMF database or tmux sessions.
+- **Agents working on AMF can capture UI proof.** This repository includes
+  native Claude and Codex `amf-screenshot` skills for isolated PNG and GIF
+  capture without touching the user's real AMF database or tmux sessions.
 ### Changed
 
+- **The AMF screenshot skill stays with AMF.** Feature setup no longer injects
+  this repository-specific development workflow into unrelated projects.
 - **Global review memory can be compacted from PR Triage.** Press `c`, then
   `g`, to select the cross-project memory document. AMF preserves findings
   added by another session while compaction is running and asks before any

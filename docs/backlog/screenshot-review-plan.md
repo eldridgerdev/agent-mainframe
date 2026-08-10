@@ -141,14 +141,15 @@ A and B are the two independent P0 tracks; everything else layers on top.
 - [x] Off by default; verify a multi-step scenario yields a valid GIF.
 
 ### Epic F — screenshot skill (P1; needs B, C)
-- [x] `.claude/skills/amf-screenshot/SKILL.md` (mirror to `skills/`):
-      invoke only when the user asks for proof a feature works; author a
-      scenario for the just-built feature; run the driver; return PNG paths
-      to the user; build a GIF only on request.
-- [x] Codex features receive a native `.agents/skills/amf-screenshot/SKILL.md`
-      from `skills/codex/amf-screenshot/`. It uses the same isolated capture,
-      scenario, rendering, and verification workflow, then returns direct
-      image previews and local file links in place of Claude's Artifact tool.
+- [x] This repository's `.claude/skills/amf-screenshot/SKILL.md`: invoke only
+      when the user asks for proof a feature works; author a scenario for the
+      just-built feature; run the driver; return PNG paths to the user; build a
+      GIF only on request.
+- [x] This repository's native `.agents/skills/amf-screenshot/SKILL.md` uses
+      the same isolated capture, scenario, rendering, and verification
+      workflow, then returns direct image previews and local file links in
+      place of Claude's Artifact tool. AMF does not inject this
+      AMF-development-only workflow into managed projects.
 - [x] Document isolation guarantees + fixed geometry in the skill.
 - [x] **Follow-up, from real use.** Returning raw PNG/GIF paths wasn't a
       usable deliverable — many terminal environments don't render images
@@ -158,7 +159,7 @@ A and B are the two independent P0 tracks; everything else layers on top.
       chrome, images inlined as base64 so nothing external loads) via the
       `Artifact` tool, loading `artifact-design` first, and returns the
       published URL as the primary deliverable instead of file paths. →
-      `skills/amf-screenshot/SKILL.md`.
+      `.claude/skills/amf-screenshot/SKILL.md`.
 
 ### Epic G — docs + high-fidelity path (P2; needs B)
 - [x] `scripts/dev/screenshot/README.md`: usage, scenario format,

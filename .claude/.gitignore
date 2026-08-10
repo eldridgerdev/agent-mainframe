@@ -5,6 +5,8 @@ final-review-progress.json
 final-review-snapshot.json
 latest-prompt.txt
 skills/amf-*/
+!skills/amf-screenshot/
+!skills/amf-screenshot/**
 final-review-feedback-archive.md
 review-notes-archive.md
 plan.md

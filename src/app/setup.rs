@@ -47,10 +47,6 @@ const AMF_SKILLS: &[(&str, &str)] = &[
         include_str!("../../skills/amf-release-notes/SKILL.md"),
     ),
 ];
-const CODEX_AMF_SKILLS: &[(&str, &str)] = &[(
-    "screenshot",
-    include_str!("../../skills/codex/amf-screenshot/SKILL.md"),
-)];
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
@@ -832,18 +828,11 @@ fn agent_skills_dir(workdir: &Path, agent: &AgentKind) -> Option<PathBuf> {
     }
 }
 
-fn agent_specific_amf_skills(agent: &AgentKind) -> &'static [(&'static str, &'static str)] {
-    match agent {
-        AgentKind::Codex => CODEX_AMF_SKILLS,
-        _ => &[],
-    }
-}
-
 fn ensure_amf_skills(workdir: &Path, agent: &AgentKind) {
     let Some(skills_dir) = agent_skills_dir(workdir, agent) else {
         return;
     };
-    for (name, content) in AMF_SKILLS.iter().chain(agent_specific_amf_skills(agent)) {
+    for (name, content) in AMF_SKILLS {
         let skill_dir = skills_dir.join(format!("amf-{name}"));
         let skill_path = skill_dir.join("SKILL.md");
         if std::fs::read_to_string(&skill_path).ok().as_deref() == Some(content) {
@@ -858,7 +847,7 @@ fn cleanup_amf_skills(workdir: &Path, agent: &AgentKind) {
     let Some(skills_dir) = agent_skills_dir(workdir, agent) else {
         return;
     };
-    for (name, _) in AMF_SKILLS.iter().chain(agent_specific_amf_skills(agent)) {
+    for (name, _) in AMF_SKILLS {
         let _ = std::fs::remove_dir_all(skills_dir.join(format!("amf-{name}")));
     }
 }

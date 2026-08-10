@@ -86,6 +86,11 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('D') => {
                 app.learning_deep_dive();
             }
+            // Re-file what you're reading: an explanation that turned out to
+            // be a problem belongs under "change".
+            KeyCode::Char('i') => {
+                app.learning_relabel_intent();
+            }
             KeyCode::Char('?') => app.learning_open_help(),
             _ => {}
         }
@@ -118,6 +123,9 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('F') => app.learning_open_follow_up(),
         KeyCode::Char('D') => {
             app.learning_deep_dive();
+        }
+        KeyCode::Char('i') => {
+            app.learning_relabel_intent();
         }
 
         // Settings and view.
@@ -389,6 +397,38 @@ mod tests {
             crate::app::LearningRunMode::DeepDive,
             "this one gets to read the repo"
         );
+    }
+
+    /// Re-filing is offered where an answer is read, not only from the list —
+    /// realising "that's a bug, not a fact" happens while reading it.
+    #[test]
+    fn i_re_files_the_answer_you_are_reading() {
+        let (_repo, mut app) = opened();
+
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        app.learning_answer_tx
+            .send(crate::app::learning::LearningAnswer {
+                qa_id: id.clone(),
+                result: Ok("It retries forever.".to_string()),
+            })
+            .unwrap();
+        assert!(app.poll_learning_answers_bg());
+
+        handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
+        handle_learning_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert!(learning(&app).answer_open);
+
+        handle_learning_key(&mut app, key(KeyCode::Char('i'))).unwrap();
+
+        let state = learning(&app);
+        assert_eq!(state.qa[0].intent, LearningQaIntent::Action);
+        assert!(
+            state.answer_open,
+            "you are still reading it — re-filing doesn't close the pane"
+        );
+        assert!(state.notice.is_some(), "and it says what it did");
     }
 
     #[test]

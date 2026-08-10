@@ -1,0 +1,92 @@
+# learning-mode-refile: Learning Mode end to end on a repo the user did
+# not write — open with K, read the first-visit help, browse the pinned
+# Start here group, select a range, ask an explaining question, wait for
+# the real headless answer, then re-file the entry as a change request
+# with `i` (docs/backlog/learning-mode-plan.md, Epic 5).
+#
+# Needs a seeded project + feature, and asks a real question, so the
+# harness must be authenticated:
+#   ./amf-capture.sh --scenario scenarios/learning-mode-refile.txt \
+#       --seed <project.json> --seed-feature <feature.json> \
+#       --geometry 140x44
+#
+# 140x44 on purpose: the answer pane's footer drops its `i` hint at 120
+# columns, which is exactly the key this scenario is proving.
+
+shot:dashboard
+
+# K on the selected project opens Learning Mode on its first feature.
+# A project's first visit opens the help overlay by itself.
+key:K
+wait:1500
+shot:first-open-help
+
+key:Escape
+wait:400
+shot:start-here-group
+
+# Down the pinned group: tour -> README.md -> CLAUDE.md -> src/main.rs.
+key:j
+key:j
+key:j
+wait:400
+shot:cursor-on-main
+
+# Enter loads the file and moves focus to the code pane.
+key:Enter
+wait:800
+shot:file-loaded
+
+# Down to the retry loop, then v starts a range and j extends it.
+key:PageDown
+key:PageDown
+wait:300
+key:v
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+wait:400
+shot:range-selected
+
+# e asks for an explanation; the prompt says what it is anchored to.
+key:e
+wait:400
+text:What does this loop do, and what happens if the lock is never released?
+wait:400
+shot:question-typed
+
+# Tab submits and hands control straight back.
+key:Tab
+wait:8000
+shot:still-thinking
+
+# The real headless run takes a while; keep waiting before the shot.
+wait:30000
+wait:30000
+shot:answered
+
+# Tab into the history pane, Enter opens the answer full-width.
+key:Tab
+wait:300
+key:Enter
+wait:600
+shot:answer-as-explanation
+
+# i re-files it as a change request: same answer, new label.
+key:i
+wait:500
+shot:answer-refiled
+
+key:Escape
+wait:400
+shot:history-shows-change
+
+# The help overlay documents the key alongside the other ways to ask.
+key:?
+wait:400
+shot:help-lists-refile

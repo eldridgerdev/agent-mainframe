@@ -40,6 +40,14 @@ are tagged.
   the row means it actually did. Following up on the verified answer continues
   from that one; the answer it replaced is left behind rather than quietly
   carried into the next question.
+- **Re-file an entry once you know what it really was.** Asking picks explain
+  or change up front, which is exactly the choice a newcomer is least placed to
+  make — you often only learn that an explanation was really a bug report by
+  reading it. `i` moves an entry to the other kind, in the history or while
+  reading the answer. The answer text is kept exactly as it was and the banner
+  says so, because re-filing changes how the entry is labelled, not what the
+  agent said; `F` is what gets an answer written the other way. The new label
+  is what the next follow-up starts from.
 - **Asking never blocks.** Questions are answered in the background and several
   can be in flight at once, so you can keep reading while answers arrive. Your
   questions and answers are kept per project and are still there next time you

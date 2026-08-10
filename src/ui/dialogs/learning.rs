@@ -51,7 +51,9 @@ pub fn draw_learning_view(frame: &mut Frame, state: &mut LearningViewState, them
         area,
     );
 
-    let has_error = state.error.is_some();
+    // Refusals and confirmations share one line: only the most recent of the
+    // two is ever set, since each clears the other.
+    let has_error = state.error.is_some() || state.notice.is_some();
     let mut constraints = vec![Constraint::Length(2), Constraint::Min(3)];
     if has_error {
         constraints.push(Constraint::Length(1));
@@ -173,14 +175,19 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
     frame.render_widget(Paragraph::new(vec![title, Line::from(settings)]), area);
 }
 
+/// The banner line: a refusal in the failure colour, or — when there is none —
+/// a confirmation of what the last key actually did, in a colour that doesn't
+/// read as something having gone wrong.
 fn draw_error(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: &Theme) {
-    let Some(message) = state.error.as_deref() else {
-        return;
+    let (message, color) = match (state.error.as_deref(), state.notice.as_deref()) {
+        (Some(error), _) => (error, theme.danger.to_color()),
+        (None, Some(notice)) => (notice, theme.info.to_color()),
+        (None, None) => return,
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("  {message}"),
-            Style::default().fg(theme.danger.to_color()),
+            Style::default().fg(color),
         ))),
         area,
     );
@@ -748,7 +755,11 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
     // pressed *in here* — `D` on an answer that already read the repo — would
     // otherwise be invisible until the pane is closed, which is precisely the
     // silently-swallowed keypress the mode is meant not to have.
-    let banner = state.error.clone();
+    let banner = match (&state.error, &state.notice) {
+        (Some(error), _) => Some((error.clone(), theme.danger.to_color())),
+        (None, Some(notice)) => Some((notice.clone(), theme.info.to_color())),
+        (None, None) => None,
+    };
     let mut constraints = vec![Constraint::Length(3), Constraint::Min(1)];
     if banner.is_some() {
         constraints.push(Constraint::Length(1));
@@ -759,14 +770,11 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
         .constraints(constraints)
         .split(inner);
     let footer_chunk = chunks[chunks.len() - 1];
-    if let Some(message) = &banner {
+    if let Some((message, color)) = &banner {
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                message.clone(),
-                Style::default().fg(theme.danger.to_color()),
-            ))
-            .style(Style::default().bg(theme.effective_header_bg()))
-            .wrap(Wrap { trim: true }),
+            Paragraph::new(Span::styled(message.clone(), Style::default().fg(*color)))
+                .style(Style::default().bg(theme.effective_header_bg()))
+                .wrap(Wrap { trim: true }),
             chunks[2],
         );
     }
@@ -845,68 +853,96 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
 struct AnswerHint {
     key: &'static str,
     label: &'static str,
+    /// Order this hint is given up in when the line doesn't fit — highest
+    /// first. `None` never drops.
+    drop_rank: Option<u8>,
 }
 
 /// The answer pane's key footer, fitted to `width`.
 ///
 /// The pane is a percentage of the terminal, so at 110 columns it has about 92
-/// inner columns while the full hint line wants 114 — and the widget truncates
+/// inner columns while the full hint line wants more — and the widget truncates
 /// from the right, which would take `Esc back to browsing` off a modal with no
 /// other way out. So hints are dropped instead, least useful first: the
-/// scrolling keys have obvious alternatives (and `j/k` covers the common case),
-/// while `Esc` is never dropped.
+/// scrolling keys that duplicate `j/k`, then re-filing — a bookkeeping gesture
+/// rather than a way to learn anything — and only then `j/k` itself, without
+/// which a long answer cannot be read at all. `F`, `D`, and `Esc` are never
+/// dropped.
 ///
 /// Hints for keys the selected row would refuse are not shown at all — a
 /// deep-dive row cannot be sent deeper, and an unanswered one cannot be
 /// followed up — so the footer never advertises a keypress that answers with a
 /// banner.
+///
+/// The two asking keys swap order by intent. On a change request the answer
+/// was proposed without the repository open, so checking it against the real
+/// code earns its place ahead of continuing the conversation; on an
+/// explanation, the next question is the likelier move.
 fn answer_footer(qa: &LearningQa, width: usize, theme: &Theme) -> Line<'static> {
     let mut hints = vec![
         AnswerHint {
             key: "j/k",
             label: "scroll",
+            drop_rank: Some(1),
         },
         AnswerHint {
             key: "PgUp/PgDn",
             label: "page",
+            drop_rank: Some(3),
         },
         AnswerHint {
             key: "g/G",
             label: "top/bottom",
+            drop_rank: Some(4),
         },
     ];
-    // Only these three may be dropped when space is short: they are the pane's
-    // navigation, and losing a scroll key costs less than losing an action or
-    // the way out.
-    let droppable = hints.len();
-    if qa.answer.is_some() {
-        hints.push(AnswerHint {
-            key: "F",
-            label: "ask a follow-up",
-        });
-    }
-    if !qa.status.is_in_flight() && qa.run_mode == LearningRunMode::NoTools {
-        hints.push(AnswerHint {
+    let follow_up = qa.answer.is_some().then_some(AnswerHint {
+        key: "F",
+        label: "ask a follow-up",
+        drop_rank: None,
+    });
+    let deep_dive = (!qa.status.is_in_flight() && qa.run_mode == LearningRunMode::NoTools)
+        .then_some(AnswerHint {
             key: "D",
             label: "ask again, reading the repo",
+            drop_rank: None,
         });
-    }
+    let asking = match qa.intent {
+        LearningQaIntent::Action => [deep_dive, follow_up],
+        LearningQaIntent::Explain => [follow_up, deep_dive],
+    };
+    hints.extend(asking.into_iter().flatten());
+    hints.push(AnswerHint {
+        key: "i",
+        label: match qa.intent {
+            LearningQaIntent::Explain => "file as a change",
+            LearningQaIntent::Action => "file as a note",
+        },
+        drop_rank: Some(2),
+    });
     hints.push(AnswerHint {
         key: "Esc",
         label: "back to browsing",
+        drop_rank: None,
     });
 
     // Widths include the two-space gap every hint but the last carries.
     let cost = |hint: &AnswerHint| hint.key.chars().count() + 1 + hint.label.chars().count() + 2;
     let mut total: usize = hints.iter().map(cost).sum::<usize>().saturating_sub(2);
-    // Last one listed goes first, so `j/k` — the key most people reach for —
-    // outlives `g/G`.
-    for i in (0..droppable).rev() {
-        if total <= width {
+    // Highest rank goes first, so `j/k` — the key most people reach for —
+    // outlives both `g/G` and re-filing.
+    while total > width {
+        let Some(victim) = hints
+            .iter()
+            .enumerate()
+            .filter_map(|(i, hint)| hint.drop_rank.map(|rank| (rank, i)))
+            .max()
+            .map(|(_, i)| i)
+        else {
             break;
-        }
-        total -= cost(&hints[i]);
-        hints.remove(i);
+        };
+        total -= cost(&hints[victim]);
+        hints.remove(victim);
     }
 
     let key_style = Style::default().fg(theme.warning.to_color());
@@ -1257,6 +1293,10 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         (
             "D",
             "ask again, letting the agent read the repo — slower, but it checks",
+        ),
+        (
+            "i",
+            "re-file an entry as the other kind — the answer itself is kept",
         ),
     ] {
         lines.push(key_row(k, text, key, body));
@@ -1653,9 +1693,16 @@ let files = list_repo_files(workdir)?;
         state.qa.push(answered_qa());
         state.answer_open = true;
 
+        // Even at a full-width terminal the line is over budget once every
+        // action is listed, so the most redundant hint is already gone: `g/G`
+        // is the one key here whose job both survivors can do.
         let wide = render(&mut state);
         assert!(wide.contains("PgUp/PgDn page"), "{wide}");
-        assert!(wide.contains("g/G top/bottom"), "{wide}");
+        assert!(wide.contains("i file as a change"), "{wide}");
+        assert!(
+            !wide.contains("g/G top/bottom"),
+            "the actions are what the space is for: {wide}"
+        );
 
         let narrow = render_at(&mut state, 110, 44);
         assert!(
@@ -1732,6 +1779,99 @@ let files = list_repo_files(workdir)?;
             rendered.contains("Esc back to browsing"),
             "and the key footer is still there, not displaced: {rendered}"
         );
+    }
+
+    /// Re-filing has to be visible in the list, or the key did nothing a user
+    /// can see.
+    #[test]
+    fn a_re_filed_entry_carries_the_other_marker() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        let explained = render(&mut state);
+        assert!(explained.contains("explain"), "{explained}");
+
+        state.qa[0].intent = LearningQaIntent::Action;
+        let refiled = render(&mut state);
+        assert!(refiled.contains("change"), "{refiled}");
+        assert!(
+            refiled.contains("What does this do?"),
+            "the question is untouched: {refiled}"
+        );
+    }
+
+    /// A change request was proposed without the repository open, so checking
+    /// it comes before continuing the conversation; on an explanation the next
+    /// question is the likelier move. Ordering is the only thing intent
+    /// changes about the actions — both keys work on both.
+    #[test]
+    fn the_answer_footer_leads_with_what_the_entry_kind_makes_likely() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+
+        let explaining = render(&mut state);
+        let follow = explaining.find("F ask a follow-up").unwrap();
+        let deeper = explaining.find("D ask again").unwrap();
+        assert!(follow < deeper, "an explanation leads with F: {explaining}");
+        assert!(
+            explaining.contains("i file as a change"),
+            "and offers the other filing: {explaining}"
+        );
+
+        state.qa[0].intent = LearningQaIntent::Action;
+        let changing = render(&mut state);
+        let follow = changing.find("F ask a follow-up").unwrap();
+        let deeper = changing.find("D ask again").unwrap();
+        assert!(deeper < follow, "a change request leads with D: {changing}");
+        assert!(
+            changing.contains("i file as a note"),
+            "and offers the way back: {changing}"
+        );
+    }
+
+    /// Index of the first cell of `needle`, counted in cells rather than bytes
+    /// so the pane borders don't shift it.
+    fn cell_index(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<usize> {
+        let symbols: Vec<&str> = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        let want: Vec<String> = needle.chars().map(|c| c.to_string()).collect();
+        symbols
+            .windows(want.len())
+            .position(|window| window.iter().zip(&want).all(|(a, b)| *a == b.as_str()))
+    }
+
+    /// The banner line carries both refusals and confirmations. Painting "this
+    /// worked" in the failure colour is a small lie, and this mode's reader is
+    /// the least equipped to discount it.
+    #[test]
+    fn a_confirmation_is_not_painted_as_a_failure() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.notice = Some("Re-filed as a change request.".to_string());
+
+        let mut terminal = Terminal::new(TestBackend::new(140, 44)).unwrap();
+        terminal
+            .draw(|frame| draw_learning_view(frame, &mut state, &theme))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let at = cell_index(&buffer, "Re-filed").expect("the confirmation is on screen");
+        assert_eq!(buffer.content()[at].fg, theme.info.to_color());
+
+        // An actual refusal still reads as one, and wins the line.
+        state.error = Some("That answer already read the repository.".to_string());
+        terminal
+            .draw(|frame| draw_learning_view(frame, &mut state, &theme))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        assert!(
+            cell_index(&buffer, "Re-filed").is_none(),
+            "the refusal takes the line"
+        );
+        let at = cell_index(&buffer, "That answer already").unwrap();
+        assert_eq!(buffer.content()[at].fg, theme.danger.to_color());
     }
 
     #[test]

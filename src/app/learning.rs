@@ -130,6 +130,8 @@ impl LearningViewState {
             help_open: false,
             help_scroll: 0,
             error: None,
+            notice: None,
+            notice_qa_id: None,
         }
     }
 
@@ -362,7 +364,9 @@ impl App {
             );
         }
         for row in &stranded {
-            self.persist_learning_qa(row);
+            // Already logged; a reset that couldn't be written through still
+            // leaves a usable overlay.
+            let _ = self.persist_learning_qa(row);
         }
         rows
     }
@@ -1466,10 +1470,15 @@ impl App {
             .unwrap_or(state.qa.len());
         state.qa.insert(at, qa.clone());
         // Show the new question, so an answer that takes a while is visibly
-        // *this* question's answer.
-        state.selected_qa = at;
+        // *this* question's answer. The insert can leave the cursor's index
+        // pointing at a different row than it did a moment ago, so the banner
+        // goes whether or not the index itself moves.
+        state.clear_notice();
+        state.select_qa(at);
 
-        self.persist_learning_qa(&qa);
+        // The question runs either way: an answer this session can show is
+        // worth more than one refused because history couldn't be written.
+        let _ = self.persist_learning_qa(&qa);
         self.spawn_learning_run(&qa_id, harness, workdir, build_prompt(&ctx), run_mode);
         Some(qa_id)
     }
@@ -1542,7 +1551,7 @@ impl App {
         };
         if let Some((index, in_flight)) = existing {
             if let AppMode::Learning(state) = &mut self.mode {
-                state.selected_qa = index;
+                state.select_qa(index);
                 state.answer_open = false;
                 // An unfinished run has nothing to show yet, so it must not be
                 // described as something that came back.
@@ -1554,6 +1563,7 @@ impl App {
                     }
                     .into(),
                 );
+                state.clear_notice();
             }
             return None;
         }
@@ -1602,10 +1612,115 @@ impl App {
         Some(ctx)
     }
 
+    /// Re-file the selected entry as the other intent: an explanation that
+    /// turned out to reveal a problem becomes a change request, and a change
+    /// request that only ever produced an explanation goes back to being a
+    /// note.
+    ///
+    /// The answer is left exactly as it was, and the banner says so. Intent is
+    /// the user's filing label; the text below it was written under whatever
+    /// framing was chosen when the question was asked, and re-labelling cannot
+    /// retroactively change that. Saying it out loud is what stops the new
+    /// marker from implying the answer was regenerated — the follow-up key is
+    /// what actually gets an answer written the other way.
+    ///
+    /// Allowed on an in-flight row for the same reason: the prompt is already
+    /// dispatched either way, so refusing would only withhold the label.
+    ///
+    /// A re-file that cannot be written through is undone rather than
+    /// confirmed: the label is what this key produces, and one that the next
+    /// open of the overlay silently drops is worse than one that was refused
+    /// out loud.
+    ///
+    /// Returns the intent the row now carries.
+    pub fn learning_relabel_intent(&mut self) -> Option<LearningQaIntent> {
+        let Some((qa_id, was, now, was_updated_at, answered)) = (match &self.mode {
+            AppMode::Learning(state) => state.qa.get(state.selected_qa).map(|row| {
+                (
+                    row.id.clone(),
+                    row.intent,
+                    row.intent.toggled(),
+                    row.updated_at.clone(),
+                    row.answer.is_some(),
+                )
+            }),
+            _ => return None,
+        }) else {
+            self.learning_error(
+                "Ask something first — re-filing changes how a question you already asked is labelled.",
+            );
+            return None;
+        };
+
+        if let AppMode::Learning(state) = &mut self.mode
+            && let Some(row) = state.qa.iter_mut().find(|r| r.id == qa_id)
+        {
+            row.intent = now;
+            row.updated_at = crate::db::learning::now_timestamp();
+        }
+        if let Err(e) = self.persist_learning_qa_by_id(&qa_id) {
+            if let AppMode::Learning(state) = &mut self.mode
+                && let Some(row) = state.qa.iter_mut().find(|r| r.id == qa_id)
+            {
+                row.intent = was;
+                row.updated_at = was_updated_at;
+            }
+            self.learning_error(format!(
+                "Couldn't re-file this one — nothing was saved: {e}"
+            ));
+            return None;
+        }
+
+        // Kept short on purpose: the banner is one unwrapped line, and at a
+        // 140-column terminal a longer sentence loses its tail — which here is
+        // the part that says the answer wasn't rewritten.
+        self.learning_notice_for_qa(&qa_id, match (now, answered) {
+            (LearningQaIntent::Action, true) => {
+                "Re-filed as a change request. The answer is unchanged — ask a follow-up (F) to get the change spelled out."
+            }
+            (LearningQaIntent::Explain, true) => {
+                "Re-filed as an explanation. The answer is unchanged — it was written as a change proposal."
+            }
+            (LearningQaIntent::Action, false) => {
+                "Re-filed as a change request. The answer on its way was asked for as an explanation."
+            }
+            (LearningQaIntent::Explain, false) => {
+                "Re-filed as an explanation. The answer on its way was asked for as a change."
+            }
+        });
+        Some(now)
+    }
+
     /// Set the overlay's banner — the "why nothing happened" channel.
     fn learning_error(&mut self, message: impl Into<String>) {
         if let AppMode::Learning(state) = &mut self.mode {
             state.error = Some(message.into());
+            state.clear_notice();
+        }
+    }
+
+    /// Set the overlay's banner to something that *did* happen, on a
+    /// particular row. Clears any standing refusal, which the successful key
+    /// has just answered.
+    ///
+    /// Bound to the row so it can be taken down again once the row is no
+    /// longer what the wording described — the cursor moving off it, or its
+    /// run landing.
+    fn learning_notice_for_qa(&mut self, qa_id: &str, message: impl Into<String>) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.notice = Some(message.into());
+            state.notice_qa_id = Some(qa_id.to_string());
+            state.error = None;
+        }
+    }
+
+    /// Drop a banner raised on `qa_id` because the row has moved on from the
+    /// state the wording assumed.
+    fn learning_invalidate_notice_for(&mut self, qa_id: &str) {
+        if let AppMode::Learning(state) = &mut self.mode
+            && state.notice_qa_id.as_deref() == Some(qa_id)
+        {
+            state.clear_notice();
         }
     }
 
@@ -1700,7 +1815,12 @@ impl App {
                 applied = true;
             }
             if applied {
-                self.persist_learning_qa_by_id(&answer.qa_id);
+                // Logged, and the answer is on screen either way.
+                let _ = self.persist_learning_qa_by_id(&answer.qa_id);
+                // "The answer on its way was asked for as an explanation" was
+                // true when the key was pressed and is not any more — the
+                // answer is here.
+                self.learning_invalidate_notice_for(&answer.qa_id);
             } else {
                 self.finish_learning_qa_in_db(&answer.qa_id, &outcome);
             }
@@ -1803,33 +1923,49 @@ impl App {
             row.error = error;
             row.updated_at = crate::db::learning::now_timestamp();
         }
-        self.persist_learning_qa_by_id(qa_id);
+        let _ = self.persist_learning_qa_by_id(qa_id);
+        // Any banner about what this row was doing stops being true the moment
+        // it stops doing it.
+        if !status.is_in_flight() {
+            self.learning_invalidate_notice_for(qa_id);
+        }
     }
 
-    fn persist_learning_qa_by_id(&mut self, qa_id: &str) {
+    /// Write the in-memory row with this id through to the DB. `Ok(())` when
+    /// there was nothing to write — no such row, no session, no database —
+    /// since none of those is a failed save.
+    fn persist_learning_qa_by_id(&mut self, qa_id: &str) -> Result<(), String> {
         let row = match &self.mode {
             AppMode::Learning(state) => state.qa.iter().find(|r| r.id == qa_id).cloned(),
             _ => None,
         };
-        if let Some(row) = row {
-            self.persist_learning_qa(&row);
+        match row {
+            Some(row) => self.persist_learning_qa(&row),
+            None => Ok(()),
         }
     }
 
     /// Write a row through to the DB when there is one. History surviving a
-    /// restart is a nice-to-have here, not a precondition, so a failure is
-    /// logged and the in-memory row carries on.
-    pub fn persist_learning_qa(&mut self, qa: &LearningQa) {
+    /// restart is a nice-to-have for most callers, not a precondition, so a
+    /// failure is logged here and the in-memory row carries on; the error is
+    /// returned as well for the callers that have just told the user something
+    /// was saved and have to take that back.
+    pub fn persist_learning_qa(&mut self, qa: &LearningQa) -> Result<(), String> {
         if qa.session_id.is_empty() {
-            return;
+            return Ok(());
         }
-        let Some(db) = self.db.as_ref() else { return };
+        let Some(db) = self.db.as_ref() else {
+            return Ok(());
+        };
         if let Err(e) = db.upsert_learning_qa(qa) {
+            let message = e.to_string();
             self.log_warn(
                 "learning",
                 format!("couldn't save this question: {e} (it still works in this session)"),
             );
+            return Err(message);
         }
+        Ok(())
     }
 }
 
@@ -1854,8 +1990,8 @@ impl App {
             if len == 0 {
                 return;
             }
-            state.selected_qa =
-                (state.selected_qa as isize + delta).clamp(0, len as isize - 1) as usize;
+            let moved_to = (state.selected_qa as isize + delta).clamp(0, len as isize - 1) as usize;
+            state.select_qa(moved_to);
         }
     }
 
@@ -3963,6 +4099,261 @@ pub(crate) mod tests {
         );
     }
 
+    // ── re-filing an entry ───────────────────────────────────
+
+    /// The case the feature exists for: you asked what something did, the
+    /// answer told you it was broken, and the entry should now be filed as a
+    /// change without losing the explanation that got you there.
+    #[test]
+    fn re_filing_an_explanation_as_a_change_keeps_its_answer() {
+        let (_repo, mut app) = opened_app();
+        let id = ask_and_answer(
+            &mut app,
+            "What does this do?",
+            "It retries forever, which is probably a bug.",
+        );
+
+        assert_eq!(
+            app.learning_relabel_intent(),
+            Some(LearningQaIntent::Action)
+        );
+
+        let state = learning(&app);
+        let row = state.qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row.intent, LearningQaIntent::Action);
+        assert_eq!(
+            row.answer.as_deref(),
+            Some("It retries forever, which is probably a bug."),
+            "the answer is a record of what was said, not something re-filing rewrites"
+        );
+        assert_eq!(
+            row.question, "What does this do?",
+            "and neither is the question"
+        );
+    }
+
+    /// Re-filing is a two-way gesture: an answer that proposed no change at
+    /// all goes back to being a note.
+    #[test]
+    fn re_filing_goes_both_ways() {
+        let (_repo, mut app) = opened_app();
+        let id = app
+            .learning_ask("Make this clearer", LearningQaIntent::Action, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("Nothing to change here.".to_string()));
+
+        assert_eq!(
+            app.learning_relabel_intent(),
+            Some(LearningQaIntent::Explain)
+        );
+        assert_eq!(
+            app.learning_relabel_intent(),
+            Some(LearningQaIntent::Action),
+            "and back again"
+        );
+    }
+
+    /// The new marker must not be read as "the answer was rewritten to match",
+    /// which is exactly what a newcomer would assume from a label that changed
+    /// on its own.
+    #[test]
+    fn re_filing_says_the_answer_was_not_rewritten() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It retries forever.");
+
+        app.learning_relabel_intent();
+
+        let state = learning(&app);
+        assert!(
+            state.error.is_none(),
+            "nothing went wrong: {:?}",
+            state.error
+        );
+        let notice = state.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("The answer is unchanged"),
+            "the banner has to say the text stayed put: {notice}"
+        );
+        assert!(
+            notice.contains("(F)"),
+            "and point at the key that does get an answer written the other way: {notice}"
+        );
+        // The banner is a single unwrapped line at the foot of the overlay, so
+        // a sentence longer than a standard terminal loses exactly the tail
+        // that carries the point.
+        assert!(
+            notice.chars().count() <= 130,
+            "the banner has to fit a 140-column terminal, got {}: {notice}",
+            notice.chars().count()
+        );
+    }
+
+    /// The banner names one row, so it must not linger over another.
+    #[test]
+    fn the_re_filing_banner_clears_when_the_cursor_moves_on() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It retries forever.");
+        ask_and_answer(&mut app, "And this?", "It gives up.");
+
+        app.learning_relabel_intent();
+        assert!(learning(&app).notice.is_some());
+
+        app.learning_select_qa(-1);
+        assert!(
+            learning(&app).notice.is_none(),
+            "the confirmation described the row that was selected, not this one"
+        );
+    }
+
+    /// The cursor also moves without the arrow keys: a follow-up selects the
+    /// row it just created, and the banner about the parent must not be left
+    /// standing over it.
+    #[test]
+    fn the_re_filing_banner_clears_when_a_follow_up_moves_the_cursor() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It retries forever.");
+
+        app.learning_relabel_intent();
+        assert!(learning(&app).notice.is_some());
+
+        follow_up(&mut app, "So what should change?");
+        assert!(
+            learning(&app).notice.is_none(),
+            "the confirmation described the parent, not the follow-up now selected"
+        );
+    }
+
+    /// Same for a deep dive, which selects its own new row.
+    #[test]
+    fn the_re_filing_banner_clears_when_a_deep_dive_moves_the_cursor() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It retries forever.");
+
+        app.learning_relabel_intent();
+        assert!(learning(&app).notice.is_some());
+
+        app.learning_deep_dive().unwrap();
+        assert!(
+            learning(&app).notice.is_none(),
+            "the confirmation described the original, not the deep dive now selected"
+        );
+    }
+
+    /// "The answer on its way was asked for as an explanation" is true until
+    /// the answer arrives, and nothing the user does marks that moment — so
+    /// the arrival has to take the banner down itself.
+    #[test]
+    fn the_re_filing_banner_clears_when_the_answer_lands() {
+        let (_repo, mut app) = opened_app();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        app.learning_relabel_intent();
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("on its way"), "{notice}");
+
+        deliver(&mut app, &id, Ok("It retries forever.".to_string()));
+
+        assert!(
+            learning(&app).notice.is_none(),
+            "the answer is here, so a banner calling it on its way is now false"
+        );
+    }
+
+    /// A label the next open of the overlay silently drops is worse than one
+    /// refused out loud, so a re-file that cannot be written through is undone
+    /// and reported rather than confirmed.
+    #[test]
+    fn a_re_file_that_cannot_be_saved_is_undone_and_says_so() {
+        let (_repo, db_dir, mut app) = opened_app_with_db();
+        let id = ask_and_answer(&mut app, "What does this do?", "It retries forever.");
+        let before = learning(&app)
+            .qa
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .updated_at
+            .clone();
+        // The same database, reopened read-only: the session and the row are
+        // all still there, and only the write fails.
+        app.db = Some(crate::db::AmfDb::open_read_only(&db_dir.path().join("amf.db")).unwrap());
+
+        assert_eq!(
+            app.learning_relabel_intent(),
+            None,
+            "nothing was re-filed, so no new intent is reported"
+        );
+
+        let state = learning(&app);
+        let row = state.qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(
+            row.intent,
+            LearningQaIntent::Explain,
+            "the on-screen label must match what a reopen would show"
+        );
+        assert_eq!(row.updated_at, before, "and so must the timestamp");
+        assert!(
+            state.notice.is_none(),
+            "nothing to confirm: {:?}",
+            state.notice
+        );
+        let error = state.error.clone().unwrap_or_default();
+        assert!(
+            error.contains("re-file") && error.contains("saved"),
+            "the banner has to say the re-file did not stick: {error}"
+        );
+    }
+
+    /// A follow-up inherits its parent's intent, so re-filing has to change
+    /// what the next question defaults to — otherwise the label is decoration.
+    #[test]
+    fn a_follow_up_after_re_filing_inherits_the_new_intent() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It retries forever.");
+
+        app.learning_relabel_intent();
+        app.learning_open_follow_up();
+
+        assert_eq!(
+            learning(&app).question.as_ref().unwrap().intent,
+            LearningQaIntent::Action
+        );
+    }
+
+    #[test]
+    fn re_filing_with_nothing_asked_says_so() {
+        let (_repo, mut app) = opened_app();
+
+        assert_eq!(app.learning_relabel_intent(), None);
+
+        let error = learning(&app).error.clone().unwrap_or_default();
+        assert!(error.contains("Ask something first"), "{error}");
+    }
+
+    /// The prompt is already dispatched under the old framing whether the run
+    /// has landed or not, so refusing mid-flight would withhold the label for
+    /// no gain — but the banner must not claim there is an answer to keep.
+    #[test]
+    fn a_question_still_generating_can_be_re_filed() {
+        let (_repo, mut app) = opened_app();
+        app.learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        assert_eq!(
+            app.learning_relabel_intent(),
+            Some(LearningQaIntent::Action)
+        );
+
+        let state = learning(&app);
+        assert_eq!(state.qa[0].intent, LearningQaIntent::Action);
+        let notice = state.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("on its way"),
+            "an unfinished run has no answer to describe as kept: {notice}"
+        );
+    }
+
     /// A bare row, for the ordering helpers that only look at ids and parents.
     fn qa_row(id: &str, parent: Option<&str>) -> LearningQa {
         LearningQa {
@@ -4160,6 +4551,34 @@ pub(crate) mod tests {
         assert!(
             !reason.contains("AMF stopped"),
             "a real failure keeps its own reason rather than being reconciled: {reason}"
+        );
+    }
+
+    /// Re-filing is a durable decision about how an entry is kept, so it has
+    /// to be there on the next open rather than only until the overlay closes.
+    #[test]
+    fn a_re_filed_entry_reloads_the_way_it_was_filed() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("It retries forever.".to_string()));
+        app.learning_relabel_intent();
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let row = learning(&app)
+            .qa
+            .iter()
+            .find(|r| r.id == id)
+            .expect("still in history")
+            .clone();
+        assert_eq!(row.intent, LearningQaIntent::Action);
+        assert_eq!(
+            row.answer.as_deref(),
+            Some("It retries forever."),
+            "and the answer came back with it"
         );
     }
 

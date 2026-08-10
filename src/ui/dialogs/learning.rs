@@ -238,22 +238,21 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
         Span::styled("x", key),
         Span::styled(" this change  ", word),
     ];
-    // These two never overlap in practice — the Start here group is gone once
-    // the project has any history, which is the same moment a deep dive
-    // becomes possible — and the line only has room for one of them.
-    if state
+    // The line has room for one of these, and the footer truncates from the
+    // right — a third entry pushes `q close` off screen at 140 columns. So they
+    // take turns, deep dive first: the Start here group is only built for a
+    // project with no history, so by the time an answer exists it is a leftover
+    // the next reload drops, while `D` is live. `z` stays in the `?` overlay.
+    if has_answer {
+        second.push(Span::styled("D", key));
+        second.push(Span::styled(" ask again, reading the repo  ", word));
+    } else if state
         .entries
         .iter()
         .any(|e| matches!(e, LearningListEntry::StartHereHeader))
     {
         second.push(Span::styled("z", key));
         second.push(Span::styled(" fold Start here  ", word));
-    }
-    // Second line, not first: the first is already full, and truncation would
-    // drop this key entirely rather than shortening it.
-    if has_answer {
-        second.push(Span::styled("D", key));
-        second.push(Span::styled(" ask again, reading the repo  ", word));
     }
     second.extend([
         Span::styled("?", key),
@@ -745,14 +744,32 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
         return;
     }
 
+    // The overlay's banner sits behind this pane, so a refusal raised by a key
+    // pressed *in here* — `D` on an answer that already read the repo — would
+    // otherwise be invisible until the pane is closed, which is precisely the
+    // silently-swallowed keypress the mode is meant not to have.
+    let banner = state.error.clone();
+    let mut constraints = vec![Constraint::Length(3), Constraint::Min(1)];
+    if banner.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
+        .constraints(constraints)
         .split(inner);
+    let footer_chunk = chunks[chunks.len() - 1];
+    if let Some(message) = &banner {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                message.clone(),
+                Style::default().fg(theme.danger.to_color()),
+            ))
+            .style(Style::default().bg(theme.effective_header_bg()))
+            .wrap(Wrap { trim: true }),
+            chunks[2],
+        );
+    }
 
     let header = Paragraph::new(vec![
         Line::from(Span::styled(
@@ -848,7 +865,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
             ),
         ]))
         .style(Style::default().bg(theme.effective_header_bg())),
-        chunks[2],
+        footer_chunk,
     );
 }
 
@@ -1532,14 +1549,21 @@ let files = list_repo_files(workdir)?;
     }
 
     /// The footer truncates from the right, so a key added to an already-full
-    /// line is a key nobody sees. Both keys have to survive at a real width.
+    /// line is a key nobody sees — and the one it pushes off is `q close`.
+    /// Asked with the Start here group present, which is how the real app looks
+    /// right after a first question: the group is only dropped on the next file
+    /// list reload, so the two do compete for this line.
     #[test]
     fn the_deep_dive_key_survives_the_footer_at_a_real_width() {
         let mut state = state();
+        state.entries = vec![LearningListEntry::StartHereHeader];
+
+        let rendered = render(&mut state);
         assert!(
-            !render(&mut state).contains("reading the repo"),
+            !rendered.contains("reading the repo"),
             "not offered before there is an answer to send deeper"
         );
+        assert!(rendered.contains("z fold Start here"), "{rendered}");
 
         state.qa.push(answered_qa());
         let rendered = render(&mut state);
@@ -1549,7 +1573,32 @@ let files = list_repo_files(workdir)?;
         );
         assert!(
             rendered.contains("F ask a follow-up"),
-            "and it didn't push the follow-up key off the end"
+            "and it didn't push the follow-up key off the first line"
+        );
+        assert!(
+            rendered.contains("q close"),
+            "nor the quit key off the second: {rendered}"
+        );
+    }
+
+    /// The answer pane covers the overlay's banner, so a key refused from
+    /// inside it — `D` on an answer that already read the repo — has to say so
+    /// here or it reads as a dead key.
+    #[test]
+    fn a_refusal_raised_inside_the_answer_pane_is_visible_there() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.error = Some("That answer already read the repository.".to_string());
+
+        let rendered = render(&mut state);
+        assert!(
+            rendered.contains("That answer already read the repository."),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("Esc back to browsing"),
+            "and the key footer is still there, not displaced: {rendered}"
         );
     }
 

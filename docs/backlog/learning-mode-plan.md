@@ -704,12 +704,24 @@ closes out.
         a second deep dive jumps to the one that exists rather than
         paying for it twice, unless the first one failed — which is
         exactly when a retry is wanted.
-      The footer had no room left: adding `D` to the first line
-      truncated it off screen at 140 columns. `z fold Start here` and
-      `D` never coexist — the Start here group is gone once the project
-      has history, which is the same moment a deep dive becomes
-      possible — so the second line now shows whichever applies, guarded
-      by `the_deep_dive_key_survives_the_footer_at_a_real_width`.
+      Two surface bugs came out of driving the real binary rather than
+      the tests, both of them the "silently swallowed keypress" failure
+      this mode is supposed to not have:
+      - **The footer had no room.** `D` on the first line truncated off
+        screen at 140 columns; moving it to the second still pushed
+        `q close` off, because `z fold Start here` and `D` *do* coexist
+        — the file list only reloads on a scope toggle, so the Start
+        here group lingers all session after the first question. They
+        now take turns, `D` first, since the group is a leftover by then
+        and `z` remains in the `?` overlay. Guarded by
+        `the_deep_dive_key_survives_the_footer_at_a_real_width`, which
+        asks with the group present and asserts `q close` survives.
+      - **The answer pane covered the banner.** `D` pressed on an answer
+        that already read the repo set the refusal behind the pane, so
+        nothing appeared until the pane was closed — in the one place
+        the key is most likely pressed. `draw_answer` now carries the
+        banner itself, above its key footer
+        (`a_refusal_raised_inside_the_answer_pane_is_visible_there`).
       Tests: `a_deep_dive_re_asks_the_same_question_with_the_repo_readable`,
       `a_deep_dive_does_not_feed_the_shallow_answer_back_to_the_agent`,
       `a_deep_dive_of_a_follow_up_keeps_the_conversation_above_it`,
@@ -720,10 +732,20 @@ closes out.
       `a_second_deep_dive_jumps_to_the_one_you_already_have`,
       `a_failed_deep_dive_can_be_retried`, and the handler-level
       `d_sends_the_answer_you_are_reading_back_with_the_repo_open`.
-      **Not verified against a real CLI**: the `run_read_only` dispatch
-      in `spawn_learning_run` predates this item and unit tests spawn no
-      process, so whether a real deep dive actually corrects an invented
-      reference is still unmeasured — see the first open question.
+      **Verified against real Claude**, driving the built binary in tmux
+      against a throwaway copy of `~/.config/amf/amf.db`: asked "In one
+      sentence, what is this project?" at the project anchor, and the
+      no-tools answer **fabricated a `Bash: ls -la && cat README.md`
+      tool call and its output** — a `crates/` directory, a
+      `rustfmt.toml`, and a README opening "A local-first orchestration
+      layer for long-running coding agents", none of which exist. `D`
+      re-asked it; the deep dive answered correctly from the real
+      README and the real `.worktrees/` mechanism. The row landed
+      indented under its parent as `Claude · read the repo`, the
+      original kept its answer, the header counted it while it ran,
+      pressing `D` on the deep dive itself was refused, and pressing `D`
+      on the parent again jumped to the existing row without a third
+      run.
 - [ ] Implement **relabel intent** on an existing entry (explain ⇄
       change), persisted, with the answer text left untouched. Verify a
       relabeled entry re-renders with the new marker and re-orders its
@@ -839,18 +861,23 @@ closes out.
 
 ## Open questions
 
-- **A no-tools answer invents plausible references.** The first real
-  Claude run followed the newcomer template closely but pointed "Where
-  to look next" at line numbers and symbol names that do not exist
-  (`src/app/state.rs:812`, `LearningState`, `is_git_repo`) — inevitable
-  when the agent can only see the prompt. Deep dive (`D`) is now built
-  for exactly this, and deliberately re-derives rather than reviewing
-  the first answer — but **whether it actually corrects such a reference
-  has not been measured against a real CLI**, and a newcomer is the
-  least able to spot a confident wrong reference in the first place.
-  That also raises the stakes on the deferred
-  "make Where to look next navigable" item: a jump that fails is at
-  least an honest signal.
+- **A no-tools answer doesn't just invent references — it invents
+  evidence.** The first real Claude run followed the newcomer template
+  closely but pointed "Where to look next" at line numbers and symbol
+  names that do not exist (`src/app/state.rs:812`, `LearningState`,
+  `is_git_repo`). A later run at the project anchor was worse: with no
+  tools available, it **wrote out a `Bash: ls -la && cat README.md`
+  call and a plausible fake result**, listing a `crates/` directory and
+  a `rustfmt.toml` this repo does not have, under a README line it does
+  not open with. Rendered in the answer pane it is indistinguishable
+  from a real tool transcript. Deep dive (`D`) corrected it on the
+  same question, so the mitigation works — but it is opt-in, and the
+  newcomer this mode is for is the least likely to know they should
+  press it. Worth considering for v1.1: detecting fabricated tool
+  transcripts in a `NoTools` answer, or stating in the prompt that the
+  agent has no tools and must say so rather than simulate them. It also
+  raises the stakes on the deferred "make Where to look next navigable"
+  item: a jump that fails is at least an honest signal.
 - **Reading level is a prompt instruction, not a guarantee.** The
   `Newcomer` overlay asks the agent to define its terms and avoid
   assumed context, but nothing enforces it; a model may still answer in

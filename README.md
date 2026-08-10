@@ -209,6 +209,18 @@ threads, send an individual or batched fix prompt to an agent, reply, and mark
 threads done. Press `W` to have AMF run its own review of the PR diff. GitHub
 actions are presented for confirmation before AMF writes to the pull request.
 
+To seed review memory from earlier reviews, open the PR picker and press `b`.
+If `G` opened the feature's pull request directly, press `g` from PR Triage to
+return to the picker first. Choose a lookback of 20, 50, 100, or all recent
+closed and merged pull requests with `j`/`k`, then press `Enter`. The default is
+50. Press `g` in the lookback dialog to switch between the project's
+`.amf/review-memory.md` and the cross-project memory at
+`~/.config/amf/review-memory.md`; project memory is the default. This requires
+authenticated `gh` and an available Claude CLI. Fetching the review history
+does not use agent tokens; AMF then makes one agent pass to distill recurring
+findings and appends only new ones. You can press `Esc` while it runs to return
+to the picker without cancelling the background job.
+
 ### Reuse prompts and track TODOs
 
 Press `L` to manage reusable prompt templates, or open them from a session with

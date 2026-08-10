@@ -4,8 +4,9 @@
   (asking), and 4 (surface) complete, plus a first pass of Epic 6
   hardening. Learning Mode is reachable from the dashboard with `K` and
   usable end to end: browse, select, ask, read the answer, ask a
-  follow-up. Epic 5's remaining items (deep dive, relabel intent, make
-  actionable, escalate to a live session) are next.
+  follow-up, send a doubtful answer back with the repo readable. Epic
+  5's remaining items (relabel intent, make actionable, escalate to a
+  live session) are next.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -679,10 +680,50 @@ closes out.
       handler-level `f_asks_a_follow_up_from_the_answer_you_are_reading`.
       The depth cap itself was already built and tested in Epic 3
       (`follow_up_context_is_capped_at_the_configured_depth`).
-- [ ] Implement **deep dive**: rerun the selected Q&A through
-      `HeadlessRunner::run_read_only` in the feature's `workdir`,
-      preserving intent and level, stored as its own row with
-      `run_mode = deep_dive` so the original answer survives.
+- [x] Implement **deep dive**: `D` on the Q&A pane or inside the answer
+      pane reruns the selected question through
+      `HeadlessRunner::run_read_only`, stored as its own row under the
+      original so the first answer survives and the two can be read
+      against each other. Three decisions came out of building it:
+      - **The answer being checked is not in the prompt that checks
+        it.** A deep dive takes the *origin's* position in the thread,
+        so it inherits the origin's ancestors but not the origin's own
+        turn — a rerun that re-derives the facts is worth more than one
+        anchored on the guess it was meant to catch.
+        (`learning_deep_dive_context`.)
+      - **A rerun preserves the level it reruns**, not the current
+        setting, so a pair of answers on the same question reads alike
+        even if the user has since switched to `Familiar`. This is why
+        `learning_enqueue` now takes level and run mode off the
+        `LearningPromptContext` instead of off the live overlay — the
+        one place a `learning_qa` row is born, so asking and re-asking
+        can't drift apart.
+      - **Every refusal says why.** Unanswered rows say to wait; a row
+        that already read the repo (including every Codex row, which
+        `effective_for` downgrades up front) says so and points at `F`;
+        a second deep dive jumps to the one that exists rather than
+        paying for it twice, unless the first one failed — which is
+        exactly when a retry is wanted.
+      The footer had no room left: adding `D` to the first line
+      truncated it off screen at 140 columns. `z fold Start here` and
+      `D` never coexist — the Start here group is gone once the project
+      has history, which is the same moment a deep dive becomes
+      possible — so the second line now shows whichever applies, guarded
+      by `the_deep_dive_key_survives_the_footer_at_a_real_width`.
+      Tests: `a_deep_dive_re_asks_the_same_question_with_the_repo_readable`,
+      `a_deep_dive_does_not_feed_the_shallow_answer_back_to_the_agent`,
+      `a_deep_dive_of_a_follow_up_keeps_the_conversation_above_it`,
+      `a_deep_dive_keeps_the_level_its_original_was_answered_at`,
+      `a_deep_dive_asks_about_its_originals_code_not_wherever_browsing_ended_up`,
+      `a_deep_dive_of_an_unanswered_question_says_to_wait`,
+      `a_deep_dive_of_a_deep_dive_says_it_already_read_the_repo`,
+      `a_second_deep_dive_jumps_to_the_one_you_already_have`,
+      `a_failed_deep_dive_can_be_retried`, and the handler-level
+      `d_sends_the_answer_you_are_reading_back_with_the_repo_open`.
+      **Not verified against a real CLI**: the `run_read_only` dispatch
+      in `spawn_learning_run` predates this item and unit tests spawn no
+      process, so whether a real deep dive actually corrects an invented
+      reference is still unmeasured — see the first open question.
 - [ ] Implement **relabel intent** on an existing entry (explain ⇄
       change), persisted, with the answer text left untouched. Verify a
       relabeled entry re-renders with the new marker and re-orders its
@@ -802,9 +843,12 @@ closes out.
   Claude run followed the newcomer template closely but pointed "Where
   to look next" at line numbers and symbol names that do not exist
   (`src/app/state.rs:812`, `LearningState`, `is_git_repo`) — inevitable
-  when the agent can only see the prompt. Deep dive exists for exactly
-  this, but a newcomer is the least able to spot a confident wrong
-  reference, which also raises the stakes on the deferred
+  when the agent can only see the prompt. Deep dive (`D`) is now built
+  for exactly this, and deliberately re-derives rather than reviewing
+  the first answer — but **whether it actually corrects such a reference
+  has not been measured against a real CLI**, and a newcomer is the
+  least able to spot a confident wrong reference in the first place.
+  That also raises the stakes on the deferred
   "make Where to look next navigable" item: a jump that fails is at
   least an honest signal.
 - **Reading level is a prompt instruction, not a guarantee.** The

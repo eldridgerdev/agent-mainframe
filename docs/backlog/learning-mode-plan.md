@@ -847,10 +847,11 @@ closes out.
       level/threading model), and `CHANGELOG.md`.
       **`CHANGELOG.md` is done** — an `Added` block under `[Unreleased]`
       covering `K`, the two ask keys, starter questions, the levels, the
-      non-blocking queue, per-project history, and harness choice. It
-      deliberately claims nothing from Epic 5: follow-ups, deep dive,
-      and making an answer actionable are not described, because they
-      are not built. `README.md` and `CLAUDE.md` are still open.
+      non-blocking queue, per-project history, harness choice, and now
+      `F` (follow-ups) and `D` (deep dive). It still claims nothing that
+      isn't built: relabel intent, make actionable, and escalate to a
+      live session are absent because they are the remaining Epic 5
+      items. `README.md` and `CLAUDE.md` are still open.
 - [ ] File follow-up items for the deferred work: anchor-drift
       resolution (commit SHA + snippet or fuzzy match, modeled on
       `App::reanchor_line_comments`), the alternative actionable

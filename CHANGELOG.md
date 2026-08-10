@@ -25,6 +25,17 @@ are tagged.
 - **Answers are written for the reader you say you are.** `L` switches between
   newcomer answers, which define their terms and end with what to read next,
   and familiar answers, which skip the groundwork.
+- **Ask again about the answer you just got.** `F` asks a follow-up, carrying
+  the earlier question and answer along so "wait, what's a trait?" is answered
+  against what you were just told rather than from scratch. Follow-ups stay
+  attached to the code they started from, even if you have browsed elsewhere
+  since, and appear indented under the answer they continue.
+- **Doubt an answer and make it go check.** Most answers are written from just
+  the code on screen, so they can confidently name files, symbols, or line
+  numbers that do not exist. `D` asks the same question again with the whole
+  repository readable, and keeps the first answer alongside the new one so you
+  can compare. The rerun does not see the answer it is checking, so it works
+  the question out again rather than agreeing with a guess.
 - **Asking never blocks.** Questions are answered in the background and several
   can be in flight at once, so you can keep reading while answers arrive. Your
   questions and answers are kept per project and are still there next time you

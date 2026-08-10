@@ -3558,6 +3558,11 @@ pub struct LearningViewState {
     /// someone their entry was re-filed in the failure red is its own small
     /// lie, and this mode's audience is the least equipped to discount it.
     pub notice: Option<String>,
+    /// The Q&A row `notice` was raised on, when it describes one. The wording
+    /// is only true of that row as it stood at the keypress ("the answer on
+    /// its way was asked for as an explanation"), so the banner is dropped
+    /// when the cursor leaves the row or the row's run lands.
+    pub notice_qa_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -3601,6 +3606,28 @@ impl LearningViewState {
     /// The Q&A row under the history cursor.
     pub fn selected_qa(&self) -> Option<&LearningQa> {
         self.qa.get(self.selected_qa)
+    }
+
+    /// Drop the confirmation banner and whatever row it was raised on.
+    pub fn clear_notice(&mut self) {
+        self.notice = None;
+        self.notice_qa_id = None;
+    }
+
+    /// Move the history cursor to `index`, dropping a banner raised on the row
+    /// being left.
+    ///
+    /// A notice describes the row it was raised on ("re-filed as a change
+    /// request"), so it must not follow the cursor onto a different entry and
+    /// appear to describe that one instead. Every cursor move goes through
+    /// here — including the programmatic ones (a follow-up selecting its new
+    /// row, a deep dive jumping to the one that already exists), which is
+    /// where a notice would otherwise survive untouched.
+    pub fn select_qa(&mut self, index: usize) {
+        if index != self.selected_qa {
+            self.clear_notice();
+        }
+        self.selected_qa = index;
     }
 }
 

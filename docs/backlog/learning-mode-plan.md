@@ -6,7 +6,9 @@
   usable end to end: browse, select, ask, read the answer, ask a
   follow-up, send a doubtful answer back with the repo readable. Epic
   5's remaining items (relabel intent, make actionable, escalate to a
-  live session) are next.
+  live session) are next. Epic 7 (a collapsible file tree, so the file
+  list teaches the repo's layout instead of hiding it behind truncated
+  paths) is new, blocks on nothing, and can run in parallel.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -428,7 +430,9 @@ everything**; after it, Epic 2 (browsing) and Epic 3 (prompts +
 execution) are independent of each other and can be built in parallel,
 as can Epic 4's rendering and key handling once Epic 2's state is in
 place. Epic 5 depends on Epic 3 having produced real answers. Epic 6
-closes out.
+closes out. **Epic 7 blocks on nothing** — it reworks the file list
+Epic 2 built, touches no prompt, run, or persistence code, and can be
+picked up in parallel with whatever is left of Epics 5 and 6.
 
 ### Epic 1 — Foundations (state, persistence, file sources)
 
@@ -904,6 +908,66 @@ closes out.
       "Where to look next" file references into navigable jumps within
       the overlay.
 
+### Epic 7 — Browsing a real repository (collapsible file tree)
+
+The file list is a flat, alphabetically sorted list of every path in
+the repo (`build_repo_tree_entries`, `src/app/learning.rs`), rendered
+into a pane that is 24% of the terminal — about 32 columns at 140. On
+this repo that is 500-odd rows where the first screenful reads
+`…ude/commands/amf/ai-review.m`, `…e/commands/amf/pr-continue.m`,
+`…ude/commands/amf/pr-create.m`: paths truncated to near-identical
+stubs, sorted so that dotfile directories come first and `src/` is
+dozens of `j` presses away. The user this mode is built for does not
+know the repo's layout, and the list that is supposed to teach it to
+them instead hides it. A tree shows structure, keeps names readable by
+indenting instead of truncating, and lets a newcomer skip whole
+subtrees they have no business in yet.
+
+The pieces already exist: `LearningListEntry` is an enum with a
+non-selectable collapsible header (`StartHereHeader`), and
+`learning_toggle_start_here` already preserves the cursor across a
+collapse. This is a second, general case of that, not a new mechanism.
+
+- [ ] Add directory nodes to `LearningListEntry` (path, depth,
+      expanded, child count) and build the repo-tree entries as a
+      flattened tree rather than a sorted path list, directories before
+      files at each level. Keep the **Start here** group pinned above
+      it, unchanged. Branch-changes scope keeps its flat list — a
+      handful of changed files needs no tree — unless the change count
+      makes one worth it, which is a judgment call to make with real
+      numbers, not now.
+- [ ] Render the tree: indent by depth, show an expand/collapse marker,
+      and label each row with the **leaf name only** rather than the
+      full path, so a 32-column pane shows `ai-review.md` instead of
+      `…ude/commands/amf/ai-review.m`. The header or content pane still
+      has to state the selected file's full path, since the name alone
+      no longer identifies it.
+- [ ] Decide and implement the opening state. Everything collapsed is
+      the honest structural view but hides `src/` behind a keypress;
+      everything expanded is today's wall of rows with indentation.
+      Proposal: collapsed to the first level, plus auto-expanding the
+      path to the **Start here** candidates so `src/main.rs` is visible
+      on open. Verify against this repo and one much larger.
+- [ ] Keys: expand/collapse the node under the cursor, expand/collapse
+      all, and jump to the parent directory. `Enter` on a directory
+      toggles it; `Enter` on a file keeps loading it. Add them to the
+      footer and the `?` overlay in the same spelled-out style, and
+      check the footer still fits — this has already truncated `q close`
+      and `Esc back to browsing` off the end twice.
+- [ ] Revisit the 20,000-entry cap (`MAX_REPO_ENTRIES`). A tree only
+      pays for what is expanded, so the cap can move from the listing to
+      per-directory expansion, and the "showing the first 20,000"
+      warning can become a per-directory one. This is the item that
+      makes repo-tree scope usable on a monorepo rather than merely
+      capped.
+- [ ] Tests: flattening is a pure function over a path list, so cover
+      ordering, depth, and collapse/expand round-trips there; plus
+      cursor preservation across a collapse (the existing
+      `collapsing_the_orientation_group_keeps_the_cursor_on_its_file`
+      is the model), a render test asserting a deep file shows its leaf
+      name rather than a truncated path, and that selecting a directory
+      does not change the question anchor.
+
 ## Open questions
 
 - **A no-tools answer doesn't just invent references — it invents
@@ -985,7 +1049,17 @@ closes out.
   file-size, and binary-detection limits are unset. The non-git
   fallback walk is a further unknown, since it has no ignore rules at
   all — and an unfamiliar user browsing a monorepo is the worst case
-  for both.
+  for both. Epic 7 addresses the listing half of this; content loading
+  cost is untouched by it.
+- **Whether a directory can be a question anchor.** Epic 7 introduces
+  directory rows, and "what is everything in `src/app/` for?" is an
+  obvious question for exactly the newcomer this mode serves — arguably
+  more useful than the whole-project tour. But a directory anchor has
+  no selection text, so it would need a different prompt shape (a file
+  listing, or a read-only run that goes and looks), and it sits between
+  the existing `Project` and `File` anchors rather than beside them.
+  Epic 7 assumes directories are navigation only; promoting them to an
+  anchor is a separate decision.
 - **Hunk selection only exists in branch-changes scope.** Repo-tree
   browsing has no diff, so "hunk" has no meaning there. This asymmetry
   is an inference from the two scopes, not a stated decision, and the

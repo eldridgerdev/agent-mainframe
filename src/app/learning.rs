@@ -1015,6 +1015,10 @@ pub struct LearningPromptContext {
     pub question: String,
     pub intent: LearningQaIntent,
     pub level: LearningLevel,
+    /// What the run may look at. Set by `learning_enqueue` from the mode that
+    /// will actually be dispatched, so the prompt and the row's label can't
+    /// disagree about whether the repository was read.
+    pub run_mode: crate::app::LearningRunMode,
     /// Oldest first. Trimmed to [`MAX_FOLLOW_UP_DEPTH`] by the builder.
     pub ancestors: Vec<ParentTurn>,
 }
@@ -1022,9 +1026,10 @@ pub struct LearningPromptContext {
 /// Build the prompt for one question.
 ///
 /// Structure is fixed: who and where, then what they're looking at, then any
-/// earlier turns, then the question, then the instructions selected by intent
-/// and level. Instructions come last so they're the freshest thing the model
-/// reads.
+/// earlier turns, then the question, then the instructions selected by intent,
+/// level, and run mode. Instructions come last so they're the freshest thing
+/// the model reads, and the run mode last of all — what may be checked, and
+/// what must be, outranks how the answer is worded.
 pub fn build_prompt(ctx: &LearningPromptContext) -> String {
     let mut out = String::new();
 
@@ -1083,7 +1088,44 @@ pub fn build_prompt(ctx: &LearningPromptContext) -> String {
     out.push_str(intent_instructions(ctx.intent));
     out.push('\n');
     out.push_str(level_instructions(ctx.level));
+    out.push('\n');
+    out.push_str(run_mode_instructions(ctx.run_mode));
     out
+}
+
+/// What the run may look at — and, for a deep dive, what it is obliged to do
+/// with that access.
+///
+/// The row and the answer pane label a deep dive "read the repo", and the whole
+/// point of the action is catching a first answer that invented a file or a
+/// line number. Read-only tools only make that possible; without being told to,
+/// an agent can answer straight from the excerpt and the claim on the row
+/// becomes false. So the deep-dive text requires the reading and requires the
+/// answer to name what was read, which is also what makes the two answers
+/// comparable. The no-tools text is the mirror image: say what you cannot see
+/// rather than filling it in.
+pub fn run_mode_instructions(mode: crate::app::LearningRunMode) -> &'static str {
+    match mode {
+        crate::app::LearningRunMode::NoTools => {
+            "You are answering from what is quoted above and nothing else — you \
+             have no access to the rest of the repository, and you must not \
+             claim otherwise. Do not invent file paths, symbols, line numbers, \
+             or command output you cannot see here. Where the answer depends on \
+             code that is not shown, say so plainly and name the file you would \
+             need to read.\n"
+        }
+        crate::app::LearningRunMode::DeepDive => {
+            "You have read-only access to this repository, and this answer is \
+             shown to them as one that read it — so read it. Before you answer, \
+             open the file above and whatever it depends on: the definitions it \
+             calls, the places that call it, and any test that exercises it. \
+             Ground every claim in what you actually read, and name the files \
+             and symbols you checked so they can follow you. If the code \
+             contradicts what you would otherwise have assumed, say so \
+             explicitly. If you looked for something and could not find it, say \
+             that rather than guessing.\n"
+        }
+    }
 }
 
 /// What the answer is for. This is the only place intent changes anything
@@ -1286,6 +1328,9 @@ impl App {
             question: question.to_string(),
             intent,
             level: state.level,
+            // Provisional: `learning_enqueue` overwrites it with the mode that
+            // is actually dispatched, once `effective_for` has had its say.
+            run_mode: crate::app::LearningRunMode::NoTools,
             ancestors,
         })
     }
@@ -1354,16 +1399,26 @@ impl App {
         let ancestors = self.learning_ancestor_turns(parent_qa_id.as_deref());
         let ctx =
             self.learning_prompt_context_at(&question, intent, ancestors, captured.as_ref())?;
-        self.learning_enqueue(ctx, parent_qa_id, crate::app::LearningRunMode::NoTools)
+        self.learning_enqueue(
+            ctx,
+            parent_qa_id,
+            crate::app::LearningRunMode::NoTools,
+            None,
+        )
     }
 
     /// Write a row for `ctx` and start its run. The single place a `learning_qa`
     /// row is born, so asking and re-asking can't drift apart.
+    ///
+    /// `deep_dive_of` is set only by [`App::learning_deep_dive`], and always to
+    /// the same row as `parent_qa_id`: the pair threads together but does not
+    /// converse (see [`LearningQa::deep_dive_of`]).
     fn learning_enqueue(
         &mut self,
-        ctx: LearningPromptContext,
+        mut ctx: LearningPromptContext,
         parent_qa_id: Option<String>,
         run_mode: crate::app::LearningRunMode,
+        deep_dive_of: Option<String>,
     ) -> Option<String> {
         let AppMode::Learning(state) = &mut self.mode else {
             return None;
@@ -1371,10 +1426,15 @@ impl App {
         // Recorded as what will actually run: a harness with no no-tools mode
         // is a deep dive whatever was asked for (see `effective_for`).
         let run_mode = run_mode.effective_for(&state.harness);
+        // The prompt is written for the run that will happen, not the one that
+        // was asked for, so a downgraded row can't be told to answer from the
+        // excerpt alone while its label says it read the repository.
+        ctx.run_mode = run_mode;
         let qa = LearningQa {
             id: uuid::Uuid::new_v4().to_string(),
             session_id: state.session_id.clone(),
             parent_qa_id: parent_qa_id.clone(),
+            deep_dive_of,
             file_path: ctx.file_path.clone(),
             anchor: ctx.anchor,
             selection_text: ctx.selection_text.clone(),
@@ -1426,7 +1486,11 @@ impl App {
     /// It lands as its own row indented under the original, and the original
     /// answer is left untouched so the two can be read against each other. The
     /// original answer is deliberately **not** fed into the prompt: a rerun that
-    /// re-derives the facts is worth more than one anchored on a guess.
+    /// re-derives the facts is worth more than one anchored on a guess. The new
+    /// row records the original in
+    /// [`deep_dive_of`](crate::app::LearningQa::deep_dive_of) as well as in
+    /// `parent_qa_id`, which is what keeps that answer out of *later* prompts
+    /// too — a follow-up on the deep dive continues from the deep dive.
     ///
     /// Returns the new row's id, or `None` when nothing was started (the banner
     /// says why).
@@ -1440,36 +1504,55 @@ impl App {
             self.learning_error("Ask something first — a deep dive re-runs a question you already asked, letting the agent read the repo.");
             return None;
         };
+        // Checked before the in-flight guard: a row that reads the repository
+        // is refused whether or not it has landed, so telling the user to wait
+        // for it would be promising something that is then refused. Also the
+        // Codex case — `effective_for` already downgraded that row to a deep
+        // dive, so there is genuinely nothing deeper to go.
+        if origin.run_mode == crate::app::LearningRunMode::DeepDive {
+            self.learning_error(if origin.status.is_in_flight() {
+                "That one is already reading the repository. Once it lands, ask a follow-up (F) to go further."
+            } else {
+                "That answer already read the repository. Ask a follow-up (F) to go further."
+            });
+            return None;
+        }
         if origin.status.is_in_flight() {
             self.learning_error(
                 "That answer is still generating — you can send it deeper once it arrives.",
             );
             return None;
         }
-        // Also the Codex case: `effective_for` already downgraded that row to a
-        // deep dive, so there is genuinely nothing deeper to go.
-        if origin.run_mode == crate::app::LearningRunMode::DeepDive {
-            self.learning_error(
-                "That answer already read the repository. Ask a follow-up (F) to go further.",
-            );
-            return None;
-        }
         // One deep dive per question: a second identical run costs the same and
         // says the same thing, so jump to the one that exists instead.
+        //
+        // Matched on `deep_dive_of` rather than parent + run mode, which would
+        // mistake an ordinary follow-up for a deep dive under Codex, where
+        // every row is recorded as one.
         let existing = match &self.mode {
-            AppMode::Learning(state) => state.qa.iter().position(|row| {
-                row.parent_qa_id.as_deref() == Some(origin.id.as_str())
-                    && row.run_mode == crate::app::LearningRunMode::DeepDive
-                    && row.status != crate::app::LearningQaStatus::Failed
-            }),
+            AppMode::Learning(state) => state
+                .qa
+                .iter()
+                .position(|row| {
+                    row.deep_dive_of.as_deref() == Some(origin.id.as_str())
+                        && row.status != crate::app::LearningQaStatus::Failed
+                })
+                .map(|index| (index, state.qa[index].status.is_in_flight())),
             _ => None,
         };
-        if let Some(index) = existing {
+        if let Some((index, in_flight)) = existing {
             if let AppMode::Learning(state) = &mut self.mode {
                 state.selected_qa = index;
                 state.answer_open = false;
+                // An unfinished run has nothing to show yet, so it must not be
+                // described as something that came back.
                 state.error = Some(
-                    "You already sent that one deeper — here is what it came back with.".into(),
+                    if in_flight {
+                        "You already sent that one deeper — it is still reading the repository."
+                    } else {
+                        "You already sent that one deeper — here is what it came back with."
+                    }
+                    .into(),
                 );
             }
             return None;
@@ -1484,6 +1567,7 @@ impl App {
             ctx,
             Some(origin.id.clone()),
             crate::app::LearningRunMode::DeepDive,
+            Some(origin.id.clone()),
         )
     }
 
@@ -1514,6 +1598,7 @@ impl App {
             Some(&captured),
         )?;
         ctx.level = origin.level;
+        ctx.run_mode = crate::app::LearningRunMode::DeepDive;
         Some(ctx)
     }
 
@@ -1667,6 +1752,11 @@ impl App {
     /// The chain of earlier turns leading to `parent_qa_id`, oldest first.
     /// Only answered rows are carried — an unanswered parent has no context to
     /// give.
+    ///
+    /// A deep dive in the chain is followed *through* the row it re-ran rather
+    /// than into it: it stands in that row's place, so the answer it was run to
+    /// check — the one that may have invented files and line numbers — never
+    /// re-enters a later prompt through the back door.
     fn learning_ancestor_turns(&self, parent_qa_id: Option<&str>) -> Vec<ParentTurn> {
         let AppMode::Learning(state) = &self.mode else {
             return Vec::new();
@@ -1685,7 +1775,16 @@ impl App {
                     answer: answer.clone(),
                 });
             }
-            current = row.parent_qa_id.clone();
+            current = match row.superseded_id() {
+                // Skip the superseded row and resume above it. Its own parent
+                // is where the conversation actually continues.
+                Some(superseded) => state
+                    .qa
+                    .iter()
+                    .find(|r| r.id == superseded)
+                    .and_then(|r| r.parent_qa_id.clone()),
+                None => row.parent_qa_id.clone(),
+            };
         }
         chain.reverse();
         chain
@@ -2599,6 +2698,7 @@ pub(crate) mod tests {
             question: "What does this do?".to_string(),
             intent: LearningQaIntent::Explain,
             level: LearningLevel::Newcomer,
+            run_mode: crate::app::LearningRunMode::NoTools,
             ancestors: Vec::new(),
         }
     }
@@ -2644,6 +2744,47 @@ pub(crate) mod tests {
         assert!(prompt.contains("imperative summary"), "{prompt}");
         assert!(prompt.contains("title of a work item"), "{prompt}");
         assert!(!prompt.contains("Do not propose changes"), "{prompt}");
+    }
+
+    /// A deep dive is labelled "read the repo" on the row and in the answer
+    /// pane. Read-only tools only make that possible, so the prompt has to be
+    /// what makes it true.
+    #[test]
+    fn the_deep_dive_template_requires_the_repository_to_be_read() {
+        let mut ctx = sample_context();
+        ctx.run_mode = crate::app::LearningRunMode::DeepDive;
+        let prompt = build_prompt(&ctx);
+
+        assert!(
+            prompt.contains("read-only access to this repository"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("Ground every claim in what you actually read"),
+            "permission is not enough — the reading has to be required: {prompt}"
+        );
+        assert!(
+            prompt.contains("name the files and symbols you checked"),
+            "and be checkable from the answer itself: {prompt}"
+        );
+        assert!(
+            !prompt.contains("no access to the rest of the repository"),
+            "the no-tools disclaimer must not survive into a run that has access: {prompt}"
+        );
+    }
+
+    #[test]
+    fn the_no_tools_template_says_it_cannot_see_the_rest_of_the_repository() {
+        let prompt = build_prompt(&sample_context());
+        assert!(
+            prompt.contains("no access to the rest of the repository"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Do not invent file paths"), "{prompt}");
+        assert!(
+            !prompt.contains("read-only access to this repository"),
+            "{prompt}"
+        );
     }
 
     #[test]
@@ -3496,6 +3637,10 @@ pub(crate) mod tests {
             !prompt.contains("widget pump"),
             "the answer under review must not be in the prompt reviewing it: {prompt}"
         );
+        assert!(
+            prompt.contains("Ground every claim in what you actually read"),
+            "and the rerun is told to go and check, not merely allowed to: {prompt}"
+        );
     }
 
     /// A deep dive of a follow-up still needs the turns that led to it — what
@@ -3666,12 +3811,165 @@ pub(crate) mod tests {
         assert_eq!(learning(&app).qa.len(), 3);
     }
 
+    /// The whole point of a deep dive is to replace an answer that may have
+    /// invented its evidence. If a follow-up on the verified answer walked the
+    /// thread back into the shallow one, the fabrication would be handed to the
+    /// agent as established fact one question later.
+    #[test]
+    fn a_follow_up_on_a_deep_dive_leaves_the_answer_it_replaced_behind() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(
+            &mut app,
+            "What does this do?",
+            "It calls into the widget pump.",
+        );
+        let deeper = app.learning_deep_dive().unwrap();
+        deliver(
+            &mut app,
+            &deeper,
+            Ok("It calls into the event loop.".to_string()),
+        );
+
+        let turns = app.learning_ancestor_turns(Some(&deeper));
+
+        let answers: Vec<&str> = turns.iter().map(|t| t.answer.as_str()).collect();
+        assert_eq!(
+            answers,
+            vec!["It calls into the event loop."],
+            "only the verified answer continues the conversation"
+        );
+    }
+
+    /// A deep dive of a follow-up steps over the turn it re-ran, not over the
+    /// conversation that led there.
+    #[test]
+    fn a_follow_up_on_a_deep_dive_still_carries_the_turns_above_it() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What is this file for?", "It is the entry point.");
+        let child = follow_up(&mut app, "What's an entry point?");
+        deliver(&mut app, &child, Ok("Where execution begins.".to_string()));
+
+        // Send the follow-up deeper, then continue from the deep dive.
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_qa = state.qa.iter().position(|r| r.id == child).unwrap();
+        }
+        let deeper = app.learning_deep_dive().unwrap();
+        deliver(
+            &mut app,
+            &deeper,
+            Ok("Where the process starts running.".to_string()),
+        );
+
+        let answers: Vec<String> = app
+            .learning_ancestor_turns(Some(&deeper))
+            .into_iter()
+            .map(|t| t.answer)
+            .collect();
+        assert_eq!(
+            answers,
+            vec![
+                "It is the entry point.".to_string(),
+                "Where the process starts running.".to_string(),
+            ],
+            "the grandparent turn survives; only the re-derived one is dropped"
+        );
+    }
+
+    /// Under Codex every row is recorded as a deep dive (`effective_for`), so
+    /// "is this a rerun?" cannot be read off `run_mode` — doing so would strip
+    /// an ordinary Codex follow-up of the answer it is following up on.
+    #[test]
+    fn a_codex_follow_up_is_not_mistaken_for_a_rerun() {
+        let (_repo, mut app) = opened_app();
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.harness = AgentKind::Codex;
+        }
+        let parent = ask_and_answer(&mut app, "What is this file for?", "It is the entry point.");
+        assert_eq!(
+            learning(&app).qa[0].run_mode,
+            crate::app::LearningRunMode::DeepDive,
+            "codex has no no-tools mode"
+        );
+
+        let child = follow_up(&mut app, "What's an entry point?");
+        let row = learning(&app)
+            .qa
+            .iter()
+            .find(|r| r.id == child)
+            .unwrap()
+            .clone();
+        assert_eq!(row.parent_qa_id.as_deref(), Some(parent.as_str()));
+        assert!(
+            row.deep_dive_of.is_none(),
+            "a follow-up replaces nothing, whatever mode it runs in"
+        );
+        assert_eq!(
+            app.learning_ancestor_turns(Some(&parent))
+                .into_iter()
+                .map(|t| t.answer)
+                .collect::<Vec<_>>(),
+            vec!["It is the entry point.".to_string()],
+        );
+    }
+
+    /// `D` on a row that reads the repository is refused whether or not it has
+    /// landed, so the in-flight message must not promise it will work later.
+    #[test]
+    fn d_on_a_running_deep_dive_says_to_follow_up_not_to_wait() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It runs the thing.");
+        let deeper = app.learning_deep_dive().unwrap();
+        assert!(
+            learning(&app)
+                .qa
+                .iter()
+                .find(|r| r.id == deeper)
+                .unwrap()
+                .status
+                .is_in_flight()
+        );
+
+        assert!(app.learning_deep_dive().is_none(), "the cursor is on it");
+
+        let error = learning(&app).error.clone().unwrap_or_default();
+        assert!(error.contains("already reading the repository"), "{error}");
+        assert!(
+            error.contains("(F)"),
+            "and points at what does work: {error}"
+        );
+        assert_eq!(learning(&app).qa.len(), 2, "nothing was started");
+    }
+
+    /// The second `D` jumps to the run that exists — which, while it is still
+    /// running, has not come back with anything to read.
+    #[test]
+    fn a_second_deep_dive_while_the_first_runs_says_it_is_still_going() {
+        let (_repo, mut app) = opened_app();
+        ask_and_answer(&mut app, "What does this do?", "It runs the thing.");
+        let deeper = app.learning_deep_dive().unwrap();
+
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_qa = 0;
+        }
+        assert!(app.learning_deep_dive().is_none());
+
+        let state = learning(&app);
+        assert_eq!(state.qa.len(), 2, "the same run isn't paid for twice");
+        assert_eq!(state.qa[state.selected_qa].id, deeper);
+        let error = state.error.clone().unwrap_or_default();
+        assert!(
+            error.contains("still reading the repository"),
+            "an unfinished run must not be described as one that came back: {error}"
+        );
+    }
+
     /// A bare row, for the ordering helpers that only look at ids and parents.
     fn qa_row(id: &str, parent: Option<&str>) -> LearningQa {
         LearningQa {
             id: id.to_string(),
             session_id: "s".to_string(),
             parent_qa_id: parent.map(str::to_string),
+            deep_dive_of: None,
             file_path: None,
             anchor: LearningAnchor::Project,
             selection_text: String::new(),

@@ -3302,7 +3302,23 @@ pub struct LearningQa {
     pub session_id: String,
     /// Set on a follow-up: the row whose question and answer are carried into
     /// this one's prompt. Follow-ups render indented under their parent.
+    ///
+    /// Also set on a deep dive, which hangs under the answer it re-derives —
+    /// see [`deep_dive_of`](Self::deep_dive_of) for why that one is *not* a
+    /// conversational parent.
     pub parent_qa_id: Option<String>,
+    /// Set only on a deep dive: the row this one re-ran.
+    ///
+    /// A deep dive is threaded under its origin so the two read as a pair, but
+    /// it *replaces* that answer rather than continuing from it. Without this
+    /// field the two relationships are indistinguishable — a follow-up on a
+    /// deep dive would walk `parent_qa_id` straight back into the shallow
+    /// answer the deep dive was run to check, feeding possibly-fabricated
+    /// claims into the prompt that was meant to be free of them. It cannot be
+    /// inferred from `run_mode` either: every Codex row is a `DeepDive` (see
+    /// [`LearningRunMode::effective_for`]), including ordinary follow-ups
+    /// whose ancestry must be kept.
+    pub deep_dive_of: Option<String>,
     /// Repo-relative path, `None` for the project-level anchor.
     pub file_path: Option<String>,
     pub anchor: LearningAnchor,
@@ -3334,6 +3350,24 @@ pub struct LearningQa {
     pub spawned_session_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl LearningQa {
+    /// The row this one stands in for, when it is a deep dive threaded under
+    /// the answer it re-derived.
+    ///
+    /// Ancestor traversal uses this to step *over* that row: the deep dive
+    /// occupies its position in the conversation, so the answer it was run to
+    /// check is not a turn that ever happened. Only honoured when it is also
+    /// this row's thread parent, which is the only shape
+    /// [`App::learning_deep_dive`](crate::app::App::learning_deep_dive)
+    /// writes — a mismatch means the ancestry never runs through it anyway.
+    pub fn superseded_id(&self) -> Option<&str> {
+        match (self.deep_dive_of.as_deref(), self.parent_qa_id.as_deref()) {
+            (Some(origin), Some(parent)) if origin == parent => Some(origin),
+            _ => None,
+        }
+    }
 }
 
 /// A Learning Mode session: one per project, carrying the settings that

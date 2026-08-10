@@ -746,6 +746,50 @@ closes out.
       pressing `D` on the deep dive itself was refused, and pressing `D`
       on the parent again jumped to the existing row without a third
       run.
+      Four review findings on the first cut, all fixed:
+      - **A rerun is not a turn in the conversation.** Threading the
+        deep dive under its origin made `parent_qa_id` mean two things
+        at once, so a follow-up on the verified answer walked straight
+        back into the shallow one and handed its (possibly invented)
+        evidence to the next prompt as fact. The two relationships are
+        now distinct: `deep_dive_of` (`deep_dive_of_qa_id`,
+        MIGRATION_021) names the row a deep dive replaced, and
+        `learning_ancestor_turns` steps *over* that row to its parent.
+        It could not be inferred from `run_mode` — every Codex row is a
+        deep dive, follow-ups included, which is also why the
+        "already sent that one deeper" lookup now matches on
+        `deep_dive_of` instead of parent + run mode.
+        (`a_follow_up_on_a_deep_dive_leaves_the_answer_it_replaced_behind`,
+        `a_follow_up_on_a_deep_dive_still_carries_the_turns_above_it`,
+        `a_codex_follow_up_is_not_mistaken_for_a_rerun`.)
+      - **Read-only tools do not make an answer repository-grounded.**
+        Both modes sent the same prompt and only the tools differed, so
+        a deep dive could answer from the excerpt alone while the row
+        claimed it read the repo. `build_prompt` now ends with
+        `run_mode_instructions`: the deep dive is required to open the
+        file and what it depends on and to name what it checked; the
+        no-tools run is told to say what it cannot see rather than fill
+        it in. The mode comes off the run that will actually be
+        dispatched (`effective_for`), so a downgraded Codex row can't be
+        told to answer blind while its label says otherwise.
+        (`the_deep_dive_template_requires_the_repository_to_be_read`,
+        `the_no_tools_template_says_it_cannot_see_the_rest_of_the_repository`.)
+      - **Two refusals described a state the row wasn't in.** `D` on a
+        *running* deep dive said to wait for it, though it is refused
+        after it lands too; and jumping to an existing deep dive said
+        "here is what it came back with" while it was still running.
+        Both now branch on `is_in_flight`.
+        (`d_on_a_running_deep_dive_says_to_follow_up_not_to_wait`,
+        `a_second_deep_dive_while_the_first_runs_says_it_is_still_going`.)
+      - **The answer pane's footer outgrew the pane.** Adding `D` took
+        it to 114 columns; the pane has ~92 inner columns at a
+        110-column terminal, and it truncates from the right, so `Esc
+        back to browsing` — the only way out of a modal — was clipped.
+        `answer_footer` now fits the line by dropping hints instead,
+        rarest navigation first, never `Esc`, and omits `F`/`D`
+        entirely on a row that would refuse them.
+        (`the_answer_footer_keeps_the_way_out_and_the_actions_when_narrow`,
+        `the_answer_footer_only_offers_keys_the_row_can_act_on`.)
 - [ ] Implement **relabel intent** on an existing entry (explain ⇄
       change), persisted, with the answer text left untouched. Verify a
       relabeled entry re-renders with the new marker and re-orders its

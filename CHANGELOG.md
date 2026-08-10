@@ -35,7 +35,11 @@ are tagged.
   numbers that do not exist. `D` asks the same question again with the whole
   repository readable, and keeps the first answer alongside the new one so you
   can compare. The rerun does not see the answer it is checking, so it works
-  the question out again rather than agreeing with a guess.
+  the question out again rather than agreeing with a guess — and it is told to
+  go and read the code, and to name the files it checked, so "read the repo" on
+  the row means it actually did. Following up on the verified answer continues
+  from that one; the answer it replaced is left behind rather than quietly
+  carried into the next question.
 - **Asking never blocks.** Questions are answered in the background and several
   can be in flight at once, so you can keep reading while answers arrive. Your
   questions and answers are kept per project and are still there next time you

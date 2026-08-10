@@ -26,7 +26,7 @@ use crate::app::learning::STARTER_QUESTIONS;
 use crate::app::{
     BrowseScope, LearningAnchor, LearningFocus, LearningHarnessPicker, LearningListEntry,
     LearningListGroup, LearningQa, LearningQaIntent, LearningQaStatus, LearningQuestionEditor,
-    LearningStarterPicker, LearningViewState,
+    LearningRunMode, LearningStarterPicker, LearningViewState,
 };
 use crate::highlight;
 use crate::theme::Theme;
@@ -213,7 +213,8 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
     ];
     // Only offered once there is an answer to continue from, so the key isn't
     // advertised before it can do anything.
-    if state.qa.iter().any(|qa| qa.answer.is_some()) {
+    let has_answer = state.qa.iter().any(|qa| qa.answer.is_some());
+    if has_answer {
         first.push(Span::styled("  F", key));
         first.push(Span::styled(" ask a follow-up", word));
     }
@@ -224,7 +225,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
         ));
     }
 
-    let second = vec![
+    let mut second = vec![
         Span::raw("  "),
         Span::styled("v", key),
         Span::styled(" start a line range  ", word),
@@ -236,13 +237,29 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
         Span::styled(" whole project  ", word),
         Span::styled("x", key),
         Span::styled(" this change  ", word),
-        Span::styled("z", key),
-        Span::styled(" fold Start here  ", word),
+    ];
+    // The line has room for one of these, and the footer truncates from the
+    // right — a third entry pushes `q close` off screen at 140 columns. So they
+    // take turns, deep dive first: the Start here group is only built for a
+    // project with no history, so by the time an answer exists it is a leftover
+    // the next reload drops, while `D` is live. `z` stays in the `?` overlay.
+    if has_answer {
+        second.push(Span::styled("D", key));
+        second.push(Span::styled(" ask again, reading the repo  ", word));
+    } else if state
+        .entries
+        .iter()
+        .any(|e| matches!(e, LearningListEntry::StartHereHeader))
+    {
+        second.push(Span::styled("z", key));
+        second.push(Span::styled(" fold Start here  ", word));
+    }
+    second.extend([
         Span::styled("?", key),
         Span::styled(" help  ", word),
         Span::styled("q", key),
         Span::styled(" close", word),
-    ];
+    ]);
 
     frame.render_widget(
         Paragraph::new(vec![Line::from(first), Line::from(second)]),
@@ -727,14 +744,32 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
         return;
     }
 
+    // The overlay's banner sits behind this pane, so a refusal raised by a key
+    // pressed *in here* — `D` on an answer that already read the repo — would
+    // otherwise be invisible until the pane is closed, which is precisely the
+    // silently-swallowed keypress the mode is meant not to have.
+    let banner = state.error.clone();
+    let mut constraints = vec![Constraint::Length(3), Constraint::Min(1)];
+    if banner.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
+        .constraints(constraints)
         .split(inner);
+    let footer_chunk = chunks[chunks.len() - 1];
+    if let Some(message) = &banner {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                message.clone(),
+                Style::default().fg(theme.danger.to_color()),
+            ))
+            .style(Style::default().bg(theme.effective_header_bg()))
+            .wrap(Wrap { trim: true }),
+            chunks[2],
+        );
+    }
 
     let header = Paragraph::new(vec![
         Line::from(Span::styled(
@@ -800,33 +835,96 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
     }
 
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " scroll  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("PgUp/PgDn", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" page  ", Style::default().fg(theme.text_muted.to_color())),
-            Span::styled("g/G", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " top/bottom  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("F", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " ask a follow-up  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " back to browsing",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-        ]))
-        .style(Style::default().bg(theme.effective_header_bg())),
-        chunks[2],
+        Paragraph::new(answer_footer(&qa, footer_chunk.width as usize, theme))
+            .style(Style::default().bg(theme.effective_header_bg())),
+        footer_chunk,
     );
+}
+
+/// One key hint in the answer pane's footer: the key and what it does.
+struct AnswerHint {
+    key: &'static str,
+    label: &'static str,
+}
+
+/// The answer pane's key footer, fitted to `width`.
+///
+/// The pane is a percentage of the terminal, so at 110 columns it has about 92
+/// inner columns while the full hint line wants 114 — and the widget truncates
+/// from the right, which would take `Esc back to browsing` off a modal with no
+/// other way out. So hints are dropped instead, least useful first: the
+/// scrolling keys have obvious alternatives (and `j/k` covers the common case),
+/// while `Esc` is never dropped.
+///
+/// Hints for keys the selected row would refuse are not shown at all — a
+/// deep-dive row cannot be sent deeper, and an unanswered one cannot be
+/// followed up — so the footer never advertises a keypress that answers with a
+/// banner.
+fn answer_footer(qa: &LearningQa, width: usize, theme: &Theme) -> Line<'static> {
+    let mut hints = vec![
+        AnswerHint {
+            key: "j/k",
+            label: "scroll",
+        },
+        AnswerHint {
+            key: "PgUp/PgDn",
+            label: "page",
+        },
+        AnswerHint {
+            key: "g/G",
+            label: "top/bottom",
+        },
+    ];
+    // Only these three may be dropped when space is short: they are the pane's
+    // navigation, and losing a scroll key costs less than losing an action or
+    // the way out.
+    let droppable = hints.len();
+    if qa.answer.is_some() {
+        hints.push(AnswerHint {
+            key: "F",
+            label: "ask a follow-up",
+        });
+    }
+    if !qa.status.is_in_flight() && qa.run_mode == LearningRunMode::NoTools {
+        hints.push(AnswerHint {
+            key: "D",
+            label: "ask again, reading the repo",
+        });
+    }
+    hints.push(AnswerHint {
+        key: "Esc",
+        label: "back to browsing",
+    });
+
+    // Widths include the two-space gap every hint but the last carries.
+    let cost = |hint: &AnswerHint| hint.key.chars().count() + 1 + hint.label.chars().count() + 2;
+    let mut total: usize = hints.iter().map(cost).sum::<usize>().saturating_sub(2);
+    // Last one listed goes first, so `j/k` — the key most people reach for —
+    // outlives `g/G`.
+    for i in (0..droppable).rev() {
+        if total <= width {
+            break;
+        }
+        total -= cost(&hints[i]);
+        hints.remove(i);
+    }
+
+    let key_style = Style::default().fg(theme.warning.to_color());
+    let word_style = Style::default().fg(theme.text_muted.to_color());
+    let last = hints.len().saturating_sub(1);
+    let mut spans = Vec::new();
+    for (i, hint) in hints.iter().enumerate() {
+        spans.push(Span::styled(hint.key, key_style));
+        spans.push(Span::styled(
+            if i == last {
+                format!(" {}", hint.label)
+            } else {
+                format!(" {}  ", hint.label)
+            },
+            word_style,
+        ));
+    }
+    Line::from(spans)
 }
 
 // ── question prompt ──────────────────────────────────────────
@@ -1156,6 +1254,10 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
             "F",
             "ask a follow-up — the agent keeps the answer you just read",
         ),
+        (
+            "D",
+            "ask again, letting the agent read the repo — slower, but it checks",
+        ),
     ] {
         lines.push(key_row(k, text, key, body));
     }
@@ -1208,6 +1310,9 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         " Answers are generated by the agent CLI you picked, so each question",
         " costs whatever that agent costs.",
         " Asking doesn't block anything — keep browsing while an answer arrives.",
+        " Most answers only see the code on screen, so they can name files or",
+        " lines that don't exist. D re-asks with the repo open, so the agent",
+        " can go and check. The first answer is kept either way.",
     ] {
         lines.push(Line::from(Span::styled(note, muted)));
     }
@@ -1379,6 +1484,7 @@ let files = list_repo_files(workdir)?;
             id: "qa-1".to_string(),
             session_id: "sess-1".to_string(),
             parent_qa_id: None,
+            deep_dive_of: None,
             file_path: Some("src/main.rs".to_string()),
             anchor: LearningAnchor::Lines { start: 1, end: 2 },
             selection_text: "fn main() {}".to_string(),
@@ -1399,9 +1505,13 @@ let files = list_repo_files(workdir)?;
     }
 
     fn render(state: &mut LearningViewState) -> String {
+        render_at(state, 140, 44)
+    }
+
+    fn render_at(state: &mut LearningViewState, width: u16, height: u16) -> String {
         use ratatui::{Terminal, backend::TestBackend};
 
-        let backend = TestBackend::new(140, 44);
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| draw_learning_view(frame, state, &Theme::default()))
@@ -1498,6 +1608,129 @@ let files = list_repo_files(workdir)?;
         assert!(
             state.answer_scroll < usize::MAX / 2,
             "the renderer clamps the stored scroll once it knows the height"
+        );
+    }
+
+    /// The footer truncates from the right, so a key added to an already-full
+    /// line is a key nobody sees — and the one it pushes off is `q close`.
+    /// Asked with the Start here group present, which is how the real app looks
+    /// right after a first question: the group is only dropped on the next file
+    /// list reload, so the two do compete for this line.
+    #[test]
+    fn the_deep_dive_key_survives_the_footer_at_a_real_width() {
+        let mut state = state();
+        state.entries = vec![LearningListEntry::StartHereHeader];
+
+        let rendered = render(&mut state);
+        assert!(
+            !rendered.contains("reading the repo"),
+            "not offered before there is an answer to send deeper"
+        );
+        assert!(rendered.contains("z fold Start here"), "{rendered}");
+
+        state.qa.push(answered_qa());
+        let rendered = render(&mut state);
+        assert!(
+            rendered.contains("D ask again, reading the repo"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("F ask a follow-up"),
+            "and it didn't push the follow-up key off the first line"
+        );
+        assert!(
+            rendered.contains("q close"),
+            "nor the quit key off the second: {rendered}"
+        );
+    }
+
+    /// The pane is a percentage of the terminal, so its footer has to fit a
+    /// narrow one. Truncation would take `Esc` — the only way out of a modal —
+    /// off the end, so hints are dropped from the middle instead.
+    #[test]
+    fn the_answer_footer_keeps_the_way_out_and_the_actions_when_narrow() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+
+        let wide = render(&mut state);
+        assert!(wide.contains("PgUp/PgDn page"), "{wide}");
+        assert!(wide.contains("g/G top/bottom"), "{wide}");
+
+        let narrow = render_at(&mut state, 110, 44);
+        assert!(
+            narrow.contains("Esc back to browsing"),
+            "the way out survives first: {narrow}"
+        );
+        assert!(
+            narrow.contains("D ask again, reading the repo"),
+            "and so do the actions: {narrow}"
+        );
+        assert!(narrow.contains("F ask a follow-up"), "{narrow}");
+        assert!(
+            narrow.contains("j/k scroll"),
+            "the common scroll keys outlive the rarer ones: {narrow}"
+        );
+        assert!(
+            !narrow.contains("g/G top/bottom"),
+            "something had to give: {narrow}"
+        );
+    }
+
+    /// A footer that offers a key the row will refuse is the same dead keypress
+    /// as one that is clipped off the end.
+    #[test]
+    fn the_answer_footer_only_offers_keys_the_row_can_act_on() {
+        let mut dived = state();
+        let mut deep = answered_qa();
+        deep.run_mode = LearningRunMode::DeepDive;
+        dived.qa.push(deep);
+        dived.answer_open = true;
+
+        let rendered = render(&mut dived);
+        assert!(
+            !rendered.contains("ask again, reading the repo"),
+            "this one already read it: {rendered}"
+        );
+        assert!(rendered.contains("F ask a follow-up"), "{rendered}");
+
+        let mut waiting = state();
+        let mut running = answered_qa();
+        running.answer = None;
+        running.status = LearningQaStatus::Running;
+        waiting.qa.push(running);
+        waiting.answer_open = true;
+
+        let rendered = render(&mut waiting);
+        assert!(
+            !rendered.contains("ask a follow-up"),
+            "nothing to follow up on yet: {rendered}"
+        );
+        assert!(
+            !rendered.contains("ask again, reading the repo"),
+            "nor to send deeper: {rendered}"
+        );
+        assert!(rendered.contains("Esc back to browsing"), "{rendered}");
+    }
+
+    /// The answer pane covers the overlay's banner, so a key refused from
+    /// inside it — `D` on an answer that already read the repo — has to say so
+    /// here or it reads as a dead key.
+    #[test]
+    fn a_refusal_raised_inside_the_answer_pane_is_visible_there() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.error = Some("That answer already read the repository.".to_string());
+
+        let rendered = render(&mut state);
+        assert!(
+            rendered.contains("That answer already read the repository."),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("Esc back to browsing"),
+            "and the key footer is still there, not displaced: {rendered}"
         );
     }
 

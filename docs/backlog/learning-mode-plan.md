@@ -4,8 +4,9 @@
   (asking), and 4 (surface) complete, plus a first pass of Epic 6
   hardening. Learning Mode is reachable from the dashboard with `K` and
   usable end to end: browse, select, ask, read the answer, ask a
-  follow-up. Epic 5's remaining items (deep dive, relabel intent, make
-  actionable, escalate to a live session) are next.
+  follow-up, send a doubtful answer back with the repo readable. Epic
+  5's remaining items (relabel intent, make actionable, escalate to a
+  live session) are next.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -679,10 +680,116 @@ closes out.
       handler-level `f_asks_a_follow_up_from_the_answer_you_are_reading`.
       The depth cap itself was already built and tested in Epic 3
       (`follow_up_context_is_capped_at_the_configured_depth`).
-- [ ] Implement **deep dive**: rerun the selected Q&A through
-      `HeadlessRunner::run_read_only` in the feature's `workdir`,
-      preserving intent and level, stored as its own row with
-      `run_mode = deep_dive` so the original answer survives.
+- [x] Implement **deep dive**: `D` on the Q&A pane or inside the answer
+      pane reruns the selected question through
+      `HeadlessRunner::run_read_only`, stored as its own row under the
+      original so the first answer survives and the two can be read
+      against each other. Three decisions came out of building it:
+      - **The answer being checked is not in the prompt that checks
+        it.** A deep dive takes the *origin's* position in the thread,
+        so it inherits the origin's ancestors but not the origin's own
+        turn — a rerun that re-derives the facts is worth more than one
+        anchored on the guess it was meant to catch.
+        (`learning_deep_dive_context`.)
+      - **A rerun preserves the level it reruns**, not the current
+        setting, so a pair of answers on the same question reads alike
+        even if the user has since switched to `Familiar`. This is why
+        `learning_enqueue` now takes level and run mode off the
+        `LearningPromptContext` instead of off the live overlay — the
+        one place a `learning_qa` row is born, so asking and re-asking
+        can't drift apart.
+      - **Every refusal says why.** Unanswered rows say to wait; a row
+        that already read the repo (including every Codex row, which
+        `effective_for` downgrades up front) says so and points at `F`;
+        a second deep dive jumps to the one that exists rather than
+        paying for it twice, unless the first one failed — which is
+        exactly when a retry is wanted.
+      Two surface bugs came out of driving the real binary rather than
+      the tests, both of them the "silently swallowed keypress" failure
+      this mode is supposed to not have:
+      - **The footer had no room.** `D` on the first line truncated off
+        screen at 140 columns; moving it to the second still pushed
+        `q close` off, because `z fold Start here` and `D` *do* coexist
+        — the file list only reloads on a scope toggle, so the Start
+        here group lingers all session after the first question. They
+        now take turns, `D` first, since the group is a leftover by then
+        and `z` remains in the `?` overlay. Guarded by
+        `the_deep_dive_key_survives_the_footer_at_a_real_width`, which
+        asks with the group present and asserts `q close` survives.
+      - **The answer pane covered the banner.** `D` pressed on an answer
+        that already read the repo set the refusal behind the pane, so
+        nothing appeared until the pane was closed — in the one place
+        the key is most likely pressed. `draw_answer` now carries the
+        banner itself, above its key footer
+        (`a_refusal_raised_inside_the_answer_pane_is_visible_there`).
+      Tests: `a_deep_dive_re_asks_the_same_question_with_the_repo_readable`,
+      `a_deep_dive_does_not_feed_the_shallow_answer_back_to_the_agent`,
+      `a_deep_dive_of_a_follow_up_keeps_the_conversation_above_it`,
+      `a_deep_dive_keeps_the_level_its_original_was_answered_at`,
+      `a_deep_dive_asks_about_its_originals_code_not_wherever_browsing_ended_up`,
+      `a_deep_dive_of_an_unanswered_question_says_to_wait`,
+      `a_deep_dive_of_a_deep_dive_says_it_already_read_the_repo`,
+      `a_second_deep_dive_jumps_to_the_one_you_already_have`,
+      `a_failed_deep_dive_can_be_retried`, and the handler-level
+      `d_sends_the_answer_you_are_reading_back_with_the_repo_open`.
+      **Verified against real Claude**, driving the built binary in tmux
+      against a throwaway copy of `~/.config/amf/amf.db`: asked "In one
+      sentence, what is this project?" at the project anchor, and the
+      no-tools answer **fabricated a `Bash: ls -la && cat README.md`
+      tool call and its output** — a `crates/` directory, a
+      `rustfmt.toml`, and a README opening "A local-first orchestration
+      layer for long-running coding agents", none of which exist. `D`
+      re-asked it; the deep dive answered correctly from the real
+      README and the real `.worktrees/` mechanism. The row landed
+      indented under its parent as `Claude · read the repo`, the
+      original kept its answer, the header counted it while it ran,
+      pressing `D` on the deep dive itself was refused, and pressing `D`
+      on the parent again jumped to the existing row without a third
+      run.
+      Four review findings on the first cut, all fixed:
+      - **A rerun is not a turn in the conversation.** Threading the
+        deep dive under its origin made `parent_qa_id` mean two things
+        at once, so a follow-up on the verified answer walked straight
+        back into the shallow one and handed its (possibly invented)
+        evidence to the next prompt as fact. The two relationships are
+        now distinct: `deep_dive_of` (`deep_dive_of_qa_id`,
+        MIGRATION_021) names the row a deep dive replaced, and
+        `learning_ancestor_turns` steps *over* that row to its parent.
+        It could not be inferred from `run_mode` — every Codex row is a
+        deep dive, follow-ups included, which is also why the
+        "already sent that one deeper" lookup now matches on
+        `deep_dive_of` instead of parent + run mode.
+        (`a_follow_up_on_a_deep_dive_leaves_the_answer_it_replaced_behind`,
+        `a_follow_up_on_a_deep_dive_still_carries_the_turns_above_it`,
+        `a_codex_follow_up_is_not_mistaken_for_a_rerun`.)
+      - **Read-only tools do not make an answer repository-grounded.**
+        Both modes sent the same prompt and only the tools differed, so
+        a deep dive could answer from the excerpt alone while the row
+        claimed it read the repo. `build_prompt` now ends with
+        `run_mode_instructions`: the deep dive is required to open the
+        file and what it depends on and to name what it checked; the
+        no-tools run is told to say what it cannot see rather than fill
+        it in. The mode comes off the run that will actually be
+        dispatched (`effective_for`), so a downgraded Codex row can't be
+        told to answer blind while its label says otherwise.
+        (`the_deep_dive_template_requires_the_repository_to_be_read`,
+        `the_no_tools_template_says_it_cannot_see_the_rest_of_the_repository`.)
+      - **Two refusals described a state the row wasn't in.** `D` on a
+        *running* deep dive said to wait for it, though it is refused
+        after it lands too; and jumping to an existing deep dive said
+        "here is what it came back with" while it was still running.
+        Both now branch on `is_in_flight`.
+        (`d_on_a_running_deep_dive_says_to_follow_up_not_to_wait`,
+        `a_second_deep_dive_while_the_first_runs_says_it_is_still_going`.)
+      - **The answer pane's footer outgrew the pane.** Adding `D` took
+        it to 114 columns; the pane has ~92 inner columns at a
+        110-column terminal, and it truncates from the right, so `Esc
+        back to browsing` — the only way out of a modal — was clipped.
+        `answer_footer` now fits the line by dropping hints instead,
+        rarest navigation first, never `Esc`, and omits `F`/`D`
+        entirely on a row that would refuse them.
+        (`the_answer_footer_keeps_the_way_out_and_the_actions_when_narrow`,
+        `the_answer_footer_only_offers_keys_the_row_can_act_on`.)
 - [ ] Implement **relabel intent** on an existing entry (explain ⇄
       change), persisted, with the answer text left untouched. Verify a
       relabeled entry re-renders with the new marker and re-orders its
@@ -784,10 +891,11 @@ closes out.
       level/threading model), and `CHANGELOG.md`.
       **`CHANGELOG.md` is done** — an `Added` block under `[Unreleased]`
       covering `K`, the two ask keys, starter questions, the levels, the
-      non-blocking queue, per-project history, and harness choice. It
-      deliberately claims nothing from Epic 5: follow-ups, deep dive,
-      and making an answer actionable are not described, because they
-      are not built. `README.md` and `CLAUDE.md` are still open.
+      non-blocking queue, per-project history, harness choice, and now
+      `F` (follow-ups) and `D` (deep dive). It still claims nothing that
+      isn't built: relabel intent, make actionable, and escalate to a
+      live session are absent because they are the remaining Epic 5
+      items. `README.md` and `CLAUDE.md` are still open.
 - [ ] File follow-up items for the deferred work: anchor-drift
       resolution (commit SHA + snippet or fuzzy match, modeled on
       `App::reanchor_line_comments`), the alternative actionable
@@ -798,15 +906,23 @@ closes out.
 
 ## Open questions
 
-- **A no-tools answer invents plausible references.** The first real
-  Claude run followed the newcomer template closely but pointed "Where
-  to look next" at line numbers and symbol names that do not exist
-  (`src/app/state.rs:812`, `LearningState`, `is_git_repo`) — inevitable
-  when the agent can only see the prompt. Deep dive exists for exactly
-  this, but a newcomer is the least able to spot a confident wrong
-  reference, which also raises the stakes on the deferred
-  "make Where to look next navigable" item: a jump that fails is at
-  least an honest signal.
+- **A no-tools answer doesn't just invent references — it invents
+  evidence.** The first real Claude run followed the newcomer template
+  closely but pointed "Where to look next" at line numbers and symbol
+  names that do not exist (`src/app/state.rs:812`, `LearningState`,
+  `is_git_repo`). A later run at the project anchor was worse: with no
+  tools available, it **wrote out a `Bash: ls -la && cat README.md`
+  call and a plausible fake result**, listing a `crates/` directory and
+  a `rustfmt.toml` this repo does not have, under a README line it does
+  not open with. Rendered in the answer pane it is indistinguishable
+  from a real tool transcript. Deep dive (`D`) corrected it on the
+  same question, so the mitigation works — but it is opt-in, and the
+  newcomer this mode is for is the least likely to know they should
+  press it. Worth considering for v1.1: detecting fabricated tool
+  transcripts in a `NoTools` answer, or stating in the prompt that the
+  agent has no tools and must say so rather than simulate them. It also
+  raises the stakes on the deferred "make Where to look next navigable"
+  item: a jump that fails is at least an honest signal.
 - **Reading level is a prompt instruction, not a guarantee.** The
   `Newcomer` overlay asks the agent to define its terms and avoid
   assumed context, but nothing enforces it; a model may still answer in

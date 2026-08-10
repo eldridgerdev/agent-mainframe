@@ -82,6 +82,10 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
             // The most likely next move while reading an answer: ask about
             // something in it. Closes the pane and opens the prompt.
             KeyCode::Char('F') => app.learning_open_follow_up(),
+            // The next most likely: doubt it. Re-asks with the repo readable.
+            KeyCode::Char('D') => {
+                app.learning_deep_dive();
+            }
             KeyCode::Char('?') => app.learning_open_help(),
             _ => {}
         }
@@ -112,6 +116,9 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('c') => app.learning_open_question(LearningQaIntent::Action, None),
         KeyCode::Char('t') => app.learning_open_starter_picker(),
         KeyCode::Char('F') => app.learning_open_follow_up(),
+        KeyCode::Char('D') => {
+            app.learning_deep_dive();
+        }
 
         // Settings and view.
         KeyCode::Char('s') => app.learning_toggle_scope(),
@@ -349,6 +356,39 @@ mod tests {
         assert_eq!(state.qa.len(), 2);
         assert_eq!(state.qa[1].question, "what is that?");
         assert_eq!(state.qa[1].parent_qa_id.as_deref(), Some(parent.as_str()));
+    }
+
+    #[test]
+    fn d_sends_the_answer_you_are_reading_back_with_the_repo_open() {
+        let (_repo, mut app) = opened();
+
+        let origin = app
+            .learning_ask("What is this?", LearningQaIntent::Explain, None)
+            .unwrap();
+        app.learning_answer_tx
+            .send(crate::app::learning::LearningAnswer {
+                qa_id: origin.clone(),
+                result: Ok("It is the entry point.".to_string()),
+            })
+            .unwrap();
+        assert!(app.poll_learning_answers_bg());
+
+        // From the answer pane, where doubting what you just read happens.
+        handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert_eq!(learning(&app).focus, LearningFocus::Qa);
+        handle_learning_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert!(learning(&app).answer_open);
+        handle_learning_key(&mut app, key(KeyCode::Char('D'))).unwrap();
+
+        let state = learning(&app);
+        assert!(!state.answer_open, "the pane steps aside for the new run");
+        assert_eq!(state.qa.len(), 2);
+        assert_eq!(state.qa[1].parent_qa_id.as_deref(), Some(origin.as_str()));
+        assert_eq!(
+            state.qa[1].run_mode,
+            crate::app::LearningRunMode::DeepDive,
+            "this one gets to read the repo"
+        );
     }
 
     #[test]

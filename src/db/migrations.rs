@@ -96,6 +96,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Record whether a learning Q&A's captured selection is a diff excerpt",
             MIGRATION_020,
         ),
+        (
+            "Record which learning Q&A a deep dive re-ran, apart from its thread parent",
+            MIGRATION_021,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -547,6 +551,24 @@ ALTER TABLE learning_qa
     ADD COLUMN selection_is_diff INTEGER NOT NULL DEFAULT 0;
 ";
 
+// Which row a deep dive re-ran, kept apart from `parent_qa_id`.
+//
+// A deep dive is stored under the answer it checks so the pair renders
+// together, but it does not *continue* that answer — it replaces it. Ancestor
+// traversal has to tell the two apart or a follow-up on a deep dive carries the
+// shallow answer (the one that may have invented files) back into the prompt.
+// `run_mode` cannot stand in for it: `effective_for` records every Codex row as
+// a deep dive, follow-ups included.
+//
+// No FK: the row it names is always this row's `parent_qa_id` too, so the
+// existing self-referencing cascade already takes the pair away together.
+// Existing rows default to NULL — "an ordinary follow-up" is the safe reading,
+// since it only ever adds context rather than dropping it.
+const MIGRATION_021: &str = "
+ALTER TABLE learning_qa
+    ADD COLUMN deep_dive_of_qa_id TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -571,7 +593,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -621,6 +643,43 @@ mod tests {
         assert_eq!(is_diff, 0, "an existing row is treated as plain source");
     }
 
+    /// Migration 021 adds `deep_dive_of_qa_id` to rows written before it
+    /// existed. They come back NULL — "an ordinary follow-up" — so ancestor
+    /// traversal over old threads behaves exactly as it did before.
+    #[test]
+    fn migration_021_leaves_existing_qa_rows_without_a_rerun_origin() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_019).unwrap();
+        conn.execute_batch(super::MIGRATION_020).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (20, datetime('now'), 'seed');",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO learning_sessions
+                (id, project_id, feature_id, title, created_at, updated_at)
+             VALUES ('s1', 'p1', 'f1', 'amf', datetime('now'), datetime('now'));
+             INSERT INTO learning_qa
+                (id, learning_session_id, question, created_at, updated_at)
+             VALUES ('q1', 's1', 'What is this?', datetime('now'), datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let origin: Option<String> = conn
+            .query_row(
+                "SELECT deep_dive_of_qa_id FROM learning_qa WHERE id = 'q1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(origin, None);
+    }
+
     /// A brand-new DB arrives at the same place in one pass.
     #[test]
     fn fresh_database_lands_at_the_latest_version() {
@@ -629,7 +688,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -642,7 +701,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 20);
+        assert_eq!(rows, 21);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

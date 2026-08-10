@@ -4,7 +4,10 @@
 //! (harness, explanation level, whether the first-open help has been shown);
 //! each [`LearningQa`] row is one anchored question and its answer. Follow-ups
 //! point at their parent through `parent_qa_id` and are cascade-deleted with
-//! it, just as a session's rows are cascade-deleted with the session.
+//! it, just as a session's rows are cascade-deleted with the session. A deep
+//! dive threads under the row it re-ran the same way, and additionally names it
+//! in `deep_dive_of_qa_id` — the two relationships display alike but read
+//! differently (see [`LearningQa::deep_dive_of`]).
 //!
 //! Like todo lists, this data lives *outside* the `ProjectStore` JSON blob and
 //! its full-replace save path, so asking a question doesn't rewrite the store
@@ -207,7 +210,8 @@ pub fn list_qa(conn: &Connection, session_id: &str) -> Result<Vec<LearningQa>> {
         "SELECT id, learning_session_id, parent_qa_id, file_path, anchor_kind,
                 line_start, line_end, selection_text, question, intent, level,
                 answer, harness, run_mode, status, error, todo_id,
-                spawned_session_id, created_at, updated_at, selection_is_diff
+                spawned_session_id, created_at, updated_at, selection_is_diff,
+                deep_dive_of_qa_id
          FROM learning_qa WHERE learning_session_id = ?1
          ORDER BY created_at ASC, rowid ASC",
     )?;
@@ -231,11 +235,13 @@ pub fn upsert_qa(conn: &Connection, qa: &LearningQa) -> Result<()> {
             (id, learning_session_id, parent_qa_id, file_path, anchor_kind,
              line_start, line_end, selection_text, question, intent, level,
              answer, harness, run_mode, status, error, todo_id,
-             spawned_session_id, created_at, updated_at, selection_is_diff)
+             spawned_session_id, created_at, updated_at, selection_is_diff,
+             deep_dive_of_qa_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                 ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
          ON CONFLICT(id) DO UPDATE SET
             parent_qa_id = excluded.parent_qa_id,
+            deep_dive_of_qa_id = excluded.deep_dive_of_qa_id,
             file_path = excluded.file_path,
             anchor_kind = excluded.anchor_kind,
             line_start = excluded.line_start,
@@ -279,6 +285,7 @@ pub fn upsert_qa(conn: &Connection, qa: &LearningQa) -> Result<()> {
             },
             now_timestamp(),
             qa.selection_is_diff as i64,
+            qa.deep_dive_of,
         ],
     )?;
     Ok(())
@@ -349,6 +356,7 @@ fn row_to_qa(row: &rusqlite::Row) -> rusqlite::Result<LearningQa> {
         id: row.get(0)?,
         session_id: row.get(1)?,
         parent_qa_id: row.get(2)?,
+        deep_dive_of: row.get(21)?,
         file_path: row.get(3)?,
         anchor: LearningAnchor::from_parts(
             &anchor_kind,
@@ -389,6 +397,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             session_id: session_id.to_string(),
             parent_qa_id: None,
+            deep_dive_of: None,
             file_path: Some("src/app/learning.rs".to_string()),
             anchor: LearningAnchor::Lines { start: 40, end: 58 },
             selection_text: "fn open_learning(&mut self) {}".to_string(),
@@ -520,6 +529,7 @@ mod tests {
         qa.intent = LearningQaIntent::Action;
         qa.level = LearningLevel::Familiar;
         qa.run_mode = LearningRunMode::DeepDive;
+        qa.deep_dive_of = Some("qa-origin".to_string());
         qa.status = LearningQaStatus::Answered;
         qa.answer = Some("It opens the overlay.".to_string());
         qa.todo_id = Some("todo-7".to_string());
@@ -536,6 +546,12 @@ mod tests {
         assert_eq!(loaded.intent, LearningQaIntent::Action);
         assert_eq!(loaded.level, LearningLevel::Familiar);
         assert_eq!(loaded.run_mode, LearningRunMode::DeepDive);
+        assert_eq!(
+            loaded.deep_dive_of.as_deref(),
+            Some("qa-origin"),
+            "which row this one re-ran has to survive a reload, or a follow-up \
+             after it walks back into the answer it replaced"
+        );
         assert_eq!(loaded.status, LearningQaStatus::Answered);
         assert_eq!(loaded.answer.as_deref(), Some("It opens the overlay."));
         assert_eq!(loaded.todo_id.as_deref(), Some("todo-7"));

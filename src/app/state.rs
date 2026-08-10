@@ -3482,6 +3482,33 @@ pub struct LearningQuestionEditor {
     pub sync_to_cursor: bool,
 }
 
+/// An open "add this answer to the project's TODO list" confirmation.
+///
+/// Lives inside [`LearningViewState`] like the pickers rather than as its own
+/// `AppMode`, so cancelling returns to exactly the browsing state underneath.
+/// Nothing is written until it is confirmed: the seeded title is a guess, and
+/// this mode's audience is the least likely to notice a wrong one going in
+/// behind their back.
+#[allow(dead_code)]
+pub struct LearningActionEditor {
+    /// The Q&A row the item is being made from.
+    pub qa_id: String,
+    /// Editable title, seeded from the answer. An explanation has no one-line
+    /// summary in it, so the seed there is a truncation the user is expected to
+    /// fix — which is most of why this dialog exists at all.
+    pub title: TextEditor,
+    /// The note's body: where the question was anchored, what was asked, and an
+    /// excerpt of the answer. Shown but not edited here, so what gets written
+    /// is never a surprise.
+    pub body: String,
+    /// Refusal raised by a key pressed *in* the dialog (an emptied title). Kept
+    /// here rather than on the overlay because the dialog covers the overlay's
+    /// banner line.
+    pub error: Option<String>,
+    pub scroll: usize,
+    pub sync_to_cursor: bool,
+}
+
 /// State for the Learning Mode overlay (`AppMode::Learning`) — a read-only
 /// file browser over a project, with an agent answering questions about
 /// whatever the cursor is on. Nothing in this mode writes to the repository.
@@ -3544,6 +3571,8 @@ pub struct LearningViewState {
     pub harness_picker: Option<LearningHarnessPicker>,
     /// Open starter-question picker, if any.
     pub starter_picker: Option<LearningStarterPicker>,
+    /// Open "add this to the TODO list" confirmation, if any.
+    pub action_editor: Option<LearningActionEditor>,
     pub level: LearningLevel,
     /// `learning_sessions.id` backing this overlay.
     pub session_id: String,

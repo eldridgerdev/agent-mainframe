@@ -16,17 +16,24 @@ const PAGE_STEP: usize = 10;
 pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-    let (help_open, question_open, harness_picker_open, starter_picker_open, answer_open) =
-        match &app.mode {
-            AppMode::Learning(state) => (
-                state.help_open,
-                state.question.is_some(),
-                state.harness_picker.is_some(),
-                state.starter_picker.is_some(),
-                state.answer_open,
-            ),
-            _ => return Ok(()),
-        };
+    let (
+        help_open,
+        question_open,
+        harness_picker_open,
+        starter_picker_open,
+        action_open,
+        answer_open,
+    ) = match &app.mode {
+        AppMode::Learning(state) => (
+            state.help_open,
+            state.question.is_some(),
+            state.harness_picker.is_some(),
+            state.starter_picker.is_some(),
+            state.action_editor.is_some(),
+            state.answer_open,
+        ),
+        _ => return Ok(()),
+    };
 
     // The help overlay is first: it opens itself on a project's first visit,
     // so it has to be dismissible before anything else reads a key.
@@ -64,6 +71,12 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // Before the answer pane, which is where this dialog is usually opened
+    // from: it has to swallow the keys typed into its title.
+    if action_open {
+        return handle_action_key(app, key);
+    }
+
     if question_open {
         return handle_question_key(app, key, ctrl);
     }
@@ -86,6 +99,8 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('D') => {
                 app.learning_deep_dive();
             }
+            // Keep what you're reading as something to come back to.
+            KeyCode::Char('a') => app.learning_make_actionable(),
             // Re-file what you're reading: an explanation that turned out to
             // be a problem belongs under "change".
             KeyCode::Char('i') => {
@@ -127,6 +142,7 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('i') => {
             app.learning_relabel_intent();
         }
+        KeyCode::Char('a') => app.learning_make_actionable(),
 
         // Settings and view.
         KeyCode::Char('s') => app.learning_toggle_scope(),
@@ -180,6 +196,39 @@ fn handle_question_key(app: &mut App, key: KeyEvent, ctrl: bool) -> Result<()> {
                 let outcome = q.editor.handle_key(key);
                 if outcome.text_changed || outcome.cursor_moved {
                     q.sync_to_cursor = true;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Keys while the "keep this on the TODO list" confirmation is open.
+///
+/// Enter writes it; Tab does too, because the question prompt next door submits
+/// with Tab and someone arriving from it will reach for the same key. Esc walks
+/// away without writing anything, which is the whole point of the dialog. Every
+/// other key types into the title, including `q` — nothing here may close the
+/// overlay out from under an edit.
+fn handle_action_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Enter | KeyCode::Tab => {
+            app.learning_confirm_action();
+        }
+        KeyCode::Esc => app.learning_cancel_action(),
+        _ => {
+            if let AppMode::Learning(state) = &mut app.mode
+                && let Some(editor) = &mut state.action_editor
+            {
+                let outcome = editor.title.handle_key(key);
+                if outcome.text_changed || outcome.cursor_moved {
+                    editor.sync_to_cursor = true;
+                }
+                if outcome.text_changed {
+                    // The refusal was about the title being empty, and it no
+                    // longer is — or it is again, and pressing Enter will say so
+                    // afresh.
+                    editor.error = None;
                 }
             }
         }
@@ -429,6 +478,87 @@ mod tests {
             "you are still reading it — re-filing doesn't close the pane"
         );
         assert!(state.notice.is_some(), "and it says what it did");
+    }
+
+    /// Keeping an answer is offered where the answer is read: deciding "I
+    /// should come back to this" happens while reading it, not from the list.
+    /// A DB-backed overlay with an answer in it, past the first-open help
+    /// overlay — which a real database means is showing, since this is the
+    /// project's first visit.
+    fn answered_with_db() -> (tempfile::TempDir, tempfile::TempDir, App) {
+        let (repo, db, mut app) = crate::app::learning::tests::opened_app_with_db_for_handlers();
+        assert!(learning(&app).help_open, "the intro shows on first open");
+        handle_learning_key(&mut app, key(KeyCode::Esc)).unwrap();
+
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        app.learning_answer_tx
+            .send(crate::app::learning::LearningAnswer {
+                qa_id: id,
+                result: Ok("It runs the program.".to_string()),
+            })
+            .unwrap();
+        assert!(app.poll_learning_answers_bg());
+        (repo, db, app)
+    }
+
+    #[test]
+    fn a_keeps_the_answer_you_are_reading() {
+        let (_repo, _db, mut app) = answered_with_db();
+
+        // From the answer pane.
+        handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
+        handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert_eq!(learning(&app).focus, LearningFocus::Qa);
+        handle_learning_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert!(learning(&app).answer_open);
+        handle_learning_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        assert!(learning(&app).action_editor.is_some());
+
+        // `q` types rather than closing anything, and Enter is what writes.
+        handle_learning_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        assert!(
+            matches!(app.mode, AppMode::Learning(_)),
+            "a stray q must not close the overlay out from under an edit"
+        );
+        handle_learning_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        assert!(learning(&app).action_editor.is_none());
+        assert!(
+            learning(&app).answer_open,
+            "you are still reading it — keeping it doesn't close the pane"
+        );
+        assert!(
+            learning(&app).qa[0].todo_id.is_some(),
+            "the entry now points at the item it produced"
+        );
+        let db = app.db.as_ref().unwrap();
+        let list = db.todo_list("proj-1").unwrap().unwrap();
+        let todos = db.todos(&list.id).unwrap();
+        assert_eq!(todos.len(), 1);
+        assert!(
+            todos[0].title.ends_with('q'),
+            "the keystrokes landed in the title: {}",
+            todos[0].title
+        );
+    }
+
+    #[test]
+    fn esc_walks_away_from_the_confirmation_without_writing() {
+        let (_repo, _db, mut app) = answered_with_db();
+
+        handle_learning_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        assert!(learning(&app).action_editor.is_some());
+        handle_learning_key(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert!(learning(&app).action_editor.is_none());
+        assert!(learning(&app).qa[0].todo_id.is_none());
+        let db = app.db.as_ref().unwrap();
+        assert!(
+            db.todo_list("proj-1").unwrap().is_none(),
+            "not even a list was created"
+        );
     }
 
     #[test]

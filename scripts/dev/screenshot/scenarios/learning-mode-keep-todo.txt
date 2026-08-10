@@ -1,0 +1,97 @@
+# learning-mode-keep-todo: the one keypress in Learning Mode that writes
+# anything. Open with K, browse to a file, select a range, ask an
+# explaining question, wait for the real headless answer, then press `a`
+# to keep it as a to-do — check the confirmation says what it will and
+# won't do, edit the seeded title, write it, and confirm the item is
+# really on the project's TODO list and reachable from the dashboard.
+# Pressing `a` again must open that item rather than adding a second.
+# (docs/backlog/learning-mode-plan.md, Epic 5.)
+#
+# Needs a seeded project + feature, and asks a real question, so the
+# harness must be authenticated:
+#   ./amf-capture.sh --scenario scenarios/learning-mode-keep-todo.txt \
+#       --seed <project.json> --seed-feature <feature.json> \
+#       --geometry 140x44
+
+shot:dashboard
+
+# K on the selected project opens Learning Mode on its first feature.
+# A project's first visit opens the help overlay by itself — `a` is
+# documented there alongside the other ways to act on an answer.
+key:K
+wait:1500
+shot:first-open-help
+
+key:Escape
+wait:400
+shot:start-here-group
+
+# Down the pinned group: tour -> README.md -> CLAUDE.md -> src/main.rs.
+key:j
+key:j
+key:j
+wait:400
+key:Enter
+wait:800
+shot:file-loaded
+
+# A range to anchor the question — and the note — to.
+key:PageDown
+wait:300
+key:v
+key:j
+key:j
+key:j
+key:j
+wait:400
+shot:range-selected
+
+key:e
+wait:400
+text:What does this do, and is there anything here worth cleaning up later?
+wait:400
+key:Tab
+wait:30000
+wait:30000
+shot:answered
+
+# Into the history pane and open the answer: keeping it is a decision
+# made while reading it.
+key:Tab
+wait:300
+key:Enter
+wait:600
+shot:answer-open
+
+# `a` opens the confirmation. Nothing is written yet.
+key:a
+wait:600
+shot:keep-confirmation
+
+# The seeded title is a guess, so editing it is the expected path.
+text: — check this later
+wait:300
+shot:title-edited
+
+# Confirming leaves the answer pane where it was — you are still reading
+# it — with the confirmation banner inside the pane, and the footer hint
+# flipped to opening the item rather than adding another.
+key:Enter
+wait:800
+shot:kept-banner
+
+# Back to browsing: the history row now carries the → TODO marker.
+key:Escape
+wait:400
+shot:history-marked
+
+# Pressing it again opens the item on the TODO list instead of writing a
+# second one.
+key:a
+wait:1200
+shot:jumped-to-todo
+
+# And the project now has a TODOs session to find it from.
+key:q
+wait:600
+shot:dashboard-has-todos-session

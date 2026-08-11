@@ -1265,6 +1265,19 @@ pub fn amf_config_dir() -> PathBuf {
     amf_config_dir_with(dirs::config_dir(), dirs::home_dir())
 }
 
+/// Directory for generated Claude hook executables.
+///
+/// Keep this independent from the platform config directory because macOS
+/// resolves that directory under `~/Library/Application Support`, while some
+/// Claude versions still route command hooks through a shell even when they
+/// use exec-form arguments.
+pub fn amf_claude_hooks_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".amf")
+        .join("hooks")
+}
+
 fn amf_config_dir_with(xdg_config_dir: Option<PathBuf>, home_dir: Option<PathBuf>) -> PathBuf {
     let legacy = home_dir
         .unwrap_or_else(|| PathBuf::from("."))

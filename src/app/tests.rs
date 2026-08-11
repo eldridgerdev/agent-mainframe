@@ -7397,6 +7397,28 @@ fn claude_exec_hooks_pass_paths_with_spaces_without_shell_quoting() {
 }
 
 #[test]
+fn generated_claude_hooks_use_the_space_free_runtime_directory() {
+    let workdir = TempDir::new().unwrap();
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+    let settings = read_settings(&workdir);
+    let commands = hook_commands_for(&settings, "PostToolUse");
+    let expected = crate::project::amf_claude_hooks_dir().join("tool-stop.sh");
+
+    assert_eq!(commands, vec![expected.to_string_lossy()]);
+    assert_eq!(
+        expected.parent().and_then(|path| path.file_name()),
+        Some(std::ffi::OsStr::new("hooks"))
+    );
+    assert_eq!(
+        expected
+            .parent()
+            .and_then(|path| path.parent())
+            .and_then(|path| path.file_name()),
+        Some(std::ffi::OsStr::new(".amf"))
+    );
+}
+
+#[test]
 fn cleanup_recognizes_quoted_managed_claude_hooks() {
     let workdir = TempDir::new().unwrap();
     let claude_dir = workdir.path().join(".claude");
@@ -7844,9 +7866,7 @@ fn ensure_hooks_removes_stale_temp_home_amf_hooks() {
     assert_eq!(
         post_cmds
             .iter()
-            .filter(|cmd| cmd
-                .trim_matches('\'')
-                .ends_with("/.config/amf/tool-stop.sh"))
+            .filter(|cmd| cmd.ends_with("/.amf/hooks/tool-stop.sh"))
             .count(),
         1,
         "only the current AMF PostToolUse hook should remain"

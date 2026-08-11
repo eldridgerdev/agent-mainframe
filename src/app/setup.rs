@@ -50,7 +50,7 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":claude-exec-hooks-v3");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":safe-claude-hook-dir-v4");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -142,11 +142,17 @@ fn ensure_gitignore_entry(path: &Path, entry: &str) {
 }
 
 fn claude_managed_commands() -> Vec<String> {
-    let config_dir = crate::project::amf_config_dir();
-    CLAUDE_MANAGED_SCRIPT_NAMES
-        .iter()
-        .map(|name| config_dir.join(name).to_string_lossy().into_owned())
-        .collect()
+    [
+        crate::project::amf_claude_hooks_dir(),
+        crate::project::amf_config_dir(),
+    ]
+    .into_iter()
+    .flat_map(|dir| {
+        CLAUDE_MANAGED_SCRIPT_NAMES
+            .iter()
+            .map(move |name| dir.join(name).to_string_lossy().into_owned())
+    })
+    .collect()
 }
 
 fn shell_quote(value: &str) -> String {
@@ -195,8 +201,15 @@ pub(crate) fn is_amf_claude_hook_command(command: &str, managed_commands: &[Stri
     let Some((parent, name)) = normalized.rsplit_once('/') else {
         return false;
     };
-    CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name)
-        && Path::new(parent).file_name().and_then(|n| n.to_str()) == Some("amf")
+    let parent = Path::new(parent);
+    let is_legacy_config_dir = parent.file_name().and_then(|n| n.to_str()) == Some("amf");
+    let is_safe_hook_dir = parent.file_name().and_then(|n| n.to_str()) == Some("hooks")
+        && parent
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            == Some(".amf");
+    CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name) && (is_legacy_config_dir || is_safe_hook_dir)
 }
 
 fn is_unquoted_amf_claude_hook(hook: &serde_json::Value, managed_commands: &[String]) -> bool {
@@ -478,14 +491,19 @@ fn write_executable_if_changed(path: &Path, content: &str) {
 
 pub fn ensure_notify_scripts() {
     let config_dir = crate::project::amf_config_dir();
+    let claude_hooks_dir = crate::project::amf_claude_hooks_dir();
     let _ = std::fs::create_dir_all(&config_dir);
-    write_executable_if_changed(&config_dir.join("notify.sh"), NOTIFY_SH);
-    write_executable_if_changed(&config_dir.join("clear-notify.sh"), CLEAR_NOTIFY_SH);
-    write_executable_if_changed(&config_dir.join("save-prompt.sh"), SAVE_PROMPT_SH);
-    write_executable_if_changed(&config_dir.join("thinking-start.sh"), THINKING_START_SH);
-    write_executable_if_changed(&config_dir.join("thinking-stop.sh"), THINKING_STOP_SH);
-    write_executable_if_changed(&config_dir.join("tool-start.sh"), TOOL_START_SH);
-    write_executable_if_changed(&config_dir.join("tool-stop.sh"), TOOL_STOP_SH);
+    let _ = std::fs::create_dir_all(&claude_hooks_dir);
+    write_executable_if_changed(&claude_hooks_dir.join("notify.sh"), NOTIFY_SH);
+    write_executable_if_changed(&claude_hooks_dir.join("clear-notify.sh"), CLEAR_NOTIFY_SH);
+    write_executable_if_changed(&claude_hooks_dir.join("save-prompt.sh"), SAVE_PROMPT_SH);
+    write_executable_if_changed(
+        &claude_hooks_dir.join("thinking-start.sh"),
+        THINKING_START_SH,
+    );
+    write_executable_if_changed(&claude_hooks_dir.join("thinking-stop.sh"), THINKING_STOP_SH);
+    write_executable_if_changed(&claude_hooks_dir.join("tool-start.sh"), TOOL_START_SH);
+    write_executable_if_changed(&claude_hooks_dir.join("tool-stop.sh"), TOOL_STOP_SH);
     write_executable_if_changed(
         &config_dir.join("codex-diff-review.sh"),
         CODEX_DIFF_REVIEW_SH,
@@ -500,7 +518,7 @@ pub fn ensure_notify_scripts() {
     write_if_changed(&plugins_dir.join("input-request.js"), INPUT_REQUEST_JS);
     write_if_changed(&plugins_dir.join("change-tracker.js"), CHANGE_TRACKER_JS);
     write_executable_if_changed(
-        &plugins_dir.join("custom-diff-review.sh"),
+        &claude_hooks_dir.join("custom-diff-review.sh"),
         CUSTOM_DIFF_REVIEW_SH,
     );
 }
@@ -956,27 +974,20 @@ fn resolve_diff_review_command(workdir: &Path, repo: &Path) -> Option<String> {
         .ok()
         .and_then(|exe| exe.parent()?.parent()?.parent().map(PathBuf::from));
 
-    [
-        Some(workdir.to_path_buf()),
-        Some(repo.to_path_buf()),
-        Some(crate::project::amf_config_dir().join("plugins")),
-        amf_root,
-    ]
-    .into_iter()
-    .flatten()
-    .map(|base| {
-        if base
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "plugins")
-        {
-            base.join(script_name)
-        } else {
-            script_suffix.iter().fold(base, |p, s| p.join(s))
-        }
-    })
-    .find(|p| p.exists())
-    .map(|p| p.to_string_lossy().into_owned())
+    let under_plugins = |base: PathBuf| script_suffix.iter().fold(base, |p, s| p.join(s));
+    let mut candidates = vec![
+        under_plugins(workdir.to_path_buf()),
+        under_plugins(repo.to_path_buf()),
+        crate::project::amf_claude_hooks_dir().join(script_name),
+    ];
+    if let Some(amf_root) = amf_root {
+        candidates.push(under_plugins(amf_root));
+    }
+
+    candidates
+        .into_iter()
+        .find(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 pub fn ensure_notification_hooks(
@@ -987,7 +998,7 @@ pub fn ensure_notification_hooks(
     _is_worktree: bool,
 ) {
     // Feature creation / restart should not depend on startup having
-    // already staged the helper scripts into ~/.config/amf.
+    // already staged the helper scripts into the AMF runtime directory.
     ensure_notify_scripts();
     remove_old_diff_review_plugin(repo);
 
@@ -1006,15 +1017,15 @@ pub fn ensure_notification_hooks(
     let settings_path = claude_dir.join(CLAUDE_SETTINGS_LOCAL_JSON);
     let state_path = claude_dir.join(CLAUDE_STATE_JSON);
 
-    let config_dir = crate::project::amf_config_dir();
+    let hooks_dir = crate::project::amf_claude_hooks_dir();
     let managed_commands = claude_managed_commands();
-    let notify_path = config_dir.join("notify.sh");
-    let clear_path = config_dir.join("clear-notify.sh");
-    let save_prompt_path = config_dir.join("save-prompt.sh");
-    let thinking_start_path = config_dir.join("thinking-start.sh");
-    let thinking_stop_path = config_dir.join("thinking-stop.sh");
-    let tool_start_path = config_dir.join("tool-start.sh");
-    let tool_stop_path = config_dir.join("tool-stop.sh");
+    let notify_path = hooks_dir.join("notify.sh");
+    let clear_path = hooks_dir.join("clear-notify.sh");
+    let save_prompt_path = hooks_dir.join("save-prompt.sh");
+    let thinking_start_path = hooks_dir.join("thinking-start.sh");
+    let thinking_stop_path = hooks_dir.join("thinking-stop.sh");
+    let tool_start_path = hooks_dir.join("tool-start.sh");
+    let tool_stop_path = hooks_dir.join("tool-stop.sh");
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
     let diff_review_cmd = if wants_diff_review {

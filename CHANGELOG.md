@@ -446,7 +446,8 @@ storage the first time it runs.
   keep producing `PostToolUse: Bash hook error` after upgrading, including
   when Claude is a secondary session in a Codex, OpenCode, or Pi feature. New
   hooks use Claude's direct exec form so paths with spaces bypass shell parsing
-  entirely.
+  entirely, and AMF stages its generated Claude scripts under `~/.amf/hooks`
+  instead of macOS's space-containing `~/Library/Application Support` path.
 - **Pane feedback no longer covers agent output indefinitely.** Repaint and
   status confirmations appear as timed toasts and clear automatically.
 - **Custom-session icons can be chosen visually.** The config wizard previews

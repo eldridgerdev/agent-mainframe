@@ -4,9 +4,9 @@
   (asking), and 4 (surface) complete, plus a first pass of Epic 6
   hardening. Learning Mode is reachable from the dashboard with `K` and
   usable end to end: browse, select, ask, read the answer, ask a
-  follow-up, send a doubtful answer back with the repo readable, and
-  re-file an entry as the other kind of question. Epic 5's remaining
-  items (make actionable, escalate to a live session) are next. Epic 7
+  follow-up, send a doubtful answer back with the repo readable, re-file
+  an entry as the other kind of question, and keep an answer as a to-do.
+  Epic 5's remaining item (escalate to a live session) is next. Epic 7
   (a collapsible file tree, so the file list teaches the repo's layout
   instead of hiding it behind truncated paths) is new, blocks on
   nothing, and can run in parallel.
@@ -856,17 +856,85 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       the whole path (open, browse, select a range, ask, wait for a real
       headless answer, re-file, help overlay) against a seeded throwaway
       repo, and is the first captured scenario for this feature.
-- [ ] Implement **make actionable** as an explicit, confirmable action
-      on any entry: `load_or_create_todo_list(project_id, feature_id)`,
-      pre-fill an editable title (action lead line, or truncated first
-      answer line for an explain entry) and a body containing
-      `path:start-end` + question + answer excerpt, write via
-      `AmfDb::add_todo`, and store `todo_id` on the Q&A row. The
-      confirm dialog states plainly that this writes a note, not code.
-      Verify (a) nothing is written on cancel, (b) the item appears in
-      the project's TODO list and can spawn an agent through the
-      existing flow, and (c) re-invoking on an already-actioned entry
-      jumps to the existing item instead of creating a duplicate.
+- [x] Implement **make actionable** as an explicit, confirmable action
+      on any entry. `a` on the Q&A pane or inside the answer pane opens
+      `LearningActionEditor` — an editable title seeded from the answer, the
+      note that would be written shown in full, and a statement that this adds
+      a note about the code rather than a change to it. `Enter` writes it via
+      `AmfDb::add_todo`, `Esc` writes nothing. The editor lives inside
+      `LearningViewState` like the pickers, so walking away from it returns to
+      exactly the browsing state underneath, and the answer pane stays open
+      behind it — keeping an answer is not the start of something else the way
+      `F` and `D` are, so the confirmation lands inside the pane you are
+      reading. Four decisions came out of building it:
+      - **A list nobody can open is worse than no list.** The plan said
+        `load_or_create_todo_list`, but a `todo_lists` row with no
+        `SessionKind::Todos` session is invisible from the dashboard — the
+        note would be written and then unreachable. It takes quick-capture's
+        route instead (`add_todos_session_for_picker`, then the list), so the
+        session row exists before the first item does.
+        (`keeping_an_answer_makes_the_list_reachable_from_the_dashboard`.)
+      - **`→ TODO` is a promise the TODOs overlay can stop keeping.** An item
+        can be deleted from over there, and jumping into a list that no longer
+        holds it is the swallowed keypress this mode is meant not to have. A
+        stale link is dropped and a fresh note offered, saying which of the two
+        happened. (`keeping_an_answer_whose_item_was_deleted_offers_a_new_one`.)
+      - **Without a DB it refuses out loud.** The Q&A history survives in
+        memory, but an in-memory TODO would not even be visible from the
+        dashboard, so pretending is worse than refusing.
+        (`nothing_is_kept_without_a_database`.)
+      - **A failed link is reported, not rolled back.** The item exists by
+        then; undoing would mean deleting a note the user just watched being
+        added, so the banner says the item landed and the link didn't.
+      The seeded title strips the markdown an agent's lead line arrives wearing
+      (`##`, `**…**`, `-`, `1.`) since a TODO title renders raw, and cuts at a
+      word boundary with an ellipsis. An explanation's first line is still a
+      guess — which is the whole reason the title is editable and nothing is
+      written until it is confirmed.
+      The answer pane's footer went to **two lines**, actions above navigation:
+      one line of all eight hints wants over 150 columns against the pane's ~92
+      at a 110-column terminal, and the drop policy was starting to eat
+      `PgUp/PgDn` and `i` at 140. Each line is still fitted independently for
+      genuinely narrow terminals.
+      Tests: `keeping_an_answer_writes_nothing_until_it_is_confirmed`,
+      `a_kept_answer_lands_on_the_projects_todo_list`,
+      `the_title_you_type_is_the_one_that_is_written`,
+      `a_note_with_no_title_says_so_instead_of_being_written`,
+      `keeping_the_same_answer_twice_opens_the_item_you_already_have`,
+      `a_kept_answer_is_still_marked_after_a_reopen`,
+      `an_answer_that_has_not_arrived_cannot_be_kept`,
+      `a_failed_question_says_to_ask_it_again_rather_than_keeping_nothing`,
+      `the_confirmation_fits_on_one_line`,
+      `a_change_proposals_lead_line_becomes_the_title_without_its_markup`,
+      `a_title_skips_blank_and_decoration_only_lines`,
+      `an_explanations_title_is_a_truncation_you_can_edit`,
+      `a_title_falls_back_to_the_question`,
+      `the_note_says_where_in_the_project_it_came_from`,
+      `a_long_answer_is_excerpted_into_the_note`, the handler-level
+      `a_keeps_the_answer_you_are_reading` and
+      `esc_walks_away_from_the_confirmation_without_writing`, and the render
+      tests `the_keep_confirmation_says_what_it_will_and_will_not_do`,
+      `a_refusal_raised_inside_the_keep_confirmation_is_visible_there`,
+      `the_keep_hint_says_whether_it_would_add_or_open`.
+      **Verified against real Claude**, driving the built binary in a 140×44
+      tmux through
+      `scripts/dev/screenshot/scenarios/learning-mode-keep-todo.txt` against a
+      seeded throwaway repo: asked about a line range in `src/main.rs`, kept
+      the answer, edited the seeded title, and confirmed. The note carried
+      `src/main.rs:11-15`, the question, and the answer excerpt; the
+      confirmation banner appeared inside the answer pane; the history row
+      gained `→ TODO`; the footer hint flipped to *open its TODO item*;
+      pressing `a` again opened the TODOs overlay with that one item selected
+      ("1 open, 0 done") under a toast saying why the screen had changed; and
+      the dashboard showed the new TODOs session. One fix came out of the first
+      run: `a` had closed the answer pane the way `F` and `D` do, which left
+      `Esc` closing the whole overlay instead of the pane and made the
+      jump-back unreachable from where it is actually pressed.
+      **Not driven end to end:** spawning an agent from the resulting item.
+      The body is stored (asserted above) and `todo_spawn_prompt` appends
+      `todo.body` verbatim, so the context reaches the composer, but the launch
+      itself was not exercised here — it is the TODOs overlay's existing `g`
+      flow, unchanged by this work.
 - [ ] Implement **escalate to live session**: create an agent-harness
       session on the feature via `create_agent_session_labeled`,
       `enter_view_without_auto_compose`, and `open_compose_seeded` with
@@ -954,10 +1022,10 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       **`CHANGELOG.md` is done** — an `Added` block under `[Unreleased]`
       covering `K`, the two ask keys, starter questions, the levels, the
       non-blocking queue, per-project history, harness choice, and now
-      `F` (follow-ups), `D` (deep dive), and `i` (re-file). It still
-      claims nothing that isn't built: make actionable and escalate to a
-      live session are absent because they are the remaining Epic 5
-      items. `README.md` and `CLAUDE.md` are still open.
+      `F` (follow-ups), `D` (deep dive), `i` (re-file), and `a` (keep as
+      a to-do). It still claims nothing that isn't built: escalate to a
+      live session is absent because it is the remaining Epic 5 item.
+      `README.md` and `CLAUDE.md` are still open.
 - [ ] File follow-up items for the deferred work: anchor-drift
       resolution (commit SHA + snippet or fuzzy match, modeled on
       `App::reanchor_line_comments`), the alternative actionable
@@ -1078,11 +1146,15 @@ collapse. This is a second, general case of that, not a new mechanism.
   typing "this should be its own function" under the explain key gets
   an explanation. Relabel + follow-up mitigate this; automatic
   classification is untested and not planned for v1.
-- **Seeded TODO titles from explanatory answers are likely poor.** The
-  action template is designed to produce a usable one-line title; an
-  explain answer has no such line, so the pre-filled title is a
-  truncation the user must edit. Mitigated by requiring confirmation,
-  but it may still be friction.
+- **Seeded TODO titles from explanatory answers are poor — confirmed.**
+  The action template is designed to produce a usable one-line title; an
+  explain answer has no such line. The first real run seeded *"The short
+  version"* — the answer's opening heading, which names nothing about
+  the code. `strip_markdown_decoration` at least keeps the `##` out of
+  it, and the title is editable precisely because of this, but the seed
+  is a prompt to type rather than something to accept. Options if it
+  keeps grating: seed from the question instead for `Explain` entries,
+  or ask the agent for a title as part of the answer.
 - **TODO-list noise.** Learning Mode writes into the same one-per-project
   list as the TODOs overlay. Whether learning-originated items need
   visual distinction or a separate list is undecided.

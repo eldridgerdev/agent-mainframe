@@ -125,6 +125,7 @@ impl LearningViewState {
             harness,
             harness_picker: None,
             starter_picker: None,
+            action_editor: None,
             level,
             session_id,
             help_open: false,
@@ -1969,6 +1970,392 @@ impl App {
     }
 }
 
+// ── making an answer actionable ──────────────────────────────
+
+/// Longest seeded TODO title, in characters. Long enough for a real imperative
+/// sentence, short enough that the TODOs list still reads as a list.
+const MAX_TODO_TITLE: usize = 80;
+
+/// Lines of the answer carried into the TODO body. The whole answer would bury
+/// the item it is attached to; this is enough to recognise what it was about,
+/// and the answer itself stays in Learning Mode either way.
+const MAX_TODO_ANSWER_LINES: usize = 12;
+
+impl App {
+    /// Offer to turn the selected answer into an item on the project's TODO
+    /// list.
+    ///
+    /// Nothing is written by this key — it opens a confirmation carrying an
+    /// editable title and the note that would be added. That is deliberate:
+    /// the seeded title is a guess (see [`todo_title_seed`]), and a mode whose
+    /// whole promise is "this changes nothing" cannot start writing on a
+    /// single keypress.
+    ///
+    /// An entry that has already been made actionable jumps to the item it
+    /// produced rather than making a second one — except when that item has
+    /// since been deleted from the TODOs overlay, where the dead link is
+    /// cleared and a fresh note offered instead of jumping into an empty list.
+    pub fn learning_make_actionable(&mut self) {
+        let Some(qa) = (match &self.mode {
+            AppMode::Learning(state) => state.qa.get(state.selected_qa).cloned(),
+            _ => return,
+        }) else {
+            self.learning_error(
+                "Ask something first — this keeps an answer you already have as a to-do note.",
+            );
+            return;
+        };
+
+        // The note *is* the answer, so there has to be one.
+        if qa.answer.is_none() {
+            self.learning_error(match qa.status {
+                crate::app::LearningQaStatus::Failed => {
+                    "That question never got an answer to keep. Ask it again first."
+                }
+                _ => "That answer is still generating — you can keep it once it arrives.",
+            });
+            return;
+        }
+
+        let mut replacing_deleted = false;
+        if let Some(todo_id) = qa.todo_id.clone() {
+            if self.learning_jump_to_todo(&todo_id) {
+                return;
+            }
+            // The item is gone from the list, so the marker on this row is a
+            // promise the TODOs overlay can no longer keep. Drop it and let the
+            // user write a new one, saying which of the two happened.
+            if let AppMode::Learning(state) = &mut self.mode
+                && let Some(row) = state.qa.iter_mut().find(|r| r.id == qa.id)
+            {
+                row.todo_id = None;
+                row.updated_at = crate::db::learning::now_timestamp();
+            }
+            let _ = self.persist_learning_qa_by_id(&qa.id);
+            replacing_deleted = true;
+        }
+
+        // Without a database there is no TODO list to add to — and unlike the
+        // Q&A history, an in-memory item would not even be visible from the
+        // dashboard, so pretending would be worse than refusing.
+        if self.db.is_none() {
+            self.learning_error(
+                "AMF can't reach its database, so there's no TODO list to add to. Your questions and answers still work.",
+            );
+            return;
+        }
+
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.error = None;
+            state.clear_notice();
+            // The answer pane stays open behind the dialog, which draws over
+            // it. Keeping an answer is not the start of something else the way
+            // a follow-up or a deep dive is — you are still reading it, and the
+            // confirmation banner lands inside the pane where you are.
+            state.action_editor = Some(crate::app::LearningActionEditor {
+                qa_id: qa.id.clone(),
+                title: crate::editor::TextEditor::new(todo_title_seed(&qa)),
+                body: todo_body(&qa),
+                error: replacing_deleted
+                    .then(|| "The item this was on has been deleted — this adds a new one.".into()),
+                scroll: 0,
+                sync_to_cursor: true,
+            });
+        }
+    }
+
+    /// Open the TODOs overlay with `todo_id` under the cursor. `false` when the
+    /// item can't be found, which is the caller's cue that the link is stale.
+    fn learning_jump_to_todo(&mut self, todo_id: &str) -> bool {
+        let (pi, fi, project_id) = match &self.mode {
+            AppMode::Learning(state) => (state.pi, state.fi, state.project_id.clone()),
+            _ => return false,
+        };
+        let Some(db) = self.db.as_ref() else {
+            return false;
+        };
+        let Ok(Some(list)) = db.todo_list(&project_id) else {
+            return false;
+        };
+        let Ok(todos) = db.todos(&list.id) else {
+            return false;
+        };
+        let Some(index) = todos.iter().position(|t| t.id == todo_id) else {
+            return false;
+        };
+
+        if let Err(e) = self.open_todos_view(pi, fi) {
+            self.log_warn("learning", format!("couldn't open the TODO list: {e}"));
+            return false;
+        }
+        if let AppMode::Todos(state) = &mut self.mode {
+            state.selected = index;
+        }
+        // The screen has just changed out from under a keypress that looked
+        // like it would add something, so it has to say why it didn't.
+        self.push_toast_info("You already kept that one — here it is on the TODO list.");
+        true
+    }
+
+    /// Close the confirmation without writing anything.
+    pub fn learning_cancel_action(&mut self) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.action_editor = None;
+        }
+    }
+
+    /// Write the confirmed note to the project's TODO list and link it back to
+    /// the answer it came from. Returns the new `todos.id`.
+    ///
+    /// The list is reached the way quick-capture reaches it — by ensuring the
+    /// project has a TODOs *session* as well as a list. A list with no session
+    /// row is invisible from the dashboard, so a note written into one would be
+    /// a note the user can never find again.
+    pub fn learning_confirm_action(&mut self) -> Option<String> {
+        let (qa_id, title, body) = match &self.mode {
+            AppMode::Learning(state) => {
+                let editor = state.action_editor.as_ref()?;
+                (
+                    editor.qa_id.clone(),
+                    editor.title.text().trim().to_string(),
+                    editor.body.clone(),
+                )
+            }
+            _ => return None,
+        };
+        if title.is_empty() {
+            // Refused inside the dialog: it covers the overlay's banner line,
+            // so a refusal raised out there would be invisible from in here.
+            if let AppMode::Learning(state) = &mut self.mode
+                && let Some(editor) = &mut state.action_editor
+            {
+                editor.error =
+                    Some("Give it a title first — this is what you'll see later.".into());
+            }
+            return None;
+        }
+
+        let (pi, fi) = match &self.mode {
+            AppMode::Learning(state) => (state.pi, state.fi),
+            _ => return None,
+        };
+        let has_session = self
+            .store
+            .projects
+            .get(pi)
+            .is_some_and(|p| p.has_todos_session());
+        if !has_session && let Err(e) = self.add_todos_session_for_picker(pi, fi, None) {
+            self.log_error("learning", format!("couldn't create a TODOs session: {e}"));
+            self.learning_cancel_action();
+            self.learning_error(format!(
+                "Couldn't start a TODO list — nothing was written: {e}"
+            ));
+            return None;
+        }
+
+        let project = self.store.projects.get(pi)?;
+        let project_id = project.id.clone();
+        let feature_id = project
+            .features
+            .get(fi)
+            .map(|f| f.id.clone())
+            .unwrap_or_default();
+
+        let written = self.db.as_ref().map(|db| {
+            db.load_or_create_todo_list(&project_id, &feature_id)
+                .and_then(|list| {
+                    db.add_todo(
+                        &list.id,
+                        &title,
+                        Some(&body),
+                        crate::db::todos::TodoPriority::Med,
+                    )
+                })
+        });
+        let todo = match written {
+            Some(Ok(todo)) => todo,
+            Some(Err(e)) => {
+                self.log_error("learning", format!("couldn't add the TODO: {e}"));
+                self.learning_cancel_action();
+                self.learning_error(format!(
+                    "Couldn't add it to the TODO list — nothing was written: {e}"
+                ));
+                return None;
+            }
+            // Refused up front in `learning_make_actionable`; belt and braces.
+            None => return None,
+        };
+
+        self.learning_cancel_action();
+        if let AppMode::Learning(state) = &mut self.mode
+            && let Some(row) = state.qa.iter_mut().find(|r| r.id == qa_id)
+        {
+            row.todo_id = Some(todo.id.clone());
+            row.updated_at = crate::db::learning::now_timestamp();
+        }
+        self.log_info(
+            "learning",
+            format!("kept an answer as TODO {} ({title})", todo.id),
+        );
+
+        // The item exists either way, so a failed link is reported as the
+        // partial success it is rather than rolled back — undoing it would mean
+        // deleting a note the user just watched being added.
+        match self.persist_learning_qa_by_id(&qa_id) {
+            Ok(()) => self.learning_notice_for_qa(
+                &qa_id,
+                "Kept on this project's TODO list — a note about your code, not a change to it.",
+            ),
+            Err(e) => self.learning_error(format!(
+                "Added to the TODO list, but the link back to this answer wasn't saved: {e}"
+            )),
+        }
+        Some(todo.id)
+    }
+}
+
+/// The title a new TODO is seeded with.
+///
+/// An `Action` answer is written to lead with a one-line imperative summary
+/// (see `intent_instructions`), so its first line is the title. An `Explain`
+/// answer has no such line, and the plan accepts that the seed there is a
+/// truncation the user is expected to fix — which is why nothing is written
+/// until they confirm. An answer that opens with nothing usable falls back to
+/// the question, which at least names the subject.
+pub fn todo_title_seed(qa: &LearningQa) -> String {
+    let seed = qa
+        .answer
+        .as_deref()
+        .and_then(first_meaningful_line)
+        .or_else(|| first_meaningful_line(&qa.question))
+        .unwrap_or_else(|| "Learning Mode note".to_string());
+    truncate_title(&seed, MAX_TODO_TITLE)
+}
+
+/// The first line of `text` that carries words, stripped of the markdown
+/// decoration an answer's opening line usually wears.
+///
+/// Answers are rendered as markdown in the answer pane, but a TODO title is
+/// shown raw — so a heading's `##` or a bullet's `-` would be read as part of
+/// the sentence.
+fn first_meaningful_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(strip_markdown_decoration)
+        .find(|line| !line.is_empty())
+}
+
+/// Strip leading heading/quote/bullet markers and surrounding emphasis from one
+/// line, leaving the sentence inside.
+fn strip_markdown_decoration(line: &str) -> String {
+    let mut rest = line.trim();
+    // A fenced block's delimiter is decoration with nothing behind it.
+    if rest.starts_with("```") || rest.starts_with("~~~") {
+        return String::new();
+    }
+    loop {
+        let before = rest;
+        rest = rest.trim_start_matches(['#', '>']).trim_start();
+        // A bullet marker is only a marker when a space follows it — otherwise
+        // `**Split this**` loses its emphasis to the list rule and then no
+        // longer looks like a matched pair.
+        if let Some(tail) = rest
+            .strip_prefix(['-', '*', '+'])
+            .filter(|tail| tail.starts_with(char::is_whitespace))
+        {
+            rest = tail.trim_start();
+        }
+        // An ordered-list marker: digits, then `.` or `)`, then a space — the
+        // space is what separates `1. Do this` from a sentence opening with a
+        // decimal number like `12.5 seconds is the default`.
+        if let Some(tail) = rest
+            .split_once(['.', ')'])
+            .filter(|(head, tail)| {
+                !head.is_empty()
+                    && head.chars().all(|c| c.is_ascii_digit())
+                    && (tail.is_empty() || tail.starts_with(char::is_whitespace))
+            })
+            .map(|(_, tail)| tail.trim_start())
+        {
+            rest = tail;
+        }
+        // Emphasis wraps the sentence rather than leading it, so it comes off
+        // both ends at once — `**Split this function**` is a title, while
+        // `**bold** start` is a sentence that happens to begin with emphasis.
+        for marker in ["**", "__", "*", "_", "`"] {
+            if let Some(inner) = rest
+                .strip_prefix(marker)
+                .and_then(|r| r.strip_suffix(marker))
+                && !inner.is_empty()
+            {
+                rest = inner.trim();
+                break;
+            }
+        }
+        if rest == before {
+            break;
+        }
+    }
+    rest.trim_end_matches(':').trim().to_string()
+}
+
+/// Cut a seeded title to `max` characters at a word boundary where there is
+/// one, marking that it was cut.
+fn truncate_title(title: &str, max: usize) -> String {
+    if title.chars().count() <= max {
+        return title.to_string();
+    }
+    let head: String = title.chars().take(max).collect();
+    let cut = match head.rsplit_once(' ') {
+        // Only worth backing up to a word boundary if most of the line survives.
+        Some((head, _)) if head.chars().count() >= max / 2 => head,
+        _ => head.as_str(),
+    };
+    format!("{}…", cut.trim_end())
+}
+
+/// The note body: where the question was anchored, what was asked, and enough
+/// of the answer to recognise it. This is what a spawned agent receives
+/// verbatim (`App::todo_spawn_prompt`), so it has to stand on its own.
+pub fn todo_body(qa: &LearningQa) -> String {
+    let mut body = format!("From Learning Mode — {}\n", anchor_locator(qa));
+    body.push_str(&format!("\nAsked: {}\n", qa.question.trim()));
+
+    let answer = qa.answer.as_deref().unwrap_or("").trim();
+    if !answer.is_empty() {
+        let lines: Vec<&str> = answer.lines().collect();
+        let shown = lines.len().min(MAX_TODO_ANSWER_LINES);
+        body.push_str(if lines.len() > shown {
+            "\nThe agent's answer began:\n"
+        } else {
+            "\nThe agent answered:\n"
+        });
+        for line in &lines[..shown] {
+            body.push_str(line);
+            body.push('\n');
+        }
+        if lines.len() > shown {
+            body.push_str("…\n");
+        }
+    }
+    body
+}
+
+/// A greppable `path:start-end` locator for the anchor, for the body's first
+/// line. The prose form lives in `LearningAnchor::describe`; this one is meant
+/// to be pasted into an editor.
+pub fn anchor_locator(qa: &LearningQa) -> String {
+    let path = qa.file_path.as_deref();
+    match (qa.anchor, path) {
+        (LearningAnchor::Project, _) | (_, None) => "the whole project".to_string(),
+        (LearningAnchor::File, Some(path)) => path.to_string(),
+        (LearningAnchor::Hunk { index }, Some(path)) => format!("{path} (change #{})", index + 1),
+        (LearningAnchor::Lines { start, end }, Some(path)) if start == end => {
+            format!("{path}:{start}")
+        }
+        (LearningAnchor::Lines { start, end }, Some(path)) => format!("{path}:{start}-{end}"),
+    }
+}
+
 // ── panes, history cursor, answer view ───────────────────────
 
 impl App {
@@ -3177,6 +3564,12 @@ pub(crate) mod tests {
     /// real temp repo with a file loaded.
     pub(crate) fn opened_app_for_handlers() -> (TempDir, App) {
         opened_app()
+    }
+
+    /// As above with a real database, for the handler tests that write
+    /// something — a TODO item has nowhere to live without one.
+    pub(crate) fn opened_app_with_db_for_handlers() -> (TempDir, TempDir, App) {
+        opened_app_with_db()
     }
 
     fn opened_app() -> (TempDir, App) {
@@ -4579,6 +4972,438 @@ pub(crate) mod tests {
             row.answer.as_deref(),
             Some("It retries forever."),
             "and the answer came back with it"
+        );
+    }
+
+    // ── keeping an answer as a to-do ─────────────────────────
+
+    /// Ask, answer, and select some lines so the note has a real anchor.
+    fn app_with_an_answer() -> (TempDir, TempDir, App, String) {
+        let (repo, db, mut app) = opened_app_with_db();
+        app.learning_cursor_move(0);
+        app.learning_start_range();
+        app.learning_cursor_move(1);
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(
+            &mut app,
+            &id,
+            Ok("It runs the program.\n\nThe body is empty for now.".to_string()),
+        );
+        (repo, db, app, id)
+    }
+
+    /// Every item on the project's list, read back from the DB rather than from
+    /// whatever the overlay believes.
+    fn stored_todos(app: &App) -> Vec<crate::db::todos::Todo> {
+        let db = app.db.as_ref().expect("db");
+        match db.todo_list("proj-1").unwrap() {
+            Some(list) => db.todos(&list.id).unwrap(),
+            None => Vec::new(),
+        }
+    }
+
+    fn action_editor(app: &App) -> &crate::app::LearningActionEditor {
+        learning(app)
+            .action_editor
+            .as_ref()
+            .expect("the confirmation is open")
+    }
+
+    /// The key that keeps an answer must not write anything by itself. This is
+    /// the one place in a mode that promises to change nothing where something
+    /// *is* written, so it happens on a second, explicit keypress or not at all.
+    #[test]
+    fn keeping_an_answer_writes_nothing_until_it_is_confirmed() {
+        let (_repo, _db, mut app, id) = app_with_an_answer();
+
+        app.learning_make_actionable();
+        assert!(
+            stored_todos(&app).is_empty(),
+            "opening the confirmation wrote nothing"
+        );
+        assert!(action_editor(&app).qa_id == id);
+
+        app.learning_cancel_action();
+        assert!(
+            stored_todos(&app).is_empty(),
+            "and neither did walking away from it"
+        );
+        assert!(
+            learning(&app).qa[0].todo_id.is_none(),
+            "so the entry is not marked as kept"
+        );
+    }
+
+    #[test]
+    fn a_kept_answer_lands_on_the_projects_todo_list() {
+        let (_repo, _db, mut app, id) = app_with_an_answer();
+
+        app.learning_make_actionable();
+        let todo_id = app.learning_confirm_action().expect("wrote an item");
+
+        let todos = stored_todos(&app);
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].id, todo_id);
+        assert_eq!(
+            todos[0].title, "It runs the program.",
+            "seeded from the answer's first line"
+        );
+
+        let body = todos[0].body.as_deref().unwrap_or_default();
+        assert!(
+            body.contains("src/main.rs:1-2"),
+            "the note says where it came from: {body}"
+        );
+        assert!(
+            body.contains("What does this do?"),
+            "and what was asked: {body}"
+        );
+        assert!(
+            body.contains("The body is empty for now."),
+            "and enough of the answer to recognise it: {body}"
+        );
+
+        let row = learning(&app).qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row.todo_id.as_deref(), Some(todo_id.as_str()));
+        assert!(learning(&app).notice.is_some(), "and it says what it did");
+    }
+
+    /// A list with no TODOs session row is invisible from the dashboard, so a
+    /// note written into one would be a note the user can never find again.
+    #[test]
+    fn keeping_an_answer_makes_the_list_reachable_from_the_dashboard() {
+        let (_repo, _db, mut app, _id) = app_with_an_answer();
+        assert!(
+            !app.store.projects[0].has_todos_session(),
+            "no list to start with"
+        );
+
+        app.learning_make_actionable();
+        app.learning_confirm_action().unwrap();
+
+        assert!(
+            app.store.projects[0].has_todos_session(),
+            "the project now has a TODOs session to open the list from"
+        );
+    }
+
+    /// The seeded title is a guess, so editing it is the expected path, not an
+    /// exception.
+    #[test]
+    fn the_title_you_type_is_the_one_that_is_written() {
+        let (_repo, _db, mut app, _id) = app_with_an_answer();
+
+        app.learning_make_actionable();
+        if let AppMode::Learning(state) = &mut app.mode
+            && let Some(editor) = &mut state.action_editor
+        {
+            editor.title = crate::editor::TextEditor::new("Work out why main is empty".to_string());
+        }
+        app.learning_confirm_action().unwrap();
+
+        assert_eq!(stored_todos(&app)[0].title, "Work out why main is empty");
+    }
+
+    #[test]
+    fn a_note_with_no_title_says_so_instead_of_being_written() {
+        let (_repo, _db, mut app, _id) = app_with_an_answer();
+
+        app.learning_make_actionable();
+        if let AppMode::Learning(state) = &mut app.mode
+            && let Some(editor) = &mut state.action_editor
+        {
+            editor.title = crate::editor::TextEditor::new("   ".to_string());
+        }
+        assert!(app.learning_confirm_action().is_none());
+
+        assert!(stored_todos(&app).is_empty());
+        let editor = action_editor(&app);
+        assert!(
+            editor.error.as_deref().is_some_and(|e| e.contains("title")),
+            "the refusal is raised inside the dialog, which covers the overlay's \
+             banner line: {:?}",
+            editor.error
+        );
+    }
+
+    /// Pressing the key again on an entry that already produced an item opens
+    /// that item rather than paying for a duplicate.
+    #[test]
+    fn keeping_the_same_answer_twice_opens_the_item_you_already_have() {
+        let (_repo, _db, mut app, _id) = app_with_an_answer();
+        app.learning_make_actionable();
+        let todo_id = app.learning_confirm_action().unwrap();
+
+        app.learning_make_actionable();
+
+        assert_eq!(stored_todos(&app).len(), 1, "no second item");
+        let AppMode::Todos(state) = &app.mode else {
+            panic!("expected the TODOs overlay, got another mode");
+        };
+        assert_eq!(
+            state.todos.get(state.selected).map(|t| t.id.as_str()),
+            Some(todo_id.as_str()),
+            "with the cursor on the item this answer produced"
+        );
+    }
+
+    /// The marker on a row is a promise the TODOs overlay can stop keeping: an
+    /// item can be deleted from over there. Jumping into an empty list would be
+    /// the swallowed keypress this mode is meant not to have.
+    #[test]
+    fn keeping_an_answer_whose_item_was_deleted_offers_a_new_one() {
+        let (_repo, _db, mut app, id) = app_with_an_answer();
+        app.learning_make_actionable();
+        let todo_id = app.learning_confirm_action().unwrap();
+        app.db.as_ref().unwrap().delete_todo(&todo_id).unwrap();
+
+        app.learning_make_actionable();
+
+        assert!(
+            matches!(app.mode, AppMode::Learning(_)),
+            "it stays put rather than opening a list the item has left"
+        );
+        let editor = action_editor(&app);
+        assert_eq!(editor.qa_id, id);
+        assert!(
+            editor
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("deleted")),
+            "and says why it is offering a new one: {:?}",
+            editor.error
+        );
+        assert!(
+            learning(&app).qa[0].todo_id.is_none(),
+            "the dead link is dropped, so the row stops claiming an item"
+        );
+    }
+
+    #[test]
+    fn a_kept_answer_is_still_marked_after_a_reopen() {
+        let (_repo, _db, mut app, id) = app_with_an_answer();
+        app.learning_make_actionable();
+        let todo_id = app.learning_confirm_action().unwrap();
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let row = learning(&app).qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row.todo_id.as_deref(), Some(todo_id.as_str()));
+    }
+
+    #[test]
+    fn an_answer_that_has_not_arrived_cannot_be_kept() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        app.learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        app.learning_make_actionable();
+
+        assert!(learning(&app).action_editor.is_none());
+        let error = learning(&app).error.clone().unwrap_or_default();
+        assert!(error.contains("still generating"), "{error}");
+        assert!(stored_todos(&app).is_empty());
+    }
+
+    #[test]
+    fn a_failed_question_says_to_ask_it_again_rather_than_keeping_nothing() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Err("Claude couldn't answer".to_string()));
+
+        app.learning_make_actionable();
+
+        assert!(learning(&app).action_editor.is_none());
+        let error = learning(&app).error.clone().unwrap_or_default();
+        assert!(error.contains("Ask it again"), "{error}");
+    }
+
+    /// The Q&A history survives without a DB, but a TODO written into a list
+    /// nobody can open would not — so this one refuses out loud instead.
+    #[test]
+    fn nothing_is_kept_without_a_database() {
+        let (_repo, mut app) = opened_app();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("It runs the program.".to_string()));
+
+        app.learning_make_actionable();
+
+        assert!(learning(&app).action_editor.is_none());
+        let error = learning(&app).error.clone().unwrap_or_default();
+        assert!(error.contains("database"), "{error}");
+    }
+
+    /// The confirmation banner is a single unwrapped line, so a sentence longer
+    /// than the pane loses its tail — and the tail here is the half that says
+    /// what was *not* written.
+    #[test]
+    fn the_confirmation_fits_on_one_line() {
+        let (_repo, _db, mut app, _id) = app_with_an_answer();
+        app.learning_make_actionable();
+        app.learning_confirm_action().unwrap();
+
+        let notice = learning(&app).notice.clone().unwrap();
+        assert!(
+            notice.contains("not a change"),
+            "it has to say what it didn't do: {notice}"
+        );
+        assert!(
+            notice.chars().count() <= 130,
+            "banner is one unwrapped line at 140 columns, this is {} chars: {notice}",
+            notice.chars().count()
+        );
+    }
+
+    // ── the seeded note ──────────────────────────────────────
+
+    fn qa_with(answer: &str, intent: LearningQaIntent) -> LearningQa {
+        LearningQa {
+            id: "qa-1".to_string(),
+            session_id: "sess-1".to_string(),
+            parent_qa_id: None,
+            deep_dive_of: None,
+            file_path: Some("src/main.rs".to_string()),
+            anchor: LearningAnchor::Lines { start: 4, end: 9 },
+            selection_text: "fn main() {}".to_string(),
+            selection_is_diff: false,
+            question: "Why is this here?".to_string(),
+            intent,
+            level: LearningLevel::Newcomer,
+            answer: Some(answer.to_string()),
+            harness: AgentKind::Claude,
+            run_mode: crate::app::LearningRunMode::NoTools,
+            status: crate::app::LearningQaStatus::Answered,
+            error: None,
+            todo_id: None,
+            spawned_session_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    /// An action answer is written to lead with a one-line imperative summary,
+    /// so the title is already there — but it arrives wearing whatever markdown
+    /// the agent felt like, and a TODO title is rendered raw.
+    #[test]
+    fn a_change_proposals_lead_line_becomes_the_title_without_its_markup() {
+        for lead in [
+            "## Split `run_loop` into two functions",
+            "**Split `run_loop` into two functions**",
+            "- Split `run_loop` into two functions",
+            "1. Split `run_loop` into two functions",
+            "> Split `run_loop` into two functions",
+        ] {
+            let qa = qa_with(
+                &format!("{lead}\n\nIt does two things at once."),
+                LearningQaIntent::Action,
+            );
+            assert_eq!(
+                todo_title_seed(&qa),
+                "Split `run_loop` into two functions",
+                "from {lead:?}"
+            );
+        }
+    }
+
+    /// A sentence that opens with a decimal number or a version string is not
+    /// an ordered-list item, and losing its first digits would rewrite what the
+    /// answer said.
+    #[test]
+    fn a_leading_number_is_only_a_list_marker_when_a_space_follows_it() {
+        for lead in [
+            "12.5 seconds is the default timeout.",
+            "2.0 release adds the flag.",
+            "3)x is the closing paren of a tuple index.",
+        ] {
+            let qa = qa_with(lead, LearningQaIntent::Explain);
+            assert_eq!(todo_title_seed(&qa), lead, "from {lead:?}");
+        }
+    }
+
+    #[test]
+    fn a_title_skips_blank_and_decoration_only_lines() {
+        let qa = qa_with(
+            "\n```\n\n# \n\nIt runs the program.",
+            LearningQaIntent::Explain,
+        );
+        assert_eq!(todo_title_seed(&qa), "It runs the program.");
+    }
+
+    /// An explanation has no one-line summary in it, so the seed is a
+    /// truncation the user is expected to fix — it just has to be a legible
+    /// one, cut at a word rather than mid-word.
+    #[test]
+    fn an_explanations_title_is_a_truncation_you_can_edit() {
+        let long = "This function is the entry point of the program, which means \
+                    the operating system calls it first and everything else follows.";
+        let qa = qa_with(long, LearningQaIntent::Explain);
+        let title = todo_title_seed(&qa);
+
+        assert!(title.ends_with('…'), "it says it was cut: {title}");
+        assert!(title.chars().count() <= MAX_TODO_TITLE + 1, "{title}");
+        assert!(
+            !title.trim_end_matches('…').ends_with(' '),
+            "cut at a word boundary, not mid-word or mid-space: {title}"
+        );
+        assert!(title.starts_with("This function is the entry point"));
+    }
+
+    /// An answer that opens with nothing usable still has to produce something
+    /// the user can recognise in a list.
+    #[test]
+    fn a_title_falls_back_to_the_question() {
+        let mut qa = qa_with("", LearningQaIntent::Explain);
+        qa.answer = Some("   \n\n".to_string());
+        assert_eq!(todo_title_seed(&qa), "Why is this here?");
+    }
+
+    #[test]
+    fn the_note_says_where_in_the_project_it_came_from() {
+        let mut qa = qa_with("It runs the program.", LearningQaIntent::Explain);
+        assert_eq!(anchor_locator(&qa), "src/main.rs:4-9");
+
+        qa.anchor = LearningAnchor::Lines { start: 4, end: 4 };
+        assert_eq!(anchor_locator(&qa), "src/main.rs:4");
+
+        qa.anchor = LearningAnchor::File;
+        assert_eq!(anchor_locator(&qa), "src/main.rs");
+
+        qa.anchor = LearningAnchor::Hunk { index: 1 };
+        assert_eq!(anchor_locator(&qa), "src/main.rs (change #2)");
+
+        qa.anchor = LearningAnchor::Project;
+        qa.file_path = None;
+        assert_eq!(anchor_locator(&qa), "the whole project");
+    }
+
+    /// The body is what a spawned agent receives verbatim
+    /// (`App::todo_spawn_prompt`), so it has to stand on its own — and it must
+    /// not bury the item it is attached to.
+    #[test]
+    fn a_long_answer_is_excerpted_into_the_note() {
+        let answer: String = (0..40).map(|i| format!("line {i}\n")).collect();
+        let qa = qa_with(&answer, LearningQaIntent::Explain);
+
+        let body = todo_body(&qa);
+        assert!(body.contains("src/main.rs:4-9"));
+        assert!(body.contains("Why is this here?"));
+        assert!(body.contains("line 0"));
+        assert!(body.contains("line 11"));
+        assert!(
+            !body.contains("line 12"),
+            "cut at the excerpt limit: {body}"
+        );
+        assert!(body.contains('…'), "and says it was cut: {body}");
+        assert!(
+            body.contains("answer began"),
+            "phrased as an excerpt rather than the whole thing: {body}"
         );
     }
 

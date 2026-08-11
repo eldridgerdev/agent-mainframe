@@ -92,6 +92,9 @@ pub fn draw_learning_view(frame: &mut Frame, state: &mut LearningViewState, them
     if state.question.is_some() {
         draw_question(frame, state, theme);
     }
+    if state.action_editor.is_some() {
+        draw_action_editor(frame, state, theme);
+    }
     if let Some(picker) = &state.starter_picker {
         draw_starter_picker(frame, picker, theme);
     }
@@ -234,10 +237,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
 
     let mut second = vec![
         Span::raw("  "),
-        Span::styled("v", key),
-        Span::styled(" start a line range  ", word),
-        Span::styled("V", key),
-        Span::styled(" clear it  ", word),
+        // The two range keys share a hint: spelling both out cost more of the
+        // line than the pair is worth, and what the second one does is legible
+        // from what the first one does.
+        Span::styled("v/V", key),
+        Span::styled(" line range on/off  ", word),
         Span::styled("f", key),
         Span::styled(" whole file  ", word),
         Span::styled("P", key),
@@ -245,14 +249,18 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
         Span::styled("x", key),
         Span::styled(" this change  ", word),
     ];
-    // The line has room for one of these, and the footer truncates from the
-    // right — a third entry pushes `q close` off screen at 140 columns. So they
-    // take turns, deep dive first: the Start here group is only built for a
-    // project with no history, so by the time an answer exists it is a leftover
-    // the next reload drops, while `D` is live. `z` stays in the `?` overlay.
+    // The footer truncates from the right, so what goes here is rationed
+    // against `q close` surviving at 140 columns. The two answer keys travel
+    // together — both act on the selected entry, and offering one without the
+    // other reads as the other not existing. `z` takes the slot only before
+    // there is an answer: the Start here group is built for a project with no
+    // history, so by then it is a leftover the next reload drops. It stays in
+    // the `?` overlay either way.
     if has_answer {
         second.push(Span::styled("D", key));
         second.push(Span::styled(" ask again, reading the repo  ", word));
+        second.push(Span::styled("a", key));
+        second.push(Span::styled(" keep as a to-do  ", word));
     } else if state
         .entries
         .iter()
@@ -764,7 +772,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
     if banner.is_some() {
         constraints.push(Constraint::Length(1));
     }
-    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(2));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
@@ -860,42 +868,31 @@ struct AnswerHint {
 
 /// The answer pane's key footer, fitted to `width`.
 ///
-/// The pane is a percentage of the terminal, so at 110 columns it has about 92
-/// inner columns while the full hint line wants more — and the widget truncates
-/// from the right, which would take `Esc back to browsing` off a modal with no
-/// other way out. So hints are dropped instead, least useful first: the
-/// scrolling keys that duplicate `j/k`, then re-filing — a bookkeeping gesture
-/// rather than a way to learn anything — and only then `j/k` itself, without
-/// which a long answer cannot be read at all. `F`, `D`, and `Esc` are never
-/// dropped.
+/// Two lines, split by what they are for: what you can *do* with this answer on
+/// top, how to move around it underneath. One line stopped being enough once
+/// keeping an answer joined following it up, sending it deeper, and re-filing
+/// it — the pane is a percentage of the terminal, so at 110 columns it has
+/// about 92 inner columns, and a single line of all eight hints wants over 150.
+/// Splitting them costs one row of answer text and buys every action being
+/// visible where the answer is read, which is where they are reached for.
+///
+/// Each line is still fitted independently, because a narrow terminal can
+/// overrun either: the widget truncates from the right, which would take `Esc
+/// back to browsing` off a modal with no other way out. Hints are dropped
+/// instead, least useful first — the scrolling keys that duplicate `j/k`, then
+/// re-filing, a bookkeeping gesture rather than a way to learn anything. `F`,
+/// `D`, `a`, `j/k` and `Esc` are never dropped.
 ///
 /// Hints for keys the selected row would refuse are not shown at all — a
 /// deep-dive row cannot be sent deeper, and an unanswered one cannot be
-/// followed up — so the footer never advertises a keypress that answers with a
-/// banner.
+/// followed up or kept — so the footer never advertises a keypress that answers
+/// with a banner.
 ///
 /// The two asking keys swap order by intent. On a change request the answer
 /// was proposed without the repository open, so checking it against the real
 /// code earns its place ahead of continuing the conversation; on an
 /// explanation, the next question is the likelier move.
-fn answer_footer(qa: &LearningQa, width: usize, theme: &Theme) -> Line<'static> {
-    let mut hints = vec![
-        AnswerHint {
-            key: "j/k",
-            label: "scroll",
-            drop_rank: Some(1),
-        },
-        AnswerHint {
-            key: "PgUp/PgDn",
-            label: "page",
-            drop_rank: Some(3),
-        },
-        AnswerHint {
-            key: "g/G",
-            label: "top/bottom",
-            drop_rank: Some(4),
-        },
-    ];
+fn answer_footer(qa: &LearningQa, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let follow_up = qa.answer.is_some().then_some(AnswerHint {
         key: "F",
         label: "ask a follow-up",
@@ -911,26 +908,63 @@ fn answer_footer(qa: &LearningQa, width: usize, theme: &Theme) -> Line<'static> 
         LearningQaIntent::Action => [deep_dive, follow_up],
         LearningQaIntent::Explain => [follow_up, deep_dive],
     };
-    hints.extend(asking.into_iter().flatten());
-    hints.push(AnswerHint {
+    let mut actions: Vec<AnswerHint> = asking.into_iter().flatten().collect();
+    // Offered on an answered row either way: on a row that already produced an
+    // item the key opens it rather than making a second, and saying which of
+    // the two will happen is the point of the label.
+    if qa.answer.is_some() {
+        actions.push(AnswerHint {
+            key: "a",
+            label: match qa.todo_id {
+                Some(_) => "open its TODO item",
+                None => "keep this as a to-do",
+            },
+            drop_rank: None,
+        });
+    }
+    actions.push(AnswerHint {
         key: "i",
         label: match qa.intent {
             LearningQaIntent::Explain => "file as a change",
             LearningQaIntent::Action => "file as a note",
         },
-        drop_rank: Some(2),
-    });
-    hints.push(AnswerHint {
-        key: "Esc",
-        label: "back to browsing",
-        drop_rank: None,
+        drop_rank: Some(1),
     });
 
+    let moving = vec![
+        AnswerHint {
+            key: "j/k",
+            label: "scroll",
+            drop_rank: None,
+        },
+        AnswerHint {
+            key: "PgUp/PgDn",
+            label: "page",
+            drop_rank: Some(1),
+        },
+        AnswerHint {
+            key: "g/G",
+            label: "top/bottom",
+            drop_rank: Some(2),
+        },
+        AnswerHint {
+            key: "Esc",
+            label: "back to browsing",
+            drop_rank: None,
+        },
+    ];
+
+    vec![
+        hint_line(fit_hints(actions, width), theme),
+        hint_line(fit_hints(moving, width), theme),
+    ]
+}
+
+/// Drop hints, highest `drop_rank` first, until the line fits `width`.
+fn fit_hints(mut hints: Vec<AnswerHint>, width: usize) -> Vec<AnswerHint> {
     // Widths include the two-space gap every hint but the last carries.
     let cost = |hint: &AnswerHint| hint.key.chars().count() + 1 + hint.label.chars().count() + 2;
     let mut total: usize = hints.iter().map(cost).sum::<usize>().saturating_sub(2);
-    // Highest rank goes first, so `j/k` — the key most people reach for —
-    // outlives both `g/G` and re-filing.
     while total > width {
         let Some(victim) = hints
             .iter()
@@ -944,7 +978,10 @@ fn answer_footer(qa: &LearningQa, width: usize, theme: &Theme) -> Line<'static> 
         total -= cost(&hints[victim]);
         hints.remove(victim);
     }
+    hints
+}
 
+fn hint_line(hints: Vec<AnswerHint>, theme: &Theme) -> Line<'static> {
     let key_style = Style::default().fg(theme.warning.to_color());
     let word_style = Style::default().fg(theme.text_muted.to_color());
     let last = hints.len().saturating_sub(1);
@@ -1073,6 +1110,143 @@ fn draw_question_editor(
             .wrap(Wrap { trim: false })
             .scroll((question.scroll as u16, 0)),
         area,
+    );
+}
+
+// ── keep this as a to-do ─────────────────────────────────────
+
+/// The confirmation for turning an answer into a TODO item.
+///
+/// It leads with what pressing Enter will and won't do, in those words: this is
+/// the one place in Learning Mode where a keypress writes something, and the
+/// user has been told all along that the mode changes nothing. The distinction
+/// — a note about the code, not a change to it — has to survive being read
+/// quickly.
+fn draw_action_editor(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) {
+    let area = centered_rect(72, 60, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let Some(editor) = &mut state.action_editor else {
+        return;
+    };
+    let block = Block::default()
+        .title(" Keep this as a to-do ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height < 8 {
+        return;
+    }
+
+    let mut constraints = vec![
+        // A blank row under the promise, so the two lines that draw the line
+        // between a note and an edit don't run into the title prompt.
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ];
+    if editor.error.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1));
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                " This adds a note to this project's TODO list.",
+                Style::default().fg(theme.text.to_color()),
+            )),
+            Line::from(Span::styled(
+                " It writes a note about your code, not a change to it.",
+                Style::default().fg(theme.success.to_color()),
+            )),
+        ]),
+        chunks[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " Title — edit it, the suggestion is only the answer's first line:",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))),
+        chunks[1],
+    );
+
+    let lines = editor_lines(&editor.title, theme, "Type a title for this note.");
+    let wrap_width = chunks[2].width.saturating_sub(1).max(1) as usize;
+    let total = count_wrapped_editor_lines(&lines, wrap_width);
+    sync_editor_scroll(
+        &editor.title,
+        &mut editor.scroll,
+        &mut editor.sync_to_cursor,
+        chunks[2].height as usize,
+        wrap_width,
+        total,
+    );
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((editor.scroll as u16, 0)),
+        chunks[2],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " The note will say:",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))),
+        chunks[3],
+    );
+    // Truncated rather than wrapped, and marked where it was cut: the preview
+    // is here so nothing about the note is a surprise, and a line clipped
+    // silently at the pane edge would read as a note that stops mid-sentence.
+    let body_width = chunks[4].width.saturating_sub(1) as usize;
+    frame.render_widget(
+        Paragraph::new(
+            editor
+                .body
+                .lines()
+                .map(|line| {
+                    Line::from(Span::styled(
+                        format!(" {}", truncate_right(line, body_width)),
+                        Style::default().fg(theme.text_muted.to_color()),
+                    ))
+                })
+                .collect::<Vec<_>>(),
+        ),
+        chunks[4],
+    );
+
+    let mut idx = 5;
+    if let Some(error) = &editor.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {error}"),
+                Style::default().fg(theme.danger.to_color()),
+            ))),
+            chunks[idx],
+        );
+        idx += 1;
+    }
+
+    let key = Style::default().fg(theme.warning.to_color());
+    let word = Style::default().fg(theme.text_muted.to_color());
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter", key),
+            Span::styled(" add it to the list  ", word),
+            Span::styled("Esc", key),
+            Span::styled(" cancel — nothing is written", word),
+        ])),
+        chunks[idx],
     );
 }
 
@@ -1297,6 +1471,10 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         (
             "i",
             "re-file an entry as the other kind — the answer itself is kept",
+        ),
+        (
+            "a",
+            "keep an answer as a to-do — adds a note to the list, not a change",
         ),
     ] {
         lines.push(key_row(k, text, key, body));
@@ -1693,18 +1871,23 @@ let files = list_repo_files(workdir)?;
         state.qa.push(answered_qa());
         state.answer_open = true;
 
-        // Even at a full-width terminal the line is over budget once every
-        // action is listed, so the most redundant hint is already gone: `g/G`
-        // is the one key here whose job both survivors can do.
+        // Splitting actions from navigation is what buys room for all of them
+        // at an ordinary terminal size.
         let wide = render(&mut state);
-        assert!(wide.contains("PgUp/PgDn page"), "{wide}");
-        assert!(wide.contains("i file as a change"), "{wide}");
-        assert!(
-            !wide.contains("g/G top/bottom"),
-            "the actions are what the space is for: {wide}"
-        );
+        for hint in [
+            "F ask a follow-up",
+            "D ask again, reading the repo",
+            "a keep this as a to-do",
+            "i file as a change",
+            "j/k scroll",
+            "PgUp/PgDn page",
+            "g/G top/bottom",
+            "Esc back to browsing",
+        ] {
+            assert!(wide.contains(hint), "missing {hint:?}: {wide}");
+        }
 
-        let narrow = render_at(&mut state, 110, 44);
+        let narrow = render_at(&mut state, 100, 44);
         assert!(
             narrow.contains("Esc back to browsing"),
             "the way out survives first: {narrow}"
@@ -1714,13 +1897,14 @@ let files = list_repo_files(workdir)?;
             "and so do the actions: {narrow}"
         );
         assert!(narrow.contains("F ask a follow-up"), "{narrow}");
+        assert!(narrow.contains("a keep this as a to-do"), "{narrow}");
         assert!(
             narrow.contains("j/k scroll"),
             "the common scroll keys outlive the rarer ones: {narrow}"
         );
         assert!(
-            !narrow.contains("g/G top/bottom"),
-            "something had to give: {narrow}"
+            !narrow.contains("i file as a change"),
+            "bookkeeping is what gives way: {narrow}"
         );
     }
 
@@ -1826,6 +2010,84 @@ let files = list_repo_files(workdir)?;
         assert!(
             changing.contains("i file as a note"),
             "and offers the way back: {changing}"
+        );
+    }
+
+    /// An entry that already produced an item can still be acted on — the key
+    /// opens that item instead of making a second — so the hint has to say
+    /// which of the two will happen.
+    #[test]
+    fn the_keep_hint_says_whether_it_would_add_or_open() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        assert!(render(&mut state).contains("a keep this as a to-do"));
+
+        state.qa[0].todo_id = Some("todo-1".to_string());
+        let kept = render(&mut state);
+        assert!(kept.contains("a open its TODO item"), "{kept}");
+        assert!(
+            !kept.contains("a keep this as a to-do"),
+            "it would not add a second: {kept}"
+        );
+    }
+
+    /// This is the one keypress in Learning Mode that writes anything, and the
+    /// mode has spent every other screen promising that it doesn't. The dialog
+    /// has to draw that line itself.
+    #[test]
+    fn the_keep_confirmation_says_what_it_will_and_will_not_do() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.action_editor = Some(crate::app::LearningActionEditor {
+            qa_id: "qa-1".to_string(),
+            title: crate::editor::TextEditor::new("Work out why main is empty".to_string()),
+            body: "From Learning Mode — src/main.rs:1-2\n\nAsked: What does this do?".to_string(),
+            error: None,
+            scroll: 0,
+            sync_to_cursor: false,
+        });
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("TODO list"), "{rendered}");
+        assert!(
+            rendered.contains("not a change to it"),
+            "the line between a note and an edit: {rendered}"
+        );
+        assert!(
+            rendered.contains("Work out why main is empty"),
+            "the title is there to be edited: {rendered}"
+        );
+        assert!(
+            rendered.contains("src/main.rs:1-2"),
+            "and what gets written is shown, not implied: {rendered}"
+        );
+        assert!(
+            rendered.contains("nothing is written"),
+            "walking away has to be the obvious option: {rendered}"
+        );
+    }
+
+    /// The dialog covers the overlay's banner line, so a refusal raised from
+    /// inside it has nowhere else to appear.
+    #[test]
+    fn a_refusal_raised_inside_the_keep_confirmation_is_visible_there() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.action_editor = Some(crate::app::LearningActionEditor {
+            qa_id: "qa-1".to_string(),
+            title: crate::editor::TextEditor::new(String::new()),
+            body: "From Learning Mode — src/main.rs:1-2".to_string(),
+            error: Some("Give it a title first — this is what you'll see later.".to_string()),
+            scroll: 0,
+            sync_to_cursor: false,
+        });
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("Give it a title first"), "{rendered}");
+        assert!(
+            rendered.contains("Esc cancel"),
+            "and the way out is still there: {rendered}"
         );
     }
 

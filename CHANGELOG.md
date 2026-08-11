@@ -48,6 +48,18 @@ are tagged.
   says so, because re-filing changes how the entry is labelled, not what the
   agent said; `F` is what gets an answer written the other way. The new label
   is what the next follow-up starts from.
+- **Keep an answer as something to come back to.** `a` turns any answered entry
+  into an item on the project's TODO list, carrying the file and line range it
+  was asked about, the question, and an excerpt of the answer — so the note
+  still makes sense weeks later, and an agent spawned from it (`g` in the TODOs
+  overlay) gets the whole context. Nothing is written by the keypress itself: a
+  confirmation opens first, with an editable title seeded from the answer and
+  the exact note it would add, and it says plainly that this writes a note about
+  your code rather than a change to it. If the project has no TODO list yet, one
+  is created along with the session row that makes it reachable from the
+  dashboard. Entries that have been kept are marked `→ TODO`, and pressing `a`
+  again opens that item instead of adding a second — unless you deleted it over
+  there, in which case it says so and offers a new one.
 - **Asking never blocks.** Questions are answered in the background and several
   can be in flight at once, so you can keep reading while answers arrive. Your
   questions and answers are kept per project and are still there next time you

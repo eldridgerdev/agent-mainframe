@@ -7214,6 +7214,20 @@ fn hook_commands_for(settings: &serde_json::Value, event: &str) -> Vec<String> {
         .collect()
 }
 
+fn hook_uses_exec_form(settings: &serde_json::Value, event: &str, script_name: &str) -> bool {
+    settings["hooks"][event]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .any(|hook| {
+            hook["command"]
+                .as_str()
+                .is_some_and(|command| command.ends_with(script_name))
+                && hook["args"].as_array().is_some_and(Vec::is_empty)
+        })
+}
+
 fn call_ensure_hooks_for(workdir: &TempDir, mode: VibeMode, agent: AgentKind, is_worktree: bool) {
     let repo = workdir.path(); // repo = workdir in tests
     ensure_notification_hooks(workdir.path(), repo, &mode, &agent, is_worktree);
@@ -7371,6 +7385,15 @@ fn claude_hook_commands_are_shell_quoted_for_paths_with_spaces() {
         command,
         "'/Users/me/Library/Application Support/amf/save-prompt.sh'"
     );
+}
+
+#[test]
+fn claude_exec_hooks_pass_paths_with_spaces_without_shell_quoting() {
+    let path = PathBuf::from("/Users/me/Library/Application Support/amf/tool-stop.sh");
+    let hook = crate::app::setup::claude_exec_hook(&path);
+
+    assert_eq!(hook["command"].as_str(), path.to_str());
+    assert!(hook["args"].as_array().is_some_and(Vec::is_empty));
 }
 
 #[test]
@@ -7600,12 +7623,7 @@ fn repair_unquoted_claude_hooks_refreshes_stale_stored_features() {
             .all(|cmd| !cmd.starts_with("/Users/me/Library/Application Support/amf/")),
         "stale unquoted hook should be repaired, got: {cmds:?}"
     );
-    assert!(
-        cmds.iter().any(|cmd| cmd.starts_with('\'')
-            && cmd.ends_with('\'')
-            && cmd.contains("thinking-stop.sh")),
-        "repaired hook should be quoted, got: {cmds:?}"
-    );
+    assert!(hook_uses_exec_form(&s, "Stop", "thinking-stop.sh"));
 }
 
 #[test]
@@ -7670,13 +7688,7 @@ fn repair_unquoted_claude_hooks_refreshes_legacy_settings_json() {
         "legacy settings.json should be removed once its stale AMF hook is cleaned"
     );
     let s = read_settings(&workdir);
-    let cmds = hook_commands_for(&s, "PostToolUse");
-    assert!(
-        cmds.iter().any(|cmd| cmd.starts_with('\'')
-            && cmd.ends_with('\'')
-            && cmd.contains("tool-stop.sh")),
-        "replacement PostToolUse hook should be quoted, got: {cmds:?}"
-    );
+    assert!(hook_uses_exec_form(&s, "PostToolUse", "tool-stop.sh"));
 }
 
 #[test]

@@ -161,8 +161,17 @@ fn shell_unquote_single(value: &str) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn claude_hook_command(path: &Path) -> String {
     shell_quote(&path.to_string_lossy())
+}
+
+pub(crate) fn claude_exec_hook(path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "type": "command",
+        "command": path.to_string_lossy(),
+        "args": []
+    })
 }
 
 pub(crate) fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
@@ -190,9 +199,15 @@ pub(crate) fn is_amf_claude_hook_command(command: &str, managed_commands: &[Stri
         && Path::new(parent).file_name().and_then(|n| n.to_str()) == Some("amf")
 }
 
-fn is_unquoted_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
-    !(command.starts_with('\'') && command.ends_with('\''))
-        && is_amf_claude_hook_command(command, managed_commands)
+fn is_unquoted_amf_claude_hook(hook: &serde_json::Value, managed_commands: &[String]) -> bool {
+    // Claude's exec form passes `command` directly when `args` is present, so
+    // a bare path containing spaces is safe there. Only shell-form commands
+    // without `args` need quoting and migration.
+    !hook["args"].is_array()
+        && hook["command"].as_str().is_some_and(|command| {
+            !(command.starts_with('\'') && command.ends_with('\''))
+                && is_amf_claude_hook_command(command, managed_commands)
+        })
 }
 
 fn has_unquoted_amf_claude_hooks(
@@ -207,11 +222,9 @@ fn has_unquoted_amf_claude_hooks(
                 entries.as_array().is_some_and(|entries| {
                     entries.iter().any(|entry| {
                         entry["hooks"].as_array().is_some_and(|hooks| {
-                            hooks.iter().any(|hook| {
-                                hook["command"].as_str().is_some_and(|command| {
-                                    is_unquoted_amf_claude_hook_command(command, managed_commands)
-                                })
-                            })
+                            hooks
+                                .iter()
+                                .any(|hook| is_unquoted_amf_claude_hook(hook, managed_commands))
                         })
                     })
                 })
@@ -995,13 +1008,13 @@ pub fn ensure_notification_hooks(
 
     let config_dir = crate::project::amf_config_dir();
     let managed_commands = claude_managed_commands();
-    let notify_cmd = claude_hook_command(&config_dir.join("notify.sh"));
-    let clear_cmd = claude_hook_command(&config_dir.join("clear-notify.sh"));
-    let save_prompt_cmd = claude_hook_command(&config_dir.join("save-prompt.sh"));
-    let thinking_start_cmd = claude_hook_command(&config_dir.join("thinking-start.sh"));
-    let thinking_stop_cmd = claude_hook_command(&config_dir.join("thinking-stop.sh"));
-    let tool_start_cmd = claude_hook_command(&config_dir.join("tool-start.sh"));
-    let tool_stop_cmd = claude_hook_command(&config_dir.join("tool-stop.sh"));
+    let notify_path = config_dir.join("notify.sh");
+    let clear_path = config_dir.join("clear-notify.sh");
+    let save_prompt_path = config_dir.join("save-prompt.sh");
+    let thinking_start_path = config_dir.join("thinking-start.sh");
+    let thinking_stop_path = config_dir.join("thinking-stop.sh");
+    let tool_start_path = config_dir.join("tool-start.sh");
+    let tool_stop_path = config_dir.join("tool-stop.sh");
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
     let diff_review_cmd = if wants_diff_review {
@@ -1020,8 +1033,8 @@ pub fn ensure_notification_hooks(
         serde_json::json!({
             "matcher": "",
             "hooks": [
-                { "type": "command", "command": thinking_stop_cmd },
-                { "type": "command", "command": notify_cmd }
+                claude_exec_hook(&thinking_stop_path),
+                claude_exec_hook(&notify_path)
             ]
         }),
     );
@@ -1029,18 +1042,9 @@ pub fn ensure_notification_hooks(
     // PreToolUse: set thinking + tool-running + clear notification,
     // plus diff-review for vibeless mode.
     let mut pre_tool_hooks: Vec<serde_json::Value> = vec![
-        serde_json::json!({
-            "type": "command",
-            "command": thinking_start_cmd
-        }),
-        serde_json::json!({
-            "type": "command",
-            "command": tool_start_cmd
-        }),
-        serde_json::json!({
-            "type": "command",
-            "command": clear_cmd
-        }),
+        claude_exec_hook(&thinking_start_path),
+        claude_exec_hook(&tool_start_path),
+        claude_exec_hook(&clear_path),
     ];
     if wants_diff_review && let Some(ref dr_cmd) = diff_review_cmd {
         let dr_cmd = shell_quote(dr_cmd);
@@ -1069,7 +1073,7 @@ pub fn ensure_notification_hooks(
         serde_json::json!({
             "matcher": "",
             "hooks": [
-                { "type": "command", "command": tool_stop_cmd }
+                claude_exec_hook(&tool_stop_path)
             ]
         }),
     );
@@ -1081,8 +1085,8 @@ pub fn ensure_notification_hooks(
         serde_json::json!({
             "matcher": "",
             "hooks": [
-                { "type": "command", "command": thinking_start_cmd },
-                { "type": "command", "command": save_prompt_cmd }
+                claude_exec_hook(&thinking_start_path),
+                claude_exec_hook(&save_prompt_path)
             ]
         }),
     );

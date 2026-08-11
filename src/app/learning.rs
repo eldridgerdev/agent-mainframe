@@ -2152,17 +2152,13 @@ impl App {
             return None;
         }
 
-        let (project_id, feature_id) = match self.store.projects.get(pi) {
-            Some(project) => (
-                project.id.clone(),
-                project
-                    .features
-                    .get(fi)
-                    .map(|f| f.id.clone())
-                    .unwrap_or_default(),
-            ),
-            None => return None,
-        };
+        let project = self.store.projects.get(pi)?;
+        let project_id = project.id.clone();
+        let feature_id = project
+            .features
+            .get(fi)
+            .map(|f| f.id.clone())
+            .unwrap_or_default();
 
         let written = self.db.as_ref().map(|db| {
             db.load_or_create_todo_list(&project_id, &feature_id)

@@ -439,6 +439,11 @@ storage the first time it runs.
 
 ### Fixed
 
+- **Older macOS Claude hooks are repaired before they can run.** AMF now checks
+  current `.claude/settings.local.json` files, the legacy project-local
+  `.claude/settings.json` location, and Claude's global settings during
+  startup. Old unquoted `~/Library/Application Support/amf` commands no longer
+  keep producing `PostToolUse: Bash hook error` after upgrading.
 - **Pane feedback no longer covers agent output indefinitely.** Repaint and
   status confirmations appear as timed toasts and clear automatically.
 - **Custom-session icons can be chosen visually.** The config wizard previews

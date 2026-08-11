@@ -7609,6 +7609,76 @@ fn repair_unquoted_claude_hooks_refreshes_stale_stored_features() {
 }
 
 #[test]
+fn repair_unquoted_claude_hooks_refreshes_legacy_settings_json() {
+    let repo = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        r#"{
+          "hooks": {
+            "PostToolUse": [{
+              "matcher": "",
+              "hooks": [{
+                "type": "command",
+                "command": "/Users/me/Library/Application Support/amf/tool-stop.sh"
+              }]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    let now = Utc::now();
+    let feature = Feature::new(
+        "feat-1".to_string(),
+        "feat-1".to_string(),
+        workdir.path().to_path_buf(),
+        true,
+        VibeMode::Vibe,
+        false,
+        false,
+        AgentKind::Claude,
+        false,
+        false,
+    );
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![Project {
+            id: "proj-1".to_string(),
+            name: "project".to_string(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+
+    let repaired = super::setup::repair_unquoted_claude_hooks_for_store(&store);
+
+    assert_eq!(repaired, 1);
+    assert!(
+        !claude_dir.join("settings.json").exists(),
+        "legacy settings.json should be removed once its stale AMF hook is cleaned"
+    );
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "PostToolUse");
+    assert!(
+        cmds.iter().any(|cmd| cmd.starts_with('\'')
+            && cmd.ends_with('\'')
+            && cmd.contains("tool-stop.sh")),
+        "replacement PostToolUse hook should be quoted, got: {cmds:?}"
+    );
+}
+
+#[test]
 fn vibeless_pre_tool_use_includes_custom_diff_review_when_script_present_by_default() {
     let workdir = TempDir::new().unwrap();
     // Create the custom diff-review script so it gets picked up.

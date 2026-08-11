@@ -165,7 +165,7 @@ pub(crate) fn claude_hook_command(path: &Path) -> String {
     shell_quote(&path.to_string_lossy())
 }
 
-fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
+pub(crate) fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
     let normalized = shell_unquote_single(command);
     if managed_commands
         .iter()
@@ -574,12 +574,12 @@ pub fn repair_unquoted_claude_hooks_for_store(store: &ProjectStore) -> usize {
             if !matches!(feature.agent, AgentKind::Claude) {
                 continue;
             }
-            let settings_path = feature
-                .workdir
-                .join(".claude")
-                .join(CLAUDE_SETTINGS_LOCAL_JSON);
-            let settings = read_json_object(&settings_path);
-            if !has_unquoted_amf_claude_hooks(&settings, &managed_commands) {
+            let claude_dir = feature.workdir.join(".claude");
+            let has_stale_hook = [CLAUDE_SETTINGS_LOCAL_JSON, CLAUDE_SETTINGS_JSON]
+                .into_iter()
+                .map(|name| read_json_object(&claude_dir.join(name)))
+                .any(|settings| has_unquoted_amf_claude_hooks(&settings, &managed_commands));
+            if !has_stale_hook {
                 continue;
             }
             ensure_notification_hooks(

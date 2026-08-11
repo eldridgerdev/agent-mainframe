@@ -2129,7 +2129,8 @@ impl App {
             if let AppMode::Learning(state) = &mut self.mode
                 && let Some(editor) = &mut state.action_editor
             {
-                editor.error = Some("Give it a title first — this is what you'll see later.".into());
+                editor.error =
+                    Some("Give it a title first — this is what you'll see later.".into());
             }
             return None;
         }
@@ -2143,12 +2144,12 @@ impl App {
             .projects
             .get(pi)
             .is_some_and(|p| p.has_todos_session());
-        if !has_session
-            && let Err(e) = self.add_todos_session_for_picker(pi, fi, None)
-        {
+        if !has_session && let Err(e) = self.add_todos_session_for_picker(pi, fi, None) {
             self.log_error("learning", format!("couldn't create a TODOs session: {e}"));
             self.learning_cancel_action();
-            self.learning_error(format!("Couldn't start a TODO list — nothing was written: {e}"));
+            self.learning_error(format!(
+                "Couldn't start a TODO list — nothing was written: {e}"
+            ));
             return None;
         }
 
@@ -2281,7 +2282,9 @@ fn strip_markdown_decoration(line: &str) -> String {
         // both ends at once — `**Split this function**` is a title, while
         // `**bold** start` is a sentence that happens to begin with emphasis.
         for marker in ["**", "__", "*", "_", "`"] {
-            if let Some(inner) = rest.strip_prefix(marker).and_then(|r| r.strip_suffix(marker))
+            if let Some(inner) = rest
+                .strip_prefix(marker)
+                .and_then(|r| r.strip_suffix(marker))
                 && !inner.is_empty()
             {
                 rest = inner.trim();
@@ -5326,7 +5329,10 @@ pub(crate) mod tests {
 
     #[test]
     fn a_title_skips_blank_and_decoration_only_lines() {
-        let qa = qa_with("\n```\n\n# \n\nIt runs the program.", LearningQaIntent::Explain);
+        let qa = qa_with(
+            "\n```\n\n# \n\nIt runs the program.",
+            LearningQaIntent::Explain,
+        );
         assert_eq!(todo_title_seed(&qa), "It runs the program.");
     }
 

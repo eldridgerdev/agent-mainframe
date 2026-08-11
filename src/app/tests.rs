@@ -7419,6 +7419,107 @@ fn generated_claude_hooks_use_the_space_free_runtime_directory() {
 }
 
 #[test]
+fn worktree_hook_setup_repairs_inherited_root_repo_hooks() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("feature");
+    let root_claude_dir = repo.path().join(".claude");
+    std::fs::create_dir_all(&root_claude_dir).unwrap();
+    std::fs::create_dir_all(&workdir).unwrap();
+    std::fs::write(
+        root_claude_dir.join("settings.local.json"),
+        r#"{
+          "hooks": {
+            "PostToolUse": [{
+              "matcher": "inherited-root-hook",
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "/Users/me/Library/Application Support/amf/tool-stop.sh"
+                },
+                {
+                  "type": "command",
+                  "command": "/tmp/user-post-tool-hook.sh"
+                }
+              ]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root_claude_dir.join("settings.json"),
+        r#"{
+          "hooks": {
+            "Stop": [{
+              "matcher": "legacy-root-hook",
+              "hooks": [{
+                "type": "command",
+                "command": "'/Users/me/Library/Application Support/amf/thinking-stop.sh'"
+              }]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    ensure_notification_hooks(
+        &workdir,
+        repo.path(),
+        &VibeMode::Vibe,
+        &AgentKind::Claude,
+        true,
+    );
+
+    let root_local: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root_claude_dir.join("settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    let root_legacy: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root_claude_dir.join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    let runtime_dir = crate::project::amf_claude_hooks_dir();
+
+    assert_eq!(
+        root_local["hooks"]["PostToolUse"][0]["matcher"].as_str(),
+        Some("inherited-root-hook")
+    );
+    assert_eq!(
+        root_local["hooks"]["PostToolUse"][0]["hooks"][0]["command"].as_str(),
+        Some(runtime_dir.join("tool-stop.sh").to_string_lossy().as_ref())
+    );
+    assert!(
+        root_local["hooks"]["PostToolUse"][0]["hooks"][0]["args"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+    );
+    assert_eq!(
+        root_local["hooks"]["PostToolUse"][0]["hooks"][1]["command"].as_str(),
+        Some("/tmp/user-post-tool-hook.sh"),
+        "user-owned hooks in the inherited entry must be preserved"
+    );
+    assert_eq!(
+        root_legacy["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
+        Some(
+            runtime_dir
+                .join("thinking-stop.sh")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+
+    let worktree_settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(workdir.join(".claude").join("settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(hook_uses_exec_form(
+        &worktree_settings,
+        "PostToolUse",
+        "tool-stop.sh"
+    ));
+}
+
+#[test]
 fn cleanup_recognizes_quoted_managed_claude_hooks() {
     let workdir = TempDir::new().unwrap();
     let claude_dir = workdir.path().join(".claude");

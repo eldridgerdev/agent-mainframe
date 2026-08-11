@@ -50,7 +50,7 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":safe-claude-hook-dir-v4");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":repair-root-repo-hooks-v5");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -290,6 +290,93 @@ fn remove_amf_claude_hooks(settings: &mut serde_json::Value, managed_commands: &
     }
 
     changed
+}
+
+/// Rewrite AMF-owned commands in an inherited Claude settings file without
+/// replacing its hook layout. Worktrees can inherit `.claude` settings from
+/// the root repository, so refreshing only the worktree-local file leaves a
+/// stale root command active in Claude.
+fn migrate_amf_claude_hooks_to_runtime_dir(
+    settings_path: &Path,
+    managed_commands: &[String],
+) -> bool {
+    let Some(mut settings) = std::fs::read_to_string(settings_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .filter(serde_json::Value::is_object)
+    else {
+        return false;
+    };
+    let Some(hooks) = settings
+        .get_mut("hooks")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return false;
+    };
+
+    let runtime_dir = crate::project::amf_claude_hooks_dir();
+    let mut changed = false;
+    for entries in hooks
+        .values_mut()
+        .filter_map(serde_json::Value::as_array_mut)
+    {
+        for entry in entries {
+            let Some(commands) = entry
+                .get_mut("hooks")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+            for hook in commands {
+                let Some(command) = hook.get("command").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                if !is_amf_claude_hook_command(command, managed_commands) {
+                    continue;
+                }
+                let normalized = shell_unquote_single(command);
+                let Some(script_name) = Path::new(&normalized).file_name() else {
+                    continue;
+                };
+                let replacement = runtime_dir.join(script_name).to_string_lossy().into_owned();
+                let uses_current_command = command == replacement;
+                let uses_exec_args = hook
+                    .get("args")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(Vec::is_empty);
+                if uses_current_command && uses_exec_args {
+                    continue;
+                }
+                hook["command"] = serde_json::Value::String(replacement);
+                hook["args"] = serde_json::json!([]);
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        write_json_object(settings_path, &settings);
+    }
+    changed
+}
+
+fn repair_inherited_repo_claude_hooks(
+    workdir: &Path,
+    repo: &Path,
+    is_worktree: bool,
+    managed_commands: &[String],
+) -> usize {
+    if !is_worktree || workdir == repo {
+        return 0;
+    }
+
+    let claude_dir = repo.join(".claude");
+    [CLAUDE_SETTINGS_LOCAL_JSON, CLAUDE_SETTINGS_JSON]
+        .into_iter()
+        .filter(|name| {
+            migrate_amf_claude_hooks_to_runtime_dir(&claude_dir.join(name), managed_commands)
+        })
+        .count()
 }
 
 fn push_claude_hook_entry(settings: &mut serde_json::Value, event: &str, entry: serde_json::Value) {
@@ -995,7 +1082,7 @@ pub fn ensure_notification_hooks(
     repo: &Path,
     mode: &VibeMode,
     agent: &AgentKind,
-    _is_worktree: bool,
+    is_worktree: bool,
 ) {
     // Feature creation / restart should not depend on startup having
     // already staged the helper scripts into the AMF runtime directory.
@@ -1019,6 +1106,7 @@ pub fn ensure_notification_hooks(
 
     let hooks_dir = crate::project::amf_claude_hooks_dir();
     let managed_commands = claude_managed_commands();
+    repair_inherited_repo_claude_hooks(workdir, repo, is_worktree, &managed_commands);
     let notify_path = hooks_dir.join("notify.sh");
     let clear_path = hooks_dir.join("clear-notify.sh");
     let save_prompt_path = hooks_dir.join("save-prompt.sh");

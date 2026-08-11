@@ -7631,7 +7631,7 @@ fn repair_unquoted_claude_hooks_refreshes_legacy_settings_json() {
     .unwrap();
 
     let now = Utc::now();
-    let feature = Feature::new(
+    let mut feature = Feature::new(
         "feat-1".to_string(),
         "feat-1".to_string(),
         workdir.path().to_path_buf(),
@@ -7639,10 +7639,11 @@ fn repair_unquoted_claude_hooks_refreshes_legacy_settings_json() {
         VibeMode::Vibe,
         false,
         false,
-        AgentKind::Claude,
+        AgentKind::Codex,
         false,
         false,
     );
+    feature.add_session_named(SessionKind::Claude, "Pairing Claude".to_string());
     let store = ProjectStore {
         version: 5,
         projects: vec![Project {

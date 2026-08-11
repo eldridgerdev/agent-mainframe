@@ -443,7 +443,8 @@ storage the first time it runs.
   current `.claude/settings.local.json` files, the legacy project-local
   `.claude/settings.json` location, and Claude's global settings during
   startup. Old unquoted `~/Library/Application Support/amf` commands no longer
-  keep producing `PostToolUse: Bash hook error` after upgrading.
+  keep producing `PostToolUse: Bash hook error` after upgrading, including
+  when Claude is a secondary session in a Codex, OpenCode, or Pi feature.
 - **Pane feedback no longer covers agent output indefinitely.** Repaint and
   status confirmations appear as timed toasts and clear automatically.
 - **Custom-session icons can be chosen visually.** The config wizard previews

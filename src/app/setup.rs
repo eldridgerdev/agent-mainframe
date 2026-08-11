@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::project::{AgentKind, ProjectStore, VibeMode};
+use crate::project::{AgentKind, Feature, ProjectStore, SessionKind, VibeMode};
 use crate::theme::ThemeManager;
 
 use super::AppConfig;
@@ -547,14 +547,14 @@ pub fn refresh_claude_hooks_for_store(store: &ProjectStore) -> usize {
     let mut refreshed = 0usize;
     for project in &store.projects {
         for feature in &project.features {
-            if !matches!(feature.agent, AgentKind::Claude) {
+            if !feature_uses_claude(feature) {
                 continue;
             }
             ensure_notification_hooks(
                 &feature.workdir,
                 &project.repo,
                 &feature.mode,
-                &feature.agent,
+                &AgentKind::Claude,
                 feature.is_worktree,
             );
             refreshed += 1;
@@ -571,7 +571,7 @@ pub fn repair_unquoted_claude_hooks_for_store(store: &ProjectStore) -> usize {
     let mut repaired = 0usize;
     for project in &store.projects {
         for feature in &project.features {
-            if !matches!(feature.agent, AgentKind::Claude) {
+            if !feature_uses_claude(feature) {
                 continue;
             }
             let claude_dir = feature.workdir.join(".claude");
@@ -586,13 +586,21 @@ pub fn repair_unquoted_claude_hooks_for_store(store: &ProjectStore) -> usize {
                 &feature.workdir,
                 &project.repo,
                 &feature.mode,
-                &feature.agent,
+                &AgentKind::Claude,
                 feature.is_worktree,
             );
             repaired += 1;
         }
     }
     repaired
+}
+
+fn feature_uses_claude(feature: &Feature) -> bool {
+    matches!(feature.agent, AgentKind::Claude)
+        || feature
+            .sessions
+            .iter()
+            .any(|session| matches!(session.kind, SessionKind::Claude))
 }
 
 /// Apply one-time, version-gated migrations to a freshly loaded config.

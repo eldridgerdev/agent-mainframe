@@ -2267,10 +2267,16 @@ fn strip_markdown_decoration(line: &str) -> String {
         {
             rest = tail.trim_start();
         }
-        // An ordered-list marker: digits, then `.` or `)`.
+        // An ordered-list marker: digits, then `.` or `)`, then a space — the
+        // space is what separates `1. Do this` from a sentence opening with a
+        // decimal number like `12.5 seconds is the default`.
         if let Some(tail) = rest
             .split_once(['.', ')'])
-            .filter(|(head, _)| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
+            .filter(|(head, tail)| {
+                !head.is_empty()
+                    && head.chars().all(|c| c.is_ascii_digit())
+                    && (tail.is_empty() || tail.starts_with(char::is_whitespace))
+            })
             .map(|(_, tail)| tail.trim_start())
         {
             rest = tail;
@@ -5304,6 +5310,21 @@ pub(crate) mod tests {
                 "Split `run_loop` into two functions",
                 "from {lead:?}"
             );
+        }
+    }
+
+    /// A sentence that opens with a decimal number or a version string is not
+    /// an ordered-list item, and losing its first digits would rewrite what the
+    /// answer said.
+    #[test]
+    fn a_leading_number_is_only_a_list_marker_when_a_space_follows_it() {
+        for lead in [
+            "12.5 seconds is the default timeout.",
+            "2.0 release adds the flag.",
+            "3)x is the closing paren of a tuple index.",
+        ] {
+            let qa = qa_with(lead, LearningQaIntent::Explain);
+            assert_eq!(todo_title_seed(&qa), lead, "from {lead:?}");
         }
     }
 

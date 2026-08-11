@@ -22,7 +22,7 @@ use anyhow::Result;
 
 use crate::app::{
     App, AppMode, BrowseScope, LearningAnchor, LearningFocus, LearningLevel, LearningListEntry,
-    LearningListGroup, LearningQa, LearningQaIntent, LearningViewState, Selection,
+    LearningListGroup, LearningQa, LearningQaIntent, LearningViewState, Selection, StartIntent,
 };
 use crate::diff::{DiffFile, DiffLineLocation};
 use crate::project::AgentKind;
@@ -2354,6 +2354,316 @@ pub fn anchor_locator(qa: &LearningQa) -> String {
         }
         (LearningAnchor::Lines { start, end }, Some(path)) => format!("{path}:{start}-{end}"),
     }
+}
+
+// ── escalating to a live session ─────────────────────────────
+
+/// Lines of the answer carried into the composer seed.
+///
+/// More generous than the TODO body's cap: a live agent is being asked to
+/// continue from this answer, not merely to recognise which one it was. Still
+/// capped, because the seed lands in an editable composer and a two-hundred-line
+/// paste is not something anyone reviews before sending.
+const MAX_SEED_ANSWER_LINES: usize = 40;
+
+/// Lines of the anchored selection carried into the seed. Shorter than the
+/// answer cap on purpose: the seed names the file and line range, and unlike the
+/// headless run, the session receiving it can open the file itself.
+const MAX_SEED_SELECTION_LINES: usize = 30;
+
+impl App {
+    /// Hand the selected Q&A to a live agent session on this feature.
+    ///
+    /// This is the one door out of Learning Mode's read-only promise, so it is
+    /// built to be crossed knowingly: the session is created, the composer is
+    /// opened **pre-filled and unsent**, and a toast says that this session can
+    /// do what Learning Mode could not. Nothing reaches the agent until the user
+    /// presses Enter on a prompt they have read.
+    ///
+    /// The seed carries where the question was anchored, the question, and the
+    /// answer — see [`escalation_seed`] — so the live agent starts where the
+    /// reading left off instead of from nothing.
+    ///
+    /// A row that already opened a session jumps back to it rather than starting
+    /// a second, and does *not* re-seed: that conversation already has this
+    /// context. A link whose session has since been removed is dropped and a
+    /// fresh one started, saying which of the two happened.
+    ///
+    /// Returns the `FeatureSession.id` the row is now linked to.
+    pub fn learning_escalate(&mut self) -> Option<String> {
+        let (qa, pi, fi) = match &self.mode {
+            AppMode::Learning(state) => {
+                (state.qa.get(state.selected_qa).cloned(), state.pi, state.fi)
+            }
+            _ => return None,
+        };
+        let Some(qa) = qa else {
+            self.learning_error(
+                "Ask something first — this hands a question you already asked to a live agent.",
+            );
+            return None;
+        };
+        // A failed row is *not* refused: a headless run that never came back is
+        // exactly when handing the question to a live agent is worth doing, and
+        // the seed says the first attempt failed instead of quoting an answer
+        // that does not exist. An in-flight one is refused, because escalating
+        // it would set two agents on the same question at once.
+        if qa.status.is_in_flight() {
+            self.learning_error(
+                "That answer is still generating — you can hand it to a live agent once it arrives.",
+            );
+            return None;
+        }
+
+        let mut replacing_deleted = false;
+        if let Some(session_id) = qa.spawned_session_id.clone() {
+            let existing = self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .and_then(|f| f.sessions.iter().position(|s| s.id == session_id));
+            match existing {
+                Some(si) => {
+                    self.selection = Selection::Session(pi, fi, si);
+                    if let Err(e) = self.enter_view_without_auto_compose() {
+                        self.log_error("learning", format!("couldn't open the session: {e}"));
+                        self.learning_error(format!("Couldn't open that session: {e}"));
+                        return None;
+                    }
+                    // The screen has just changed out from under a keypress that
+                    // looked like it would start something, so it has to say why
+                    // it didn't. No re-seed: that conversation already has this.
+                    self.push_toast_info("You already opened a session for that one — here it is.");
+                    return Some(session_id);
+                }
+                // The session is gone, so the `→ session` marker is a promise
+                // nothing can keep. Drop it and start a fresh one.
+                None => {
+                    self.learning_clear_spawned_session(&qa.id);
+                    replacing_deleted = true;
+                }
+            }
+        }
+
+        // The feature's own agent, not the harness that answered in here: the
+        // live session is work on this feature, and every other session in it
+        // runs that agent. Continuity costs nothing, because the seed carries
+        // the answer verbatim rather than relying on the agent remembering it.
+        let harness = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| f.agent.clone());
+        let label = learning_session_label(&qa);
+        // The link back to the answer is recorded from inside this overlay,
+        // which the resource confirmation dialog would replace, so this start
+        // warns and goes ahead instead of parking.
+        let si = match self.create_agent_session_labeled(
+            pi,
+            fi,
+            &label,
+            harness,
+            StartIntent::Warn("the agent for this question"),
+        ) {
+            Ok(si) => si,
+            Err(e) => {
+                self.log_error("learning", format!("couldn't start a session: {e}"));
+                self.learning_error(format!(
+                    "Couldn't start an agent session — nothing was changed: {e}"
+                ));
+                return None;
+            }
+        };
+        let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
+
+        // Recorded while the overlay is still the mode, the way the TODO spawn
+        // does it: once `enter_view` lands there is no `state.qa` to write to.
+        if let AppMode::Learning(state) = &mut self.mode
+            && let Some(row) = state.qa.iter_mut().find(|r| r.id == qa.id)
+        {
+            row.spawned_session_id = Some(session_id.clone());
+            row.updated_at = crate::db::learning::now_timestamp();
+        }
+        let link = self.persist_learning_qa_by_id(&qa.id);
+        self.log_info(
+            "learning",
+            format!("escalated a question to session {session_id} ({label})"),
+        );
+
+        let seed = escalation_seed(&qa);
+        self.selection = Selection::Session(pi, fi, si);
+        if let Err(e) = self.enter_view_without_auto_compose() {
+            self.log_error("learning", format!("couldn't open the new session: {e}"));
+            self.push_toast_error(format!(
+                "The session started, but AMF couldn't open it: {e}"
+            ));
+            return Some(session_id);
+        }
+        if let Err(e) = self.open_compose_seeded(seed) {
+            self.log_error("learning", format!("couldn't seed the composer: {e}"));
+            self.push_toast_error(format!(
+                "The session started, but the prompt wasn't loaded: {e}"
+            ));
+            return Some(session_id);
+        }
+
+        // Anything still worth saying goes through `message`, not a toast: the
+        // composer is now the mode, and `ui::dashboard` draws it and returns
+        // *before* the shared toast pass, so a toast raised here would never
+        // appear. `promote_message_to_toast` picks this up the moment the user
+        // steps back to the pane. The boundary this key crosses is said in the
+        // seed itself, which is the thing they are looking at right now.
+        //
+        // The session exists either way, so a failed link is reported as the
+        // partial success it is rather than rolled back — and it outranks the
+        // stale-link notice, which is only bookkeeping.
+        if let Err(e) = link {
+            self.message = Some(format!(
+                "Error: the session started, but the link back to this answer wasn't saved: {e}"
+            ));
+        } else if replacing_deleted {
+            self.message =
+                Some("The session that answer opened is gone — this is a new one.".to_string());
+        }
+        Some(session_id)
+    }
+
+    /// Drop a `spawned_session_id` whose session no longer exists, in memory and
+    /// (with a DB) on disk.
+    fn learning_clear_spawned_session(&mut self, qa_id: &str) {
+        if let AppMode::Learning(state) = &mut self.mode
+            && let Some(row) = state.qa.iter_mut().find(|r| r.id == qa_id)
+        {
+            row.spawned_session_id = None;
+            row.updated_at = crate::db::learning::now_timestamp();
+        }
+        let _ = self.persist_learning_qa_by_id(qa_id);
+    }
+}
+
+/// A short session label naming what the session was opened about.
+///
+/// The anchor rather than the question: the session list is scanned for "which
+/// bit of code was that", and a truncated question reads the same as every other
+/// truncated question.
+pub fn learning_session_label(qa: &LearningQa) -> String {
+    const MAX: usize = 24;
+    let locator = anchor_locator(qa);
+    if locator.chars().count() > MAX {
+        // From the left: a path's tail is what identifies it.
+        let tail: String = locator
+            .chars()
+            .skip(locator.chars().count() - MAX)
+            .collect();
+        format!("Learning: …{tail}")
+    } else {
+        format!("Learning: {locator}")
+    }
+}
+
+/// The composer seed for an escalated Q&A.
+///
+/// Built as something a user would be willing to send unedited: where they were
+/// reading, what they asked, what they were told, and what they want next. It is
+/// never auto-submitted, so it is written to be *read* first — which is also why
+/// it says plainly how much the earlier answer is worth. A no-tools answer could
+/// only see the excerpt, and telling the live agent that is what stops a
+/// fabricated file path being carried forward as an established fact.
+///
+/// At `Newcomer` level it also asks the live agent to narrate what it is doing,
+/// since the user escalating is the one least able to read a silent diff.
+///
+/// The **closing** ask names the boundary this seed crosses — Learning Mode
+/// could not change files, this session can. That belongs in the prompt rather
+/// than in a toast (the composer draws over the pane and returns before the
+/// shared toast pass, so a toast raised on arrival is never painted), and it
+/// belongs at the *end* rather than the top: the composer opens with the cursor
+/// after the last line, so the tail is what is on screen when the user arrives.
+/// It is also true and useful to the agent reading it.
+pub fn escalation_seed(qa: &LearningQa) -> String {
+    let mut seed = String::from(match qa.intent {
+        LearningQaIntent::Explain => {
+            "I've been reading this code in AMF's Learning Mode and want to keep going with you.\n"
+        }
+        LearningQaIntent::Action => {
+            "I've been reading this code in AMF's Learning Mode, and there's a change I'd like made.\n"
+        }
+    });
+    seed.push_str(&format!("\nWhere I was reading: {}\n", anchor_locator(qa)));
+
+    if !qa.selection_text.trim().is_empty() {
+        seed.push_str(if qa.selection_is_diff {
+            "\nThe change I was looking at (unified diff):\n\n```diff\n"
+        } else {
+            "\nThe code I was looking at:\n\n```\n"
+        });
+        seed.push_str(&seed_excerpt(&qa.selection_text, MAX_SEED_SELECTION_LINES));
+        seed.push_str("```\n");
+    }
+
+    seed.push_str(&format!("\nWhat I asked: {}\n", qa.question.trim()));
+
+    match qa
+        .answer
+        .as_deref()
+        .map(str::trim)
+        .filter(|answer| !answer.is_empty())
+    {
+        Some(answer) => {
+            seed.push_str(match qa.run_mode {
+                crate::app::LearningRunMode::NoTools => {
+                    "\nWhat I was told. This came from a one-shot run that could only see the \
+                     excerpt above — not the rest of the repository — so check it against the \
+                     real code before relying on it:\n\n"
+                }
+                crate::app::LearningRunMode::DeepDive => {
+                    "\nWhat I was told, by an agent with read-only access to this repository:\n\n"
+                }
+            });
+            seed.push_str(&seed_excerpt(answer, MAX_SEED_ANSWER_LINES));
+        }
+        None => seed.push_str(
+            "\nThat question never got an answer — the run failed before it came back.\n",
+        ),
+    }
+
+    if qa.level == LearningLevel::Newcomer {
+        seed.push_str(
+            "\nI'm new to this codebase, so explain what you're doing as you go and define any \
+             terms you use.\n",
+        );
+    }
+
+    seed.push_str(match qa.intent {
+        LearningQaIntent::Explain => {
+            "\nPlease carry on from there. Start by checking that answer against the real code, \
+             and tell me anything it got wrong. Unlike the run that produced it, you can change \
+             files here — so ask me before you change anything.\n"
+        }
+        LearningQaIntent::Action => {
+            "\nPlease make that change. Check the real code first — the answer above may be \
+             wrong about it. Unlike the run that produced it, you can change files here, so \
+             tell me what you're going to do before you do it.\n"
+        }
+    });
+    seed
+}
+
+/// `text` capped at `max_lines`, with the cut marked so nothing reads as the
+/// whole of something it isn't.
+fn seed_excerpt(text: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let shown = lines.len().min(max_lines);
+    let mut out: String = lines[..shown]
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    if lines.len() > shown {
+        out.push_str(&format!("… {} more lines not shown\n", lines.len() - shown));
+    }
+    out
 }
 
 // ── panes, history cursor, answer view ───────────────────────
@@ -5556,5 +5866,343 @@ pub(crate) mod tests {
             "the follow-up quotes its parent's diff, so it is still a diff"
         );
         assert!(row.selection_text.lines().any(|l| l.starts_with('+')));
+    }
+
+    // ── escalating to a live session ─────────────────────────
+
+    /// The seed is the whole point of escalation: a live agent that has to be
+    /// told everything again is no better than opening a session by hand.
+    #[test]
+    fn an_escalated_question_carries_where_what_and_the_answer() {
+        let qa = qa_with(
+            "It is the program's entry point.",
+            LearningQaIntent::Explain,
+        );
+
+        let seed = escalation_seed(&qa);
+
+        assert!(
+            seed.contains("src/main.rs:4-9"),
+            "where they were reading: {seed}"
+        );
+        assert!(seed.contains("fn main() {}"), "the code itself: {seed}");
+        assert!(seed.contains("Why is this here?"), "the question: {seed}");
+        assert!(
+            seed.contains("It is the program's entry point."),
+            "and what they were told: {seed}"
+        );
+    }
+
+    /// A no-tools answer may name files that do not exist. Handing it over
+    /// without saying so would launder a guess into an established fact — the
+    /// live agent has tools, so it is told to check.
+    #[test]
+    fn a_shallow_answer_is_handed_over_with_its_limits_stated() {
+        let shallow = qa_with("Look at src/nonexistent.rs.", LearningQaIntent::Explain);
+        let seed = escalation_seed(&shallow);
+        assert!(
+            seed.contains("could only see the excerpt"),
+            "the live agent has to know what this answer was worth: {seed}"
+        );
+
+        let mut deep = qa_with("Look at src/main.rs.", LearningQaIntent::Explain);
+        deep.run_mode = crate::app::LearningRunMode::DeepDive;
+        let seed = escalation_seed(&deep);
+        assert!(
+            !seed.contains("could only see the excerpt"),
+            "this one did read the repository: {seed}"
+        );
+        assert!(seed.contains("read-only access"), "{seed}");
+    }
+
+    /// The two intents ask for different things: one continues a conversation,
+    /// the other requests work.
+    #[test]
+    fn the_seed_asks_for_what_the_entry_was_filed_as() {
+        let explain = escalation_seed(&qa_with("It parses argv.", LearningQaIntent::Explain));
+        assert!(explain.contains("carry on"), "{explain}");
+        assert!(
+            !explain.to_lowercase().contains("make that change"),
+            "an explanation must not turn into a work order: {explain}"
+        );
+
+        let action = escalation_seed(&qa_with("Split this function.", LearningQaIntent::Action));
+        assert!(action.contains("make that change"), "{action}");
+
+        // Whichever it is, the last thing on screen when the composer opens
+        // says that this session is not bound by Learning Mode's promise. The
+        // composer scrolls to the end, so the tail is the only part guaranteed
+        // to be read before Enter.
+        for seed in [&explain, &action] {
+            assert!(
+                seed.trim_end().ends_with("before you do it.")
+                    || seed.trim_end().ends_with("before you change anything."),
+                "the boundary has to be the closing line: {seed}"
+            );
+            assert!(seed.contains("you can change files here"), "{seed}");
+        }
+    }
+
+    /// The user escalating at newcomer level is the one least able to read a
+    /// silent diff, so the seed asks the live agent to narrate.
+    #[test]
+    fn a_newcomer_seed_asks_the_live_agent_to_explain_itself() {
+        let mut qa = qa_with("It parses argv.", LearningQaIntent::Action);
+        assert_eq!(qa.level, LearningLevel::Newcomer);
+        assert!(escalation_seed(&qa).contains("new to this codebase"));
+
+        qa.level = LearningLevel::Familiar;
+        let seed = escalation_seed(&qa);
+        assert!(
+            !seed.contains("new to this codebase"),
+            "someone who switched to familiar asked for the denser version: {seed}"
+        );
+    }
+
+    /// A failed run is exactly when a live agent is worth reaching for, so the
+    /// row is escalatable — and the seed says there was no answer rather than
+    /// leaving a gap that reads as one.
+    #[test]
+    fn escalating_a_failed_question_says_there_was_no_answer() {
+        let mut qa = qa_with("", LearningQaIntent::Explain);
+        qa.answer = None;
+        qa.status = crate::app::LearningQaStatus::Failed;
+        qa.error = Some("claude: command not found".to_string());
+
+        let seed = escalation_seed(&qa);
+
+        assert!(seed.contains("Why is this here?"), "the question survives");
+        assert!(seed.contains("never got an answer"), "{seed}");
+    }
+
+    #[test]
+    fn a_long_answer_is_excerpted_into_the_seed() {
+        let long: String = (1..=200).map(|n| format!("line {n}\n")).collect::<String>();
+        let qa = qa_with(&long, LearningQaIntent::Explain);
+
+        let seed = escalation_seed(&qa);
+
+        assert!(seed.contains("line 1\n"));
+        assert!(!seed.contains("line 200"), "the tail is cut: {seed}");
+        assert!(
+            seed.contains("more lines not shown"),
+            "and the cut is marked, so nothing reads as the whole answer: {seed}"
+        );
+    }
+
+    #[test]
+    fn a_diff_selection_is_handed_over_as_a_diff() {
+        let mut qa = qa_with("A function was renamed.", LearningQaIntent::Explain);
+        qa.selection_is_diff = true;
+        qa.selection_text = "-fn old() {}\n+fn new() {}".to_string();
+
+        let seed = escalation_seed(&qa);
+
+        assert!(seed.contains("unified diff"), "{seed}");
+        assert!(seed.contains("+fn new() {}"), "markers survive: {seed}");
+    }
+
+    /// The label names the code, not the question: a session list full of
+    /// truncated questions is a session list you cannot scan.
+    #[test]
+    fn the_session_is_labelled_with_the_code_it_is_about() {
+        let qa = qa_with("It is the entry point.", LearningQaIntent::Explain);
+        assert_eq!(learning_session_label(&qa), "Learning: src/main.rs:4-9");
+
+        let mut deep = qa_with("x", LearningQaIntent::Explain);
+        deep.file_path = Some("src/app/some/deeply/nested/module.rs".to_string());
+        deep.anchor = LearningAnchor::File;
+        let label = learning_session_label(&deep);
+        assert!(label.starts_with("Learning: …"), "{label}");
+        assert!(
+            label.ends_with("nested/module.rs"),
+            "the tail is what identifies a path: {label}"
+        );
+    }
+
+    /// Shared with `crate::handlers::learning`'s tests: an overlay that can
+    /// really launch a session, for the `S` key.
+    pub(crate) fn launchable_app_for_handlers() -> (TempDir, TempDir, App) {
+        opened_app_that_can_launch()
+    }
+
+    /// An overlay whose tmux is mocked well enough to actually launch — the one
+    /// Learning Mode action that starts anything.
+    fn opened_app_that_can_launch() -> (TempDir, TempDir, App) {
+        let repo = repo_with_branch_change();
+        let db_dir = TempDir::new().unwrap();
+
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_create_window().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
+        tmux.expect_select_window().returning(|_, _| Ok(()));
+
+        let mut app = App::new_for_test(
+            store_at(repo.path(), true),
+            Box::new(tmux),
+            Box::new(MockWorktreeOps::new()),
+        );
+        // Both gates off: what is under test is the escalation, not the
+        // resource warning it would otherwise raise on a loaded machine.
+        app.config.max_concurrent_agents = 0;
+        app.config.low_memory_warn_mb = 0;
+        app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+        app.open_learning_mode(0, 0).unwrap();
+        while learning(&app).content_path.as_deref() != Some("src/main.rs") {
+            app.learning_select_next_entry();
+        }
+        (repo, db_dir, app)
+    }
+
+    fn launchable_with_an_answer() -> (TempDir, TempDir, App, String) {
+        let (repo, db, mut app) = opened_app_that_can_launch();
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("It is the entry point.".to_string()));
+        (repo, db, app, id)
+    }
+
+    /// The whole contract of this key: a session exists, the prompt is in the
+    /// composer, and **nothing has been sent**. Learning Mode's promise is that
+    /// it changes nothing, and this is the one door out of that — so the door
+    /// has to open onto something the user reads before it acts.
+    #[test]
+    fn escalating_opens_a_session_with_the_prompt_filled_in_and_unsent() {
+        let (_repo, _db, mut app, id) = launchable_with_an_answer();
+
+        let session_id = app.learning_escalate().expect("a session was started");
+
+        let sessions = &app.store.projects[0].features[0].sessions;
+        assert_eq!(sessions.len(), 1, "exactly one session was created");
+        assert_eq!(sessions[0].id, session_id);
+        assert!(sessions[0].kind.is_agent_harness());
+        assert!(
+            sessions[0].label.starts_with("Learning:"),
+            "got {}",
+            sessions[0].label
+        );
+
+        // The prompt is sitting in the composer, unsent: the seed is the
+        // editor's text, and only Enter would hand it over.
+        match &app.mode {
+            AppMode::Compose(state) => {
+                let text = state.editor.text();
+                assert!(text.contains("What does this do?"), "{text}");
+                assert!(text.contains("It is the entry point."), "{text}");
+                // The composer opens with the cursor after the last line, so
+                // the tail is what is on screen — which is where the boundary
+                // this key crosses has to be stated.
+                assert!(
+                    text.trim_end().ends_with("before you change anything."),
+                    "the last thing they see says this session can change files: {text}"
+                );
+            }
+            other => panic!(
+                "expected the composer, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+
+        // Reopening finds the link, so the entry renders as `→ session`.
+        app.open_learning_mode(0, 0).unwrap();
+        let row = learning(&app)
+            .qa
+            .iter()
+            .find(|r| r.id == id)
+            .expect("still in history")
+            .clone();
+        assert_eq!(row.spawned_session_id.as_deref(), Some(session_id.as_str()));
+    }
+
+    /// A second press must not pay for a second agent: the conversation it
+    /// would start already exists.
+    #[test]
+    fn a_second_escalation_returns_to_the_session_you_already_have() {
+        let (_repo, _db, mut app, _id) = launchable_with_an_answer();
+        let first = app.learning_escalate().unwrap();
+
+        // Back to the overlay, cursor on the same row.
+        app.cancel_compose();
+        app.open_learning_mode(0, 0).unwrap();
+        let again = app.learning_escalate().unwrap();
+
+        assert_eq!(again, first, "the same session");
+        assert_eq!(
+            app.store.projects[0].features[0].sessions.len(),
+            1,
+            "and no second one was created"
+        );
+        assert!(
+            matches!(app.mode, AppMode::Viewing(_)),
+            "it jumps into the session rather than re-seeding it"
+        );
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.message.contains("already opened a session")),
+            "the screen changed under a keypress that looked like it would start \
+             something, so it has to say why it didn't"
+        );
+    }
+
+    /// `→ session` is a promise the session list can stop keeping. Jumping into
+    /// a session that no longer exists is the swallowed keypress this mode is
+    /// built not to have.
+    #[test]
+    fn escalating_after_the_session_was_removed_starts_a_new_one() {
+        let (_repo, _db, mut app, id) = launchable_with_an_answer();
+        let first = app.learning_escalate().unwrap();
+
+        app.cancel_compose();
+        app.store.projects[0].features[0].sessions.clear();
+        app.open_learning_mode(0, 0).unwrap();
+        let second = app.learning_escalate().unwrap();
+
+        assert_ne!(second, first, "a fresh session, not the dead link");
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+        // Through `message`, not a toast: the composer is the mode now, and it
+        // draws no toasts — the pane promotes this the moment they step back.
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.contains("is gone — this is a new one")),
+            "which of the two happened has to be said: {:?}",
+            app.message
+        );
+
+        app.cancel_compose();
+        app.open_learning_mode(0, 0).unwrap();
+        let row = learning(&app).qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row.spawned_session_id.as_deref(), Some(second.as_str()));
+    }
+
+    /// Two agents on the same question at once is worth refusing; the refusal
+    /// says when to come back.
+    #[test]
+    fn escalating_a_question_still_generating_says_to_wait() {
+        let (_repo, _db, mut app) = opened_app_that_can_launch();
+        app.learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        assert!(app.learning_escalate().is_none());
+
+        assert!(app.store.projects[0].features[0].sessions.is_empty());
+        let error = learning(&app).error.clone().unwrap_or_default();
+        assert!(error.contains("still generating"), "{error}");
+    }
+
+    #[test]
+    fn escalating_with_nothing_asked_says_so() {
+        let (_repo, _db, mut app) = opened_app_that_can_launch();
+
+        assert!(app.learning_escalate().is_none());
+
+        assert!(app.store.projects[0].features[0].sessions.is_empty());
+        let error = learning(&app).error.clone().unwrap_or_default();
+        assert!(error.contains("Ask something first"), "{error}");
     }
 }

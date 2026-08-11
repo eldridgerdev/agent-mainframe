@@ -101,6 +101,11 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             // Keep what you're reading as something to come back to.
             KeyCode::Char('a') => app.learning_make_actionable(),
+            // Take what you're reading to an agent that can act on it. This
+            // leaves the overlay, so it is the last thing in the list.
+            KeyCode::Char('S') => {
+                app.learning_escalate();
+            }
             // Re-file what you're reading: an explanation that turned out to
             // be a problem belongs under "change".
             KeyCode::Char('i') => {
@@ -143,6 +148,9 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.learning_relabel_intent();
         }
         KeyCode::Char('a') => app.learning_make_actionable(),
+        KeyCode::Char('S') => {
+            app.learning_escalate();
+        }
 
         // Settings and view.
         KeyCode::Char('s') => app.learning_toggle_scope(),
@@ -559,6 +567,48 @@ mod tests {
             db.todo_list("proj-1").unwrap().is_none(),
             "not even a list was created"
         );
+    }
+
+    /// The one key that leaves the overlay, pressed where it is reached for:
+    /// from the answer that made the user want a real agent.
+    #[test]
+    fn s_hands_the_answer_you_are_reading_to_a_live_agent() {
+        let (_repo, _db, mut app) = crate::app::learning::tests::launchable_app_for_handlers();
+        // A real database means the intro is showing on this first visit.
+        handle_learning_key(&mut app, key(KeyCode::Esc)).unwrap();
+
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        app.learning_answer_tx
+            .send(crate::app::learning::LearningAnswer {
+                qa_id: id,
+                result: Ok("It is the entry point.".to_string()),
+            })
+            .unwrap();
+        assert!(app.poll_learning_answers_bg());
+
+        // From the answer pane.
+        handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
+        handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert_eq!(learning(&app).focus, LearningFocus::Qa);
+        handle_learning_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert!(learning(&app).answer_open);
+
+        handle_learning_key(&mut app, key(KeyCode::Char('S'))).unwrap();
+
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+        match &app.mode {
+            AppMode::Compose(state) => assert!(
+                state.editor.text().contains("What does this do?"),
+                "the composer is pre-filled: {}",
+                state.editor.text()
+            ),
+            other => panic!(
+                "expected the composer, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
     }
 
     #[test]

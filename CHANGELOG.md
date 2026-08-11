@@ -60,6 +60,18 @@ are tagged.
   dashboard. Entries that have been kept are marked `→ TODO`, and pressing `a`
   again opens that item instead of adding a second — unless you deleted it over
   there, in which case it says so and offers a new one.
+- **Hand an answer to a live agent.** Learning Mode cannot change your files,
+  which is the point of it — but sooner or later you want the thing it just
+  explained actually done. `S` opens a normal agent session on the feature with
+  the composer pre-filled: where you were reading, the code itself, what you
+  asked, and what you were told, phrased for whichever kind of entry it is.
+  Nothing is sent until you press Enter on a prompt you have read, and the last
+  line of it says out loud that this session — unlike the one that answered you
+  — can change files. If the answer came from a run that only saw the code on
+  screen, the seed says so and asks the live agent to check it against the real
+  thing first; at newcomer level it also asks it to explain what it is doing as
+  it goes. Entries you have handed over are marked `→ session`, and pressing `S`
+  again returns to that conversation rather than starting a second one.
 - **Asking never blocks.** Questions are answered in the background and several
   can be in flight at once, so you can keep reading while answers arrive. Your
   questions and answers are kept per project and are still there next time you

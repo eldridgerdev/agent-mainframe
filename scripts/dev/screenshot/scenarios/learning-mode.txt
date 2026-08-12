@@ -1,15 +1,20 @@
-# learning-mode: proves the Learning Mode overlay added on the
-# learning-mode branch — the `K` entry key, the read-only three-pane
-# surface, the first-open help, starter questions, the question prompt's
-# spelled-out anchor, and a real headless answer rendered as markdown
-# with the `F` follow-up affordance.
+# learning-mode: the Learning Mode overlay end to end — the `K` entry
+# key, the read-only three-pane surface, the first-open help, starter
+# questions, the question prompt's spelled-out anchor, a real headless
+# answer rendered as markdown, a follow-up, and handing the answer to a
+# live agent.
 #
-# Seeded with a small throwaway "taskline" repo (README.md, CLAUDE.md,
-# Cargo.toml, src/main.rs) so the pinned "Start here" group has real
-# files to find.
+# The question deliberately asks for an answer shaped as a bulleted list
+# whose every bullet *opens* with an inline code span: that is the shape
+# the shared markdown renderer used to drop (`• — it worked` instead of
+# "`Ok(())` — it worked"), so the answer frame doubles as the regression
+# shot for that fix.
+#
+# Seed a small throwaway repo with README.md, CLAUDE.md, Cargo.toml and
+# src/main.rs so the pinned "Start here" group has real files to find.
 #
 # Run with:
-#   ./amf-capture.sh --scenario <this file> \
+#   ./amf-capture.sh --scenario scenarios/learning-mode.txt \
 #     --seed <scratch>/seed-project.json \
 #     --seed-feature <scratch>/seed-feature.json \
 #     --geometry 160x44
@@ -18,22 +23,22 @@ wait:2000
 shot:dashboard
 
 # `K` on the selected project opens Learning Mode on its first feature.
-# The project has never been opened in Learning Mode, so the help
-# overlay shows itself unprompted — a newcomer's discovery path is this
-# overlay, not the source.
+# The project has never been opened in Learning Mode, so the help shows
+# itself unprompted — a newcomer's discovery path is this overlay, not
+# the source.
 key:K
 wait:2500
 shot:first-open-help
 
-# Esc dismisses the intro and leaves the browsing surface behind it.
-# The cursor opens on the "Tour this whole project" row rather than a
-# group header, so the first thing on screen is a question you can ask.
+# Esc dismisses the intro and leaves the browsing surface behind it. The
+# cursor opens on the "Tour this whole project" row rather than a group
+# header, so the first thing on screen is a question you can ask.
 key:Escape
 wait:600
 shot:overlay-start-here
 
-# `t` offers the starter questions that fit the current anchor — with
-# the project selected, only the project-level presets.
+# `t` offers the starter questions that fit the current anchor — with the
+# project selected, only the project-level presets.
 text:t
 wait:700
 shot:starter-questions
@@ -58,9 +63,9 @@ key:Enter
 wait:800
 shot:file-content
 
-# Focus is now the content pane. Walk down into the body of `run`, then
-# `v` starts a multi-line range and `j` extends it. The header echoes
-# the anchor in words as it changes.
+# Focus is now the content pane. Walk down into the body of `main`, then
+# `v` starts a multi-line range and `j` extends it. The header echoes the
+# anchor in words as it changes.
 key:j
 wait:120
 key:j
@@ -96,7 +101,7 @@ shot:line-range-selected
 # `e` is "explain this to me" — a teaching answer, no changes proposed.
 text:e
 wait:700
-text:What does this function do, and what is ExitCode?
+text:What does this function do? Answer as a bulleted list where each bullet starts with an inline code span naming the thing, like `Ok(())`.
 wait:400
 shot:question-typed
 
@@ -107,11 +112,12 @@ wait:1200
 shot:asking-in-flight
 
 # The real headless run against the selected harness takes a while.
-wait:60000
+wait:70000
 shot:answered
 
 # Tab moves focus to the questions pane, Enter opens the answer as
-# rendered markdown, with `F ask a follow-up` in its footer.
+# rendered markdown. Every bullet keeps the code it opens with, and the
+# provenance line above states the status once.
 key:Tab
 wait:400
 key:Enter
@@ -122,3 +128,11 @@ shot:answer-markdown
 text:F
 wait:700
 shot:follow-up-prompt
+
+# Esc backs out, then `S` hands the answer to a live agent: a real
+# session with the composer pre-filled and nothing submitted.
+key:Escape
+wait:500
+text:S
+wait:6000
+shot:escalate-composer

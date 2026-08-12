@@ -1014,6 +1014,31 @@ picked up in parallel with whatever is left of Epics 5 and 6.
 
 ### Epic 6 — Hardening and docs
 
+- [x] Capture the mode end to end and fix what the capture exposed.
+      Thirteen frames in `docs/screenshots/learning-mode/` (scenario
+      `scripts/dev/screenshot/scenarios/learning-mode.txt`), driven
+      against a throwaway instance seeded with a small demo repo, with
+      one real headless Claude run. Reading the rendered answer — rather
+      than the code that produces it — is what surfaced both defects
+      below, neither of which any unit test would have caught:
+      - **The shared markdown renderer dropped whatever opened a list
+        item.** `push_inline_text` only appended when a text block was
+        already open, and a *tight* list item carries its content with
+        no `Tag::Paragraph` around it, so the first inline event had
+        nowhere to land: `` `Ok(())` — it worked`` rendered as `• — it
+        worked`. Task-list checkboxes (always first in their item) and
+        footnote bodies opening with inline code went the same way. The
+        block is now opened at that single point rather than by each
+        caller remembering to. This bites Learning Mode hardest, because
+        a newcomer-pitched answer is written in exactly that shape, but
+        the fix is shared with every markdown surface in AMF. Tests:
+        `render_markdown_keeps_whatever_opens_a_list_item`,
+        `render_markdown_keeps_inline_code_opening_a_footnote_body`.
+      - **The answer pane stated its status twice** ("answered by Claude
+        · … · answered") and said "answered by" of a row that hadn't
+        answered. The status now rides the opening verb alone
+        (`answer_provenance`), covered by
+        `the_answer_pane_states_its_provenance_once`.
 - [x] Close the honesty gaps found by using the finished surface — each
       one a case where the UI stated something the code didn't
       guarantee:

@@ -10,7 +10,36 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Hand a Learning Mode answer to a live agent.** `S` on an answered entry —
+  in the history or while reading the answer — opens an agent session on the
+  feature with the composer already filled in: the file and lines you asked
+  about, the code itself, your question, and the answer you got. Nothing is
+  sent until you send it, so you can edit or delete the whole thing first.
+  This is the one way out of the mode's read-only promise, and the message
+  says so in its closing line. Pressing `S` again on the same entry returns to
+  that conversation rather than starting a second one; if you have since
+  closed that session, a fresh one starts and AMF tells you which happened.
+
+### Fixed
+
+- **Lists no longer lose whatever they start with.** Anywhere AMF renders
+  markdown — Learning Mode answers, the markdown viewer, plan review, PR
+  triage — a bullet that began with code showed only the rest of the line
+  (`• — it worked` instead of `` `Ok(())` — it worked``). Task list
+  checkboxes vanished for the same reason, so `- [ ] not done` lost its box
+  entirely. This hit Learning Mode hardest, because answers written for a
+  newcomer explain things in exactly that shape.
+- **Learning Mode's answer view no longer repeats itself.** The line above an
+  answer said "answered" twice, and claimed an answer was "answered by
+  Claude" while it was still being written. It now reads once and matches
+  what is actually happening: `Claude is answering`, `queued for Claude`, or
+  `Claude couldn't answer`.
+
+### Migration
+
+No migration is required.
 
 ## [v0.35.0] - 2026-08-12
 

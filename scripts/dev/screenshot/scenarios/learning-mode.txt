@@ -1,0 +1,124 @@
+# learning-mode: proves the Learning Mode overlay added on the
+# learning-mode branch — the `K` entry key, the read-only three-pane
+# surface, the first-open help, starter questions, the question prompt's
+# spelled-out anchor, and a real headless answer rendered as markdown
+# with the `F` follow-up affordance.
+#
+# Seeded with a small throwaway "taskline" repo (README.md, CLAUDE.md,
+# Cargo.toml, src/main.rs) so the pinned "Start here" group has real
+# files to find.
+#
+# Run with:
+#   ./amf-capture.sh --scenario <this file> \
+#     --seed <scratch>/seed-project.json \
+#     --seed-feature <scratch>/seed-feature.json \
+#     --geometry 160x44
+
+wait:2000
+shot:dashboard
+
+# `K` on the selected project opens Learning Mode on its first feature.
+# The project has never been opened in Learning Mode, so the help
+# overlay shows itself unprompted — a newcomer's discovery path is this
+# overlay, not the source.
+key:K
+wait:2500
+shot:first-open-help
+
+# Esc dismisses the intro and leaves the browsing surface behind it.
+# The cursor opens on the "Tour this whole project" row rather than a
+# group header, so the first thing on screen is a question you can ask.
+key:Escape
+wait:600
+shot:overlay-start-here
+
+# `t` offers the starter questions that fit the current anchor — with
+# the project selected, only the project-level presets.
+text:t
+wait:700
+shot:starter-questions
+
+# Enter loads the preset into the prompt as editable text; it asks
+# nothing on its own. The prompt states its anchor in plain words.
+key:Enter
+wait:700
+shot:question-prompt-project
+
+# Back out without asking, then walk into the Start here group down to
+# src/main.rs and open it.
+key:Escape
+wait:400
+key:j
+wait:250
+key:j
+wait:250
+key:j
+wait:400
+key:Enter
+wait:800
+shot:file-content
+
+# Focus is now the content pane. Walk down into the body of `run`, then
+# `v` starts a multi-line range and `j` extends it. The header echoes
+# the anchor in words as it changes.
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:300
+text:v
+wait:300
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:400
+shot:line-range-selected
+
+# `e` is "explain this to me" — a teaching answer, no changes proposed.
+text:e
+wait:700
+text:What does this function do, and what is ExitCode?
+wait:400
+shot:question-typed
+
+# Tab asks it. Control returns immediately: the row shows a status word
+# and the header counts what is still generating.
+key:Tab
+wait:1200
+shot:asking-in-flight
+
+# The real headless run against the selected harness takes a while.
+wait:60000
+shot:answered
+
+# Tab moves focus to the questions pane, Enter opens the answer as
+# rendered markdown, with `F ask a follow-up` in its footer.
+key:Tab
+wait:400
+key:Enter
+wait:900
+shot:answer-markdown
+
+# `F` opens the follow-up prompt carrying the parent's place and turn.
+text:F
+wait:700
+shot:follow-up-prompt

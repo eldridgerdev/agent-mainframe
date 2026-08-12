@@ -689,16 +689,6 @@ impl<'a> MarkdownRenderer<'a> {
             return;
         }
 
-        if self.current_text.is_none() {
-            let (first_prefix, rest_prefix, list_item) = self.current_block_prefixes();
-            self.current_text = Some(TextBlock {
-                kind: TextBlockKind::Paragraph { list_item },
-                nodes: Vec::new(),
-                first_prefix,
-                rest_prefix,
-            });
-        }
-
         self.push_inline_text(text.to_string(), self.current_style(), false);
     }
 
@@ -774,6 +764,12 @@ impl<'a> MarkdownRenderer<'a> {
         if text.is_empty() {
             return;
         }
+        // Open the block here rather than expecting every caller to. A tight
+        // list item emits its content with no `Tag::Paragraph` around it, so
+        // whatever arrives first — inline code, a task marker, a footnote
+        // reference — arrives with no block open, and used to be dropped
+        // silently. `- `Ok(())` — it worked` rendered as `• — it worked`.
+        self.ensure_text_block();
         if let Some(block) = &mut self.current_text {
             block.nodes.push(InlineNode::Text {
                 text,
@@ -1791,6 +1787,74 @@ mod tests {
             strings.iter().skip(1).any(|line| line.starts_with("  ")),
             "{strings:#?}"
         );
+    }
+
+    /// A tight list item carries its content with no `Tag::Paragraph` around
+    /// it, so whatever comes first arrives before any text block is open.
+    /// That used to be dropped on the floor: an item opening with inline code
+    /// rendered as a bare bullet, which is exactly how a newcomer-pitched
+    /// answer writes itself ("`Ok(())` — it worked").
+    #[test]
+    fn render_markdown_keeps_whatever_opens_a_list_item() {
+        let theme = Theme::default();
+        let render = |md: &str| {
+            render_markdown(md, &theme, 60, None)
+                .lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let bullets = render("- `Ok(())` — it worked\n- `Err(e)` — it failed");
+        assert_eq!(
+            bullets,
+            vec!["• Ok(()) — it worked", "• Err(e) — it failed"],
+            "inline code opening a bullet survives"
+        );
+
+        assert_eq!(
+            render("1. `Ok(())` leading code, ordered"),
+            vec!["1. Ok(()) leading code, ordered"],
+            "and in an ordered list"
+        );
+
+        // A task marker is always the first thing in its item, so it was
+        // dropped for the same reason.
+        assert_eq!(
+            render("- [ ] not done\n- [x] done"),
+            vec!["• ☐ not done", "• ☑ done"],
+            "task checkboxes survive"
+        );
+
+        // Text-first items were never affected; assert they still work.
+        assert_eq!(
+            render("- plain first, then `Ok(())`"),
+            vec!["• plain first, then Ok(())"]
+        );
+    }
+
+    /// The same drop point served footnote bodies, which also start without a
+    /// paragraph of their own.
+    #[test]
+    fn render_markdown_keeps_inline_code_opening_a_footnote_body() {
+        let theme = Theme::default();
+        let text = render_markdown("Text.[^n]\n\n[^n]: `code` first", &theme, 60, None)
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("code first"), "{text}");
     }
 
     #[test]

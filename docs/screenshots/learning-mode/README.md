@@ -23,12 +23,23 @@ call, not a fixture.
 | `010-answered` | The run lands; the row flips to `answered` and the counter clears. |
 | `011-answer-markdown` | The answer as rendered markdown — headings, a fenced Rust block, inline code — with the newcomer template defining `ExitCode`, `Result` and `Vec<String>` before using them. |
 | `012-follow-up-prompt` | `F` keeps the parent's place (`lines 11-15`, though the file list moved since) and says so. |
+| `013-answer-markdown-fixed` | The same pane after the two fixes below: every bullet keeps the inline code it opens with, and the provenance line states the status once. |
 
-## Known nits visible in `011`
+## Two nits caught in `011`, fixed in `013`
 
-Both belong to the shared markdown renderer, not to Learning Mode:
+`011` is kept as the before-shot for two defects it exposed:
 
-- Inline code at the very start of a list item is dropped — `` `Ok(())` — it
-  worked`` renders as `• — it worked`.
-- The answer pane's metadata line ends with the status word twice
-  ("…written for a newcomer reader · answered").
+- **Inline code opening a list item was dropped** — `` `Ok(())` — it worked``
+  rendered as `• — it worked`. `MarkdownRenderer::push_inline_text` only
+  appended when a text block was already open, and a *tight* list item carries
+  its content with no `Tag::Paragraph` around it, so whatever came first had
+  nowhere to land. Task-list checkboxes and footnote bodies opening with inline
+  code were dropped for the same reason. It now opens the block itself.
+- **The answer pane said its status twice** — "answered by Claude · … ·
+  answered" — and said "answered by" of a row that hadn't answered yet. The
+  status is now carried by the opening verb alone (`Claude is answering`,
+  `queued for Claude`, `Claude couldn't answer`).
+
+`013-answer-markdown-fixed` is a fresh run asking for an answer written as a
+bulleted list whose every bullet opens with an inline code span — the shape
+that used to come out blank. All nine bullets keep their code.

@@ -795,13 +795,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            format!(
-                "answered by {} · {} · written for a {} reader · {}",
-                qa.harness.display_name(),
-                qa.run_mode.description(),
-                qa.level.as_str(),
-                qa.status.word()
-            ),
+            answer_provenance(&qa),
             Style::default().fg(theme.text_muted.to_color()),
         )),
     ])
@@ -1564,6 +1558,27 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
 
 // ── small helpers ────────────────────────────────────────────
 
+/// Where an answer came from, in one line: who produced it, how much it was
+/// allowed to read, and who it was written for.
+///
+/// The status is carried by the opening verb rather than repeated at the end —
+/// "answered by Claude … · answered" said it twice, and said "answered by" of
+/// a row that hadn't answered.
+fn answer_provenance(qa: &LearningQa) -> String {
+    let who = qa.harness.display_name();
+    let lead = match qa.status {
+        LearningQaStatus::Answered => format!("answered by {who}"),
+        LearningQaStatus::Running => format!("{who} is answering"),
+        LearningQaStatus::Pending => format!("queued for {who}"),
+        LearningQaStatus::Failed => format!("{who} couldn't answer"),
+    };
+    format!(
+        "{lead} · {} · written for a {} reader",
+        qa.run_mode.description(),
+        qa.level.as_str()
+    )
+}
+
 /// One `key — what it does` row in the help overlay.
 fn key_row(k: &str, text: &str, key: Style, body: Style) -> Line<'static> {
     Line::from(vec![
@@ -1822,6 +1837,34 @@ let files = list_repo_files(workdir)?;
         // The question and its provenance head the pane.
         assert!(rendered.contains("What does this do?"));
         assert!(rendered.contains("answered by"));
+    }
+
+    #[test]
+    fn the_answer_pane_states_its_provenance_once() {
+        let qa = answered_qa();
+        let line = answer_provenance(&qa);
+        assert_eq!(
+            line,
+            "answered by Claude · this file only · written for a newcomer reader"
+        );
+        assert_eq!(
+            line.matches("answered").count(),
+            1,
+            "the status is the opening verb, not also a trailing word: {line}"
+        );
+
+        // A row that hasn't answered must not claim it was "answered by".
+        for (status, expected) in [
+            (LearningQaStatus::Running, "Claude is answering"),
+            (LearningQaStatus::Pending, "queued for Claude"),
+            (LearningQaStatus::Failed, "Claude couldn't answer"),
+        ] {
+            let mut pending = answered_qa();
+            pending.status = status;
+            let line = answer_provenance(&pending);
+            assert!(line.starts_with(expected), "{line}");
+            assert!(line.ends_with("written for a newcomer reader"), "{line}");
+        }
     }
 
     #[test]

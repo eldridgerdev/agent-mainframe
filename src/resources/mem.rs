@@ -11,6 +11,7 @@
 //!   page classes, with `vm.swapusage` for swap.
 //! - **Anything else**: `None`, which disables the memory gate entirely.
 
+#[cfg(any(target_os = "linux", test))]
 use std::path::Path;
 
 const KIB_PER_MIB: u64 = 1024;
@@ -20,20 +21,24 @@ const KIB_PER_MIB: u64 = 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemorySource {
     /// `/proc/meminfo` only.
+    #[cfg(any(target_os = "linux", test))]
     ProcMeminfo,
     /// `/proc/meminfo` for the totals, narrowed by a cgroup v2 memory limit.
+    #[cfg(any(target_os = "linux", test))]
     CgroupV2,
-    /// macOS `sysctl` + `vm_stat`. Only constructed on macOS; the label and
-    /// the parsers behind it are still compiled (and tested) everywhere.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    /// macOS `sysctl` + `vm_stat`.
+    #[cfg(any(target_os = "macos", test))]
     MacOs,
 }
 
 impl MemorySource {
     pub fn label(self) -> &'static str {
         match self {
+            #[cfg(any(target_os = "linux", test))]
             MemorySource::ProcMeminfo => "/proc/meminfo",
+            #[cfg(any(target_os = "linux", test))]
             MemorySource::CgroupV2 => "cgroup v2 memory limit",
+            #[cfg(any(target_os = "macos", test))]
             MemorySource::MacOs => "sysctl/vm_stat",
         }
     }
@@ -103,6 +108,7 @@ fn probe_linux() -> Option<MemorySnapshot> {
 }
 
 /// Parse `/proc/meminfo`. Values there are in KiB.
+#[cfg(any(target_os = "linux", test))]
 fn parse_proc_meminfo(raw: &str) -> Option<MemorySnapshot> {
     let mut total = None;
     let mut available = None;
@@ -148,6 +154,7 @@ fn parse_proc_meminfo(raw: &str) -> Option<MemorySnapshot> {
 /// from the process's own cgroup up to the root and keeps the tightest
 /// headroom it finds. `None` when the process is unlimited, on cgroup v1, or
 /// when the files are unreadable.
+#[cfg(any(target_os = "linux", test))]
 fn probe_cgroup_v2(self_cgroup: &Path, mount: &Path) -> Option<MemorySnapshot> {
     let raw = std::fs::read_to_string(self_cgroup).ok()?;
     let rel = parse_cgroup_v2_path(&raw)?;
@@ -175,6 +182,7 @@ fn probe_cgroup_v2(self_cgroup: &Path, mount: &Path) -> Option<MemorySnapshot> {
 
 /// The unified-hierarchy line of `/proc/self/cgroup` (`0::/some/path`).
 /// cgroup v1-only systems have no such line and yield `None`.
+#[cfg(any(target_os = "linux", test))]
 fn parse_cgroup_v2_path(raw: &str) -> Option<String> {
     raw.lines()
         .find_map(|line| line.strip_prefix("0::"))
@@ -183,6 +191,7 @@ fn parse_cgroup_v2_path(raw: &str) -> Option<String> {
 
 /// `memory.max` / `memory.current` for one cgroup directory. `None` when the
 /// cgroup is unlimited (`max`) or the files are missing.
+#[cfg(any(target_os = "linux", test))]
 fn read_cgroup_dir(dir: &Path) -> Option<MemorySnapshot> {
     let max = std::fs::read_to_string(dir.join("memory.max")).ok()?;
     let limit_bytes = parse_cgroup_limit(&max)?;
@@ -198,6 +207,7 @@ fn read_cgroup_dir(dir: &Path) -> Option<MemorySnapshot> {
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_cgroup_limit(raw: &str) -> Option<u64> {
     match raw.trim() {
         "max" => None,
@@ -251,7 +261,7 @@ fn probe_macos() -> Option<MemorySnapshot> {
 /// purgeable pages are all memory a new process can be given without paging
 /// anything out. `None` if the page size or the free-page line is missing,
 /// which is what makes macOS fall back to the concurrency limit alone.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(target_os = "macos", test))]
 fn parse_vm_stat_available_bytes(raw: &str) -> Option<u64> {
     let page_size = raw
         .lines()
@@ -278,7 +288,7 @@ fn parse_vm_stat_available_bytes(raw: &str) -> Option<u64> {
 
 /// `(total_mb, free_mb)` from `sysctl -n vm.swapusage`, whose values look like
 /// `total = 2048.00M  used = 512.00M  free = 1536.00M`.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(target_os = "macos", test))]
 fn parse_swapusage_mb(raw: &str) -> Option<(u64, u64)> {
     let field = |label: &str| -> Option<u64> {
         let rest = raw.split(label).nth(1)?;
@@ -310,6 +320,13 @@ SwapCached:            0 kB
 SwapTotal:       2097152 kB
 SwapFree:        2097152 kB
 ";
+
+    #[test]
+    fn memory_source_labels_describe_each_platform_probe() {
+        assert_eq!(MemorySource::ProcMeminfo.label(), "/proc/meminfo");
+        assert_eq!(MemorySource::CgroupV2.label(), "cgroup v2 memory limit");
+        assert_eq!(MemorySource::MacOs.label(), "sysctl/vm_stat");
+    }
 
     #[test]
     fn parses_proc_meminfo_into_mib() {

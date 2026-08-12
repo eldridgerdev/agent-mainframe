@@ -7,8 +7,8 @@
   answer, ask a follow-up, send a doubtful answer back with the repo
   readable, re-file an entry as the other kind of question, keep an answer
   as a to-do, and hand one to a live agent session. What remains is Epic 6
-  (error handling and logging, the remaining tests, `README.md` /
-  `CLAUDE.md`, and filing the deferred follow-ups) and Epic 7 (a
+  (the remaining tests, `README.md` / `CLAUDE.md`, and filing the deferred
+  follow-ups) and Epic 7 (a
   collapsible file tree, so the file list teaches the repo's layout instead
   of hiding it behind truncated paths), which blocks on nothing and can run
   in parallel.
@@ -1105,12 +1105,47 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       - `AmfDb::finish_learning_qa` persists a finished run by id rather
         than rewriting the whole row, so a completion can't overwrite an
         edit made while the answer was generating.
-- [ ] Add error handling and debug logging (`log_info` / `log_warn` /
+- [x] Add error handling and debug logging (`log_info` / `log_warn` /
       `log_error` with a `"learning"` context) for file load failures,
       headless run failures, and DB errors. User-facing errors must say
       what to do next, not just what failed (e.g. a missing harness CLI
       points at the `A` harness wizard). Confirm no
       `println!`/`eprintln!` was introduced.
+      Headless failures (`headless_failure_message` — a missing CLI already
+      points at `A`), DB writes, the escalation and TODO paths, and the
+      listing failures were already covered as those epics landed. Auditing
+      the rest for silence found four gaps, all closed:
+      - **Loading a file logged nothing.** The one failure a user meets by
+        simply moving the cursor set `content_error` and stopped there, so
+        the debug log had no record of *which* file or why. It now logs a
+        `learning` warning carrying the path, which the banner itself can't
+        give someone reading the log afterwards.
+      - **The non-git walk dropped unreadable folders silently.** A
+        directory `read_dir` couldn't open was `continue`d past, and a
+        listing missing a whole subtree is indistinguishable from a project
+        that doesn't have one — the worst shape for a user who doesn't know
+        the layout. `walk_files_capped` now returns `RepoWalk { files,
+        unreadable }`; each skipped folder is logged by name and the banner
+        says how many are missing and where to look. Test:
+        `the_fallback_walk_reports_folders_it_could_not_read`.
+      - **The onboarding lookup swallowed its error.** `.ok().unwrap_or(true)`
+        is the right *behaviour* (an intro that reappears every open is worse
+        than one that never shows), but it should not be silent; the failure
+        is now logged and the fallback made explicit.
+      - **Two messages stopped at what failed.** The file-load errors gained
+        next steps, checked against the keys that actually exist in this
+        overlay: the project anchor is `P` (not `p`), and there is no reload
+        key, so a vanished file points at `s` twice rather than an `r` that
+        would do nothing — pointing at a dead key is the swallowed-keypress
+        failure this mode exists to avoid.
+      An `open` line (`entries`, past-question count, and whether history is
+      being saved or is memory-only) and the no-features refusal are now
+      logged too, so "`K` did nothing" is diagnosable from the log alone.
+      Verified: no `println!`/`eprintln!` in any of the four Learning Mode
+      files, `cargo clippy --all-targets` clean, and
+      `a_file_that_vanished_says_what_to_do_and_reaches_the_debug_log`
+      asserts both halves — the banner's next step and the log entry naming
+      the file.
 - [ ] Add tests covering: DB round-trip of a session plus Q&A rows
       including `intent`, `level`, `parent_qa_id`, `todo_id`, and
       `spawned_session_id`; follow-up cascade on parent delete; the

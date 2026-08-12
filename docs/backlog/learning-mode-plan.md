@@ -1190,8 +1190,11 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       non-blocking queue, per-project history, harness choice, and the
       five keys that act on an answer: `F` (follow-ups), `D` (deep dive),
       `i` (re-file), `a` (keep as a to-do), and `S` (hand to a live
-      session). It now covers every built behaviour and claims nothing
-      that isn't. `README.md` and `CLAUDE.md` are still open.
+      session), plus a `Fixed` block for the error-handling pass: the
+      incomplete-file-list warning, the file errors that now say what to do
+      next, and failures being recorded in the debug log. It covers every
+      built behaviour and claims nothing that isn't. `README.md` and
+      `CLAUDE.md` are still open.
 - [ ] File follow-up items for the deferred work: anchor-drift
       resolution (commit SHA + snippet or fuzzy match, modeled on
       `App::reanchor_line_comments`), the alternative actionable

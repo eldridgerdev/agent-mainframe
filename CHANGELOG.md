@@ -40,6 +40,20 @@ are tagged.
   Claude" while it was still being written. It now reads once and matches
   what is actually happening: `Claude is answering`, `queued for Claude`, or
   `Claude couldn't answer`.
+- **Learning Mode says when its file list is incomplete.** In a project that
+  is not a git repository, any folder AMF could not open was left out
+  silently — and a list missing a whole folder looks exactly like a project
+  that does not have one. It now tells you how many folders are missing and
+  where to see which ones.
+- **Learning Mode's file errors now tell you what to do next.** Opening a
+  binary file, a file too large to show, or one you do not have permission to
+  read used to stop at the diagnosis. Each message now ends with a way
+  forward, and names the file the way the list does instead of printing its
+  full path.
+- **Learning Mode failures are recorded.** Files that would not open, folders
+  that could not be read, and saved-history problems now appear in the debug
+  log (`D` on the dashboard) with the path involved, so a question that went
+  nowhere can be traced after the fact instead of vanishing.
 
 ### Migration
 

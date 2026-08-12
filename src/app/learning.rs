@@ -402,14 +402,32 @@ impl App {
             AppMode::Learning(state) => state.is_git,
             _ => return,
         };
-        if let AppMode::Learning(state) = &mut self.mode {
-            if state.scope == BrowseScope::RepoTree && !is_git {
+        let stuck_in_repo_tree = matches!(
+            &self.mode,
+            AppMode::Learning(state) if state.scope == BrowseScope::RepoTree && !is_git
+        );
+        if stuck_in_repo_tree {
+            // There is no second scope to switch to, but the key still has a
+            // job here: rebuild the list in place. Elsewhere the advice for a
+            // file that vanished since the list was built is "press s" — and
+            // if this branch only explained itself and returned, that advice
+            // would be a no-op in exactly the projects it's aimed at.
+            self.learning_reload_entries();
+            self.learning_load_selected_content();
+            if let AppMode::Learning(state) = &mut self.mode
+                // A problem listing the files is more useful than the reminder
+                // that this isn't a repository, so it keeps the line.
+                && state.error.is_none()
+            {
                 state.error = Some(
-                    "This project isn't a git repository, so there are no branch changes to show."
+                    "This project isn't a git repository, so there are no branch changes to \
+                     show — rebuilt the file list instead."
                         .to_string(),
                 );
-                return;
             }
+            return;
+        }
+        if let AppMode::Learning(state) = &mut self.mode {
             state.scope = state.scope.toggled();
             state.selected_entry = 0;
             state.list_scroll = 0;
@@ -824,7 +842,8 @@ pub fn load_file_lines(path: &Path, label: &str) -> Result<Vec<String>, String> 
     let meta = std::fs::metadata(path).map_err(|e| {
         format!(
             "Couldn't open {label}: {e}. It may have been moved or deleted since this list \
-             was built — press s twice to rebuild it, or pick another file."
+             was built — press s to rebuild the list (twice, if that switches scope), \
+             or pick another file."
         )
     })?;
     if meta.len() > MAX_FILE_BYTES {
@@ -4464,6 +4483,43 @@ pub(crate) mod tests {
         assert_eq!(state.scope, BrowseScope::RepoTree);
         let err = state.error.clone().unwrap();
         assert!(err.contains("git repository"), "{err}");
+    }
+
+    /// The scope key can't switch scope in a non-git project, so it rebuilds
+    /// the list instead — which is what the vanished-file message tells the
+    /// user to press, and that message is only reachable from this scope.
+    #[test]
+    fn the_scope_key_rebuilds_a_non_git_list_it_cannot_switch() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("main.py"), "print('hi')\n").unwrap();
+        std::fs::write(dir.path().join("gone.py"), "print('bye')\n").unwrap();
+        let mut app = app_at(dir.path(), false);
+        app.open_learning_mode(0, 0).unwrap();
+
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("gone.py"))
+            .expect("gone.py should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        app.learning_load_selected_content();
+        std::fs::remove_file(dir.path().join("gone.py")).unwrap();
+        app.learning_load_selected_content();
+        let content_error = learning(&app).content_error.clone().unwrap();
+        assert!(content_error.contains("press s"), "{content_error}");
+
+        app.learning_toggle_scope();
+        let state = learning(&app);
+        assert_eq!(state.scope, BrowseScope::RepoTree, "still no other scope");
+        let paths: Vec<&str> = state.entries.iter().filter_map(|e| e.path()).collect();
+        assert_eq!(paths, vec!["main.py"], "the vanished file is gone from it");
+        assert!(
+            state.content_error.is_none(),
+            "the surviving file loads: {:?}",
+            state.content_error
+        );
     }
 
     /// With no DB (as in tests) the overlay still opens and browses; history is

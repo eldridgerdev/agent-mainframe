@@ -50,6 +50,12 @@ are tagged.
   read used to stop at the diagnosis. Each message now ends with a way
   forward, and names the file the way the list does instead of printing its
   full path.
+- **The scope key rebuilds the file list when it cannot switch scope.** In a
+  project that is not a git repository there are no branch changes to switch
+  to, so `s` used to only say so. That left the advice for a file that had
+  been moved or deleted since the list was built — press `s` to rebuild it —
+  doing nothing in exactly the projects it was written for. `s` now rebuilds
+  the list in place there, and still explains why the scope did not change.
 - **Learning Mode failures are recorded.** Files that would not open, folders
   that could not be read, and saved-history problems now appear in the debug
   log (`D` on the dashboard) with the path involved, so a question that went

@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.35.0] - 2026-08-12
+
 ### Added
 
 - **Learning Mode: read a codebase and ask an agent about it.** Press `K` on a
@@ -394,6 +398,11 @@ storage the first time it runs.
   feature using the main repository no longer causes inherited diff-review
   popups in later worktree features. AMF scopes existing hooks automatically
   on startup; no manual configuration changes are required.
+
+### Migration
+
+No manual migration is required. AMF creates and migrates the new local
+storage automatically and refreshes managed feature hooks on startup.
 
 ## [v0.34.1] - 2026-08-12
 

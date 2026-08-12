@@ -388,6 +388,23 @@ storage the first time it runs.
   dismissed investigations leave the current plan untouched, and a failure
   preserves the research request for retry. No migration is required.
 
+## [v0.34.1] - 2026-08-12
+
+### Fixed
+
+- **Older macOS Claude hooks are repaired before they can run.** AMF now checks
+  worktree-local settings, root-repository settings inherited by worktrees,
+  legacy project settings, and Claude's global settings. Old unquoted commands
+  under `~/Library/Application Support/amf` no longer keep producing
+  `PostToolUse: Bash hook error`, including when Claude is a secondary session
+  in a Codex, OpenCode, or Pi feature. Generated Claude scripts now live under
+  the space-free `~/.amf/hooks` path and use Claude's direct command form.
+
+### Migration
+
+No manual settings edits are required. After upgrading, restart AMF and restart
+affected features so Claude reloads the automatically repaired hook settings.
+
 ## [v0.34.0] - 2026-08-07
 
 ### Added
@@ -439,16 +456,6 @@ storage the first time it runs.
 
 ### Fixed
 
-- **Older macOS Claude hooks are repaired before they can run.** AMF now checks
-  current `.claude/settings.local.json` files, the legacy project-local
-  `.claude/settings.json` location, root-repository settings inherited by
-  worktrees, and Claude's global settings during startup. Old unquoted
-  `~/Library/Application Support/amf` commands no longer keep producing
-  `PostToolUse: Bash hook error` after upgrading, including when Claude is a
-  secondary session in a Codex, OpenCode, or Pi feature. New hooks use Claude's
-  direct exec form so paths with spaces bypass shell parsing entirely, and AMF
-  stages its generated Claude scripts under `~/.amf/hooks` instead of macOS's
-  space-containing `~/Library/Application Support` path.
 - **Pane feedback no longer covers agent output indefinitely.** Repaint and
   status confirmations appear as timed toasts and clear automatically.
 - **Custom-session icons can be chosen visually.** The config wizard previews

@@ -1228,31 +1228,86 @@ impl App {
         let session = feature.add_session_named(kind.clone(), label.to_string());
         let session_id = session.id.clone();
         let window = session.tmux_window.clone();
+        feature.collapsed = false;
+        let si = feature.sessions.len() - 1;
 
-        self.tmux.create_window(&tmux_session, &window, &workdir)?;
+        // The record above exists before the window and the harness do, so a
+        // failure below has to take it back out again. Callers are told the
+        // start failed and act on that — some of them offer the key again —
+        // and a leftover record would leave a session in the tree that no
+        // agent is behind, plus a second one on the next press.
+        let launched = self.launch_agent_session_window(
+            &agent,
+            &tmux_session,
+            &window,
+            &workdir,
+            &mode,
+            &session_id,
+            extra_args,
+        );
+        if let Err(e) = launched {
+            // Best-effort: whether the window exists depends on which step
+            // failed, and tmux is already unhappy either way.
+            let _ = self.tmux.kill_window(&tmux_session, &window);
+            if let Some(feature) = self
+                .store
+                .projects
+                .get_mut(pi)
+                .and_then(|p| p.features.get_mut(fi))
+            {
+                feature.sessions.retain(|s| s.id != session_id);
+            }
+            return Err(e);
+        }
+
+        // The session is up by now, so a failed save is not worth tearing a
+        // live agent back down for — and returning an error here would tell
+        // the caller nothing was started while a harness is running. It is
+        // logged and the in-memory store keeps the session; the next save
+        // writes it out.
+        if let Err(e) = self.save() {
+            self.log_warn(
+                "session",
+                format!("started '{label}' but couldn't save the store: {e}"),
+            );
+        }
+        Ok(si)
+    }
+
+    /// Create the tmux window for a new agent session and launch its harness in
+    /// it. Split out so the caller can undo the session record as one unit when
+    /// any step of it fails.
+    #[allow(clippy::too_many_arguments)]
+    fn launch_agent_session_window(
+        &self,
+        agent: &AgentKind,
+        tmux_session: &str,
+        window: &str,
+        workdir: &Path,
+        mode: &VibeMode,
+        session_id: &str,
+        extra_args: Vec<String>,
+    ) -> Result<()> {
+        self.tmux.create_window(tmux_session, window, workdir)?;
         match agent {
             AgentKind::Claude => {
                 self.tmux
-                    .launch_claude(&tmux_session, &window, &session_id, None, extra_args)?;
+                    .launch_claude(tmux_session, window, session_id, None, extra_args)?;
             }
             AgentKind::Opencode => {
                 self.tmux
-                    .launch_opencode(&tmux_session, &window, &session_id)?;
+                    .launch_opencode(tmux_session, window, session_id)?;
             }
             AgentKind::Codex => {
-                let codex_args = crate::codex_config::launch_override_args(&workdir, &mode);
+                let codex_args = crate::codex_config::launch_override_args(workdir, mode);
                 self.tmux
-                    .launch_codex(&tmux_session, &window, &session_id, None, codex_args)?;
+                    .launch_codex(tmux_session, window, session_id, None, codex_args)?;
             }
             AgentKind::Pi => {
-                self.tmux.launch_pi(&tmux_session, &window, &session_id)?;
+                self.tmux.launch_pi(tmux_session, window, session_id)?;
             }
         }
-
-        feature.collapsed = false;
-        let si = feature.sessions.len() - 1;
-        self.save()?;
-        Ok(si)
+        Ok(())
     }
 
     pub fn remove_session(&mut self) -> Result<()> {

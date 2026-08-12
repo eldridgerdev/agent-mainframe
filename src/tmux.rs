@@ -2268,6 +2268,10 @@ impl TmuxOps for TmuxManager {
         TmuxManager::select_window(session, window)
     }
 
+    fn kill_window(&self, session: &str, window: &str) -> Result<()> {
+        TmuxManager::kill_window(session, window)
+    }
+
     fn kill_session(&self, session: &str) -> Result<()> {
         TmuxManager::kill_session(session)
     }

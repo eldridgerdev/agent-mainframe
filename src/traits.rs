@@ -61,6 +61,7 @@ pub trait TmuxOps: Send + Sync {
     fn send_key_name(&self, session: &str, window: &str, key_name: &str) -> Result<()>;
     fn resize_pane(&self, session: &str, window: &str, cols: u16, rows: u16) -> Result<()>;
     fn select_window(&self, session: &str, window: &str) -> Result<()>;
+    fn kill_window(&self, session: &str, window: &str) -> Result<()>;
     fn kill_session(&self, session: &str) -> Result<()>;
 }
 

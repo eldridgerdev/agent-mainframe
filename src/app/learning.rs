@@ -2417,12 +2417,12 @@ impl App {
 
         let mut replacing_deleted = false;
         if let Some(session_id) = qa.spawned_session_id.clone() {
-            let existing = self
-                .store
-                .projects
-                .get(pi)
-                .and_then(|p| p.features.get(fi))
-                .and_then(|f| f.sessions.iter().position(|s| s.id == session_id));
+            let feature = self.store.projects.get(pi).and_then(|p| p.features.get(fi));
+            let existing = feature.and_then(|f| {
+                f.sessions
+                    .iter()
+                    .position(|s| s.id == session_id && self.learning_session_is_reusable(f, s))
+            });
             match existing {
                 Some(si) => {
                     self.selection = Selection::Session(pi, fi, si);
@@ -2437,8 +2437,9 @@ impl App {
                     self.push_toast_info("You already opened a session for that one — here it is.");
                     return Some(session_id);
                 }
-                // The session is gone, so the `→ session` marker is a promise
-                // nothing can keep. Drop it and start a fresh one.
+                // The session is gone — removed, or its window is no longer
+                // running — so the `→ session` marker is a promise nothing can
+                // keep. Drop it and start a fresh one.
                 None => {
                     self.learning_clear_spawned_session(&qa.id);
                     replacing_deleted = true;
@@ -2528,6 +2529,27 @@ impl App {
                 Some("The session that answer opened is gone — this is a new one.".to_string());
         }
         Some(session_id)
+    }
+
+    /// Whether a linked session is one `S` can hand the user back to.
+    ///
+    /// A surviving record is not enough: the agent can have exited, or its
+    /// window been killed, while the rest of the feature runs on — and opening
+    /// a dead pane is not the conversation the marker promised. A *stopped*
+    /// feature is not dead in that sense: nothing of it is running, and
+    /// entering the session starts it and recreates every saved window, so the
+    /// linked conversation comes back with it. Only a live tmux session missing
+    /// this window counts as gone.
+    fn learning_session_is_reusable(
+        &self,
+        feature: &crate::project::Feature,
+        session: &crate::project::FeatureSession,
+    ) -> bool {
+        !session.kind.is_tmux_backed()
+            || !self.tmux.session_exists(&feature.tmux_session)
+            || self
+                .tmux
+                .window_exists(&feature.tmux_session, &session.tmux_window)
     }
 
     /// Drop a `spawned_session_id` whose session no longer exists, in memory and
@@ -6034,6 +6056,8 @@ pub(crate) mod tests {
 
         let mut tmux = MockTmuxOps::new();
         tmux.expect_session_exists().return_const(true);
+        // A linked session is only reusable while its window is still there.
+        tmux.expect_window_exists().return_const(true);
         tmux.expect_create_window().returning(|_, _, _| Ok(()));
         tmux.expect_launch_claude()
             .returning(|_, _, _, _, _| Ok(()));
@@ -6178,6 +6202,81 @@ pub(crate) mod tests {
         app.open_learning_mode(0, 0).unwrap();
         let row = learning(&app).qa.iter().find(|r| r.id == id).unwrap();
         assert_eq!(row.spawned_session_id.as_deref(), Some(second.as_str()));
+    }
+
+    /// The record outliving the agent is the ordinary case — an agent that quit,
+    /// a window killed from tmux — and it looks exactly like a live link from
+    /// the store alone. Jumping into a dead pane is the same swallowed keypress
+    /// as jumping into a removed one.
+    #[test]
+    fn escalating_after_the_agent_exited_starts_a_new_one() {
+        let (_repo, _db, mut app, id) = launchable_with_an_answer();
+        let first = app.learning_escalate().unwrap();
+        app.cancel_compose();
+
+        // The feature is still running — other windows are alive — but the
+        // window this answer opened is not.
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_window_exists().return_const(false);
+        tmux.expect_create_window().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
+        tmux.expect_select_window().returning(|_, _| Ok(()));
+        app.tmux = Box::new(tmux);
+
+        app.open_learning_mode(0, 0).unwrap();
+        let second = app.learning_escalate().unwrap();
+
+        assert_ne!(second, first, "a fresh session, not the dead window");
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.contains("is gone — this is a new one")),
+            "which of the two happened has to be said: {:?}",
+            app.message
+        );
+
+        app.cancel_compose();
+        app.open_learning_mode(0, 0).unwrap();
+        let row = learning(&app).qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row.spawned_session_id.as_deref(), Some(second.as_str()));
+    }
+
+    /// "Nothing was changed" has to be true. A launch that dies partway used to
+    /// leave the session record behind, so the tree showed a session with no
+    /// agent in it and the next press started yet another.
+    #[test]
+    fn a_failed_launch_leaves_no_session_behind() {
+        let (_repo, _db, mut app, id) = launchable_with_an_answer();
+
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_window_exists().return_const(true);
+        tmux.expect_create_window()
+            .returning(|_, _, _| Ok(()))
+            .times(1);
+        tmux.expect_launch_claude()
+            .returning(|_, _, _, _, _| anyhow::bail!("no claude here"));
+        // The window got as far as existing, so the rollback takes it out.
+        tmux.expect_kill_window().returning(|_, _| Ok(())).times(1);
+        app.tmux = Box::new(tmux);
+
+        assert!(app.learning_escalate().is_none());
+
+        assert!(
+            app.store.projects[0].features[0].sessions.is_empty(),
+            "the session record is rolled back with the failed launch"
+        );
+        let row = learning(&app).qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(
+            row.spawned_session_id, None,
+            "and nothing is linked, so the next press starts one rather than \
+             opening a session that was never created"
+        );
+        let error = learning(&app).error.clone().unwrap_or_default();
+        assert!(error.contains("nothing was changed"), "{error}");
     }
 
     /// Two agents on the same question at once is worth refusing; the refusal

@@ -1011,6 +1011,24 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       the new session under the feature, the history row carried `→ session`,
       the footer hint had flipped to *back to its session*, and pressing `S`
       again jumped into that session rather than starting a second.
+      Review found two lifecycle gaps in this, both since fixed:
+      - **A surviving record is not a live session.** The reuse check only
+        looked the session up in the feature, so an agent that had exited (or
+        a window killed from tmux) still counted as the linked conversation and
+        `S` opened a dead pane. `learning_session_is_reusable` now also asks
+        tmux for the window — but only when the feature's tmux session is
+        running, because a *stopped* feature is restarted by `enter_view` and
+        gets every saved window back. Test:
+        `escalating_after_the_agent_exited_starts_a_new_one`.
+      - **A failed launch left the record behind.**
+        `create_agent_session_labeled` adds the session before the window,
+        harness, and save, so a failure partway left a session in the tree with
+        no agent behind it while telling the caller "nothing was changed" — and
+        with no link recorded, the next `S` added another. The launch is now one
+        unit (`launch_agent_session_window`) whose failure kills the window and
+        removes the record; a failed *save* is deliberately not rolled back,
+        since the agent is up by then, and is logged instead. Test:
+        `a_failed_launch_leaves_no_session_behind`.
 
 ### Epic 6 — Hardening and docs
 

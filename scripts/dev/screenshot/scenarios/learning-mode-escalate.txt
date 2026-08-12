@@ -1,0 +1,101 @@
+# learning-mode-escalate: the one door out of Learning Mode's read-only
+# promise. Open with K, browse to a file, select a range, ask an
+# explaining question, wait for the real headless answer, then press `S`
+# to hand it to a live agent — check a real session starts, the composer
+# opens pre-filled with the anchor + question + answer, and nothing is
+# sent. Pressing `S` again must return to that session rather than
+# starting a second one.
+# (docs/backlog/learning-mode-plan.md, Epic 5.)
+#
+# Needs a seeded project + feature, asks a real question, and launches a
+# real agent session, so the harness must be authenticated:
+#   ./amf-capture.sh --scenario scenarios/learning-mode-escalate.txt \
+#       --seed <project.json> --seed-feature <feature.json> \
+#       --geometry 140x44
+
+shot:dashboard
+
+# K on the selected project opens Learning Mode on its first feature.
+# A project's first visit opens the help overlay by itself — `S` is
+# documented there, and "Worth knowing" says what it crosses.
+key:K
+wait:1500
+shot:first-open-help
+
+key:Escape
+wait:400
+shot:start-here-group
+
+# Down the pinned group: tour -> README.md -> CLAUDE.md -> src/main.rs.
+key:j
+key:j
+key:j
+wait:400
+key:Enter
+wait:800
+shot:file-loaded
+
+# A range to anchor the question — and the seed — to.
+key:PageDown
+wait:300
+key:v
+key:j
+key:j
+key:j
+key:j
+wait:400
+shot:range-selected
+
+key:e
+wait:400
+text:What does this do, and what would I need to know to change it?
+wait:400
+key:Tab
+wait:30000
+wait:30000
+shot:answered
+
+# Into the history pane and open the answer: deciding "I want a real
+# agent on this" happens while reading it.
+key:Tab
+wait:300
+key:Enter
+wait:600
+shot:answer-open
+
+# `S` starts the session and lands in the composer, pre-filled. The
+# toast has to say that this session can change files and that nothing
+# is sent yet.
+key:S
+wait:6000
+shot:composer-seeded
+
+# Scroll the seed: it carries where, what was asked, and what was said.
+key:PageDown
+wait:400
+shot:seed-body
+
+# Esc keeps the draft and drops back to the live pane, unsent.
+key:Escape
+wait:800
+shot:session-pane-unsent
+
+# Back to the dashboard: the feature now has the Learning: session.
+key:C-q
+wait:800
+shot:dashboard-has-session
+
+# Reopening Learning Mode, the row carries the → session marker and `S`
+# returns to the session instead of starting a second one.
+key:K
+wait:1500
+key:Tab
+key:Tab
+wait:400
+shot:history-marked
+key:Enter
+wait:600
+shot:answer-footer-back-to-session
+key:S
+wait:3000
+shot:jumped-back

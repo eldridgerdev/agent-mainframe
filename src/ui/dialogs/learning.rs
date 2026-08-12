@@ -795,13 +795,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            format!(
-                "answered by {} · {} · written for a {} reader · {}",
-                qa.harness.display_name(),
-                qa.run_mode.description(),
-                qa.level.as_str(),
-                qa.status.word()
-            ),
+            answer_provenance(&qa),
             Style::default().fg(theme.text_muted.to_color()),
         )),
     ])
@@ -880,8 +874,9 @@ struct AnswerHint {
 /// overrun either: the widget truncates from the right, which would take `Esc
 /// back to browsing` off a modal with no other way out. Hints are dropped
 /// instead, least useful first — the scrolling keys that duplicate `j/k`, then
-/// re-filing, a bookkeeping gesture rather than a way to learn anything. `F`,
-/// `D`, `a`, `j/k` and `Esc` are never dropped.
+/// re-filing, a bookkeeping gesture rather than a way to learn anything, then
+/// handing the answer to a live agent. `F`, `D`, `a`, `j/k` and `Esc` are never
+/// dropped.
 ///
 /// Hints for keys the selected row would refuse are not shown at all — a
 /// deep-dive row cannot be sent deeper, and an unanswered one cannot be
@@ -922,13 +917,29 @@ fn answer_footer(qa: &LearningQa, width: usize, theme: &Theme) -> Vec<Line<'stat
             drop_rank: None,
         });
     }
+    // The one key here that leaves the read-only overlay. Offered last because
+    // it is the least likely next move while reading, but dropped *after*
+    // re-filing: an answer you cannot act on is worth more than a label.
+    if !qa.status.is_in_flight() {
+        actions.push(AnswerHint {
+            key: "S",
+            // Terse for a reason: with five hints on the line, the pane's ~118
+            // inner columns at a 140-column terminal leave 22 for this one, and
+            // going over costs the whole `i` hint.
+            label: match qa.spawned_session_id {
+                Some(_) => "back to its session",
+                None => "hand to a live agent",
+            },
+            drop_rank: Some(1),
+        });
+    }
     actions.push(AnswerHint {
         key: "i",
         label: match qa.intent {
             LearningQaIntent::Explain => "file as a change",
             LearningQaIntent::Action => "file as a note",
         },
-        drop_rank: Some(1),
+        drop_rank: Some(2),
     });
 
     let moving = vec![
@@ -1476,6 +1487,10 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
             "a",
             "keep an answer as a to-do — adds a note to the list, not a change",
         ),
+        (
+            "S",
+            "hand an answer to a live agent — that one can change files",
+        ),
     ] {
         lines.push(key_row(k, text, key, body));
     }
@@ -1531,6 +1546,9 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         " Most answers only see the code on screen, so they can name files or",
         " lines that don't exist. D re-asks with the repo open, so the agent",
         " can go and check. The first answer is kept either way.",
+        " S is the one way out of read-only: it opens a normal agent session,",
+        " which can change files. The question is filled in for you, and",
+        " nothing is sent until you press Enter on it.",
     ] {
         lines.push(Line::from(Span::styled(note, muted)));
     }
@@ -1539,6 +1557,27 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
 }
 
 // ── small helpers ────────────────────────────────────────────
+
+/// Where an answer came from, in one line: who produced it, how much it was
+/// allowed to read, and who it was written for.
+///
+/// The status is carried by the opening verb rather than repeated at the end —
+/// "answered by Claude … · answered" said it twice, and said "answered by" of
+/// a row that hadn't answered.
+fn answer_provenance(qa: &LearningQa) -> String {
+    let who = qa.harness.display_name();
+    let lead = match qa.status {
+        LearningQaStatus::Answered => format!("answered by {who}"),
+        LearningQaStatus::Running => format!("{who} is answering"),
+        LearningQaStatus::Pending => format!("queued for {who}"),
+        LearningQaStatus::Failed => format!("{who} couldn't answer"),
+    };
+    format!(
+        "{lead} · {} · written for a {} reader",
+        qa.run_mode.description(),
+        qa.level.as_str()
+    )
+}
 
 /// One `key — what it does` row in the help overlay.
 fn key_row(k: &str, text: &str, key: Style, body: Style) -> Line<'static> {
@@ -1801,6 +1840,34 @@ let files = list_repo_files(workdir)?;
     }
 
     #[test]
+    fn the_answer_pane_states_its_provenance_once() {
+        let qa = answered_qa();
+        let line = answer_provenance(&qa);
+        assert_eq!(
+            line,
+            "answered by Claude · this file only · written for a newcomer reader"
+        );
+        assert_eq!(
+            line.matches("answered").count(),
+            1,
+            "the status is the opening verb, not also a trailing word: {line}"
+        );
+
+        // A row that hasn't answered must not claim it was "answered by".
+        for (status, expected) in [
+            (LearningQaStatus::Running, "Claude is answering"),
+            (LearningQaStatus::Pending, "queued for Claude"),
+            (LearningQaStatus::Failed, "Claude couldn't answer"),
+        ] {
+            let mut pending = answered_qa();
+            pending.status = status;
+            let line = answer_provenance(&pending);
+            assert!(line.starts_with(expected), "{line}");
+            assert!(line.ends_with("written for a newcomer reader"), "{line}");
+        }
+    }
+
+    #[test]
     fn a_long_answer_scrolls_to_its_end() {
         let mut state = state();
         let mut qa = answered_qa();
@@ -1878,6 +1945,7 @@ let files = list_repo_files(workdir)?;
             "F ask a follow-up",
             "D ask again, reading the repo",
             "a keep this as a to-do",
+            "S hand to a live agent",
             "i file as a change",
             "j/k scroll",
             "PgUp/PgDn page",
@@ -1905,6 +1973,10 @@ let files = list_repo_files(workdir)?;
         assert!(
             !narrow.contains("i file as a change"),
             "bookkeeping is what gives way: {narrow}"
+        );
+        assert!(
+            !narrow.contains("hand to a live agent"),
+            "and then the one action you can still reach from the dashboard: {narrow}"
         );
     }
 
@@ -2029,6 +2101,25 @@ let files = list_repo_files(workdir)?;
         assert!(
             !kept.contains("a keep this as a to-do"),
             "it would not add a second: {kept}"
+        );
+    }
+
+    /// Same reasoning as the keep hint: a row that already opened a session
+    /// jumps back to it rather than starting a second, so the footer says which
+    /// of the two the key will do.
+    #[test]
+    fn the_escalation_hint_says_whether_it_would_start_or_return() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        assert!(render(&mut state).contains("S hand to a live agent"));
+
+        state.qa[0].spawned_session_id = Some("sess-9".to_string());
+        let linked = render(&mut state);
+        assert!(linked.contains("S back to its session"), "{linked}");
+        assert!(
+            !linked.contains("S hand to a live agent"),
+            "it would not start a second: {linked}"
         );
     }
 

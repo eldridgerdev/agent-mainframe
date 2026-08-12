@@ -1,15 +1,17 @@
 # Learning Mode
 
 - **Status:** In progress — Epics 1 (foundations), 2 (browsing), 3
-  (asking), and 4 (surface) complete, plus a first pass of Epic 6
-  hardening. Learning Mode is reachable from the dashboard with `K` and
-  usable end to end: browse, select, ask, read the answer, ask a
-  follow-up, send a doubtful answer back with the repo readable, re-file
-  an entry as the other kind of question, and keep an answer as a to-do.
-  Epic 5's remaining item (escalate to a live session) is next. Epic 7
-  (a collapsible file tree, so the file list teaches the repo's layout
-  instead of hiding it behind truncated paths) is new, blocks on
-  nothing, and can run in parallel.
+  (asking), 4 (surface), and 5 (acting on an answer) complete, plus a
+  first pass of Epic 6 hardening. Learning Mode is reachable from the
+  dashboard with `K` and usable end to end: browse, select, ask, read the
+  answer, ask a follow-up, send a doubtful answer back with the repo
+  readable, re-file an entry as the other kind of question, keep an answer
+  as a to-do, and hand one to a live agent session. What remains is Epic 6
+  (error handling and logging, the remaining tests, `README.md` /
+  `CLAUDE.md`, and filing the deferred follow-ups) and Epic 7 (a
+  collapsible file tree, so the file list teaches the repo's layout instead
+  of hiding it behind truncated paths), which blocks on nothing and can run
+  in parallel.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -935,18 +937,126 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `todo.body` verbatim, so the context reaches the composer, but the launch
       itself was not exercised here — it is the TODOs overlay's existing `g`
       flow, unchanged by this work.
-- [ ] Implement **escalate to live session**: create an agent-harness
-      session on the feature via `create_agent_session_labeled`,
-      `enter_view_without_auto_compose`, and `open_compose_seeded` with
-      an intent- and level-appropriate seed (anchor + question +
-      answer, editable, not auto-submitted); store
-      `spawned_session_id` and jump back to the linked session on
-      repeat escalation. Verify the composer is pre-filled and unsent
-      for both intents, and that the newcomer-level seed asks the live
-      agent to narrate what it is doing.
+- [x] Implement **escalate to live session**: `S` on the Q&A pane or inside
+      the answer pane creates an agent-harness session on the feature via
+      `create_agent_session_labeled`, enters it with
+      `enter_view_without_auto_compose`, and seeds the composer with
+      `open_compose_seeded` — editable, not auto-submitted. The seed
+      (`escalation_seed`) carries the anchor, the selection, the question and
+      the answer, phrased by intent, with the `Newcomer` overlay asking the
+      live agent to narrate. `spawned_session_id` is recorded on the row
+      *before* the mode changes, the way the TODO spawn does it, since once
+      `enter_view` lands there is no `state.qa` left to write to. Four
+      decisions came out of building it:
+      - **A toast raised on arrival is never painted.** `ui::dashboard` draws
+        the `Compose` branch and `return`s before the shared `draw_toasts`
+        pass, so the first cut's "this session can change files" toast — the
+        one thing this key most needed to say — was invisible in the one place
+        it was raised. Drawing toasts there is not the fix either: they stack
+        from the bottom-right, which is exactly where the compose box sits, so
+        they would cover the prompt the user is meant to read. The statement
+        moved **into the seed**, and the leftovers (a stale link replaced, a
+        link that failed to save) moved to `self.message`, which
+        `promote_message_to_toast` surfaces the moment the user steps back to
+        the pane.
+      - **…and it has to be the seed's *last* line, not its first.** The
+        composer opens with the cursor after the last line, so the tail is what
+        is on screen. Verified the wrong way round first: the opening line
+        carrying it scrolled off, and a ~60-line seed meant the user arrived
+        looking at the middle of a quoted answer. It is now the closing ask —
+        "Unlike the run that produced it, you can change files here — so ask me
+        before you change anything" — which is both visible and true of the
+        agent reading it.
+      - **A failed row is escalatable; an in-flight one is not.** A headless run
+        that never came back is precisely when a live agent is worth reaching
+        for, so the seed says there was no answer rather than leaving a gap that
+        reads as one. An in-flight row is refused, because escalating it would
+        set two agents on the same question at once.
+      - **The session runs the feature's agent, not Learning Mode's harness.**
+        The live session is work on this feature and every other session in it
+        runs that agent; continuity costs nothing because the seed carries the
+        answer verbatim rather than relying on the agent remembering it.
+      A repeat press returns to the linked session without re-seeding — that
+      conversation already has this context — and a link whose session has been
+      removed is dropped and a fresh one started, saying which of the two
+      happened. The answer footer's `S` hint flips between "hand to a live
+      agent" and "back to its session"; fitting it cost the label its verbosity,
+      since with five hints the pane's ~118 inner columns at 140 leave exactly
+      22 for this one, and going over dropped the whole `i` hint.
+      Tests: `an_escalated_question_carries_where_what_and_the_answer`,
+      `a_shallow_answer_is_handed_over_with_its_limits_stated`,
+      `the_seed_asks_for_what_the_entry_was_filed_as`,
+      `a_newcomer_seed_asks_the_live_agent_to_explain_itself`,
+      `escalating_a_failed_question_says_there_was_no_answer`,
+      `a_long_answer_is_excerpted_into_the_seed`,
+      `a_diff_selection_is_handed_over_as_a_diff`,
+      `the_session_is_labelled_with_the_code_it_is_about`,
+      `escalating_opens_a_session_with_the_prompt_filled_in_and_unsent`,
+      `a_second_escalation_returns_to_the_session_you_already_have`,
+      `escalating_after_the_session_was_removed_starts_a_new_one`,
+      `escalating_a_question_still_generating_says_to_wait`,
+      `escalating_with_nothing_asked_says_so`, the handler-level
+      `s_hands_the_answer_you_are_reading_to_a_live_agent`, and the render test
+      `the_escalation_hint_says_whether_it_would_start_or_return`. The
+      overlay-level tests needed a first for this feature: a `MockTmuxOps` with
+      real launch expectations (`launchable_app_for_handlers`), since this is
+      the only Learning Mode action that starts anything.
+      **Verified against real Claude**, driving the built binary in a 140×44
+      tmux through `scripts/dev/screenshot/scenarios/learning-mode-escalate.txt`
+      against a seeded throwaway repo: asked about a line range in
+      `src/main.rs`, pressed `S` on the answer, and a real `claude` session
+      titled `Learning: src/main.rs:11-15` came up with the composer pre-filled
+      and **nothing sent** — the closing boundary line was the last thing on
+      screen. `Esc` left the draft intact on the live pane, the dashboard showed
+      the new session under the feature, the history row carried `→ session`,
+      the footer hint had flipped to *back to its session*, and pressing `S`
+      again jumped into that session rather than starting a second.
+      Review found two lifecycle gaps in this, both since fixed:
+      - **A surviving record is not a live session.** The reuse check only
+        looked the session up in the feature, so an agent that had exited (or
+        a window killed from tmux) still counted as the linked conversation and
+        `S` opened a dead pane. `learning_session_is_reusable` now also asks
+        tmux for the window — but only when the feature's tmux session is
+        running, because a *stopped* feature is restarted by `enter_view` and
+        gets every saved window back. Test:
+        `escalating_after_the_agent_exited_starts_a_new_one`.
+      - **A failed launch left the record behind.**
+        `create_agent_session_labeled` adds the session before the window,
+        harness, and save, so a failure partway left a session in the tree with
+        no agent behind it while telling the caller "nothing was changed" — and
+        with no link recorded, the next `S` added another. The launch is now one
+        unit (`launch_agent_session_window`) whose failure kills the window and
+        removes the record; a failed *save* is deliberately not rolled back,
+        since the agent is up by then, and is logged instead. Test:
+        `a_failed_launch_leaves_no_session_behind`.
 
 ### Epic 6 — Hardening and docs
 
+- [x] Capture the mode end to end and fix what the capture exposed.
+      Thirteen frames in `docs/screenshots/learning-mode/` (scenario
+      `scripts/dev/screenshot/scenarios/learning-mode.txt`), driven
+      against a throwaway instance seeded with a small demo repo, with
+      one real headless Claude run. Reading the rendered answer — rather
+      than the code that produces it — is what surfaced both defects
+      below, neither of which any unit test would have caught:
+      - **The shared markdown renderer dropped whatever opened a list
+        item.** `push_inline_text` only appended when a text block was
+        already open, and a *tight* list item carries its content with
+        no `Tag::Paragraph` around it, so the first inline event had
+        nowhere to land: `` `Ok(())` — it worked`` rendered as `• — it
+        worked`. Task-list checkboxes (always first in their item) and
+        footnote bodies opening with inline code went the same way. The
+        block is now opened at that single point rather than by each
+        caller remembering to. This bites Learning Mode hardest, because
+        a newcomer-pitched answer is written in exactly that shape, but
+        the fix is shared with every markdown surface in AMF. Tests:
+        `render_markdown_keeps_whatever_opens_a_list_item`,
+        `render_markdown_keeps_inline_code_opening_a_footnote_body`.
+      - **The answer pane stated its status twice** ("answered by Claude
+        · … · answered") and said "answered by" of a row that hadn't
+        answered. The status now rides the opening verb alone
+        (`answer_provenance`), covered by
+        `the_answer_pane_states_its_provenance_once`.
 - [x] Close the honesty gaps found by using the finished surface — each
       one a case where the UI stated something the code didn't
       guarantee:
@@ -1021,18 +1131,25 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       level/threading model), and `CHANGELOG.md`.
       **`CHANGELOG.md` is done** — an `Added` block under `[Unreleased]`
       covering `K`, the two ask keys, starter questions, the levels, the
-      non-blocking queue, per-project history, harness choice, and now
-      `F` (follow-ups), `D` (deep dive), `i` (re-file), and `a` (keep as
-      a to-do). It still claims nothing that isn't built: escalate to a
-      live session is absent because it is the remaining Epic 5 item.
-      `README.md` and `CLAUDE.md` are still open.
+      non-blocking queue, per-project history, harness choice, and the
+      five keys that act on an answer: `F` (follow-ups), `D` (deep dive),
+      `i` (re-file), `a` (keep as a to-do), and `S` (hand to a live
+      session). It now covers every built behaviour and claims nothing
+      that isn't. `README.md` and `CLAUDE.md` are still open.
 - [ ] File follow-up items for the deferred work: anchor-drift
       resolution (commit SHA + snippet or fuzzy match, modeled on
       `App::reanchor_line_comments`), the alternative actionable
       mechanisms (composer seeded and scoped to file/range, inline
       suggested patch like Final Review suggestions), and turning
       "Where to look next" file references into navigable jumps within
-      the overlay.
+      the overlay. Plus one found by building the escalation and **not
+      specific to Learning Mode**: `AppMode::Compose` draws and returns
+      before `ui::dashboard`'s shared `draw_toasts` pass, so *any* toast
+      raised while landing in the composer is silently swallowed —
+      including `open_compose_seeded`'s own "Prompt loaded — review and
+      send", which the prompt library has presumably never shown either.
+      The fix is not simply adding the call: toasts stack from the
+      bottom-right, exactly where the compose box is drawn.
 
 ### Epic 7 — Browsing a real repository (collapsible file tree)
 
@@ -1155,6 +1272,13 @@ collapse. This is a second, general case of that, not a new mechanism.
   is a prompt to type rather than something to accept. Options if it
   keeps grating: seed from the question instead for `Explain` entries,
   or ask the agent for a title as part of the answer.
+- **Which agent an escalated session runs is a judgment call.** It uses the
+  *feature's* agent, not the harness the Learning Mode picker (`m`) chose,
+  on the grounds that the live session is work on the feature and every
+  other session in it runs that agent — and that the seed carries the answer
+  verbatim, so nothing is lost by switching. The opposite reading is
+  defensible: a user who deliberately picked a harness to answer their
+  questions may expect the same one to continue. Unvalidated either way.
 - **TODO-list noise.** Learning Mode writes into the same one-per-project
   list as the TODOs overlay. Whether learning-originated items need
   visual distinction or a separate list is undecided.

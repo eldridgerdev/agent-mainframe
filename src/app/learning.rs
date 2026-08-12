@@ -341,7 +341,7 @@ impl App {
             return Vec::new();
         };
         match db.learning_qa(session_id) {
-            Ok(rows) => self.reconcile_interrupted_qa(rows),
+            Ok(rows) => thread_rows(self.reconcile_interrupted_qa(rows)),
             Err(e) => {
                 self.log_error(
                     "learning",
@@ -638,9 +638,10 @@ impl App {
                 // Logged out here rather than inside the borrow: a file that
                 // won't open is the one failure the user meets while simply
                 // moving the cursor, so it belongs in the debug log too.
-                let load_failure = loaded.as_ref().err().map(|reason| {
-                    format!("couldn't load {path} for browsing: {reason}")
-                });
+                let load_failure = loaded
+                    .as_ref()
+                    .err()
+                    .map(|reason| format!("couldn't load {path} for browsing: {reason}"));
                 if let AppMode::Learning(state) = &mut self.mode {
                     match loaded {
                         Ok(lines) => {
@@ -1468,6 +1469,34 @@ pub fn thread_insert_index(rows: &[LearningQa], parent_id: &str) -> Option<usize
         }
     }
     Some(last + 1)
+}
+
+/// Reorder a stored history so every follow-up sits directly under the thread
+/// it continues, the way the live list keeps it.
+///
+/// Rows are stored — and reloaded — in the order they were asked, but a
+/// follow-up is asked *after* whatever else was asked in between. Replaying
+/// that order verbatim would leave it indented under an unrelated question,
+/// since the renderer takes its placement from the list and only its
+/// indentation from `parent_qa_id`. Threading here rather than at render time
+/// keeps one notion of order: `learning_enqueue` inserts a new row at exactly
+/// this position, so a reopened history reads the way it did when it was
+/// written.
+///
+/// A row whose parent is missing lands at the end rather than disappearing.
+pub fn thread_rows(rows: Vec<LearningQa>) -> Vec<LearningQa> {
+    let mut out: Vec<LearningQa> = Vec::with_capacity(rows.len());
+    for row in rows {
+        // Oldest first, so a parent is always placed before the rows that hang
+        // off it.
+        let at = row
+            .parent_qa_id
+            .as_deref()
+            .and_then(|parent| thread_insert_index(&out, parent))
+            .unwrap_or(out.len());
+        out.insert(at, row);
+    }
+    out
 }
 
 /// A finished headless run, delivered back to the UI thread.
@@ -4535,6 +4564,31 @@ pub(crate) mod tests {
         assert!(!learning(&app).entries.is_empty());
     }
 
+    /// Without a database the overlay is still fully usable — questions are
+    /// asked and answered against the in-memory list — but that list is all
+    /// there is, so it goes when the overlay does. Asserted rather than assumed:
+    /// the alternative is refusing to answer at all, which would be worse.
+    #[test]
+    fn without_a_database_questions_still_work_but_do_not_outlive_the_overlay() {
+        let (_repo, mut app) = opened_app();
+        assert!(app.db.is_none());
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("It runs the program.".to_string()));
+        assert_eq!(
+            learning(&app).qa[0].answer.as_deref(),
+            Some("It runs the program.")
+        );
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+        assert!(
+            learning(&app).qa.is_empty(),
+            "there was nowhere to keep it, and nothing pretends otherwise"
+        );
+    }
+
     #[test]
     fn closing_returns_to_the_feature_it_was_opened_from() {
         let repo = repo_with_branch_change();
@@ -5436,6 +5490,39 @@ pub(crate) mod tests {
         );
     }
 
+    /// Stored order is the order things were asked; threaded order is the order
+    /// they are read in. Ids here are in ask order, so `b` and `e` were asked
+    /// long after the questions they continue.
+    #[test]
+    fn threading_a_stored_history_gathers_each_conversation() {
+        let stored = vec![
+            qa_row("a", None),
+            qa_row("d", None),
+            qa_row("b", Some("a")),
+            qa_row("e", Some("d")),
+            qa_row("c", Some("b")),
+        ];
+        let threaded = thread_rows(stored);
+        let ids: Vec<&str> = threaded.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["a", "b", "c", "d", "e"],
+            "each thread reads top to bottom, and roots keep the order they \
+             were asked in"
+        );
+    }
+
+    /// Orphans are not supposed to happen — the delete cascades — but a row
+    /// pointing at a parent that isn't there must still be readable rather than
+    /// dropped, since it is the only copy of a question someone asked.
+    #[test]
+    fn threading_keeps_a_row_whose_parent_is_gone() {
+        let stored = vec![qa_row("a", None), qa_row("orphan", Some("vanished"))];
+        let threaded = thread_rows(stored);
+        let ids: Vec<&str> = threaded.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "orphan"]);
+    }
+
     #[test]
     fn following_up_on_an_unanswered_question_says_to_wait() {
         let (_repo, mut app) = opened_app();
@@ -5616,6 +5703,126 @@ pub(crate) mod tests {
             Some("It retries forever."),
             "and the answer came back with it"
         );
+    }
+
+    /// Stored history comes back oldest-first, but a follow-up is asked *after*
+    /// whatever else was asked in between — so replaying that order verbatim
+    /// would indent it under an unrelated question. This is the same defect
+    /// `a_follow_up_lands_under_the_thread_it_continues` fixed for the live
+    /// list, arriving by the other door.
+    #[test]
+    fn a_reloaded_thread_keeps_its_follow_ups_under_their_parents() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let first = ask_and_answer(&mut app, "First question?", "First answer.");
+        let unrelated = ask_and_answer(&mut app, "Unrelated question?", "Unrelated answer.");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_qa = 0;
+        }
+        let child = follow_up(&mut app, "Follow-up?");
+        deliver(&mut app, &child, Ok("Follow-up answer.".to_string()));
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let ids: Vec<&str> = learning(&app).qa.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![first.as_str(), child.as_str(), unrelated.as_str()],
+            "a reopened history threads the same way the live one does"
+        );
+    }
+
+    /// A rerun sits in its original's place for the same reason, and it is
+    /// threaded by `parent_qa_id` like everything else.
+    #[test]
+    fn a_reloaded_deep_dive_stays_with_the_question_it_re_asked() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let origin = ask_and_answer(&mut app, "What does this do?", "A guess.");
+        let unrelated = ask_and_answer(&mut app, "Unrelated question?", "Unrelated answer.");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_qa = 0;
+        }
+        let deeper = app.learning_deep_dive().expect("the rerun starts");
+        deliver(
+            &mut app,
+            &deeper,
+            Ok("Checked against the repo.".to_string()),
+        );
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let ids: Vec<&str> = learning(&app).qa.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![origin.as_str(), deeper.as_str(), unrelated.as_str()],
+            "the rerun reloads under the answer it was checking"
+        );
+    }
+
+    /// Every anchor kind has to survive a reload: the file and lines a question
+    /// was asked about are what make its answer readable a week later, and a
+    /// follow-up asked after the reload quotes them again.
+    #[test]
+    fn a_reloaded_question_still_knows_what_it_was_asked_about() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        app.learning_cursor_move(0);
+        app.learning_start_range();
+        app.learning_cursor_move(1);
+        let anchor = learning(&app).anchor;
+        assert!(
+            matches!(anchor, LearningAnchor::Lines { .. }),
+            "the test selected a range: {anchor:?}"
+        );
+        let id = app
+            .learning_ask("Explain these lines.", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("They parse the arguments.".to_string()));
+        let selection = learning(&app).qa[0].selection_text.clone();
+        assert!(!selection.is_empty(), "the question captured its lines");
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let row = learning(&app).qa[0].clone();
+        assert_eq!(row.anchor, anchor);
+        assert_eq!(row.file_path.as_deref(), Some("src/main.rs"));
+        assert_eq!(row.selection_text, selection);
+        assert_eq!(row.level, LearningLevel::Newcomer);
+        assert_eq!(row.intent, LearningQaIntent::Explain);
+    }
+
+    /// The intro is the newcomer's discovery path, so it opens unasked — but
+    /// only once. A second visit that reopens it reads as the mode not
+    /// remembering the user was here.
+    #[test]
+    fn the_intro_opens_on_the_first_visit_only() {
+        let repo = repo_with_branch_change();
+        let db_dir = TempDir::new().unwrap();
+        let mut app = app_at(repo.path(), true);
+        app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+
+        app.open_learning_mode(0, 0).unwrap();
+        assert!(
+            learning(&app).help_open,
+            "the first visit explains what this is"
+        );
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+        assert!(
+            !learning(&app).help_open,
+            "and the second one does not repeat itself"
+        );
+    }
+
+    /// Without a database there is nowhere to record that the intro was shown,
+    /// so showing it would mean showing it on every single open.
+    #[test]
+    fn the_intro_stays_shut_when_there_is_nothing_to_remember_it_with() {
+        let (_repo, app) = opened_app();
+        assert!(app.db.is_none());
+        assert!(!learning(&app).help_open);
     }
 
     // ── keeping an answer as a to-do ─────────────────────────

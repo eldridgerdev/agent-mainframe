@@ -28,6 +28,13 @@ are tagged.
   been moved or deleted since the list was built — press `s` to rebuild it —
   doing nothing in exactly the projects it was written for. `s` now rebuilds
   the list in place there, and still explains why the scope did not change.
+- **Reopening Learning Mode keeps each conversation together.** Follow-up
+  questions are shown indented under the question they continue, but on a
+  reopen they were laid out in the order they had been asked — so a follow-up
+  asked after a couple of other questions came back indented under whichever
+  unrelated question happened to precede it. History now reads on the second
+  visit the way it read on the first, and answers you sent back for a deeper
+  look stay next to the answer they were checking.
 - **Learning Mode failures are recorded.** Files that would not open, folders
   that could not be read, and saved-history problems now appear in the debug
   log (`D` on the dashboard) with the path involved, so a question that went

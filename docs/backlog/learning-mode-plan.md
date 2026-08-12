@@ -1,14 +1,14 @@
 # Learning Mode
 
 - **Status:** In progress — Epics 1 (foundations), 2 (browsing), 3
-  (asking), 4 (surface), and 5 (acting on an answer) complete, plus a
-  first pass of Epic 6 hardening. Learning Mode is reachable from the
+  (asking), 4 (surface), and 5 (acting on an answer) complete, and Epic 6
+  hardening is done bar its docs. Learning Mode is reachable from the
   dashboard with `K` and usable end to end: browse, select, ask, read the
   answer, ask a follow-up, send a doubtful answer back with the repo
   readable, re-file an entry as the other kind of question, keep an answer
-  as a to-do, and hand one to a live agent session. What remains is Epic 6
-  (the remaining tests, `README.md` / `CLAUDE.md`, and filing the deferred
-  follow-ups) and Epic 7 (a
+  as a to-do, and hand one to a live agent session. What remains is Epic 6's
+  `README.md` / `CLAUDE.md` pass and filing the deferred
+  follow-ups, plus Epic 7 (a
   collapsible file tree, so the file list teaches the repo's layout instead
   of hiding it behind truncated paths), which blocks on nothing and can run
   in parallel.
@@ -1167,15 +1167,67 @@ picked up in parallel with whatever is left of Epics 5 and 6.
         retry there is. Tests:
         `opening_the_file_already_under_the_cursor_does_not_read_it_again`,
         `opening_a_file_that_failed_to_load_tries_it_again`.
-- [ ] Add tests covering: DB round-trip of a session plus Q&A rows
+- [x] Add tests covering: DB round-trip of a session plus Q&A rows
       including `intent`, `level`, `parent_qa_id`, `todo_id`, and
       `spawned_session_id`; follow-up cascade on parent delete; the
       no-DB in-memory path; scope toggling; anchor serialization
       (including the project anchor); and that an answered explain
       entry with no follow-up persists and reloads unchanged (the
       default, non-actioned path).
-- [ ] Run `cargo build`, `cargo clippy`, and the test suite; fix all
-      warnings introduced by this feature.
+      Most of the list was already standing from the epics that built it
+      (`qa_round_trips_every_field`, `answered_explain_entry_reloads_unchanged`,
+      `deleting_a_parent_cascades_to_follow_ups`,
+      `the_overlay_works_without_a_database`,
+      `toggling_scope_switches_to_the_branch_s_changed_files_and_back`,
+      `project_anchor_round_trips_without_a_file`). Auditing it against the
+      schema found four holes, and the first of them was a real defect:
+      - **A reopened history lost its threading.** Rows reload
+        `ORDER BY created_at`, but a follow-up is asked *after* whatever else
+        was asked in between — and the renderer takes a row's *placement* from
+        the list while taking only its *indentation* from `parent_qa_id`. So a
+        follow-up came back indented under an unrelated question: exactly the
+        defect Epic 5's `thread_insert_index` fixed for the live list, arriving
+        by the other door. `thread_rows` now reorders a loaded history through
+        that same function, so there is one notion of order rather than two
+        that agree until the overlay is closed. Deep dives thread by
+        `parent_qa_id` too, so they came along for free. Tests:
+        `a_reloaded_thread_keeps_its_follow_ups_under_their_parents`,
+        `a_reloaded_deep_dive_stays_with_the_question_it_re_asked`,
+        `threading_a_stored_history_gathers_each_conversation`,
+        `threading_keeps_a_row_whose_parent_is_gone` (an orphan is kept, not
+        dropped — it is the only copy of a question someone asked).
+      - **`selection_is_diff` was written but never asserted back**, though
+        the plan already records that it cannot be re-derived from the other
+        columns. Now asserted in `qa_round_trips_every_field`.
+      - **`parent_qa_id`'s value was never checked on reload.** The cascade
+        tests prove a follow-up is *reachable* from its parent, which is a
+        different claim from it coming back pointing at the right row — and it
+        is the second claim the threading above depends on.
+        (`a_follow_up_reloads_pointing_at_its_parent`.)
+      - **Only two of the four anchor kinds round-tripped.** `File` and
+        `Hunk { index }` were untested, and `Hunk` is the one with a payload
+        that isn't a line range. (`every_anchor_kind_round_trips`.)
+      **Captured** as five frames in
+      `docs/screenshots/learning-mode-thread-reload/` (scenario
+      `scripts/dev/screenshot/scenarios/learning-mode-thread-reload.txt`),
+      driven against a throwaway instance seeded with a small demo repo, with
+      three real headless Claude runs. The before/after pair renders the **same
+      scratch database** — the pre-fix frame is that database reopened by a
+      binary built without `thread_rows`, so the only difference between the two
+      images is the row order, and no second set of runs was paid for. The order
+      the scenario drives is the only one that shows the defect: a follow-up on
+      the *most recent* question is adjacent to its parent either way, which is
+      why every earlier capture of this feature missed it.
+      Also landed the overlay-level onboarding test Epic 4 deferred to here
+      (`the_intro_opens_on_the_first_visit_only`, plus
+      `the_intro_stays_shut_when_there_is_nothing_to_remember_it_with`), and
+      stated the no-DB contract as an assertion rather than an assumption:
+      `without_a_database_questions_still_work_but_do_not_outlive_the_overlay`
+      — the overlay answers questions, and nothing pretends they were kept.
+- [x] Run `cargo build`, `cargo clippy`, and the test suite; fix all
+      warnings introduced by this feature. `cargo build` and
+      `cargo clippy --all-targets` are both clean, and the full suite is
+      1902 passing / 0 failing.
 - [ ] Update `README.md` (feature bullet, the dashboard keybindings
       table, and a `### Learning Mode` section written for a first-time
       reader: what it is for, that it never edits files, the two ask
@@ -1192,7 +1244,8 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `i` (re-file), `a` (keep as a to-do), and `S` (hand to a live
       session), plus a `Fixed` block for the error-handling pass: the
       incomplete-file-list warning, the file errors that now say what to do
-      next, and failures being recorded in the debug log. It covers every
+      next, failures being recorded in the debug log, and a reopened history
+      keeping its follow-ups with the question they continue. It covers every
       built behaviour and claims nothing that isn't. `README.md` and
       `CLAUDE.md` are still open.
 - [ ] File follow-up items for the deferred work: anchor-drift

@@ -692,9 +692,11 @@ pub fn cleanup_hooks_at(settings_path: &std::path::Path, extra_cmds: &[&str]) {
         arr.retain(|entry| {
             !entry["hooks"].as_array().is_some_and(|hs| {
                 hs.iter().any(|h| {
-                    h["command"]
-                        .as_str()
-                        .is_some_and(|c| static_cmds.contains(&c) || extra_cmds.contains(&c))
+                    h["command"].as_str().is_some_and(|c| {
+                        static_cmds.contains(&c)
+                            || extra_cmds.contains(&c)
+                            || app::setup::is_amf_claude_hook_command(c, &[])
+                    })
                 })
             })
         });
@@ -1872,6 +1874,29 @@ mod tests {
         assert!(
             s["hooks"].get("Stop").is_none(),
             "Stop entry for notify.sh should be removed"
+        );
+    }
+
+    #[test]
+    fn removes_unquoted_macos_amf_hook() {
+        let dir = TempDir::new().unwrap();
+        let path = write_settings(
+            &dir,
+            r#"{
+            "hooks": {
+                "PostToolUse": [{"matcher":"","hooks":[
+                    {"type":"command","command":"/Users/me/Library/Application Support/amf/tool-stop.sh"}
+                ]}]
+            }
+        }"#,
+        );
+
+        cleanup_hooks_at(&path, &[]);
+
+        let s = read_settings(&path);
+        assert!(
+            s["hooks"].get("PostToolUse").is_none(),
+            "stale global macOS PostToolUse hook should be removed"
         );
     }
 

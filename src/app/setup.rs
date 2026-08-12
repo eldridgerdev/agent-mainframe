@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::project::{AgentKind, ProjectStore, VibeMode};
+use crate::project::{AgentKind, Feature, ProjectStore, SessionKind, VibeMode};
 use crate::theme::ThemeManager;
 
 use super::AppConfig;
@@ -50,7 +50,7 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":quoted-claude-hooks-v2");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":scope-diff-review-hooks-v6");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -142,13 +142,20 @@ fn ensure_gitignore_entry(path: &Path, entry: &str) {
 }
 
 fn claude_managed_commands() -> Vec<String> {
-    let config_dir = crate::project::amf_config_dir();
-    CLAUDE_MANAGED_SCRIPT_NAMES
-        .iter()
-        .map(|name| config_dir.join(name).to_string_lossy().into_owned())
-        .collect()
+    [
+        crate::project::amf_claude_hooks_dir(),
+        crate::project::amf_config_dir(),
+    ]
+    .into_iter()
+    .flat_map(|dir| {
+        CLAUDE_MANAGED_SCRIPT_NAMES
+            .iter()
+            .map(move |name| dir.join(name).to_string_lossy().into_owned())
+    })
+    .collect()
 }
 
+#[cfg(test)]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -161,11 +168,20 @@ fn shell_unquote_single(value: &str) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn claude_hook_command(path: &Path) -> String {
     shell_quote(&path.to_string_lossy())
 }
 
-fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
+pub(crate) fn claude_exec_hook(path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "type": "command",
+        "command": path.to_string_lossy(),
+        "args": []
+    })
+}
+
+pub(crate) fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
     let normalized = shell_unquote_single(command);
     if managed_commands
         .iter()
@@ -186,13 +202,26 @@ fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> boo
     let Some((parent, name)) = normalized.rsplit_once('/') else {
         return false;
     };
-    CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name)
-        && Path::new(parent).file_name().and_then(|n| n.to_str()) == Some("amf")
+    let parent = Path::new(parent);
+    let is_legacy_config_dir = parent.file_name().and_then(|n| n.to_str()) == Some("amf");
+    let is_safe_hook_dir = parent.file_name().and_then(|n| n.to_str()) == Some("hooks")
+        && parent
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            == Some(".amf");
+    CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name) && (is_legacy_config_dir || is_safe_hook_dir)
 }
 
-fn is_unquoted_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
-    !(command.starts_with('\'') && command.ends_with('\''))
-        && is_amf_claude_hook_command(command, managed_commands)
+fn is_unquoted_amf_claude_hook(hook: &serde_json::Value, managed_commands: &[String]) -> bool {
+    // Claude's exec form passes `command` directly when `args` is present, so
+    // a bare path containing spaces is safe there. Only shell-form commands
+    // without `args` need quoting and migration.
+    !hook["args"].is_array()
+        && hook["command"].as_str().is_some_and(|command| {
+            !(command.starts_with('\'') && command.ends_with('\''))
+                && is_amf_claude_hook_command(command, managed_commands)
+        })
 }
 
 fn has_unquoted_amf_claude_hooks(
@@ -207,11 +236,9 @@ fn has_unquoted_amf_claude_hooks(
                 entries.as_array().is_some_and(|entries| {
                     entries.iter().any(|entry| {
                         entry["hooks"].as_array().is_some_and(|hooks| {
-                            hooks.iter().any(|hook| {
-                                hook["command"].as_str().is_some_and(|command| {
-                                    is_unquoted_amf_claude_hook_command(command, managed_commands)
-                                })
-                            })
+                            hooks
+                                .iter()
+                                .any(|hook| is_unquoted_amf_claude_hook(hook, managed_commands))
                         })
                     })
                 })
@@ -264,6 +291,93 @@ fn remove_amf_claude_hooks(settings: &mut serde_json::Value, managed_commands: &
     }
 
     changed
+}
+
+/// Rewrite AMF-owned commands in an inherited Claude settings file without
+/// replacing its hook layout. Worktrees can inherit `.claude` settings from
+/// the root repository, so refreshing only the worktree-local file leaves a
+/// stale root command active in Claude.
+fn migrate_amf_claude_hooks_to_runtime_dir(
+    settings_path: &Path,
+    managed_commands: &[String],
+) -> bool {
+    let Some(mut settings) = std::fs::read_to_string(settings_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .filter(serde_json::Value::is_object)
+    else {
+        return false;
+    };
+    let Some(hooks) = settings
+        .get_mut("hooks")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return false;
+    };
+
+    let runtime_dir = crate::project::amf_claude_hooks_dir();
+    let mut changed = false;
+    for entries in hooks
+        .values_mut()
+        .filter_map(serde_json::Value::as_array_mut)
+    {
+        for entry in entries {
+            let Some(commands) = entry
+                .get_mut("hooks")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+            for hook in commands {
+                let Some(command) = hook.get("command").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                if !is_amf_claude_hook_command(command, managed_commands) {
+                    continue;
+                }
+                let normalized = shell_unquote_single(command);
+                let Some(script_name) = Path::new(&normalized).file_name() else {
+                    continue;
+                };
+                let replacement = runtime_dir.join(script_name).to_string_lossy().into_owned();
+                let uses_current_command = command == replacement;
+                let uses_exec_args = hook
+                    .get("args")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(Vec::is_empty);
+                if uses_current_command && uses_exec_args {
+                    continue;
+                }
+                hook["command"] = serde_json::Value::String(replacement);
+                hook["args"] = serde_json::json!([]);
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        write_json_object(settings_path, &settings);
+    }
+    changed
+}
+
+fn repair_inherited_repo_claude_hooks(
+    workdir: &Path,
+    repo: &Path,
+    is_worktree: bool,
+    managed_commands: &[String],
+) -> usize {
+    if !is_worktree || workdir == repo {
+        return 0;
+    }
+
+    let claude_dir = repo.join(".claude");
+    [CLAUDE_SETTINGS_LOCAL_JSON, CLAUDE_SETTINGS_JSON]
+        .into_iter()
+        .filter(|name| {
+            migrate_amf_claude_hooks_to_runtime_dir(&claude_dir.join(name), managed_commands)
+        })
+        .count()
 }
 
 fn push_claude_hook_entry(settings: &mut serde_json::Value, event: &str, entry: serde_json::Value) {
@@ -465,14 +579,19 @@ fn write_executable_if_changed(path: &Path, content: &str) {
 
 pub fn ensure_notify_scripts() {
     let config_dir = crate::project::amf_config_dir();
+    let claude_hooks_dir = crate::project::amf_claude_hooks_dir();
     let _ = std::fs::create_dir_all(&config_dir);
-    write_executable_if_changed(&config_dir.join("notify.sh"), NOTIFY_SH);
-    write_executable_if_changed(&config_dir.join("clear-notify.sh"), CLEAR_NOTIFY_SH);
-    write_executable_if_changed(&config_dir.join("save-prompt.sh"), SAVE_PROMPT_SH);
-    write_executable_if_changed(&config_dir.join("thinking-start.sh"), THINKING_START_SH);
-    write_executable_if_changed(&config_dir.join("thinking-stop.sh"), THINKING_STOP_SH);
-    write_executable_if_changed(&config_dir.join("tool-start.sh"), TOOL_START_SH);
-    write_executable_if_changed(&config_dir.join("tool-stop.sh"), TOOL_STOP_SH);
+    let _ = std::fs::create_dir_all(&claude_hooks_dir);
+    write_executable_if_changed(&claude_hooks_dir.join("notify.sh"), NOTIFY_SH);
+    write_executable_if_changed(&claude_hooks_dir.join("clear-notify.sh"), CLEAR_NOTIFY_SH);
+    write_executable_if_changed(&claude_hooks_dir.join("save-prompt.sh"), SAVE_PROMPT_SH);
+    write_executable_if_changed(
+        &claude_hooks_dir.join("thinking-start.sh"),
+        THINKING_START_SH,
+    );
+    write_executable_if_changed(&claude_hooks_dir.join("thinking-stop.sh"), THINKING_STOP_SH);
+    write_executable_if_changed(&claude_hooks_dir.join("tool-start.sh"), TOOL_START_SH);
+    write_executable_if_changed(&claude_hooks_dir.join("tool-stop.sh"), TOOL_STOP_SH);
     write_executable_if_changed(
         &config_dir.join("codex-diff-review.sh"),
         CODEX_DIFF_REVIEW_SH,
@@ -487,7 +606,7 @@ pub fn ensure_notify_scripts() {
     write_if_changed(&plugins_dir.join("input-request.js"), INPUT_REQUEST_JS);
     write_if_changed(&plugins_dir.join("change-tracker.js"), CHANGE_TRACKER_JS);
     write_executable_if_changed(
-        &plugins_dir.join("custom-diff-review.sh"),
+        &claude_hooks_dir.join("custom-diff-review.sh"),
         CUSTOM_DIFF_REVIEW_SH,
     );
 }
@@ -547,14 +666,14 @@ pub fn refresh_claude_hooks_for_store(store: &ProjectStore) -> usize {
     let mut refreshed = 0usize;
     for project in &store.projects {
         for feature in &project.features {
-            if !matches!(feature.agent, AgentKind::Claude) {
+            if !feature_uses_claude(feature) {
                 continue;
             }
             ensure_notification_hooks(
                 &feature.workdir,
                 &project.repo,
                 &feature.mode,
-                &feature.agent,
+                &AgentKind::Claude,
                 feature.is_worktree,
             );
             refreshed += 1;
@@ -571,28 +690,36 @@ pub fn repair_unquoted_claude_hooks_for_store(store: &ProjectStore) -> usize {
     let mut repaired = 0usize;
     for project in &store.projects {
         for feature in &project.features {
-            if !matches!(feature.agent, AgentKind::Claude) {
+            if !feature_uses_claude(feature) {
                 continue;
             }
-            let settings_path = feature
-                .workdir
-                .join(".claude")
-                .join(CLAUDE_SETTINGS_LOCAL_JSON);
-            let settings = read_json_object(&settings_path);
-            if !has_unquoted_amf_claude_hooks(&settings, &managed_commands) {
+            let claude_dir = feature.workdir.join(".claude");
+            let has_stale_hook = [CLAUDE_SETTINGS_LOCAL_JSON, CLAUDE_SETTINGS_JSON]
+                .into_iter()
+                .map(|name| read_json_object(&claude_dir.join(name)))
+                .any(|settings| has_unquoted_amf_claude_hooks(&settings, &managed_commands));
+            if !has_stale_hook {
                 continue;
             }
             ensure_notification_hooks(
                 &feature.workdir,
                 &project.repo,
                 &feature.mode,
-                &feature.agent,
+                &AgentKind::Claude,
                 feature.is_worktree,
             );
             repaired += 1;
         }
     }
     repaired
+}
+
+fn feature_uses_claude(feature: &Feature) -> bool {
+    matches!(feature.agent, AgentKind::Claude)
+        || feature
+            .sessions
+            .iter()
+            .any(|session| matches!(session.kind, SessionKind::Claude))
 }
 
 /// Apply one-time, version-gated migrations to a freshly loaded config.
@@ -935,27 +1062,20 @@ fn resolve_diff_review_command(workdir: &Path, repo: &Path) -> Option<String> {
         .ok()
         .and_then(|exe| exe.parent()?.parent()?.parent().map(PathBuf::from));
 
-    [
-        Some(workdir.to_path_buf()),
-        Some(repo.to_path_buf()),
-        Some(crate::project::amf_config_dir().join("plugins")),
-        amf_root,
-    ]
-    .into_iter()
-    .flatten()
-    .map(|base| {
-        if base
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "plugins")
-        {
-            base.join(script_name)
-        } else {
-            script_suffix.iter().fold(base, |p, s| p.join(s))
-        }
-    })
-    .find(|p| p.exists())
-    .map(|p| p.to_string_lossy().into_owned())
+    let under_plugins = |base: PathBuf| script_suffix.iter().fold(base, |p, s| p.join(s));
+    let mut candidates = vec![
+        under_plugins(workdir.to_path_buf()),
+        under_plugins(repo.to_path_buf()),
+        crate::project::amf_claude_hooks_dir().join(script_name),
+    ];
+    if let Some(amf_root) = amf_root {
+        candidates.push(under_plugins(amf_root));
+    }
+
+    candidates
+        .into_iter()
+        .find(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 pub fn ensure_notification_hooks(
@@ -963,10 +1083,10 @@ pub fn ensure_notification_hooks(
     repo: &Path,
     mode: &VibeMode,
     agent: &AgentKind,
-    _is_worktree: bool,
+    is_worktree: bool,
 ) {
     // Feature creation / restart should not depend on startup having
-    // already staged the helper scripts into ~/.config/amf.
+    // already staged the helper scripts into the AMF runtime directory.
     ensure_notify_scripts();
     remove_old_diff_review_plugin(repo);
 
@@ -985,15 +1105,16 @@ pub fn ensure_notification_hooks(
     let settings_path = claude_dir.join(CLAUDE_SETTINGS_LOCAL_JSON);
     let state_path = claude_dir.join(CLAUDE_STATE_JSON);
 
-    let config_dir = crate::project::amf_config_dir();
+    let hooks_dir = crate::project::amf_claude_hooks_dir();
     let managed_commands = claude_managed_commands();
-    let notify_cmd = claude_hook_command(&config_dir.join("notify.sh"));
-    let clear_cmd = claude_hook_command(&config_dir.join("clear-notify.sh"));
-    let save_prompt_cmd = claude_hook_command(&config_dir.join("save-prompt.sh"));
-    let thinking_start_cmd = claude_hook_command(&config_dir.join("thinking-start.sh"));
-    let thinking_stop_cmd = claude_hook_command(&config_dir.join("thinking-stop.sh"));
-    let tool_start_cmd = claude_hook_command(&config_dir.join("tool-start.sh"));
-    let tool_stop_cmd = claude_hook_command(&config_dir.join("tool-stop.sh"));
+    repair_inherited_repo_claude_hooks(workdir, repo, is_worktree, &managed_commands);
+    let notify_path = hooks_dir.join("notify.sh");
+    let clear_path = hooks_dir.join("clear-notify.sh");
+    let save_prompt_path = hooks_dir.join("save-prompt.sh");
+    let thinking_start_path = hooks_dir.join("thinking-start.sh");
+    let thinking_stop_path = hooks_dir.join("thinking-stop.sh");
+    let tool_start_path = hooks_dir.join("tool-start.sh");
+    let tool_stop_path = hooks_dir.join("tool-stop.sh");
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
     let diff_review_cmd = if wants_diff_review {
@@ -1012,8 +1133,8 @@ pub fn ensure_notification_hooks(
         serde_json::json!({
             "matcher": "",
             "hooks": [
-                { "type": "command", "command": thinking_stop_cmd },
-                { "type": "command", "command": notify_cmd }
+                claude_exec_hook(&thinking_stop_path),
+                claude_exec_hook(&notify_path)
             ]
         }),
     );
@@ -1021,24 +1142,15 @@ pub fn ensure_notification_hooks(
     // PreToolUse: set thinking + tool-running + clear notification,
     // plus diff-review for vibeless mode.
     let mut pre_tool_hooks: Vec<serde_json::Value> = vec![
-        serde_json::json!({
-            "type": "command",
-            "command": thinking_start_cmd
-        }),
-        serde_json::json!({
-            "type": "command",
-            "command": tool_start_cmd
-        }),
-        serde_json::json!({
-            "type": "command",
-            "command": clear_cmd
-        }),
+        claude_exec_hook(&thinking_start_path),
+        claude_exec_hook(&tool_start_path),
+        claude_exec_hook(&clear_path),
     ];
     if wants_diff_review && let Some(ref dr_cmd) = diff_review_cmd {
-        let dr_cmd = shell_quote(dr_cmd);
         pre_tool_hooks.push(serde_json::json!({
             "type": "command",
             "command": dr_cmd,
+            "args": [workdir.to_string_lossy()],
             "timeout": 600
         }));
     }
@@ -1061,7 +1173,7 @@ pub fn ensure_notification_hooks(
         serde_json::json!({
             "matcher": "",
             "hooks": [
-                { "type": "command", "command": tool_stop_cmd }
+                claude_exec_hook(&tool_stop_path)
             ]
         }),
     );
@@ -1073,8 +1185,8 @@ pub fn ensure_notification_hooks(
         serde_json::json!({
             "matcher": "",
             "hooks": [
-                { "type": "command", "command": thinking_start_cmd },
-                { "type": "command", "command": save_prompt_cmd }
+                claude_exec_hook(&thinking_start_path),
+                claude_exec_hook(&save_prompt_path)
             ]
         }),
     );

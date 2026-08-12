@@ -13,6 +13,24 @@ if [[ "${AMF_ACTIVE:-}" != "1" ]]; then
     exit 0
 fi
 
+# Root-repository Claude settings are inherited by sessions launched from Git
+# worktrees. AMF passes the Git root that owns this hook as the first argument;
+# an inherited hook must not review changes for a different feature.
+EXPECTED_WORKDIR="${1:-}"
+if [[ -n "$EXPECTED_WORKDIR" ]]; then
+    EXPECTED_GIT_ROOT=$(git -C "$EXPECTED_WORKDIR" rev-parse --show-toplevel 2>/dev/null || true)
+    ACTIVE_GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n "$EXPECTED_GIT_ROOT" ]]; then
+        EXPECTED_GIT_ROOT=$(cd "$EXPECTED_GIT_ROOT" && pwd -P)
+    fi
+    if [[ -n "$ACTIVE_GIT_ROOT" ]]; then
+        ACTIVE_GIT_ROOT=$(cd "$ACTIVE_GIT_ROOT" && pwd -P)
+    fi
+    if [[ -z "$EXPECTED_GIT_ROOT" || -z "$ACTIVE_GIT_ROOT" || "$ACTIVE_GIT_ROOT" != "$EXPECTED_GIT_ROOT" ]]; then
+        exit 0
+    fi
+fi
+
 HOOK_INPUT=$(cat)
 TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty')
 SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // "unknown"')

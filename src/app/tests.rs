@@ -7214,6 +7214,20 @@ fn hook_commands_for(settings: &serde_json::Value, event: &str) -> Vec<String> {
         .collect()
 }
 
+fn hook_uses_exec_form(settings: &serde_json::Value, event: &str, script_name: &str) -> bool {
+    settings["hooks"][event]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .any(|hook| {
+            hook["command"]
+                .as_str()
+                .is_some_and(|command| command.ends_with(script_name))
+                && hook["args"].as_array().is_some_and(Vec::is_empty)
+        })
+}
+
 fn call_ensure_hooks_for(workdir: &TempDir, mode: VibeMode, agent: AgentKind, is_worktree: bool) {
     let repo = workdir.path(); // repo = workdir in tests
     ensure_notification_hooks(workdir.path(), repo, &mode, &agent, is_worktree);
@@ -7371,6 +7385,138 @@ fn claude_hook_commands_are_shell_quoted_for_paths_with_spaces() {
         command,
         "'/Users/me/Library/Application Support/amf/save-prompt.sh'"
     );
+}
+
+#[test]
+fn claude_exec_hooks_pass_paths_with_spaces_without_shell_quoting() {
+    let path = PathBuf::from("/Users/me/Library/Application Support/amf/tool-stop.sh");
+    let hook = crate::app::setup::claude_exec_hook(&path);
+
+    assert_eq!(hook["command"].as_str(), path.to_str());
+    assert!(hook["args"].as_array().is_some_and(Vec::is_empty));
+}
+
+#[test]
+fn generated_claude_hooks_use_the_space_free_runtime_directory() {
+    let workdir = TempDir::new().unwrap();
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+    let settings = read_settings(&workdir);
+    let commands = hook_commands_for(&settings, "PostToolUse");
+    let expected = crate::project::amf_claude_hooks_dir().join("tool-stop.sh");
+
+    assert_eq!(commands, vec![expected.to_string_lossy()]);
+    assert_eq!(
+        expected.parent().and_then(|path| path.file_name()),
+        Some(std::ffi::OsStr::new("hooks"))
+    );
+    assert_eq!(
+        expected
+            .parent()
+            .and_then(|path| path.parent())
+            .and_then(|path| path.file_name()),
+        Some(std::ffi::OsStr::new(".amf"))
+    );
+}
+
+#[test]
+fn worktree_hook_setup_repairs_inherited_root_repo_hooks() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("feature");
+    let root_claude_dir = repo.path().join(".claude");
+    std::fs::create_dir_all(&root_claude_dir).unwrap();
+    std::fs::create_dir_all(&workdir).unwrap();
+    std::fs::write(
+        root_claude_dir.join("settings.local.json"),
+        r#"{
+          "hooks": {
+            "PostToolUse": [{
+              "matcher": "inherited-root-hook",
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "/Users/me/Library/Application Support/amf/tool-stop.sh"
+                },
+                {
+                  "type": "command",
+                  "command": "/tmp/user-post-tool-hook.sh"
+                }
+              ]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root_claude_dir.join("settings.json"),
+        r#"{
+          "hooks": {
+            "Stop": [{
+              "matcher": "legacy-root-hook",
+              "hooks": [{
+                "type": "command",
+                "command": "'/Users/me/Library/Application Support/amf/thinking-stop.sh'"
+              }]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    ensure_notification_hooks(
+        &workdir,
+        repo.path(),
+        &VibeMode::Vibe,
+        &AgentKind::Claude,
+        true,
+    );
+
+    let root_local: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root_claude_dir.join("settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    let root_legacy: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root_claude_dir.join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    let runtime_dir = crate::project::amf_claude_hooks_dir();
+
+    assert_eq!(
+        root_local["hooks"]["PostToolUse"][0]["matcher"].as_str(),
+        Some("inherited-root-hook")
+    );
+    assert_eq!(
+        root_local["hooks"]["PostToolUse"][0]["hooks"][0]["command"].as_str(),
+        Some(runtime_dir.join("tool-stop.sh").to_string_lossy().as_ref())
+    );
+    assert!(
+        root_local["hooks"]["PostToolUse"][0]["hooks"][0]["args"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+    );
+    assert_eq!(
+        root_local["hooks"]["PostToolUse"][0]["hooks"][1]["command"].as_str(),
+        Some("/tmp/user-post-tool-hook.sh"),
+        "user-owned hooks in the inherited entry must be preserved"
+    );
+    assert_eq!(
+        root_legacy["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
+        Some(
+            runtime_dir
+                .join("thinking-stop.sh")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+
+    let worktree_settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(workdir.join(".claude").join("settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(hook_uses_exec_form(
+        &worktree_settings,
+        "PostToolUse",
+        "tool-stop.sh"
+    ));
 }
 
 #[test]
@@ -7600,12 +7746,72 @@ fn repair_unquoted_claude_hooks_refreshes_stale_stored_features() {
             .all(|cmd| !cmd.starts_with("/Users/me/Library/Application Support/amf/")),
         "stale unquoted hook should be repaired, got: {cmds:?}"
     );
-    assert!(
-        cmds.iter().any(|cmd| cmd.starts_with('\'')
-            && cmd.ends_with('\'')
-            && cmd.contains("thinking-stop.sh")),
-        "repaired hook should be quoted, got: {cmds:?}"
+    assert!(hook_uses_exec_form(&s, "Stop", "thinking-stop.sh"));
+}
+
+#[test]
+fn repair_unquoted_claude_hooks_refreshes_legacy_settings_json() {
+    let repo = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        r#"{
+          "hooks": {
+            "PostToolUse": [{
+              "matcher": "",
+              "hooks": [{
+                "type": "command",
+                "command": "/Users/me/Library/Application Support/amf/tool-stop.sh"
+              }]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    let now = Utc::now();
+    let mut feature = Feature::new(
+        "feat-1".to_string(),
+        "feat-1".to_string(),
+        workdir.path().to_path_buf(),
+        true,
+        VibeMode::Vibe,
+        false,
+        false,
+        AgentKind::Codex,
+        false,
+        false,
     );
+    feature.add_session_named(SessionKind::Claude, "Pairing Claude".to_string());
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![Project {
+            id: "proj-1".to_string(),
+            name: "project".to_string(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+
+    let repaired = super::setup::repair_unquoted_claude_hooks_for_store(&store);
+
+    assert_eq!(repaired, 1);
+    assert!(
+        !claude_dir.join("settings.json").exists(),
+        "legacy settings.json should be removed once its stale AMF hook is cleaned"
+    );
+    let s = read_settings(&workdir);
+    assert!(hook_uses_exec_form(&s, "PostToolUse", "tool-stop.sh"));
 }
 
 #[test]
@@ -7627,6 +7833,90 @@ fn vibeless_pre_tool_use_includes_custom_diff_review_when_script_present_by_defa
     assert!(
         cmds.iter().any(|c| c.contains("custom-diff-review.sh")),
         "Vibeless PreToolUse should include custom-diff-review; got: {cmds:?}"
+    );
+}
+
+#[test]
+fn root_vibeless_diff_review_hook_is_scoped_away_from_worktrees() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("feature");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    ensure_notification_hooks(
+        repo.path(),
+        repo.path(),
+        &VibeMode::Vibeless,
+        &AgentKind::Claude,
+        false,
+    );
+    ensure_notification_hooks(
+        &workdir,
+        repo.path(),
+        &VibeMode::Vibe,
+        &AgentKind::Claude,
+        true,
+    );
+
+    let root_settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.path().join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    let root_diff_hook = root_settings["hooks"]["PreToolUse"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .find(|hook| {
+            hook["command"]
+                .as_str()
+                .is_some_and(|command| command.ends_with("custom-diff-review.sh"))
+        })
+        .expect("root Vibeless settings should contain the diff-review hook");
+    assert_eq!(
+        root_diff_hook["args"].as_array(),
+        Some(&vec![serde_json::json!(repo.path().to_string_lossy())]),
+        "the inherited hook must carry the Git root that owns it"
+    );
+
+    let worktree_settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(workdir.join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        hook_commands_for(&worktree_settings, "PreToolUse")
+            .iter()
+            .all(|command| !command.ends_with("custom-diff-review.sh")),
+        "a Vibe worktree should not install its own diff-review hook"
+    );
+}
+
+#[test]
+fn inherited_diff_review_script_exits_for_a_different_git_root() {
+    let owning_repo = TempDir::new().unwrap();
+    let active_repo = TempDir::new().unwrap();
+    for repo in [&owning_repo, &active_repo] {
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("plugins/diff-review/scripts/custom-diff-review.sh");
+    let output = std::process::Command::new("bash")
+        .arg(script)
+        .arg(owning_repo.path())
+        .current_dir(active_repo.path())
+        .env("AMF_ACTIVE", "1")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "an inherited hook should exit before invoking popup dependencies: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -7761,9 +8051,7 @@ fn ensure_hooks_removes_stale_temp_home_amf_hooks() {
     assert_eq!(
         post_cmds
             .iter()
-            .filter(|cmd| cmd
-                .trim_matches('\'')
-                .ends_with("/.config/amf/tool-stop.sh"))
+            .filter(|cmd| cmd.ends_with("/.amf/hooks/tool-stop.sh"))
             .count(),
         1,
         "only the current AMF PostToolUse hook should remain"

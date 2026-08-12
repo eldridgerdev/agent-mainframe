@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.35.0] - 2026-08-12
+
 ### Added
 
 - **Learning Mode: read a codebase and ask an agent about it.** Press `K` on a
@@ -399,6 +403,35 @@ storage the first time it runs.
   separate no-tools planning pass that merges them into the draft. Failed or
   dismissed investigations leave the current plan untouched, and a failure
   preserves the research request for retry. No migration is required.
+
+### Fixed
+
+- **Vibeless review stays with the feature that enabled it.** A Vibeless
+  feature using the main repository no longer causes inherited diff-review
+  popups in later worktree features. AMF scopes existing hooks automatically
+  on startup; no manual configuration changes are required.
+
+### Migration
+
+No manual migration is required. AMF creates and migrates the new local
+storage automatically and refreshes managed feature hooks on startup.
+
+## [v0.34.1] - 2026-08-12
+
+### Fixed
+
+- **Older macOS Claude hooks are repaired before they can run.** AMF now checks
+  worktree-local settings, root-repository settings inherited by worktrees,
+  legacy project settings, and Claude's global settings. Old unquoted commands
+  under `~/Library/Application Support/amf` no longer keep producing
+  `PostToolUse: Bash hook error`, including when Claude is a secondary session
+  in a Codex, OpenCode, or Pi feature. Generated Claude scripts now live under
+  the space-free `~/.amf/hooks` path and use Claude's direct command form.
+
+### Migration
+
+No manual settings edits are required. After upgrading, restart AMF and restart
+affected features so Claude reloads the automatically repaired hook settings.
 
 ## [v0.34.0] - 2026-08-07
 

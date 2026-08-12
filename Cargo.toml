@@ -1,6 +1,6 @@
 [package]
 name = "agent-mainframe"
-version = "0.34.0"
+version = "0.35.0"
 edition = "2024"
 description = "Terminal dashboard for running many AI coding agents in parallel — each on its own branch, in its own tmux session"
 license = "MIT"

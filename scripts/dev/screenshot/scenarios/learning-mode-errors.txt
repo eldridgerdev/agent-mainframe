@@ -1,0 +1,110 @@
+# learning-mode-errors: the failure paths Learning Mode used to keep to
+# itself. Every frame here is a message that previously either said only
+# what failed, or said nothing at all.
+#
+# Seeded with a deliberately awkward NON-git project, so the repo listing
+# comes from the fallback walk rather than `git ls-files`:
+#
+#   notes-app/
+#     README.md            readable
+#     main.py              readable
+#     lib/store.py         readable
+#     assets/icon.bin      binary (NUL bytes)
+#     credentials.env      mode 000 -- listable, unreadable
+#     vendor-cache/        mode 000 -- the walk cannot open it at all
+#
+# Build that project first (DEMO is wherever you want it; the seed JSON's
+# `path` must point at it). Do NOT run as root -- the mode 000 entries are
+# the whole point, and root reads them anyway:
+#
+#   mkdir -p "$DEMO"/{lib,assets,vendor-cache}
+#   echo '# notes-app' > "$DEMO/README.md"
+#   echo 'print("hi")'  > "$DEMO/main.py"
+#   echo 'import json'  > "$DEMO/lib/store.py"
+#   printf 'PK\x03\x04\x00\x00binary\x00\xff' > "$DEMO/assets/icon.bin"
+#   echo 'inner' > "$DEMO/vendor-cache/inner.py"
+#   echo 'API_TOKEN=x' > "$DEMO/credentials.env"
+#   chmod 000 "$DEMO/credentials.env" "$DEMO/vendor-cache"
+#
+# The row counts in the j-presses below assume the file list AMF ends up
+# with after it writes its own .claude/ hooks and skills into the project.
+# If those change, recount against frame 003 rather than trusting them.
+#
+# Run with:
+#   ./amf-capture.sh --scenario <scratch>/learning-mode-errors.txt \
+#     --seed <scratch>/seed-project.json \
+#     --seed-feature <scratch>/seed-feature.json \
+#     --geometry 140x40
+
+wait:2000
+shot:dashboard
+
+# `K` opens Learning Mode. This project has never been opened in it, so
+# the intro shows itself unprompted.
+key:K
+wait:2500
+shot:first-open-help
+
+# Esc leaves the browsing surface. The banner is the new one: the walk
+# could not open `vendor-cache/`, and a listing missing a whole subtree
+# looks exactly like a project that hasn't got one. It now says how many
+# folders are missing and points at the debug log for which.
+key:Escape
+wait:800
+shot:unreadable-folder-banner
+
+# Down the file list to assets/icon.bin (12 rows below the tour row) and
+# open it. Binary files were always skipped; the message now ends with
+# somewhere to go instead of a dead end.
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:400
+key:Enter
+wait:900
+shot:binary-file-next-step
+
+# Enter moved focus to the content pane, so Tab twice returns to the file
+# list (Content -> Questions -> Files). One row down is credentials.env --
+# mode 000, so the walk lists it but the read fails. This is the case that
+# previously logged nothing at all: the pane said so and the debug log
+# stayed silent.
+key:Tab
+wait:300
+key:Tab
+wait:300
+key:j
+wait:400
+key:Enter
+wait:900
+shot:permission-denied-next-step
+
+# `q` back to the dashboard, then `D` opens the debug log. The same two
+# failures are here under the `learning` context, naming the paths the
+# on-screen banners cannot carry -- which is what makes them diagnosable
+# after the fact.
+key:q
+wait:600
+key:D
+wait:1200
+shot:debug-log

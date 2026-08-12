@@ -1,0 +1,118 @@
+# learning-mode-thread-reload: a follow-up stays with the question it
+# continues after the overlay is closed and reopened.
+#
+# Stored history reloads oldest-first, but a follow-up is asked *after*
+# whatever else was asked in between — and the history pane takes a row's
+# placement from the list while taking only its indentation from
+# parent_qa_id. So a reopened history used to show the follow-up indented
+# under an unrelated question. (docs/backlog/learning-mode-plan.md,
+# Epic 6.)
+#
+# The order this drives — ask, ask something else, then follow up on the
+# *first* one — is the only order that shows it: a follow-up on the most
+# recent question is already adjacent to its parent either way.
+#
+# Needs a seeded project + feature and asks three real questions, so the
+# harness must be authenticated:
+#   ./amf-capture.sh --scenario scenarios/learning-mode-thread-reload.txt \
+#       --seed <scratch>/seed-project.json \
+#       --seed-feature <scratch>/seed-feature.json \
+#       --geometry 160x44 --keep
+#
+# --keep on purpose: the scratch amf.db is the interesting artifact. The
+# same stored history rendered by a pre-fix binary is the "before" frame,
+# with no further questions asked.
+
+wait:2000
+shot:dashboard
+
+# K opens Learning Mode on the project's first feature; the first visit
+# opens the help by itself.
+key:K
+wait:2500
+key:Escape
+wait:800
+shot:overlay-start-here
+
+# Down the pinned Start here group: tour -> README.md -> CLAUDE.md ->
+# src/main.rs. Enter loads the file and moves focus to the code pane.
+key:j
+key:j
+key:j
+wait:500
+key:Enter
+wait:1200
+shot:file-loaded
+
+# A range over load(), so the first question has something to be about.
+key:j
+key:j
+key:j
+key:j
+key:j
+key:v
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+wait:500
+shot:range-selected
+
+# Question one.
+key:e
+wait:600
+text:What does this function do?
+wait:400
+key:Tab
+wait:30000
+wait:30000
+shot:first-answered
+
+# Question two, unrelated — this is the row that would otherwise end up
+# between the first question and its follow-up.
+key:e
+wait:600
+text:What is stored in tasks.txt, and in what format?
+wait:400
+key:Tab
+wait:30000
+wait:30000
+shot:second-answered
+
+# Into the history pane and back up to the FIRST question. k clamps at
+# the top, so three presses land on it wherever the cursor was.
+key:Tab
+wait:500
+key:k
+key:k
+key:k
+wait:500
+shot:cursor-on-first-question
+
+# F follows up on the question under the cursor, not on the newest one.
+key:F
+wait:800
+text:What happens if that file does not exist yet?
+wait:400
+key:Tab
+wait:30000
+wait:30000
+shot:threaded-live
+
+# Close the overlay entirely and come back: this is the reload path, and
+# the only one that reads the history back out of the database.
+key:q
+wait:1200
+shot:dashboard-again
+
+key:K
+wait:3000
+shot:threaded-after-reopen
+
+# Into the history pane so the reopened thread is the focused pane.
+key:Tab
+key:Tab
+wait:800
+shot:history-after-reopen

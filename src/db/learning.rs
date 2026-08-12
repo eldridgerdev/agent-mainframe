@@ -556,6 +556,85 @@ mod tests {
         assert_eq!(loaded.answer.as_deref(), Some("It opens the overlay."));
         assert_eq!(loaded.todo_id.as_deref(), Some("todo-7"));
         assert_eq!(loaded.spawned_session_id.as_deref(), Some("sess-3"));
+        assert!(
+            loaded.selection_is_diff,
+            "whether the excerpt is a diff can't be re-derived from the other \
+             columns, so it has to survive a reload of its own"
+        );
+    }
+
+    /// A follow-up's link to its parent is what threads the two together on the
+    /// next open, so it has to come back with the value it was written with —
+    /// the cascade tests below only prove the row is *reachable* from its
+    /// parent.
+    #[test]
+    fn a_follow_up_reloads_pointing_at_its_parent() {
+        let (_tmp, db) = open_temp_db();
+        let session = db
+            .create_learning_session(
+                "proj-1",
+                "feat-1",
+                "amf",
+                &AgentKind::Claude,
+                LearningLevel::Newcomer,
+            )
+            .unwrap();
+
+        let parent = sample_qa(&session.id, "What is this?");
+        db.upsert_learning_qa(&parent).unwrap();
+        let mut child = sample_qa(&session.id, "What's a trait?");
+        child.parent_qa_id = Some(parent.id.clone());
+        db.upsert_learning_qa(&child).unwrap();
+
+        let rows = db.learning_qa(&session.id).unwrap();
+        let reloaded = rows.iter().find(|r| r.id == child.id).unwrap();
+        assert_eq!(reloaded.parent_qa_id.as_deref(), Some(parent.id.as_str()));
+        assert!(
+            rows.iter()
+                .find(|r| r.id == parent.id)
+                .unwrap()
+                .parent_qa_id
+                .is_none(),
+            "and the root of the thread stays a root"
+        );
+    }
+
+    /// Every anchor kind, including the ones with no line range: what a question
+    /// was asked about is most of what makes its answer readable later.
+    #[test]
+    fn every_anchor_kind_round_trips() {
+        let (_tmp, db) = open_temp_db();
+        let session = db
+            .create_learning_session(
+                "proj-1",
+                "feat-1",
+                "amf",
+                &AgentKind::Claude,
+                LearningLevel::Newcomer,
+            )
+            .unwrap();
+
+        let anchors = [
+            LearningAnchor::Project,
+            LearningAnchor::File,
+            LearningAnchor::Lines { start: 1, end: 1 },
+            LearningAnchor::Lines { start: 40, end: 58 },
+            LearningAnchor::Hunk { index: 0 },
+            LearningAnchor::Hunk { index: 3 },
+        ];
+        let mut ids = Vec::new();
+        for anchor in anchors {
+            let mut qa = sample_qa(&session.id, &format!("About {anchor:?}?"));
+            qa.anchor = anchor;
+            db.upsert_learning_qa(&qa).unwrap();
+            ids.push((qa.id, anchor));
+        }
+
+        let rows = db.learning_qa(&session.id).unwrap();
+        for (id, anchor) in ids {
+            let loaded = rows.iter().find(|r| r.id == id).unwrap();
+            assert_eq!(loaded.anchor, anchor, "{anchor:?} came back changed");
+        }
     }
 
     #[test]

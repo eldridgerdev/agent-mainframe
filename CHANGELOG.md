@@ -10,7 +10,39 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **Learning Mode says when its file list is incomplete.** In a project that
+  is not a git repository, any folder AMF could not open was left out
+  silently — and a list missing a whole folder looks exactly like a project
+  that does not have one. It now tells you how many folders are missing and
+  where to see which ones.
+- **Learning Mode's file errors now tell you what to do next.** Opening a
+  binary file, a file too large to show, or one you do not have permission to
+  read used to stop at the diagnosis. Each message now ends with a way
+  forward, and names the file the way the list does instead of printing its
+  full path.
+- **The scope key rebuilds the file list when it cannot switch scope.** In a
+  project that is not a git repository there are no branch changes to switch
+  to, so `s` used to only say so. That left the advice for a file that had
+  been moved or deleted since the list was built — press `s` to rebuild it —
+  doing nothing in exactly the projects it was written for. `s` now rebuilds
+  the list in place there, and still explains why the scope did not change.
+- **Reopening Learning Mode keeps each conversation together.** Follow-up
+  questions are shown indented under the question they continue, but on a
+  reopen they were laid out in the order they had been asked — so a follow-up
+  asked after a couple of other questions came back indented under whichever
+  unrelated question happened to precede it. History now reads on the second
+  visit the way it read on the first, and answers you sent back for a deeper
+  look stay next to the answer they were checking.
+- **Learning Mode failures are recorded.** Files that would not open, folders
+  that could not be read, and saved-history problems now appear in the debug
+  log (`D` on the dashboard) with the path involved, so a question that went
+  nowhere can be traced after the fact instead of vanishing.
+
+### Migration
+
+No migration is required.
 
 ## [v0.36.0] - 2026-08-12
 

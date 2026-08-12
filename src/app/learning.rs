@@ -215,6 +215,8 @@ impl App {
             None => (String::new(), default_harness, LearningLevel::Newcomer),
         };
         let qa = self.load_learning_qa(&session_id);
+        let workdir_label = workdir.display().to_string();
+        let session_persisted = !session_id.is_empty();
 
         let mut state = LearningViewState::new(
             project_id,
@@ -244,6 +246,22 @@ impl App {
         }
         self.learning_load_selected_content();
         self.learning_show_onboarding_if_new();
+        let (entries, history) = match &self.mode {
+            AppMode::Learning(state) => (state.entries.len(), state.qa.len()),
+            _ => (0, 0),
+        };
+        self.log_info(
+            "learning",
+            format!(
+                "opened on {} ({entries} entries, {history} past question(s), {})",
+                workdir_label,
+                if session_persisted {
+                    "history is being saved"
+                } else {
+                    "history is in memory only"
+                }
+            ),
+        );
         Ok(())
     }
 
@@ -264,6 +282,10 @@ impl App {
                 .map(|_| (*pi, 0)),
         };
         let Some((pi, fi)) = target else {
+            self.log_warn(
+                "learning",
+                "asked to open on a project with no features — nothing to read".to_string(),
+            );
             self.message =
                 Some("Add a feature first — Learning Mode reads that feature's files".to_string());
             return Ok(());
@@ -319,7 +341,7 @@ impl App {
             return Vec::new();
         };
         match db.learning_qa(session_id) {
-            Ok(rows) => self.reconcile_interrupted_qa(rows),
+            Ok(rows) => thread_rows(self.reconcile_interrupted_qa(rows)),
             Err(e) => {
                 self.log_error(
                     "learning",
@@ -380,14 +402,32 @@ impl App {
             AppMode::Learning(state) => state.is_git,
             _ => return,
         };
-        if let AppMode::Learning(state) = &mut self.mode {
-            if state.scope == BrowseScope::RepoTree && !is_git {
+        let stuck_in_repo_tree = matches!(
+            &self.mode,
+            AppMode::Learning(state) if state.scope == BrowseScope::RepoTree && !is_git
+        );
+        if stuck_in_repo_tree {
+            // There is no second scope to switch to, but the key still has a
+            // job here: rebuild the list in place. Elsewhere the advice for a
+            // file that vanished since the list was built is "press s" — and
+            // if this branch only explained itself and returned, that advice
+            // would be a no-op in exactly the projects it's aimed at.
+            self.learning_reload_entries();
+            self.learning_load_selected_content();
+            if let AppMode::Learning(state) = &mut self.mode
+                // A problem listing the files is more useful than the reminder
+                // that this isn't a repository, so it keeps the line.
+                && state.error.is_none()
+            {
                 state.error = Some(
-                    "This project isn't a git repository, so there are no branch changes to show."
+                    "This project isn't a git repository, so there are no branch changes to \
+                     show — rebuilt the file list instead."
                         .to_string(),
                 );
-                return;
             }
+            return;
+        }
+        if let AppMode::Learning(state) = &mut self.mode {
             state.scope = state.scope.toggled();
             state.selected_entry = 0;
             state.list_scroll = 0;
@@ -413,6 +453,7 @@ impl App {
         };
 
         let mut load_error: Option<String> = None;
+        let mut unreadable: Vec<String> = Vec::new();
         let mut diff_files: Vec<DiffFile> = Vec::new();
         let entries = match scope {
             BrowseScope::BranchChanges => match crate::diff::load_snapshot(&workdir, None, false) {
@@ -441,12 +482,25 @@ impl App {
                         }
                     }
                 } else {
-                    walk_files_capped(&workdir, MAX_REPO_ENTRIES, MAX_WALK_DEPTH)
+                    let walk = walk_files_capped(&workdir, MAX_REPO_ENTRIES, MAX_WALK_DEPTH);
+                    unreadable = walk.unreadable;
+                    walk.files
                 };
                 if let Some(total) = cap_repo_entries(&mut files, MAX_REPO_ENTRIES) {
                     load_error.get_or_insert(format!(
                         "This project has {total} files — showing the first {MAX_REPO_ENTRIES}. \
                          Switch to branch changes to see what's actually changed."
+                    ));
+                }
+                // A subtree that couldn't be opened leaves no trace in the
+                // list, so say it out loud: "this project has no such
+                // directory" and "AMF couldn't read it" look identical
+                // otherwise, and only one of them is true.
+                if !unreadable.is_empty() {
+                    load_error.get_or_insert(format!(
+                        "{} folder(s) here couldn't be read, so anything inside them is missing \
+                         from this list. See the debug log (D on the dashboard) for which.",
+                        unreadable.len()
                     ));
                 }
                 let start_here = if has_history {
@@ -468,6 +522,9 @@ impl App {
         }
         if let Some(msg) = load_error {
             self.log_warn("learning", msg);
+        }
+        for dir in unreadable {
+            self.log_warn("learning", format!("couldn't read the folder {dir}"));
         }
     }
 
@@ -576,8 +633,15 @@ impl App {
                 // file there comes from the snapshot rather than from disk.
                 let loaded = match scope {
                     BrowseScope::BranchChanges => Ok(diff_lines),
-                    BrowseScope::RepoTree => load_file_lines(&workdir.join(&path)),
+                    BrowseScope::RepoTree => load_file_lines(&workdir.join(&path), &path),
                 };
+                // Logged out here rather than inside the borrow: a file that
+                // won't open is the one failure the user meets while simply
+                // moving the cursor, so it belongs in the debug log too.
+                let load_failure = loaded
+                    .as_ref()
+                    .err()
+                    .map(|reason| format!("couldn't load {path} for browsing: {reason}"));
                 if let AppMode::Learning(state) = &mut self.mode {
                     match loaded {
                         Ok(lines) => {
@@ -594,6 +658,9 @@ impl App {
                     state.cursor_line = 0;
                     state.selection_anchor = None;
                     state.anchor = LearningAnchor::File;
+                }
+                if let Some(msg) = load_failure {
+                    self.log_warn("learning", msg);
                 }
             }
         }
@@ -768,20 +835,38 @@ pub fn diff_file_lines(file: &DiffFile) -> Vec<String> {
 
 /// Read a file for the content pane, or say why it can't be shown. The message
 /// is user-facing, so it names the limit rather than the errno.
-pub fn load_file_lines(path: &Path) -> Result<Vec<String>, String> {
-    let meta =
-        std::fs::metadata(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+/// `label` is what the message calls the file — the repo-relative path, not
+/// `path` itself. A workdir prefix is both noise (the pane title already names
+/// the file) and long enough to push the actual advice off the end of the
+/// line, which is how it read the first time this was captured.
+pub fn load_file_lines(path: &Path, label: &str) -> Result<Vec<String>, String> {
+    let meta = std::fs::metadata(path).map_err(|e| {
+        format!(
+            "Couldn't open {label}: {e}. It may have been moved or deleted since this list \
+             was built — press s to rebuild the list (twice, if that switches scope), \
+             or pick another file."
+        )
+    })?;
     if meta.len() > MAX_FILE_BYTES {
         return Err(format!(
-            "This file is {} — too big to show here (the limit is {} MB).",
+            "This file is {} — too big to show here (the limit is {} MB). Pick another file, \
+             or press P to ask about the project as a whole.",
             human_bytes(meta.len()),
             MAX_FILE_BYTES / (1024 * 1024)
         ));
     }
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+    let bytes = std::fs::read(path).map_err(|e| {
+        format!(
+            "Couldn't read {label}: {e}. Check you have permission to read it, \
+             or pick another file."
+        )
+    })?;
     if looks_binary(&bytes) {
-        return Err("This looks like a binary file, so there's nothing to read here.".to_string());
+        return Err(
+            "This looks like a binary file, so there's nothing to read here. \
+             Pick a source file from the list instead."
+                .to_string(),
+        );
     }
     let text = String::from_utf8_lossy(&bytes);
     Ok(text.lines().map(ToOwned::to_owned).collect())
@@ -800,17 +885,36 @@ fn human_bytes(len: u64) -> String {
     }
 }
 
+/// A non-git listing, plus the directories the walk couldn't open.
+///
+/// The skipped directories are carried rather than dropped because their
+/// absence is invisible: a listing missing a whole subtree looks exactly like a
+/// project that doesn't have one, and this mode's user has no way to know
+/// better.
+pub struct RepoWalk {
+    pub files: Vec<String>,
+    pub unreadable: Vec<String>,
+}
+
 /// Depth- and entry-capped walk for projects git doesn't know about. There are
 /// no ignore rules to inherit here, so [`WALK_SKIP_DIRS`] stands in for them.
-pub fn walk_files_capped(root: &Path, max_entries: usize, max_depth: usize) -> Vec<String> {
+pub fn walk_files_capped(root: &Path, max_entries: usize, max_depth: usize) -> RepoWalk {
     let mut out = Vec::new();
+    let mut unreadable = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
         if out.len() >= max_entries || depth > max_depth {
             continue;
         }
-        let Ok(read) = std::fs::read_dir(&dir) else {
-            continue;
+        let read = match std::fs::read_dir(&dir) {
+            Ok(read) => read,
+            Err(e) => {
+                unreadable.push(format!(
+                    "{}: {e}",
+                    dir.strip_prefix(root).unwrap_or(&dir).display()
+                ));
+                continue;
+            }
         };
         for entry in read.flatten() {
             let path = entry.path();
@@ -832,7 +936,11 @@ pub fn walk_files_capped(root: &Path, max_entries: usize, max_depth: usize) -> V
     }
     out.sort();
     out.truncate(max_entries);
-    out
+    unreadable.sort();
+    RepoWalk {
+        files: out,
+        unreadable,
+    }
 }
 
 /// Trim a repo-tree listing to `max_entries`, returning the original count
@@ -1361,6 +1469,34 @@ pub fn thread_insert_index(rows: &[LearningQa], parent_id: &str) -> Option<usize
         }
     }
     Some(last + 1)
+}
+
+/// Reorder a stored history so every follow-up sits directly under the thread
+/// it continues, the way the live list keeps it.
+///
+/// Rows are stored — and reloaded — in the order they were asked, but a
+/// follow-up is asked *after* whatever else was asked in between. Replaying
+/// that order verbatim would leave it indented under an unrelated question,
+/// since the renderer takes its placement from the list and only its
+/// indentation from `parent_qa_id`. Threading here rather than at render time
+/// keeps one notion of order: `learning_enqueue` inserts a new row at exactly
+/// this position, so a reopened history reads the way it did when it was
+/// written.
+///
+/// A row whose parent is missing lands at the end rather than disappearing.
+pub fn thread_rows(rows: Vec<LearningQa>) -> Vec<LearningQa> {
+    let mut out: Vec<LearningQa> = Vec::with_capacity(rows.len());
+    for row in rows {
+        // Oldest first, so a parent is always placed before the rows that hang
+        // off it.
+        let at = row
+            .parent_qa_id
+            .as_deref()
+            .and_then(|parent| thread_insert_index(&out, parent))
+            .unwrap_or(out.len());
+        out.insert(at, row);
+    }
+    out
 }
 
 /// A finished headless run, delivered back to the UI thread.
@@ -2734,7 +2870,21 @@ impl App {
                 if on_header {
                     self.learning_toggle_start_here();
                 } else {
-                    self.learning_load_selected_content();
+                    // Moving the cursor already loaded this file, so Enter on
+                    // it is only a focus change. Reloading would re-read the
+                    // file from disk and log the same failure twice, which is
+                    // how this was caught. A file that *failed* still reloads:
+                    // Enter is the only retry there is.
+                    let already_loaded = matches!(
+                        &self.mode,
+                        AppMode::Learning(state)
+                            if state.content_error.is_none()
+                                && state.content_path.as_deref()
+                                    == state.selected_entry().and_then(|e| e.path())
+                    );
+                    if !already_loaded {
+                        self.learning_load_selected_content();
+                    }
                     if let AppMode::Learning(state) = &mut self.mode {
                         state.focus = LearningFocus::Content;
                     }
@@ -3122,11 +3272,23 @@ impl App {
         if session_id.is_empty() {
             return;
         }
-        let already_seen = self
+        // A failed lookup counts as "seen": showing the intro on every open is
+        // a worse failure than never showing it, but it should not be silent.
+        let looked_up = self
             .db
             .as_ref()
-            .and_then(|db| db.learning_session_onboarding_seen(&session_id).ok())
-            .unwrap_or(true);
+            .map(|db| db.learning_session_onboarding_seen(&session_id));
+        let already_seen = match looked_up {
+            Some(Ok(seen)) => seen,
+            Some(Err(e)) => {
+                self.log_warn(
+                    "learning",
+                    format!("couldn't tell whether the Learning Mode intro has been shown: {e}"),
+                );
+                true
+            }
+            None => true,
+        };
         if already_seen {
             return;
         }
@@ -3518,16 +3680,123 @@ pub(crate) mod tests {
         let dir = TempDir::new().unwrap();
         let binary = dir.path().join("thing.bin");
         std::fs::write(&binary, [0x7f, 0x45, 0x00, 0x01]).unwrap();
-        let err = load_file_lines(&binary).unwrap_err();
+        let err = load_file_lines(&binary, "thing.bin").unwrap_err();
         assert!(err.contains("binary"), "{err}");
 
         let big = dir.path().join("huge.txt");
         std::fs::write(&big, vec![b'a'; (MAX_FILE_BYTES + 1) as usize]).unwrap();
-        let err = load_file_lines(&big).unwrap_err();
+        let err = load_file_lines(&big, "huge.txt").unwrap_err();
         assert!(err.contains("too big"), "{err}");
 
         let missing = dir.path().join("nope.txt");
-        assert!(load_file_lines(&missing).is_err());
+        assert!(load_file_lines(&missing, "nope.txt").is_err());
+    }
+
+    /// A file that won't open is the one failure met by simply moving the
+    /// cursor, so it has to reach both the pane (with a next step) and the
+    /// debug log (with the path, which the pane's message alone doesn't give
+    /// someone reading the log later).
+    #[test]
+    fn a_file_that_vanished_says_what_to_do_and_reaches_the_debug_log() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        // Select README.md, then delete it out from under the listing.
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("README.md"))
+            .expect("README.md should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        std::fs::remove_file(repo.path().join("README.md")).unwrap();
+        app.learning_load_selected_content();
+
+        let reason = learning(&app)
+            .content_error
+            .clone()
+            .expect("a missing file should say so");
+        assert!(
+            reason.contains("moved or deleted") && reason.contains("pick another file"),
+            "should say what to do next, got {reason}"
+        );
+        // The repo-relative path, not the absolute one: a workdir prefix is
+        // long enough to push the advice off the end of the line, which is
+        // exactly how this read the first time it was captured.
+        assert!(
+            reason.contains("Couldn't open README.md:"),
+            "should name the file the way the list does, got {reason}"
+        );
+        assert!(
+            !reason.contains(&repo.path().display().to_string()),
+            "the workdir prefix is noise the pane title already carries, got {reason}"
+        );
+
+        let logged = app
+            .debug_log
+            .entries()
+            .iter()
+            .any(|e| e.context == "learning" && e.message.contains("README.md"));
+        assert!(logged, "the load failure should name the file in the log");
+    }
+
+    /// Opening the cursored file is a focus change, not a second read: the
+    /// cursor move already loaded it. Caught by seeing the same failure logged
+    /// twice for one `Enter`.
+    #[test]
+    fn opening_the_file_already_under_the_cursor_does_not_read_it_again() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("src/util.rs"))
+            .expect("src/util.rs should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        app.learning_load_selected_content();
+        assert_eq!(learning(&app).content_path.as_deref(), Some("src/util.rs"));
+
+        // Change the file on disk, then press Enter. A reload would pick the
+        // new text up; a focus change leaves what was already read alone.
+        std::fs::write(repo.path().join("src/util.rs"), "pub fn changed() {}\n").unwrap();
+        app.learning_activate_selection();
+
+        assert_eq!(learning(&app).focus, LearningFocus::Content);
+        assert_eq!(learning(&app).content, vec!["pub fn ok() {}"]);
+    }
+
+    /// ...but a file that failed still reloads, because `Enter` is the only
+    /// retry there is.
+    #[test]
+    fn opening_a_file_that_failed_to_load_tries_it_again() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("src/util.rs"))
+            .expect("src/util.rs should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        // Fail the load, then make the file readable again.
+        std::fs::remove_file(repo.path().join("src/util.rs")).unwrap();
+        app.learning_load_selected_content();
+        assert!(learning(&app).content_error.is_some());
+
+        std::fs::write(repo.path().join("src/util.rs"), "pub fn back() {}\n").unwrap();
+        app.learning_activate_selection();
+
+        assert!(learning(&app).content_error.is_none());
+        assert_eq!(learning(&app).content, vec!["pub fn back() {}"]);
     }
 
     #[test]
@@ -3535,7 +3804,7 @@ pub(crate) mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("a.txt");
         std::fs::write(&path, "one\ntwo\n").unwrap();
-        assert_eq!(load_file_lines(&path).unwrap(), vec!["one", "two"]);
+        assert_eq!(load_file_lines(&path, "a.txt").unwrap(), vec!["one", "two"]);
     }
 
     // ── prompt builders ──────────────────────────────────────
@@ -4245,6 +4514,43 @@ pub(crate) mod tests {
         assert!(err.contains("git repository"), "{err}");
     }
 
+    /// The scope key can't switch scope in a non-git project, so it rebuilds
+    /// the list instead — which is what the vanished-file message tells the
+    /// user to press, and that message is only reachable from this scope.
+    #[test]
+    fn the_scope_key_rebuilds_a_non_git_list_it_cannot_switch() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("main.py"), "print('hi')\n").unwrap();
+        std::fs::write(dir.path().join("gone.py"), "print('bye')\n").unwrap();
+        let mut app = app_at(dir.path(), false);
+        app.open_learning_mode(0, 0).unwrap();
+
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("gone.py"))
+            .expect("gone.py should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        app.learning_load_selected_content();
+        std::fs::remove_file(dir.path().join("gone.py")).unwrap();
+        app.learning_load_selected_content();
+        let content_error = learning(&app).content_error.clone().unwrap();
+        assert!(content_error.contains("press s"), "{content_error}");
+
+        app.learning_toggle_scope();
+        let state = learning(&app);
+        assert_eq!(state.scope, BrowseScope::RepoTree, "still no other scope");
+        let paths: Vec<&str> = state.entries.iter().filter_map(|e| e.path()).collect();
+        assert_eq!(paths, vec!["main.py"], "the vanished file is gone from it");
+        assert!(
+            state.content_error.is_none(),
+            "the surviving file loads: {:?}",
+            state.content_error
+        );
+    }
+
     /// With no DB (as in tests) the overlay still opens and browses; history is
     /// simply empty and nothing is persisted.
     #[test]
@@ -4256,6 +4562,31 @@ pub(crate) mod tests {
         assert!(learning(&app).qa.is_empty());
         assert!(learning(&app).session_id.is_empty());
         assert!(!learning(&app).entries.is_empty());
+    }
+
+    /// Without a database the overlay is still fully usable — questions are
+    /// asked and answered against the in-memory list — but that list is all
+    /// there is, so it goes when the overlay does. Asserted rather than assumed:
+    /// the alternative is refusing to answer at all, which would be worse.
+    #[test]
+    fn without_a_database_questions_still_work_but_do_not_outlive_the_overlay() {
+        let (_repo, mut app) = opened_app();
+        assert!(app.db.is_none());
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("It runs the program.".to_string()));
+        assert_eq!(
+            learning(&app).qa[0].answer.as_deref(),
+            Some("It runs the program.")
+        );
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+        assert!(
+            learning(&app).qa.is_empty(),
+            "there was nowhere to keep it, and nothing pretends otherwise"
+        );
     }
 
     #[test]
@@ -4296,13 +4627,47 @@ pub(crate) mod tests {
         std::fs::create_dir_all(dir.path().join("lib/deep")).unwrap();
         std::fs::write(dir.path().join("lib/deep/util.py"), "y").unwrap();
 
-        let files = walk_files_capped(dir.path(), 100, 12);
-        assert_eq!(files, vec!["lib/deep/util.py", "main.py"]);
+        let walk = walk_files_capped(dir.path(), 100, 12);
+        assert_eq!(walk.files, vec!["lib/deep/util.py", "main.py"]);
+        assert!(walk.unreadable.is_empty());
 
         // The entry cap truncates rather than growing without bound.
-        assert_eq!(walk_files_capped(dir.path(), 1, 12).len(), 1);
+        assert_eq!(walk_files_capped(dir.path(), 1, 12).files.len(), 1);
         // The depth cap keeps the walk shallow.
-        assert_eq!(walk_files_capped(dir.path(), 100, 0), vec!["main.py"]);
+        assert_eq!(walk_files_capped(dir.path(), 100, 0).files, vec!["main.py"]);
+    }
+
+    /// A folder the walk can't open leaves no gap in the list, so the walk has
+    /// to report it — otherwise "no such directory" and "AMF couldn't read it"
+    /// are indistinguishable to someone who doesn't know the project.
+    #[test]
+    #[cfg(unix)]
+    fn the_fallback_walk_reports_folders_it_could_not_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("main.py"), "print()").unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("secret.py"), "z").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let walk = walk_files_capped(dir.path(), 100, 12);
+        // Running as root defeats the permission bits entirely; the point of
+        // the test is the reporting path, so only assert it when it applies.
+        if walk.files.iter().any(|f| f.contains("secret")) {
+            return;
+        }
+        assert_eq!(walk.files, vec!["main.py"]);
+        assert_eq!(walk.unreadable.len(), 1);
+        assert!(
+            walk.unreadable[0].starts_with("locked:"),
+            "should name the folder it couldn't open, got {:?}",
+            walk.unreadable
+        );
+
+        // Leave it readable so the temp dir can clean itself up.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     // ── follow-ups ───────────────────────────────────────────
@@ -5125,6 +5490,39 @@ pub(crate) mod tests {
         );
     }
 
+    /// Stored order is the order things were asked; threaded order is the order
+    /// they are read in. Ids here are in ask order, so `b` and `e` were asked
+    /// long after the questions they continue.
+    #[test]
+    fn threading_a_stored_history_gathers_each_conversation() {
+        let stored = vec![
+            qa_row("a", None),
+            qa_row("d", None),
+            qa_row("b", Some("a")),
+            qa_row("e", Some("d")),
+            qa_row("c", Some("b")),
+        ];
+        let threaded = thread_rows(stored);
+        let ids: Vec<&str> = threaded.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["a", "b", "c", "d", "e"],
+            "each thread reads top to bottom, and roots keep the order they \
+             were asked in"
+        );
+    }
+
+    /// Orphans are not supposed to happen — the delete cascades — but a row
+    /// pointing at a parent that isn't there must still be readable rather than
+    /// dropped, since it is the only copy of a question someone asked.
+    #[test]
+    fn threading_keeps_a_row_whose_parent_is_gone() {
+        let stored = vec![qa_row("a", None), qa_row("orphan", Some("vanished"))];
+        let threaded = thread_rows(stored);
+        let ids: Vec<&str> = threaded.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "orphan"]);
+    }
+
     #[test]
     fn following_up_on_an_unanswered_question_says_to_wait() {
         let (_repo, mut app) = opened_app();
@@ -5305,6 +5703,126 @@ pub(crate) mod tests {
             Some("It retries forever."),
             "and the answer came back with it"
         );
+    }
+
+    /// Stored history comes back oldest-first, but a follow-up is asked *after*
+    /// whatever else was asked in between — so replaying that order verbatim
+    /// would indent it under an unrelated question. This is the same defect
+    /// `a_follow_up_lands_under_the_thread_it_continues` fixed for the live
+    /// list, arriving by the other door.
+    #[test]
+    fn a_reloaded_thread_keeps_its_follow_ups_under_their_parents() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let first = ask_and_answer(&mut app, "First question?", "First answer.");
+        let unrelated = ask_and_answer(&mut app, "Unrelated question?", "Unrelated answer.");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_qa = 0;
+        }
+        let child = follow_up(&mut app, "Follow-up?");
+        deliver(&mut app, &child, Ok("Follow-up answer.".to_string()));
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let ids: Vec<&str> = learning(&app).qa.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![first.as_str(), child.as_str(), unrelated.as_str()],
+            "a reopened history threads the same way the live one does"
+        );
+    }
+
+    /// A rerun sits in its original's place for the same reason, and it is
+    /// threaded by `parent_qa_id` like everything else.
+    #[test]
+    fn a_reloaded_deep_dive_stays_with_the_question_it_re_asked() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let origin = ask_and_answer(&mut app, "What does this do?", "A guess.");
+        let unrelated = ask_and_answer(&mut app, "Unrelated question?", "Unrelated answer.");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_qa = 0;
+        }
+        let deeper = app.learning_deep_dive().expect("the rerun starts");
+        deliver(
+            &mut app,
+            &deeper,
+            Ok("Checked against the repo.".to_string()),
+        );
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let ids: Vec<&str> = learning(&app).qa.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![origin.as_str(), deeper.as_str(), unrelated.as_str()],
+            "the rerun reloads under the answer it was checking"
+        );
+    }
+
+    /// Every anchor kind has to survive a reload: the file and lines a question
+    /// was asked about are what make its answer readable a week later, and a
+    /// follow-up asked after the reload quotes them again.
+    #[test]
+    fn a_reloaded_question_still_knows_what_it_was_asked_about() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        app.learning_cursor_move(0);
+        app.learning_start_range();
+        app.learning_cursor_move(1);
+        let anchor = learning(&app).anchor;
+        assert!(
+            matches!(anchor, LearningAnchor::Lines { .. }),
+            "the test selected a range: {anchor:?}"
+        );
+        let id = app
+            .learning_ask("Explain these lines.", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("They parse the arguments.".to_string()));
+        let selection = learning(&app).qa[0].selection_text.clone();
+        assert!(!selection.is_empty(), "the question captured its lines");
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let row = learning(&app).qa[0].clone();
+        assert_eq!(row.anchor, anchor);
+        assert_eq!(row.file_path.as_deref(), Some("src/main.rs"));
+        assert_eq!(row.selection_text, selection);
+        assert_eq!(row.level, LearningLevel::Newcomer);
+        assert_eq!(row.intent, LearningQaIntent::Explain);
+    }
+
+    /// The intro is the newcomer's discovery path, so it opens unasked — but
+    /// only once. A second visit that reopens it reads as the mode not
+    /// remembering the user was here.
+    #[test]
+    fn the_intro_opens_on_the_first_visit_only() {
+        let repo = repo_with_branch_change();
+        let db_dir = TempDir::new().unwrap();
+        let mut app = app_at(repo.path(), true);
+        app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+
+        app.open_learning_mode(0, 0).unwrap();
+        assert!(
+            learning(&app).help_open,
+            "the first visit explains what this is"
+        );
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+        assert!(
+            !learning(&app).help_open,
+            "and the second one does not repeat itself"
+        );
+    }
+
+    /// Without a database there is nowhere to record that the intro was shown,
+    /// so showing it would mean showing it on every single open.
+    #[test]
+    fn the_intro_stays_shut_when_there_is_nothing_to_remember_it_with() {
+        let (_repo, app) = opened_app();
+        assert!(app.db.is_none());
+        assert!(!learning(&app).help_open);
     }
 
     // ── keeping an answer as a to-do ─────────────────────────

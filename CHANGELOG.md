@@ -33,6 +33,10 @@ are tagged.
   log (`D` on the dashboard) with the path involved, so a question that went
   nowhere can be traced after the fact instead of vanishing.
 
+### Migration
+
+No migration is required.
+
 ## [v0.36.0] - 2026-08-12
 
 ### Added

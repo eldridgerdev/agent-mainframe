@@ -615,7 +615,7 @@ impl App {
                 // file there comes from the snapshot rather than from disk.
                 let loaded = match scope {
                     BrowseScope::BranchChanges => Ok(diff_lines),
-                    BrowseScope::RepoTree => load_file_lines(&workdir.join(&path)),
+                    BrowseScope::RepoTree => load_file_lines(&workdir.join(&path), &path),
                 };
                 // Logged out here rather than inside the borrow: a file that
                 // won't open is the one failure the user meets while simply
@@ -816,12 +816,15 @@ pub fn diff_file_lines(file: &DiffFile) -> Vec<String> {
 
 /// Read a file for the content pane, or say why it can't be shown. The message
 /// is user-facing, so it names the limit rather than the errno.
-pub fn load_file_lines(path: &Path) -> Result<Vec<String>, String> {
+/// `label` is what the message calls the file — the repo-relative path, not
+/// `path` itself. A workdir prefix is both noise (the pane title already names
+/// the file) and long enough to push the actual advice off the end of the
+/// line, which is how it read the first time this was captured.
+pub fn load_file_lines(path: &Path, label: &str) -> Result<Vec<String>, String> {
     let meta = std::fs::metadata(path).map_err(|e| {
         format!(
-            "Couldn't open {}: {e}. It may have been moved or deleted since this list was \
-             built — press s twice to rebuild it, or pick another file.",
-            path.display()
+            "Couldn't open {label}: {e}. It may have been moved or deleted since this list \
+             was built — press s twice to rebuild it, or pick another file."
         )
     })?;
     if meta.len() > MAX_FILE_BYTES {
@@ -834,8 +837,8 @@ pub fn load_file_lines(path: &Path) -> Result<Vec<String>, String> {
     }
     let bytes = std::fs::read(path).map_err(|e| {
         format!(
-            "Couldn't read {}: {e}. Check you have permission to read it, or pick another file.",
-            path.display()
+            "Couldn't read {label}: {e}. Check you have permission to read it, \
+             or pick another file."
         )
     })?;
     if looks_binary(&bytes) {
@@ -2819,7 +2822,21 @@ impl App {
                 if on_header {
                     self.learning_toggle_start_here();
                 } else {
-                    self.learning_load_selected_content();
+                    // Moving the cursor already loaded this file, so Enter on
+                    // it is only a focus change. Reloading would re-read the
+                    // file from disk and log the same failure twice, which is
+                    // how this was caught. A file that *failed* still reloads:
+                    // Enter is the only retry there is.
+                    let already_loaded = matches!(
+                        &self.mode,
+                        AppMode::Learning(state)
+                            if state.content_error.is_none()
+                                && state.content_path.as_deref()
+                                    == state.selected_entry().and_then(|e| e.path())
+                    );
+                    if !already_loaded {
+                        self.learning_load_selected_content();
+                    }
                     if let AppMode::Learning(state) = &mut self.mode {
                         state.focus = LearningFocus::Content;
                     }
@@ -3615,16 +3632,16 @@ pub(crate) mod tests {
         let dir = TempDir::new().unwrap();
         let binary = dir.path().join("thing.bin");
         std::fs::write(&binary, [0x7f, 0x45, 0x00, 0x01]).unwrap();
-        let err = load_file_lines(&binary).unwrap_err();
+        let err = load_file_lines(&binary, "thing.bin").unwrap_err();
         assert!(err.contains("binary"), "{err}");
 
         let big = dir.path().join("huge.txt");
         std::fs::write(&big, vec![b'a'; (MAX_FILE_BYTES + 1) as usize]).unwrap();
-        let err = load_file_lines(&big).unwrap_err();
+        let err = load_file_lines(&big, "huge.txt").unwrap_err();
         assert!(err.contains("too big"), "{err}");
 
         let missing = dir.path().join("nope.txt");
-        assert!(load_file_lines(&missing).is_err());
+        assert!(load_file_lines(&missing, "nope.txt").is_err());
     }
 
     /// A file that won't open is the one failure met by simply moving the
@@ -3657,6 +3674,17 @@ pub(crate) mod tests {
             reason.contains("moved or deleted") && reason.contains("pick another file"),
             "should say what to do next, got {reason}"
         );
+        // The repo-relative path, not the absolute one: a workdir prefix is
+        // long enough to push the advice off the end of the line, which is
+        // exactly how this read the first time it was captured.
+        assert!(
+            reason.contains("Couldn't open README.md:"),
+            "should name the file the way the list does, got {reason}"
+        );
+        assert!(
+            !reason.contains(&repo.path().display().to_string()),
+            "the workdir prefix is noise the pane title already carries, got {reason}"
+        );
 
         let logged = app
             .debug_log
@@ -3666,12 +3694,69 @@ pub(crate) mod tests {
         assert!(logged, "the load failure should name the file in the log");
     }
 
+    /// Opening the cursored file is a focus change, not a second read: the
+    /// cursor move already loaded it. Caught by seeing the same failure logged
+    /// twice for one `Enter`.
+    #[test]
+    fn opening_the_file_already_under_the_cursor_does_not_read_it_again() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("src/util.rs"))
+            .expect("src/util.rs should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        app.learning_load_selected_content();
+        assert_eq!(learning(&app).content_path.as_deref(), Some("src/util.rs"));
+
+        // Change the file on disk, then press Enter. A reload would pick the
+        // new text up; a focus change leaves what was already read alone.
+        std::fs::write(repo.path().join("src/util.rs"), "pub fn changed() {}\n").unwrap();
+        app.learning_activate_selection();
+
+        assert_eq!(learning(&app).focus, LearningFocus::Content);
+        assert_eq!(learning(&app).content, vec!["pub fn ok() {}"]);
+    }
+
+    /// ...but a file that failed still reloads, because `Enter` is the only
+    /// retry there is.
+    #[test]
+    fn opening_a_file_that_failed_to_load_tries_it_again() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("src/util.rs"))
+            .expect("src/util.rs should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        // Fail the load, then make the file readable again.
+        std::fs::remove_file(repo.path().join("src/util.rs")).unwrap();
+        app.learning_load_selected_content();
+        assert!(learning(&app).content_error.is_some());
+
+        std::fs::write(repo.path().join("src/util.rs"), "pub fn back() {}\n").unwrap();
+        app.learning_activate_selection();
+
+        assert!(learning(&app).content_error.is_none());
+        assert_eq!(learning(&app).content, vec!["pub fn back() {}"]);
+    }
+
     #[test]
     fn text_files_load_as_lines() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("a.txt");
         std::fs::write(&path, "one\ntwo\n").unwrap();
-        assert_eq!(load_file_lines(&path).unwrap(), vec!["one", "two"]);
+        assert_eq!(load_file_lines(&path, "a.txt").unwrap(), vec!["one", "two"]);
     }
 
     // ── prompt builders ──────────────────────────────────────

@@ -1146,6 +1146,27 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `a_file_that_vanished_says_what_to_do_and_reaches_the_debug_log`
       asserts both halves — the banner's next step and the log entry naming
       the file.
+      **Captured** as six frames in `docs/screenshots/learning-mode-errors/`
+      (scenario `scripts/dev/screenshot/scenarios/learning-mode-errors.txt`),
+      driven against a throwaway instance seeded with a deliberately awkward
+      **non-git** project — a mode-000 folder, a mode-000 file, and a binary
+      file — so the fallback walk is the listing path under test. As with the
+      first capture, reading the rendered output found two defects no unit
+      test would have:
+      - **The message carried an absolute path.** `Couldn't read
+        /tmp/…/scratchpad/demo-notes-app/credentials.env: …` — a workdir
+        prefix long enough to push the advice itself onto a fourth line, and
+        duplicating what the pane title already says. `load_file_lines` now
+        takes the repo-relative label the file list uses; the log line was
+        already prefixing it, so the absolute path was redundant in both
+        places. Guarded by an assertion that the workdir prefix stays out.
+      - **One `Enter` read the file twice.** The duplicated log line is what
+        exposed it: moving the cursor already loads the file, so `Enter` was
+        re-reading it from disk before shifting focus. It now only changes
+        focus — *unless* the previous load failed, where `Enter` is the only
+        retry there is. Tests:
+        `opening_the_file_already_under_the_cursor_does_not_read_it_again`,
+        `opening_a_file_that_failed_to_load_tries_it_again`.
 - [ ] Add tests covering: DB round-trip of a session plus Q&A rows
       including `intent`, `level`, `parent_qa_id`, `todo_id`, and
       `spawned_session_id`; follow-up cascade on parent delete; the

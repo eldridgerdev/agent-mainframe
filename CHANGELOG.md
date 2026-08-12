@@ -388,6 +388,13 @@ storage the first time it runs.
   dismissed investigations leave the current plan untouched, and a failure
   preserves the research request for retry. No migration is required.
 
+### Fixed
+
+- **Vibeless review stays with the feature that enabled it.** A Vibeless
+  feature using the main repository no longer causes inherited diff-review
+  popups in later worktree features. AMF scopes existing hooks automatically
+  on startup; no manual configuration changes are required.
+
 ## [v0.34.1] - 2026-08-12
 
 ### Fixed

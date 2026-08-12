@@ -7837,6 +7837,90 @@ fn vibeless_pre_tool_use_includes_custom_diff_review_when_script_present_by_defa
 }
 
 #[test]
+fn root_vibeless_diff_review_hook_is_scoped_away_from_worktrees() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("feature");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    ensure_notification_hooks(
+        repo.path(),
+        repo.path(),
+        &VibeMode::Vibeless,
+        &AgentKind::Claude,
+        false,
+    );
+    ensure_notification_hooks(
+        &workdir,
+        repo.path(),
+        &VibeMode::Vibe,
+        &AgentKind::Claude,
+        true,
+    );
+
+    let root_settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.path().join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    let root_diff_hook = root_settings["hooks"]["PreToolUse"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .find(|hook| {
+            hook["command"]
+                .as_str()
+                .is_some_and(|command| command.ends_with("custom-diff-review.sh"))
+        })
+        .expect("root Vibeless settings should contain the diff-review hook");
+    assert_eq!(
+        root_diff_hook["args"].as_array(),
+        Some(&vec![serde_json::json!(repo.path().to_string_lossy())]),
+        "the inherited hook must carry the Git root that owns it"
+    );
+
+    let worktree_settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(workdir.join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        hook_commands_for(&worktree_settings, "PreToolUse")
+            .iter()
+            .all(|command| !command.ends_with("custom-diff-review.sh")),
+        "a Vibe worktree should not install its own diff-review hook"
+    );
+}
+
+#[test]
+fn inherited_diff_review_script_exits_for_a_different_git_root() {
+    let owning_repo = TempDir::new().unwrap();
+    let active_repo = TempDir::new().unwrap();
+    for repo in [&owning_repo, &active_repo] {
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("plugins/diff-review/scripts/custom-diff-review.sh");
+    let output = std::process::Command::new("bash")
+        .arg(script)
+        .arg(owning_repo.path())
+        .current_dir(active_repo.path())
+        .env("AMF_ACTIVE", "1")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "an inherited hook should exit before invoking popup dependencies: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn vibeless_permissions_include_edit_and_write() {
     let workdir = TempDir::new().unwrap();
     // Need custom diff-review script for vibeless path to complete.

@@ -50,7 +50,7 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":repair-root-repo-hooks-v5");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":scope-diff-review-hooks-v6");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -155,6 +155,7 @@ fn claude_managed_commands() -> Vec<String> {
     .collect()
 }
 
+#[cfg(test)]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -1146,10 +1147,10 @@ pub fn ensure_notification_hooks(
         claude_exec_hook(&clear_path),
     ];
     if wants_diff_review && let Some(ref dr_cmd) = diff_review_cmd {
-        let dr_cmd = shell_quote(dr_cmd);
         pre_tool_hooks.push(serde_json::json!({
             "type": "command",
             "command": dr_cmd,
+            "args": [workdir.to_string_lossy()],
             "timeout": 600
         }));
     }

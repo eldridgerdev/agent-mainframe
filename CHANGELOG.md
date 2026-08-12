@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.36.0] - 2026-08-12
+
 ### Added
 
 - **Hand a Learning Mode answer to a live agent.** `S` on an answered entry —
@@ -40,6 +44,8 @@ are tagged.
   Claude" while it was still being written. It now reads once and matches
   what is actually happening: `Claude is answering`, `queued for Claude`, or
   `Claude couldn't answer`.
+- **Building AMF from source on macOS is warning-free again.** Linux-only
+  memory probes are no longer compiled into the macOS binary as unused code.
 
 ### Migration
 

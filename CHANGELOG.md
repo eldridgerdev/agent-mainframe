@@ -43,6 +43,24 @@ are tagged.
   summary no longer leaves garbled fragments from diff or source lines mixed
   into the review text, and scrolling stays aligned when content wraps.
 
+### Documentation
+
+- **The README now covers Learning Mode.** A new *Understand a codebase you
+  didn't write* workflow — placed first, because it is the one that needs no
+  prior knowledge of AMF — explains what the mode is for, that nothing in it
+  changes your files and `S` is the single exception, how to start when you do
+  not yet know what to ask, the two ask keys and the five keys that act on an
+  answer, and the newcomer/familiar reading levels. It also says why `D`
+  exists: an ordinary answer only sees the code on screen, so it can name
+  files or line numbers that do not exist — and that Codex is the exception,
+  since it always reads the repository on the first request, so its answers
+  are deep dives already and `D` refuses rather than re-running one. `K` is in
+  the dashboard keybindings table.
+- **`CLAUDE.md` documents Learning Mode's architecture** — the four new
+  modules, the read-only invariant and its one exception, and the distinction
+  between a follow-up and a deep dive, which are two different relationships
+  between Q&A rows rather than one. Nothing about AMF's behavior changes.
+
 ### Migration
 
 No migration is required.

@@ -161,6 +161,58 @@ is anchored to.
 Intermittently, the agent applies or explains the fix against different lines
 than the comment refers to and reports that it mis-anchored the comment.
 
+## Toasts raised while landing in the composer are never drawn
+
+- **Status:** Backlog
+- **Reported:** 2026-08-13
+- **Relates to:** `src/ui/dashboard.rs` (the `AppMode::Compose` branch, ~line
+  1276), `src/app/compose.rs::open_compose_seeded`, and every caller that
+  seeds a composer — the prompt library, `App::todos_spawn_agent`, and
+  Learning Mode's escalation (`S`).
+- **Lead:** `ui::dashboard` draws the `Compose` branch and `return`s before
+  the shared `super::draw_toasts` call at the end of the function. The
+  PR-review family of full-screen modes hit the same problem and each solved
+  it by calling `draw_toasts` themselves before returning (there is a comment
+  at `src/ui/dashboard.rs:991` explaining exactly this); the `Compose` branch
+  never got the same treatment. So *any* toast pushed while landing in the
+  composer is silently swallowed until the mode changes.
+
+  This is not hypothetical: `open_compose_seeded` pushes
+  `"Prompt loaded — review and send"` (`src/app/compose.rs:445`) as its own
+  last act, so that toast has presumably never been seen by anyone. It was
+  found while building Learning Mode's escalation, whose first cut raised a
+  "this session can change files" toast on arrival — the single most important
+  thing that key had to say, invisible in the one place it was said.
+
+  **The fix is not simply adding the call.** Toasts stack from the
+  bottom-right, which is exactly where the compose box is drawn, so they would
+  cover the prompt the user is meant to be reading. Options: move the toast
+  stack for this mode, draw it above the compose box, or decide the composer
+  is a place where a toast is the wrong channel and require callers to use
+  `self.message` instead (which `promote_message_to_toast` surfaces the moment
+  the user steps back out). Learning Mode's escalation took a fourth route as
+  a local workaround — it moved the statement into the seed text itself, as
+  the seed's last line, since the composer opens with the cursor after the
+  last line — but that does not generalize to callers with nothing to append
+  to.
+
+### Repro
+
+1. From a session view, open the prompt library (leader + `P`) and inject any
+   saved prompt, or press `g` on a TODO, or press `S` on a Learning Mode
+   answer.
+2. Watch the bottom-right corner as the composer opens.
+
+### Expected
+
+The toast the seeding path pushed (e.g. "Prompt loaded — review and send")
+appears over the composer, or is deliberately routed somewhere it can be seen.
+
+### Actual
+
+Nothing appears. The toast is queued but never drawn, and it expires while the
+composer is open, so it is not shown on return either.
+
 ## AI Review pane doesn't refresh PR Triage after posting
 
 - **Status:** Backlog

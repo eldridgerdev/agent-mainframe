@@ -16,6 +16,7 @@
 //! module is written before anything calls it. The allow comes off in Epic 6.
 #![allow(dead_code)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -52,10 +53,22 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// How much of a file is sniffed for a NUL byte before calling it binary.
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
-/// Cap on the repo-tree file list. A monorepo browsed by an unfamiliar user is
-/// the worst case for both listing cost and usefulness; the list is truncated
-/// rather than allowed to grow without bound.
-const MAX_REPO_ENTRIES: usize = 20_000;
+/// Safety valve on the repo-tree file list. This used to be the *browsing*
+/// limit at 20,000, back when the list was flat and every path in the repo was
+/// a row: past that the pane was unusable anyway, so capping the listing and
+/// capping what you could reach were the same decision. A tree only emits rows
+/// for what is expanded, so the two have come apart — reachability is now
+/// bounded per directory by `MAX_DIR_CHILDREN`, and this is only here to stop a
+/// pathological repository from being read into memory whole. It is deliberately
+/// far above any real project.
+const MAX_REPO_ENTRIES: usize = 200_000;
+
+/// Cap on the rows one directory contributes. This is the limit that actually
+/// bites, and it bites where the user can see it: a directory over the cap says
+/// how many children it is not showing, rather than the whole listing claiming
+/// to be complete. A single directory with thousands of entries is unbrowsable
+/// however it is rendered, and is nearly always generated output.
+const MAX_DIR_CHILDREN: usize = 2_000;
 
 /// Depth cap for the non-git fallback walk.
 const MAX_WALK_DEPTH: usize = 12;
@@ -105,6 +118,10 @@ impl LearningViewState {
             selected_entry: 0,
             list_scroll: 0,
             start_here_collapsed: false,
+            expanded_dirs: BTreeSet::new(),
+            expanded_seeded: false,
+            repo_files: Vec::new(),
+            start_here: Vec::new(),
             diff_files: Vec::new(),
             content: Vec::new(),
             content_path: None,
@@ -439,22 +456,27 @@ impl App {
 
     /// Rebuild the file list for the current scope.
     pub fn learning_reload_entries(&mut self) {
-        let Some((scope, workdir, is_git, has_history, collapsed)) = (match &self.mode {
-            AppMode::Learning(state) => Some((
-                state.scope,
-                state.workdir.clone(),
-                state.is_git,
-                !state.qa.is_empty(),
-                state.start_here_collapsed,
-            )),
-            _ => None,
-        }) else {
+        let Some((scope, workdir, is_git, has_history, mut expanded, expanded_seeded)) =
+            (match &self.mode {
+                AppMode::Learning(state) => Some((
+                    state.scope,
+                    state.workdir.clone(),
+                    state.is_git,
+                    !state.qa.is_empty(),
+                    state.expanded_dirs.clone(),
+                    state.expanded_seeded,
+                )),
+                _ => None,
+            })
+        else {
             return;
         };
 
         let mut load_error: Option<String> = None;
         let mut unreadable: Vec<String> = Vec::new();
         let mut diff_files: Vec<DiffFile> = Vec::new();
+        let mut repo_files: Vec<String> = Vec::new();
+        let mut start_here_files: Vec<String> = Vec::new();
         let entries = match scope {
             BrowseScope::BranchChanges => match crate::diff::load_snapshot(&workdir, None, false) {
                 Ok(snapshot) => {
@@ -508,23 +530,317 @@ impl App {
                 } else {
                     start_here_candidates(&workdir)
                 };
-                build_repo_tree_entries(&files, &start_here, collapsed)
+                // First listing of this project: open the path down to the
+                // orientation files so the tree arrives useful rather than
+                // shut. Seeded once and never re-applied — after that the tree
+                // is the user's, and a reload that re-opened what they closed
+                // would be the overlay arguing with them.
+                if !expanded_seeded {
+                    expanded.extend(default_expanded_dirs(&start_here));
+                }
+                repo_files = files;
+                start_here_files = start_here;
+                Vec::new()
             }
         };
 
         if let AppMode::Learning(state) = &mut self.mode {
             state.diff_files = diff_files;
-            state.entries = entries;
+            if scope == BrowseScope::RepoTree {
+                state.repo_files = repo_files;
+                state.start_here = start_here_files;
+                state.expanded_dirs = expanded;
+                state.expanded_seeded = true;
+            } else {
+                state.entries = entries;
+            }
             if state.selected_entry >= state.entries.len() {
                 state.selected_entry = state.entries.len().saturating_sub(1);
             }
             state.error = load_error.clone();
+        }
+        // Repo-tree rows come from the cached listing, so building them is the
+        // same step a collapse takes — one function, not two that have to be
+        // kept agreeing.
+        if scope == BrowseScope::RepoTree {
+            let overflow = self.learning_rebuild_tree();
+            if overflow > 0 {
+                let msg = format!(
+                    "{overflow} more item(s) sit at the top level than this list shows \
+                     (the limit is {MAX_DIR_CHILDREN} per folder). Open a folder to browse \
+                     inside it, or press s for just this branch's changes."
+                );
+                if let AppMode::Learning(state) = &mut self.mode {
+                    state.error.get_or_insert(msg.clone());
+                }
+                if load_error.is_none() {
+                    load_error = Some(msg);
+                }
+            }
         }
         if let Some(msg) = load_error {
             self.log_warn("learning", msg);
         }
         for dir in unreadable {
             self.log_warn("learning", format!("couldn't read the folder {dir}"));
+        }
+    }
+
+    /// Rebuild the repo-tree rows from the cached listing. No disk access:
+    /// expanding a directory must not re-run `git ls-files`, which on a large
+    /// repository would make the tree slower than the flat list it replaced.
+    /// Returns the root-level overflow, which only the caller that reads the
+    /// listing has anywhere to report.
+    fn learning_rebuild_tree(&mut self) -> usize {
+        let AppMode::Learning(state) = &mut self.mode else {
+            return 0;
+        };
+        if state.scope != BrowseScope::RepoTree {
+            return 0;
+        }
+        let (rows, overflow) = build_repo_tree_entries(
+            &state.repo_files,
+            &state.start_here,
+            state.start_here_collapsed,
+            &state.expanded_dirs,
+        );
+        state.entries = rows;
+        if state.selected_entry >= state.entries.len() {
+            state.selected_entry = state.entries.len().saturating_sub(1);
+        }
+        overflow
+    }
+
+    /// Rebuild the list and put the cursor back on the row it was on. Every
+    /// tree operation is "change `expanded_dirs`, then this": the rows are
+    /// derived, so the cursor is an index into something that no longer exists
+    /// by the time the new list is built.
+    ///
+    /// A directory keeps the cursor by its own path; a file keeps it by its
+    /// path too, and if that file is no longer listed (its folder was just
+    /// closed) the cursor falls back to the nearest ancestor directory still
+    /// on screen — the row that swallowed it — rather than to wherever the old
+    /// index happens to land.
+    fn learning_rebuild_keeping_cursor(&mut self) {
+        let key = match &self.mode {
+            AppMode::Learning(state) => state
+                .selected_entry()
+                .and_then(|e| e.row_key())
+                .map(|(is_dir, path)| (is_dir, path.to_string())),
+            _ => return,
+        };
+        self.learning_rebuild_tree();
+        let Some((was_dir, path)) = key else { return };
+        if let AppMode::Learning(state) = &mut self.mode {
+            let exact = state.entries.iter().position(|e| {
+                e.row_key()
+                    .is_some_and(|(d, p)| d == was_dir && p == path.as_str())
+            });
+            if let Some(idx) = exact {
+                state.selected_entry = idx;
+                return;
+            }
+            // The row is gone, so it was inside something that just closed.
+            // Walk up its path until a directory row exists.
+            let mut prefix = path.as_str();
+            while let Some(cut) = prefix.rfind('/') {
+                prefix = &prefix[..cut];
+                if let Some(idx) = state
+                    .entries
+                    .iter()
+                    .position(|e| e.dir_path() == Some(prefix))
+                {
+                    state.selected_entry = idx;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Open or close the directory under the cursor. No-op with a spoken
+    /// reason elsewhere — on a file this is routed to `learning_jump_to_parent`
+    /// by the key handler, so this only ever sees a directory.
+    pub fn learning_toggle_dir(&mut self) -> bool {
+        let Some(path) = (match &self.mode {
+            AppMode::Learning(state) => state
+                .selected_entry()
+                .and_then(|e| e.dir_path())
+                .map(str::to_string),
+            _ => None,
+        }) else {
+            return false;
+        };
+        if let AppMode::Learning(state) = &mut self.mode
+            && !state.expanded_dirs.remove(&path)
+        {
+            state.expanded_dirs.insert(path);
+        }
+        self.learning_rebuild_keeping_cursor();
+        true
+    }
+
+    /// Tree movement only ever means something in the file list. Pressing it
+    /// while reading the content or the history is a wrong guess about which
+    /// pane has the cursor, so it is answered rather than swallowed — and never
+    /// allowed to move a cursor the user cannot see.
+    fn learning_require_file_list_focus(&mut self) -> bool {
+        let focused = match &self.mode {
+            AppMode::Learning(state) => state.focus == LearningFocus::FileList,
+            _ => return false,
+        };
+        if !focused {
+            self.learning_notice("That moves the file list, which isn't focused — press Tab.");
+        }
+        focused
+    }
+
+    /// `l` / `Right`: open the folder under the cursor, step into an already
+    /// open one, or — on a file — do what `Enter` does.
+    pub fn learning_expand_or_open(&mut self) {
+        if !self.learning_require_file_list_focus() {
+            return;
+        }
+        let state_kind = match &self.mode {
+            AppMode::Learning(state) => match state.selected_entry() {
+                Some(LearningListEntry::Dir { expanded, .. }) => Some(*expanded),
+                _ => None,
+            },
+            _ => return,
+        };
+        match state_kind {
+            Some(false) => {
+                self.learning_toggle_dir();
+            }
+            // Already open, so the useful move is into it. The first child is
+            // always the next row — that is what flattening guarantees.
+            Some(true) => self.learning_select_next_entry(),
+            None => self.learning_activate_selection(),
+        }
+    }
+
+    /// `h` / `Left`: close the folder under the cursor, or step out to the one
+    /// containing this row.
+    pub fn learning_collapse_or_parent(&mut self) {
+        if !self.learning_require_file_list_focus() {
+            return;
+        }
+        let on_open_dir = matches!(
+            &self.mode,
+            AppMode::Learning(state)
+                if matches!(
+                    state.selected_entry(),
+                    Some(LearningListEntry::Dir { expanded: true, .. })
+                )
+        );
+        if on_open_dir {
+            self.learning_toggle_dir();
+        } else {
+            self.learning_jump_to_parent();
+        }
+    }
+
+    /// Move the cursor to the directory containing the current row, closing
+    /// nothing. Two rows have nowhere to go: a top-level one, and one whose
+    /// folder has no row of its own (the flat branch-changes list, or a pinned
+    /// `Start here` file whose folder the root cap dropped). Each says so
+    /// rather than being swallowed.
+    pub fn learning_jump_to_parent(&mut self) {
+        let Some(path) = (match &self.mode {
+            AppMode::Learning(state) => state
+                .selected_entry()
+                .and_then(|e| e.row_key())
+                .map(|(_, p)| p.to_string()),
+            _ => None,
+        }) else {
+            return;
+        };
+        let Some(cut) = path.rfind('/') else {
+            self.learning_notice("This is already at the top level of the project.");
+            return;
+        };
+        let parent = path[..cut].to_string();
+        let found = match &mut self.mode {
+            AppMode::Learning(state) => {
+                match state
+                    .entries
+                    .iter()
+                    .position(|e| e.dir_path() == Some(parent.as_str()))
+                {
+                    Some(idx) => {
+                        state.selected_entry = idx;
+                        true
+                    }
+                    // A pinned `Start here` file, or any row in the flat
+                    // branch-changes list, can sit on screen while the folder
+                    // holding it has no row at all.
+                    None => false,
+                }
+            }
+            _ => return,
+        };
+        if found {
+            return;
+        }
+        let flat = matches!(
+            &self.mode,
+            AppMode::Learning(state) if state.scope != BrowseScope::RepoTree
+        );
+        if flat {
+            self.learning_notice(
+                "Changed files are listed flat, without folders — press s for the project tree.",
+            );
+        } else {
+            self.learning_notice(format!(
+                "{parent}/ isn't open in the tree, so there's nowhere to step out to — press Z to open every folder."
+            ));
+        }
+    }
+
+    /// Open every directory that has one, or shut the tree back to its top
+    /// level. One key, because the useful gesture is "show me everything" and
+    /// its undo — and because the footer cannot afford two.
+    pub fn learning_toggle_expand_all(&mut self) {
+        let expand = match &self.mode {
+            // Anything still closed means the gesture is "open it all"; only a
+            // fully open tree collapses.
+            AppMode::Learning(state) => state.entries.iter().any(|e| {
+                matches!(
+                    e,
+                    LearningListEntry::Dir {
+                        expanded: false,
+                        ..
+                    }
+                )
+            }),
+            _ => return,
+        };
+        if let AppMode::Learning(state) = &mut self.mode {
+            if expand {
+                // Taken from the cached path list, not from the rows: the
+                // directories being opened are precisely the ones with no rows
+                // yet, so walking the visible tree would only ever open one
+                // level per press.
+                state.expanded_dirs = all_dir_paths(&state.repo_files);
+            } else {
+                state.expanded_dirs.clear();
+            }
+        }
+        self.learning_rebuild_keeping_cursor();
+        self.learning_notice(if expand {
+            "Opened every folder. Press Z again to fold them."
+        } else {
+            "Folded every folder. Enter opens one."
+        });
+    }
+
+    /// Raise a plain confirmation on the overlay's shared banner line. Unlike
+    /// `learning_notice_for_qa` this one isn't about a Q&A row, so it carries
+    /// no row id and survives the history cursor moving.
+    fn learning_notice(&mut self, message: impl Into<String>) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.notice = Some(message.into());
+            state.notice_qa_id = None;
+            state.error = None;
         }
     }
 
@@ -540,7 +856,7 @@ impl App {
         if let AppMode::Learning(state) = &mut self.mode {
             state.start_here_collapsed = !state.start_here_collapsed;
         }
-        self.learning_reload_entries();
+        self.learning_rebuild_tree();
         // Keep the cursor on whatever file it was on, if that row survived.
         if let (AppMode::Learning(state), Some(path)) = (&mut self.mode, selected_path)
             && let Some(idx) = state
@@ -617,6 +933,11 @@ impl App {
             // The orientation rows aren't files: the tour question anchors to
             // the project, and the header only toggles the group.
             LearningListEntry::StartHereHeader => {}
+            // A directory is navigation, not a selection. Resting on one
+            // deliberately leaves the loaded file and the anchor alone, so
+            // walking down to `src/app/learning.rs` never quietly drops the
+            // question you had lined up two folders ago.
+            LearningListEntry::Dir { .. } => {}
             LearningListEntry::ProjectTour => {
                 if let AppMode::Learning(state) = &mut self.mode {
                     state.content = Vec::new();
@@ -778,38 +1099,189 @@ pub fn start_here_candidates(workdir: &Path) -> Vec<String> {
 }
 
 /// The repo-tree file list: the pinned orientation group (when it has any
-/// members and hasn't been collapsed), then every file.
+/// members and hasn't been collapsed), then the repo as a collapsible tree.
+///
+/// Returns the rows plus the root-level overflow `flatten_tree` reports, which
+/// has no row of its own to be stated on.
 pub fn build_repo_tree_entries(
     files: &[String],
     start_here: &[String],
     collapsed: bool,
-) -> Vec<LearningListEntry> {
-    let mut entries = Vec::with_capacity(files.len() + start_here.len() + 2);
+    expanded: &BTreeSet<String>,
+) -> (Vec<LearningListEntry>, usize) {
+    let mut entries = Vec::with_capacity(start_here.len() + 2);
     if !start_here.is_empty() {
         entries.push(LearningListEntry::StartHereHeader);
         if !collapsed {
             entries.push(LearningListEntry::ProjectTour);
             for path in start_here {
+                // The orientation group is a reading list, not a tree: these
+                // are shortcuts to files that also appear in their real place
+                // below, so they stay flat at depth 0.
                 entries.push(LearningListEntry::File {
                     path: path.clone(),
                     group: LearningListGroup::StartHere,
                     diff_index: None,
+                    depth: 0,
                 });
             }
         }
     }
+    let (tree, root_overflow) = flatten_tree(files, expanded);
+    entries.extend(tree);
+    (entries, root_overflow)
+}
+
+/// One directory while the tree is being assembled. `BTreeMap`/sort do the
+/// ordering, so the flatten step never sorts.
+#[derive(Default)]
+struct TreeNode {
+    dirs: BTreeMap<String, TreeNode>,
+    /// Leaf names only — the full path is rebuilt on the way down.
+    files: Vec<String>,
+    /// Files anywhere beneath here, so a collapsed row can say what it hides.
+    file_count: usize,
+}
+
+impl TreeNode {
+    fn insert(&mut self, path: &str) {
+        let mut node = self;
+        let mut parts = path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            node.file_count += 1;
+            if parts.peek().is_none() {
+                node.files.push(part.to_string());
+                return;
+            }
+            node = node.dirs.entry(part.to_string()).or_default();
+        }
+    }
+}
+
+/// Flatten a path list into tree rows: at each level, directories before files,
+/// each in name order, descending only into directories listed in `expanded`.
+///
+/// This is the whole of Epic 7's ordering decision, and it is a pure function
+/// over the path list so the ordering, depth, and collapse behaviour are
+/// testable without an overlay.
+///
+/// Returns the rows plus how many *root-level* children were dropped by
+/// `MAX_DIR_CHILDREN`. Every other directory reports its own overflow on its
+/// row; the root has no row to report on, so it comes back here for the banner.
+pub fn flatten_tree(
+    files: &[String],
+    expanded: &BTreeSet<String>,
+) -> (Vec<LearningListEntry>, usize) {
+    let mut root = TreeNode::default();
     for path in files {
-        entries.push(LearningListEntry::File {
+        root.insert(path);
+    }
+    let root_children = root.dirs.len() + root.files.len();
+    let mut out = Vec::new();
+    push_level(&mut root, "", 0, expanded, &mut out);
+    (out, root_children.saturating_sub(MAX_DIR_CHILDREN))
+}
+
+fn push_level(
+    node: &mut TreeNode,
+    prefix: &str,
+    depth: usize,
+    expanded: &BTreeSet<String>,
+    out: &mut Vec<LearningListEntry>,
+) {
+    // Directories first so structure reads before contents: a newcomer
+    // scanning `src/` wants to see that `app/` exists before wading through
+    // the twenty files sitting beside it.
+    let mut budget = MAX_DIR_CHILDREN;
+
+    for (name, child) in node.dirs.iter_mut() {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        let path = join_path(prefix, name);
+        let is_expanded = expanded.contains(&path);
+        // Truncation is reported on the row that truncated, so it is computed
+        // here where the child's own budget is known.
+        let child_children = child.dirs.len() + child.files.len();
+        out.push(LearningListEntry::Dir {
             path: path.clone(),
+            depth,
+            expanded: is_expanded,
+            file_count: child.file_count,
+            truncated: child_children.saturating_sub(MAX_DIR_CHILDREN),
+        });
+        if is_expanded {
+            push_level(child, &path, depth + 1, expanded, out);
+        }
+    }
+
+    node.files.sort();
+    for name in node.files.iter() {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        out.push(LearningListEntry::File {
+            path: join_path(prefix, name),
             group: LearningListGroup::Files,
             diff_index: None,
+            depth,
         });
     }
-    entries
+}
+
+fn join_path(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}/{name}")
+    }
+}
+
+/// The directories to open when the overlay first lists a repository:
+/// every ancestor of a `Start here` candidate, and nothing else.
+///
+/// The plan weighed two honest defaults and rejected both. Everything expanded
+/// is the flat wall of rows the tree exists to replace; everything collapsed is
+/// structurally honest but puts `src/` — the only directory most newcomers want
+/// — behind a keypress they have to guess at. This is the middle: the top level
+/// is visible, and the path down to the files the orientation group already
+/// decided were worth reading is open, so `src/main.rs` is on screen at open.
+pub fn default_expanded_dirs(start_here: &[String]) -> BTreeSet<String> {
+    let mut dirs = BTreeSet::new();
+    for path in start_here {
+        let mut prefix = String::new();
+        // The last component is the file itself, so it is not a directory.
+        let parts: Vec<&str> = path.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            prefix = join_path(&prefix, part);
+            dirs.insert(prefix.clone());
+        }
+    }
+    dirs
+}
+
+/// Every directory that appears anywhere in a path list — what "expand all"
+/// expands. Derived from the paths rather than from the rows on screen, since
+/// a closed directory contributes no rows and is exactly what is being opened.
+pub fn all_dir_paths(files: &[String]) -> BTreeSet<String> {
+    let mut dirs = BTreeSet::new();
+    for path in files {
+        let mut prefix = String::new();
+        let parts: Vec<&str> = path.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            prefix = join_path(&prefix, part);
+            dirs.insert(prefix.clone());
+        }
+    }
+    dirs
 }
 
 /// The branch-changes file list. No orientation group here: the user already
-/// knows what they're looking for when they're reading their own diff.
+/// knows what they're looking for when they're reading their own diff — and no
+/// tree, because a handful of changed files needs no structure and the paths
+/// are the point.
 pub fn build_changed_entries(files: &[DiffFile]) -> Vec<LearningListEntry> {
     files
         .iter()
@@ -818,6 +1290,7 @@ pub fn build_changed_entries(files: &[DiffFile]) -> Vec<LearningListEntry> {
             path: file.path.clone(),
             group: LearningListGroup::Files,
             diff_index: Some(i),
+            depth: 0,
         })
         .collect()
 }
@@ -2867,7 +3340,17 @@ impl App {
                             Some(LearningListEntry::StartHereHeader)
                         )
                 );
-                if on_header {
+                // Enter on a folder opens or closes it, so someone who never
+                // finds `l`/`h` can still browse the tree with the one key
+                // that already meant "open this".
+                let on_dir = matches!(
+                    &self.mode,
+                    AppMode::Learning(state)
+                        if matches!(state.selected_entry(), Some(LearningListEntry::Dir { .. }))
+                );
+                if on_dir {
+                    self.learning_toggle_dir();
+                } else if on_header {
                     self.learning_toggle_start_here();
                 } else {
                     // Moving the cursor already loaded this file, so Enter on
@@ -3572,37 +4055,250 @@ pub(crate) mod tests {
         assert!(start_here_candidates(dir.path()).is_empty());
     }
 
+    /// Shorthand for the tests below, which care about rows rather than the
+    /// root-overflow count.
+    fn tree_entries(
+        files: &[String],
+        start_here: &[String],
+        collapsed: bool,
+        expanded: &BTreeSet<String>,
+    ) -> Vec<LearningListEntry> {
+        build_repo_tree_entries(files, start_here, collapsed, expanded).0
+    }
+
+    fn expanded_set(dirs: &[&str]) -> BTreeSet<String> {
+        dirs.iter().map(|d| (*d).to_string()).collect()
+    }
+
     #[test]
     fn repo_tree_entries_pin_the_orientation_group_on_top() {
-        let entries = build_repo_tree_entries(
+        let entries = tree_entries(
             &["src/app/learning.rs".to_string(), "README.md".to_string()],
             &["README.md".to_string()],
             false,
+            &expanded_set(&["src", "src/app"]),
         );
         assert!(matches!(entries[0], LearningListEntry::StartHereHeader));
         assert!(matches!(entries[1], LearningListEntry::ProjectTour));
         assert_eq!(entries[2].path(), Some("README.md"));
-        // The pinned copy doesn't remove the file from the full list below.
-        assert_eq!(entries.len(), 5);
+        // The pinned copy doesn't remove the file from the tree below: `src`,
+        // `src/app`, the file inside it, and `README.md` in its real place.
+        assert_eq!(entries.len(), 7);
+        assert_eq!(entries[3].dir_path(), Some("src"));
+        assert_eq!(entries[4].dir_path(), Some("src/app"));
+        assert_eq!(entries[5].path(), Some("src/app/learning.rs"));
+        assert_eq!(entries[6].path(), Some("README.md"));
     }
 
     #[test]
     fn collapsing_the_group_keeps_only_its_header() {
-        let entries = build_repo_tree_entries(
+        let entries = tree_entries(
             &["src/main.rs".to_string()],
             &["README.md".to_string()],
             true,
+            &expanded_set(&["src"]),
         );
         assert!(matches!(entries[0], LearningListEntry::StartHereHeader));
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[1].path(), Some("src/main.rs"));
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[1].dir_path(), Some("src"));
+        assert_eq!(entries[2].path(), Some("src/main.rs"));
     }
 
     #[test]
     fn no_orientation_group_when_no_candidate_exists() {
-        let entries = build_repo_tree_entries(&["a.rs".to_string()], &[], false);
+        let entries = tree_entries(&["a.rs".to_string()], &[], false, &BTreeSet::new());
         assert_eq!(entries.len(), 1);
         assert!(entries[0].is_file());
+    }
+
+    // ── Epic 7: the tree ─────────────────────────────────────
+
+    /// Directories come before files at each level, each in name order, and a
+    /// closed directory contributes exactly one row.
+    #[test]
+    fn flattening_puts_directories_before_files_at_each_level() {
+        let files = vec![
+            "zebra.md".to_string(),
+            "src/main.rs".to_string(),
+            "Cargo.toml".to_string(),
+            "docs/guide.md".to_string(),
+        ];
+        let (rows, _) = flatten_tree(&files, &BTreeSet::new());
+        let labels: Vec<&str> = rows
+            .iter()
+            .map(|r| r.dir_path().or_else(|| r.path()).unwrap())
+            .collect();
+        assert_eq!(labels, vec!["docs", "src", "Cargo.toml", "zebra.md"]);
+        // Nothing is expanded, so neither directory shows its contents.
+        assert!(rows.iter().all(|r| r.depth() == 0));
+    }
+
+    /// Expanding a directory reveals its children one level deeper, and does
+    /// not open its subdirectories with it.
+    #[test]
+    fn expanding_a_directory_reveals_one_level() {
+        let files = vec![
+            "src/main.rs".to_string(),
+            "src/app/learning.rs".to_string(),
+            "src/app/todos.rs".to_string(),
+        ];
+        let (rows, _) = flatten_tree(&files, &expanded_set(&["src"]));
+        assert_eq!(rows[0].dir_path(), Some("src"));
+        assert_eq!(rows[0].depth(), 0);
+        assert_eq!(rows[1].dir_path(), Some("src/app"));
+        assert_eq!(rows[1].depth(), 1);
+        // `src/app` is closed, so its two files are not rows.
+        assert_eq!(rows[2].path(), Some("src/main.rs"));
+        assert_eq!(rows[2].depth(), 1);
+        assert_eq!(rows.len(), 3);
+
+        let (deeper, _) = flatten_tree(&files, &expanded_set(&["src", "src/app"]));
+        assert_eq!(deeper[2].path(), Some("src/app/learning.rs"));
+        assert_eq!(deeper[2].depth(), 2);
+        assert_eq!(deeper.len(), 5);
+    }
+
+    /// Collapsing and re-expanding returns exactly the rows you started with —
+    /// the tree is derived from `expanded_dirs`, so this is what says the
+    /// derivation has no memory of its own.
+    #[test]
+    fn collapse_and_expand_round_trips() {
+        let files = vec![
+            "src/app/learning.rs".to_string(),
+            "src/main.rs".to_string(),
+            "README.md".to_string(),
+        ];
+        let open = expanded_set(&["src", "src/app"]);
+        let (before, _) = flatten_tree(&files, &open);
+        let (collapsed, _) = flatten_tree(&files, &BTreeSet::new());
+        assert_eq!(collapsed.len(), 2);
+        let (after, _) = flatten_tree(&files, &open);
+        assert_eq!(before, after);
+    }
+
+    /// A closed folder says how many files it holds, counting everything below
+    /// it rather than only its immediate children — the number is there to
+    /// answer "is it worth opening this".
+    #[test]
+    fn a_closed_directory_counts_everything_beneath_it() {
+        let files = vec![
+            "src/a.rs".to_string(),
+            "src/app/b.rs".to_string(),
+            "src/app/deep/c.rs".to_string(),
+        ];
+        let (rows, _) = flatten_tree(&files, &BTreeSet::new());
+        assert!(matches!(
+            &rows[0],
+            LearningListEntry::Dir {
+                path,
+                file_count: 3,
+                expanded: false,
+                ..
+            } if path == "src"
+        ));
+    }
+
+    /// The opening state: the path down to each `Start here` file is open, and
+    /// nothing else is — so `src/main.rs` is on screen without the whole repo
+    /// being.
+    #[test]
+    fn the_tree_opens_at_the_start_here_files() {
+        let start_here = vec![
+            "README.md".to_string(),
+            "src/main.rs".to_string(),
+            "Cargo.toml".to_string(),
+        ];
+        let expanded = default_expanded_dirs(&start_here);
+        // `README.md` and `Cargo.toml` are at the root and open nothing.
+        assert_eq!(expanded, expanded_set(&["src"]));
+
+        let files = vec![
+            "src/main.rs".to_string(),
+            "src/app/learning.rs".to_string(),
+            "docs/guide.md".to_string(),
+        ];
+        let (rows, _) = flatten_tree(&files, &expanded);
+        assert!(rows.iter().any(|r| r.path() == Some("src/main.rs")));
+        // `docs` is visible as structure but not opened.
+        assert!(rows.iter().any(|r| r.dir_path() == Some("docs")));
+        assert!(rows.iter().all(|r| r.path() != Some("docs/guide.md")));
+    }
+
+    /// A nested candidate opens every directory above it, not just the last.
+    #[test]
+    fn the_opening_state_opens_the_whole_path_down() {
+        let expanded = default_expanded_dirs(&["a/b/c/main.rs".to_string()]);
+        assert_eq!(expanded, expanded_set(&["a", "a/b", "a/b/c"]));
+    }
+
+    /// One directory over the cap is truncated and *says so* on its own row,
+    /// rather than the listing looking complete. This is the honesty duty the
+    /// old whole-listing cap carried, moved to where it now applies.
+    #[test]
+    fn a_directory_over_the_cap_says_what_it_is_not_showing() {
+        let files: Vec<String> = (0..MAX_DIR_CHILDREN + 25)
+            .map(|i| format!("generated/file{i:06}.rs"))
+            .collect();
+        let (rows, root_overflow) = flatten_tree(&files, &expanded_set(&["generated"]));
+        assert_eq!(root_overflow, 0, "only one directory sits at the root");
+        assert!(matches!(
+            &rows[0],
+            LearningListEntry::Dir { truncated: 25, .. }
+        ));
+        // The row for the directory itself, plus its capped children.
+        assert_eq!(rows.len(), MAX_DIR_CHILDREN + 1);
+    }
+
+    /// The root has no row to be truthful on, so its overflow comes back to
+    /// the caller for the banner.
+    #[test]
+    fn root_level_overflow_is_reported_to_the_caller() {
+        let files: Vec<String> = (0..MAX_DIR_CHILDREN + 7)
+            .map(|i| format!("file{i:06}.rs"))
+            .collect();
+        let (rows, root_overflow) = flatten_tree(&files, &BTreeSet::new());
+        assert_eq!(root_overflow, 7);
+        assert_eq!(rows.len(), MAX_DIR_CHILDREN);
+    }
+
+    /// "Expand all" needs every directory in the repo, including ones with no
+    /// row on screen yet — that is the whole difference between it and pressing
+    /// `l` repeatedly.
+    #[test]
+    fn every_directory_is_reachable_by_expand_all() {
+        let files = vec![
+            "src/app/deep/x.rs".to_string(),
+            "docs/guide.md".to_string(),
+            "README.md".to_string(),
+        ];
+        assert_eq!(
+            all_dir_paths(&files),
+            expanded_set(&["docs", "src", "src/app", "src/app/deep"])
+        );
+        let (rows, _) = flatten_tree(&files, &all_dir_paths(&files));
+        assert!(rows.iter().any(|r| r.path() == Some("src/app/deep/x.rs")));
+    }
+
+    /// Branch-changes scope keeps the flat list the plan left it with: a
+    /// handful of changed paths needs no structure, and the paths are the point.
+    #[test]
+    fn branch_changes_stay_flat() {
+        let changed = |path: &str| crate::diff::DiffFile {
+            old_path: None,
+            path: path.to_string(),
+            status: crate::diff::DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: Vec::new(),
+        };
+        let rows = build_changed_entries(&[changed("src/app/learning.rs"), changed("README.md")]);
+        assert!(rows.iter().all(|r| r.depth() == 0));
+        assert!(rows.iter().all(|r| r.dir_path().is_none()));
+        assert_eq!(rows[0].path(), Some("src/app/learning.rs"));
     }
 
     #[test]
@@ -4424,6 +5120,289 @@ pub(crate) mod tests {
         assert!(paths.contains(&"src/main.rs"), "{paths:?}");
         assert!(paths.contains(&"src/util.rs"), "{paths:?}");
         assert!(paths.contains(&"README.md"), "{paths:?}");
+    }
+
+    /// Whether this row is `path` *in the tree*. The `Start here` group pins
+    /// its own copies of a few files above the tree, and those are a reading
+    /// list rather than tree rows — they neither indent nor disappear when
+    /// their folder is collapsed. Tests about the tree have to say which copy
+    /// they mean, or collapsing `src/` looks like it kept `src/main.rs`.
+    fn is_tree_file(entry: &LearningListEntry, path: &str) -> bool {
+        matches!(
+            entry,
+            LearningListEntry::File {
+                path: p,
+                group: LearningListGroup::Files,
+                ..
+            } if p == path
+        )
+    }
+
+    /// Move the file-list cursor onto whichever row matches, or fail loudly:
+    /// a silent no-match would make the assertions below pass on nothing.
+    fn put_cursor_on(app: &mut App, pred: impl Fn(&LearningListEntry) -> bool) {
+        let idx = learning(app)
+            .entries
+            .iter()
+            .position(&pred)
+            .unwrap_or_else(|| {
+                let rows: Vec<String> = learning(app)
+                    .entries
+                    .iter()
+                    .map(|e| format!("{e:?}"))
+                    .collect();
+                panic!("no matching row in {rows:#?}")
+            });
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        app.learning_load_selected_content();
+    }
+
+    /// A folder is navigation. Resting on one must not move the loaded file or
+    /// the anchor, or walking down to a file would silently drop the question
+    /// that was lined up two folders ago.
+    #[test]
+    fn a_folder_is_navigation_not_a_question_anchor() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/util.rs"));
+        let before = learning(&app).anchor;
+        assert_eq!(learning(&app).content_path.as_deref(), Some("src/util.rs"));
+
+        put_cursor_on(&mut app, |e| e.dir_path() == Some("src"));
+        assert_eq!(
+            learning(&app).content_path.as_deref(),
+            Some("src/util.rs"),
+            "the folder row must not unload the file"
+        );
+        assert_eq!(learning(&app).anchor, before);
+    }
+
+    /// Collapsing leaves the cursor on the folder that was collapsed, the way
+    /// `collapsing_the_orientation_group_keeps_the_cursor_on_its_file` does for
+    /// the group — the row list is rebuilt from scratch, so an index alone
+    /// would land somewhere unrelated.
+    #[test]
+    fn collapsing_a_folder_keeps_the_cursor_on_it() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.dir_path() == Some("src"));
+        app.learning_toggle_dir();
+
+        let state = learning(&app);
+        assert_eq!(
+            state.selected_entry().and_then(|e| e.dir_path()),
+            Some("src")
+        );
+        assert!(
+            !state.entries.iter().any(|e| is_tree_file(e, "src/main.rs")),
+            "collapsing should have taken the children with it"
+        );
+
+        app.learning_toggle_dir();
+        assert_eq!(
+            learning(&app).selected_entry().and_then(|e| e.dir_path()),
+            Some("src"),
+            "and re-expanding leaves it where it was"
+        );
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .any(|e| is_tree_file(e, "src/main.rs"))
+        );
+    }
+
+    /// Closing a folder from *inside* it: the row under the cursor stops
+    /// existing, so the cursor moves to the folder that swallowed it rather
+    /// than to whatever the old index now points at.
+    #[test]
+    fn closing_the_folder_you_are_inside_moves_the_cursor_to_it() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/util.rs"));
+        // `h` on a file steps out to its folder, and again closes it.
+        app.learning_collapse_or_parent();
+        assert_eq!(
+            learning(&app).selected_entry().and_then(|e| e.dir_path()),
+            Some("src")
+        );
+        app.learning_collapse_or_parent();
+        let state = learning(&app);
+        assert_eq!(
+            state.selected_entry().and_then(|e| e.dir_path()),
+            Some("src")
+        );
+        assert!(!state.expanded_dirs.contains("src"));
+    }
+
+    /// Tree keys belong to the file list. Pressing them while reading the
+    /// content pane must not move a cursor that isn't on screen — and must say
+    /// so, in both directions, rather than doing nothing.
+    #[test]
+    fn tree_keys_do_nothing_but_explain_themselves_off_the_file_list() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/util.rs"));
+        let before = learning(&app).selected_entry;
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.focus = LearningFocus::Content;
+        }
+
+        app.learning_collapse_or_parent();
+        assert_eq!(
+            learning(&app).selected_entry,
+            before,
+            "`h` off the file list must not move the hidden cursor"
+        );
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("Tab"), "{notice:?}");
+
+        app.learning_expand_or_open();
+        assert_eq!(learning(&app).selected_entry, before);
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("Tab"), "{notice:?}");
+        assert!(
+            learning(&app).expanded_dirs.contains("src"),
+            "and nothing about the tree changed either"
+        );
+    }
+
+    /// A pinned `Start here` file keeps its row when the folder holding it has
+    /// none — the root truncated it away. Stepping out then has no target,
+    /// which is a refusal, and it says why.
+    #[test]
+    fn stepping_out_with_no_visible_parent_says_why() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        // Push `src` past the root's child cap: it sorts last, so it is the row
+        // that gets dropped, while pinned `src/main.rs` is unaffected.
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.repo_files = (0..MAX_DIR_CHILDREN)
+                .map(|i| format!("aaa{i:06}/file.rs"))
+                .collect();
+            state.repo_files.push("src/main.rs".to_string());
+        }
+        app.learning_rebuild_tree();
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .all(|e| e.dir_path() != Some("src"))
+        );
+        put_cursor_on(&mut app, |e| {
+            matches!(
+                e,
+                LearningListEntry::File { path, group: LearningListGroup::StartHere, .. }
+                    if path == "src/main.rs"
+            )
+        });
+
+        app.learning_collapse_or_parent();
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("src/"), "{notice:?}");
+        assert!(notice.contains('Z'), "{notice:?}");
+    }
+
+    /// The branch-changes list has no folders at all, so stepping out of a
+    /// nested path there points at the scope key instead of going quiet.
+    #[test]
+    fn stepping_out_in_branch_changes_scope_points_at_the_tree() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+        app.learning_toggle_scope();
+        assert_eq!(learning(&app).scope, BrowseScope::BranchChanges);
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/main.rs"));
+        app.learning_collapse_or_parent();
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("flat"), "{notice:?}");
+    }
+
+    /// At the top level there is nothing to step out to, so `h` says so rather
+    /// than doing nothing — the swallowed keypress this mode exists to avoid.
+    #[test]
+    fn stepping_out_of_a_top_level_row_says_there_is_nowhere_to_go() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.dir_path() == Some("src"));
+        // `src` is open, so the first press closes it; the second has no parent.
+        app.learning_collapse_or_parent();
+        app.learning_collapse_or_parent();
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("top level"), "{notice:?}");
+    }
+
+    /// Expand-all opens folders that had no row on screen, which is the whole
+    /// difference between it and pressing `l` repeatedly — and pressing it
+    /// again folds the tree back.
+    #[test]
+    fn expand_all_opens_every_folder_and_folds_them_again() {
+        let repo = repo_with_branch_change();
+        std::fs::create_dir_all(repo.path().join("docs/deep")).unwrap();
+        std::fs::write(repo.path().join("docs/deep/notes.md"), "hi\n").unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "docs"]);
+
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+        // `docs` was never opened, so its contents have no rows yet.
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .all(|e| e.path() != Some("docs/deep/notes.md"))
+        );
+
+        app.learning_toggle_expand_all();
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .any(|e| e.path() == Some("docs/deep/notes.md"))
+        );
+
+        app.learning_toggle_expand_all();
+        let state = learning(&app);
+        assert!(state.expanded_dirs.is_empty());
+        assert!(!state.entries.iter().any(|e| is_tree_file(e, "src/main.rs")));
+    }
+
+    /// Expanding and collapsing must not re-read the repository: on a large
+    /// project that would make the tree slower than the flat list it replaced.
+    /// Proven by deleting a file behind the overlay's back — a listing that
+    /// re-ran `git ls-files` would notice.
+    #[test]
+    fn toggling_a_folder_does_not_re_read_the_repository() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        std::fs::remove_file(repo.path().join("src/util.rs")).unwrap();
+        put_cursor_on(&mut app, |e| e.dir_path() == Some("src"));
+        app.learning_toggle_dir();
+        app.learning_toggle_dir();
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .any(|e| e.path() == Some("src/util.rs")),
+            "the cached listing should have been reused"
+        );
     }
 
     #[test]

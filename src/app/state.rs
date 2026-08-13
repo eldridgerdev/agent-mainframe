@@ -3407,22 +3407,72 @@ pub enum LearningListEntry {
     /// The repo-level orientation question — anchors to the project rather
     /// than to any file.
     ProjectTour,
+    /// A directory in the repo tree. Navigation only: a directory is not a
+    /// question anchor, so resting on one leaves the loaded file and the
+    /// anchor exactly where they were. Only ever built in repo-tree scope.
+    Dir {
+        /// Repo-relative path with no trailing slash, e.g. `src/app`. This is
+        /// the key `LearningViewState::expanded_dirs` stores.
+        path: String,
+        /// Nesting depth; 0 for a top-level directory.
+        depth: usize,
+        expanded: bool,
+        /// Files anywhere beneath this directory, so a collapsed row can still
+        /// say how much it is hiding.
+        file_count: usize,
+        /// Children not listed because this one directory exceeded
+        /// `MAX_DIR_CHILDREN`. Non-zero rows say so rather than looking
+        /// complete — the whole-listing cap this replaced had the same duty.
+        truncated: usize,
+    },
     /// A file. `diff_index` indexes `LearningViewState::diff_files` in
-    /// branch-changes scope and is `None` in repo-tree scope.
+    /// branch-changes scope and is `None` in repo-tree scope. `depth` is the
+    /// tree indent; it is 0 for the flat branch-changes list and for the
+    /// `Start here` group, neither of which is a tree.
     File {
         path: String,
         group: LearningListGroup,
         diff_index: Option<usize>,
+        depth: usize,
     },
 }
 
 #[allow(dead_code)]
 impl LearningListEntry {
-    /// The repo-relative path this row loads, if it loads one.
+    /// The repo-relative path this row loads, if it loads one. Deliberately
+    /// `None` for a directory: this is what the content pane and the anchor
+    /// follow, and a directory must move neither.
     pub fn path(&self) -> Option<&str> {
         match self {
             LearningListEntry::File { path, .. } => Some(path.as_str()),
             _ => None,
+        }
+    }
+
+    /// The directory this row is, if it is one.
+    pub fn dir_path(&self) -> Option<&str> {
+        match self {
+            LearningListEntry::Dir { path, .. } => Some(path.as_str()),
+            _ => None,
+        }
+    }
+
+    /// A stable identity for the row, used to put the cursor back on the same
+    /// thing after the list is rebuilt. Unlike `path()` this covers
+    /// directories, because collapsing one must leave the cursor on it.
+    pub fn row_key(&self) -> Option<(bool, &str)> {
+        match self {
+            LearningListEntry::Dir { path, .. } => Some((true, path.as_str())),
+            LearningListEntry::File { path, .. } => Some((false, path.as_str())),
+            _ => None,
+        }
+    }
+
+    /// How far the row is indented in the tree.
+    pub fn depth(&self) -> usize {
+        match self {
+            LearningListEntry::Dir { depth, .. } | LearningListEntry::File { depth, .. } => *depth,
+            _ => 0,
         }
     }
 
@@ -3534,6 +3584,22 @@ pub struct LearningViewState {
     pub selected_entry: usize,
     pub list_scroll: usize,
     pub start_here_collapsed: bool,
+    /// Which repo-tree directories are expanded, by repo-relative path. The
+    /// tree is rebuilt from this on every reload, so it — not `entries` — is
+    /// what expansion state actually lives in. Seeded on open with the
+    /// ancestors of the `Start here` candidates, so `src/` is open at the file
+    /// a newcomer is most likely to want.
+    pub expanded_dirs: std::collections::BTreeSet<String>,
+    /// Whether that seeding has happened. It runs once per overlay, so a later
+    /// reload can't re-open a directory the user deliberately closed.
+    pub expanded_seeded: bool,
+    /// The repo's flat path list, kept so expanding or collapsing a directory
+    /// rebuilds `entries` from memory instead of shelling out to `git ls-files`
+    /// again. `entries` is derived from this plus `expanded_dirs`; this is the
+    /// input, and it only changes when the listing is genuinely re-read.
+    pub repo_files: Vec<String>,
+    /// The surviving `Start here` candidates, cached for the same reason.
+    pub start_here: Vec<String>,
     /// Diff snapshot backing `BrowseScope::BranchChanges`.
     pub diff_files: Vec<crate::diff::DiffFile>,
     /// Lines of the loaded file, and the path they came from.

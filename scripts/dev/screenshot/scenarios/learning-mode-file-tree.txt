@@ -1,0 +1,72 @@
+# learning-mode-file-tree: Epic 7's collapsible file tree, driven against
+# AMF's own repository — which is the case the epic was written about. The
+# flat list rendered ~500 rows into a pane ~32 columns wide, so the first
+# screenful read `…ude/commands/amf/ai-review.m`, `…e/commands/amf/pr-continue.m`,
+# `…ude/commands/amf/pr-create.m`: three near-identical stubs, with `src/`
+# dozens of `j` presses below.
+#
+# Nothing here asks a question, so no harness is needed and the run costs
+# nothing. Seed this repository itself as the project:
+#   ./amf-capture.sh --scenario scenarios/learning-mode-file-tree.txt \
+#     --seed <scratch>/seed-project.json --geometry 140x44
+#
+# 140x44 on purpose: that is the width the footer is rationed against, and
+# the tree hint is taking a slot on an already-full line.
+
+wait:2000
+shot:dashboard
+
+# `K` opens Learning Mode; a project's first visit opens the intro.
+key:K
+wait:2500
+key:Escape
+wait:800
+
+# The opening state: top level visible, and the path down to the `Start
+# here` candidates already open, so `src/` is expanded at `src/main.rs`
+# without the rest of the repo being unfolded.
+shot:tree-opening-state
+
+# Down into the tree proper, past the pinned orientation group.
+key:j
+key:j
+key:j
+key:j
+key:j
+key:j
+wait:400
+shot:tree-rows
+
+# `l` opens the folder under the cursor — one level, not the whole
+# subtree. Leaf names, not truncated paths.
+key:l
+wait:500
+shot:folder-opened
+
+# `h` closes it again and leaves the cursor on the folder it closed.
+key:h
+wait:500
+shot:folder-closed
+
+# `Z` opens every folder in the project at once, which is the gesture the
+# flat list used to be. The banner says what happened.
+text:Z
+wait:1200
+shot:expand-all
+
+# …and `Z` again folds the whole tree back to its top level.
+text:Z
+wait:1000
+shot:fold-all
+
+# The `?` overlay is the discovery path for these keys, so it has to
+# carry them spelled out.
+text:?
+wait:700
+shot:help-overlay
+key:Escape
+wait:400
+
+key:q
+wait:800
+shot:back-to-dashboard

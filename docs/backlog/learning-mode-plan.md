@@ -1,17 +1,18 @@
 # Learning Mode
 
-- **Status:** In progress — Epics 1 (foundations), 2 (browsing), 3
-  (asking), 4 (surface), and 5 (acting on an answer) are complete, and Epic
-  6 is done apart from filing the deferred follow-ups. Learning Mode is
-  reachable from the dashboard with `K`, usable end to end (browse, select,
-  ask, read the answer, ask a follow-up, send a doubtful answer back with
-  the repo readable, re-file an entry as the other kind of question, keep an
-  answer as a to-do, and hand one to a live agent session), and documented
-  in `README.md`, `CLAUDE.md`, and `CHANGELOG.md`. What remains is filing
-  the deferred follow-ups as their own backlog items, plus Epic 7 (a
-  collapsible file tree, so the file list teaches the repo's layout instead
-  of hiding it behind truncated paths), which blocks on nothing and can run
-  in parallel.
+- **Status:** All seven epics complete. Learning Mode is reachable from the
+  dashboard with `K` and usable end to end: browse the repo as a collapsible
+  tree or just the branch's changes, select a file, hunk, line range, or the
+  whole project, ask, read the answer, ask a follow-up, send a doubtful
+  answer back with the repo readable, re-file an entry as the other kind of
+  question, keep an answer as a to-do, and hand one to a live agent session.
+  Documented in `README.md`, `CLAUDE.md`, and `CHANGELOG.md`. The work this
+  plan deliberately deferred is filed as its own backlog item —
+  [`learning-mode-followups-plan.md`](learning-mode-followups-plan.md)
+  (anchor drift, alternative actionable mechanisms, navigable "Where to look
+  next" references) — plus one entry in `bug-backlog-plan.md` that is not
+  specific to this feature. The open questions below are recorded as known
+  limits, not as remaining work.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -1285,20 +1286,42 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       replay was re-run at the real numbers rather than renumbered on paper.
       A plan that cites the wrong schema version is worse than one that cites
       none.
-- [ ] File follow-up items for the deferred work: anchor-drift
-      resolution (commit SHA + snippet or fuzzy match, modeled on
-      `App::reanchor_line_comments`), the alternative actionable
-      mechanisms (composer seeded and scoped to file/range, inline
-      suggested patch like Final Review suggestions), and turning
-      "Where to look next" file references into navigable jumps within
-      the overlay. Plus one found by building the escalation and **not
-      specific to Learning Mode**: `AppMode::Compose` draws and returns
+- [x] File follow-up items for the deferred work. The three Learning
+      Mode deferrals went to
+      [`learning-mode-followups-plan.md`](learning-mode-followups-plan.md)
+      as one doc with a section each, rather than three thin docs —
+      they are extensions to one shipped feature, not features of their
+      own, and `bug-backlog-plan.md` is the precedent for a shared doc
+      with one section per item. Each section is self-contained and
+      carries its own `Progress` checklist and open questions:
+      **anchor-drift resolution** (content match against the stored
+      `selection_text` first, modeled on `App::reanchor_line_comments`,
+      with commit SHA + snippet as the costlier second option — and the
+      requirement that "re-anchored" and "lost" are distinguishable in
+      the UI, since a silent re-anchor is a smaller version of the same
+      honesty problem); **the alternative actionable mechanisms**
+      (composer seeded and scoped to file/range, inline suggested patch
+      — with the note that the patch option would be Learning Mode's
+      *second* read-only exception and has to be decided as one, and
+      that the cheaper fix to the known-poor seeded title should be
+      tried before replacing the whole mechanism); and **navigable
+      "Where to look next" references** (resolved eagerly, so a
+      fabricated path is marked before it is trusted — the mitigation
+      matters more here than the navigation).
+      The fourth, **not specific to Learning Mode**, went to
+      `bug-backlog-plan.md` as *"Toasts raised while landing in the
+      composer are never drawn"*: `AppMode::Compose` draws and returns
       before `ui::dashboard`'s shared `draw_toasts` pass, so *any* toast
       raised while landing in the composer is silently swallowed —
       including `open_compose_seeded`'s own "Prompt loaded — review and
-      send", which the prompt library has presumably never shown either.
-      The fix is not simply adding the call: toasts stack from the
-      bottom-right, exactly where the compose box is drawn.
+      send" (`src/app/compose.rs:445`), which the prompt library has
+      presumably never shown either. Both halves re-verified against the
+      code while filing. The entry records that the fix is not simply
+      adding the call (toasts stack from the bottom-right, exactly where
+      the compose box is drawn), lists the four routes, and notes that
+      the one Learning Mode took — moving the statement into the seed's
+      last line — does not generalize to callers with nothing to append
+      to.
 
 ### Epic 7 — Browsing a real repository (collapsible file tree)
 
@@ -1320,45 +1343,101 @@ non-selectable collapsible header (`StartHereHeader`), and
 `learning_toggle_start_here` already preserves the cursor across a
 collapse. This is a second, general case of that, not a new mechanism.
 
-- [ ] Add directory nodes to `LearningListEntry` (path, depth,
-      expanded, child count) and build the repo-tree entries as a
-      flattened tree rather than a sorted path list, directories before
-      files at each level. Keep the **Start here** group pinned above
-      it, unchanged. Branch-changes scope keeps its flat list — a
-      handful of changed files needs no tree — unless the change count
-      makes one worth it, which is a judgment call to make with real
-      numbers, not now.
-- [ ] Render the tree: indent by depth, show an expand/collapse marker,
-      and label each row with the **leaf name only** rather than the
-      full path, so a 32-column pane shows `ai-review.md` instead of
-      `…ude/commands/amf/ai-review.m`. The header or content pane still
-      has to state the selected file's full path, since the name alone
-      no longer identifies it.
-- [ ] Decide and implement the opening state. Everything collapsed is
-      the honest structural view but hides `src/` behind a keypress;
-      everything expanded is today's wall of rows with indentation.
-      Proposal: collapsed to the first level, plus auto-expanding the
-      path to the **Start here** candidates so `src/main.rs` is visible
-      on open. Verify against this repo and one much larger.
-- [ ] Keys: expand/collapse the node under the cursor, expand/collapse
-      all, and jump to the parent directory. `Enter` on a directory
-      toggles it; `Enter` on a file keeps loading it. Add them to the
-      footer and the `?` overlay in the same spelled-out style, and
-      check the footer still fits — this has already truncated `q close`
-      and `Esc back to browsing` off the end twice.
-- [ ] Revisit the 20,000-entry cap (`MAX_REPO_ENTRIES`). A tree only
-      pays for what is expanded, so the cap can move from the listing to
-      per-directory expansion, and the "showing the first 20,000"
-      warning can become a per-directory one. This is the item that
-      makes repo-tree scope usable on a monorepo rather than merely
-      capped.
-- [ ] Tests: flattening is a pure function over a path list, so cover
-      ordering, depth, and collapse/expand round-trips there; plus
-      cursor preservation across a collapse (the existing
-      `collapsing_the_orientation_group_keeps_the_cursor_on_its_file`
-      is the model), a render test asserting a deep file shows its leaf
-      name rather than a truncated path, and that selecting a directory
-      does not change the question anchor.
+- [x] Add directory nodes to `LearningListEntry` (`Dir { path, depth,
+      expanded, file_count, truncated }`; `File` gained `depth`) and build the
+      repo-tree entries as a flattened tree, directories before files at each
+      level. `flatten_tree` is a pure function over the path list; **Start
+      here** stays pinned above it and stays flat, because it is a reading list
+      of shortcuts rather than part of the tree. Branch-changes keeps its flat
+      list (`branch_changes_stay_flat`).
+      Two things fell out of building it:
+      - **Expansion state can't live in the rows.** `entries` is derived, so a
+        collapse rebuilds it and any state held there is lost. It lives in
+        `LearningViewState::expanded_dirs`, and every tree operation is
+        "change that set, then rebuild" — which is also why the cursor has to
+        be restored by *identity* rather than index
+        (`learning_rebuild_keeping_cursor`, `LearningListEntry::row_key`).
+      - **Rebuilding must not re-read the repository.** The first cut called
+        `learning_reload_entries`, so expanding a folder re-ran `git ls-files`
+        — on a large repo that would have made the tree slower than the flat
+        list it replaced. The listing is cached (`repo_files`, `start_here`)
+        and `learning_rebuild_tree` works from memory. Guarded by
+        `toggling_a_folder_does_not_re_read_the_repository`, which deletes a
+        file behind the overlay's back and asserts the row survives.
+- [x] Render the tree: indent by depth (clamped at `MAX_INDENT_LEVELS` so a
+      deep path can't push the name off a 32-column pane), `▾`/`▸` markers,
+      and **leaf names only**. A closed folder shows its recursive file count,
+      so skipping one is an informed choice. Tree rows truncate from the
+      *right* — the existing left-truncation would have eaten the indent that
+      says where a row sits — while the flat branch-changes rows keep theirs.
+      The content pane already titled itself with the full path, which is what
+      makes leaf names safe. Tests:
+      `a_deep_file_shows_its_name_not_a_truncated_path`,
+      `a_closed_folder_says_what_is_inside_it`.
+- [x] Opening state: **collapsed to the first level, plus the path down to
+      each `Start here` candidate** (`default_expanded_dirs`), so `src/` is
+      open at `src/main.rs` without the rest of the repo being. Seeded once
+      per overlay (`expanded_seeded`) and never re-applied — a reload that
+      re-opened a folder the user had closed would be the overlay arguing with
+      them. Tests: `the_tree_opens_at_the_start_here_files`,
+      `the_opening_state_opens_the_whole_path_down`.
+- [x] Keys: `l`/`Right` opens the folder or steps into an open one, `h`/`Left`
+      closes it or steps out, `Z` opens every folder or folds them all, and
+      `Enter` toggles a folder while still loading a file. `h` at the top level
+      says there is nowhere to go rather than doing nothing
+      (`stepping_out_of_a_top_level_row_says_there_is_nowhere_to_go`).
+      **The footer had no room**, exactly as the plan warned. Line two was at
+      135 of 140 columns with an answer present, so the tree hint had to come
+      out of the existing budget rather than be added to it. It came from `x
+      this change`, which **needs a diff and could only ever refuse in
+      repo-tree scope** — advertising it there was already the thing this mode
+      says it doesn't do, so dropping it is a fix rather than a trade. `h/l
+      folders` takes that slot in repo-tree scope and `x` keeps it in
+      branch-changes. `Enter`'s own label switches to *open/close folder* when
+      the cursor is on one, which costs nothing and is the discovery path for
+      anyone who never finds `h`/`l`. `Z` is `?`-overlay only; the help gained
+      a **Finding your way around** section carrying all four keys plus the
+      statement that resting on a folder changes nothing about the question you
+      have lined up. Guarded by
+      `the_tree_hint_fits_the_footer_beside_everything_else` (asserts `q close`
+      survives at 140 with an answer *and* a tree) and
+      `the_enter_hint_says_it_opens_a_folder_when_the_cursor_is_on_one`.
+- [x] Revisit the entry cap. The 20,000 cap was the *browsing* limit back when
+      every path was a row, so capping the listing and capping what you could
+      reach were one decision; a tree only emits rows for what is expanded, so
+      they came apart. `MAX_REPO_ENTRIES` is now a 200,000 safety valve against
+      reading a pathological repo into memory, and the limit that actually
+      bites is `MAX_DIR_CHILDREN` (2,000 per directory) — where the user can
+      see it, since an over-cap folder reports its own overflow on its own row
+      (`a_directory_over_the_cap_says_what_it_is_not_showing`). The root has no
+      row to be truthful on, so `flatten_tree` returns its overflow for the
+      banner (`root_level_overflow_is_reported_to_the_caller`). This is what
+      makes repo-tree scope usable on a monorepo rather than merely capped.
+- [x] Tests. Pure flattening: `flattening_puts_directories_before_files_at_each_level`,
+      `expanding_a_directory_reveals_one_level`, `collapse_and_expand_round_trips`,
+      `a_closed_directory_counts_everything_beneath_it`,
+      `every_directory_is_reachable_by_expand_all`. Overlay level:
+      `a_folder_is_navigation_not_a_question_anchor` (the plan's "selecting a
+      directory does not change the question anchor"),
+      `collapsing_a_folder_keeps_the_cursor_on_it`,
+      `closing_the_folder_you_are_inside_moves_the_cursor_to_it`,
+      `expand_all_opens_every_folder_and_folds_them_again`. Handler level:
+      `the_tree_keys_open_and_close_folders`. Plus the render and footer tests
+      above. Suite: 1926 passing / 0 failing, `cargo clippy --all-targets`
+      clean, no `println!`/`eprintln!` introduced.
+      One thing the first run of these tests taught, now written into a
+      helper: `src/main.rs` appears **twice** — pinned in `Start here` and in
+      its real place in the tree — so a test asserting a collapse hid it must
+      say which copy it means (`is_tree_file`). Two assertions were wrong
+      about this before the code was.
+      **Captured** as nine frames driven against a clone of AMF's own
+      repository (484 files), the case Epic 7 was written about, via
+      `scripts/dev/screenshot/scenarios/learning-mode-file-tree.txt`. No
+      question is asked, so the scenario needs no harness and costs nothing to
+      re-run. The opening frame is the whole argument for the epic: where the
+      flat list gave three truncated `…ude/commands/amf/…` stubs, the pane now
+      shows every top-level folder with its file count, `src/` open at its
+      subfolders, and readable leaf names — the repo's layout, on one screen.
 
 ## Open questions
 
@@ -1447,22 +1526,27 @@ collapse. This is a second, general case of that, not a new mechanism.
   deleted. Todos solve the analogous problem with a host-feature
   reassign prompt (`AppMode::TodosHostReassign`) — whether Learning
   Mode needs the same is undecided.
-- **Repo-tree scope on large repositories.** `git ls-files` output and
-  content loading cost are unbounded; the specific entry-count,
-  file-size, and binary-detection limits are unset. The non-git
-  fallback walk is a further unknown, since it has no ignore rules at
-  all — and an unfamiliar user browsing a monorepo is the worst case
-  for both. Epic 7 addresses the listing half of this; content loading
-  cost is untouched by it.
-- **Whether a directory can be a question anchor.** Epic 7 introduces
-  directory rows, and "what is everything in `src/app/` for?" is an
-  obvious question for exactly the newcomer this mode serves — arguably
-  more useful than the whole-project tour. But a directory anchor has
-  no selection text, so it would need a different prompt shape (a file
+- **Repo-tree scope on large repositories — half closed.** Epic 7 closed
+  the listing half: the cap moved off the whole listing and onto
+  per-directory expansion (`MAX_DIR_CHILDREN`), where an over-cap folder
+  says what it is hiding, and rows are only built for what is expanded.
+  What remains open is **content loading cost** — `MAX_FILE_BYTES` and the
+  binary sniff are still guesses, unchanged by the tree — and the non-git
+  fallback walk, which has no ignore rules at all beyond a short skip
+  list. An unfamiliar user browsing a monorepo remains the worst case for
+  both.
+- **Whether a directory can be a question anchor — still open, and now
+  more tempting.** Epic 7 shipped directory rows as **navigation only**
+  (asserted by `a_folder_is_navigation_not_a_question_anchor`, and stated
+  in the `?` overlay so the absence doesn't read as a bug). But "what is
+  everything in `src/app/` for?" is an obvious question for exactly the
+  newcomer this mode serves — arguably more useful than the whole-project
+  tour, and now that the folder is a row the user is sitting on, the
+  missing key is easier to notice. A directory anchor still has no
+  selection text, so it would need a different prompt shape (a file
   listing, or a read-only run that goes and looks), and it sits between
   the existing `Project` and `File` anchors rather than beside them.
-  Epic 7 assumes directories are navigation only; promoting them to an
-  anchor is a separate decision.
+  Promoting them is a separate decision, not a follow-on.
 - **Hunk selection only exists in branch-changes scope.** Repo-tree
   browsing has no diff, so "hunk" has no meaning there. This asymmetry
   is an inference from the two scopes, not a stated decision, and the

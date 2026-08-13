@@ -3023,7 +3023,10 @@ mod tests {
         let cases: [(&str, String); 3] = [
             ("long unbroken word", format!("+{}", "x".repeat(100))),
             ("whitespace run", format!("+{}", " ".repeat(100))),
-            ("wrapped prose", format!("+{}", "lorem ipsum dolor ".repeat(12))),
+            (
+                "wrapped prose",
+                format!("+{}", "lorem ipsum dolor ".repeat(12)),
+            ),
         ];
         for (label, hunk) in cases {
             let mut comment = pr_comment_of_kind(1, CommentKind::Inline);

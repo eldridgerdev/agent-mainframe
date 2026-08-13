@@ -2015,65 +2015,14 @@ fn draw_comment_detail(
         }
     }
 
-    let count = detail_wrapped_line_count(&lines, inner.width);
-    let body = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll as u16, 0));
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
     // `scroll.y` is measured in rows after wrapping, not in the source
-    // `Vec<Line>` entries. Record that same rendered-row count so long diff
-    // lines and Markdown can never make the clamp disagree with Paragraph.
-    frame.render_widget(body, inner);
+    // `Vec<Line>` entries. `line_count` runs the same `WordWrapper` the
+    // renderer does, so the clamp can never disagree with what `Paragraph`
+    // actually draws — no matter how long diff lines or Markdown wrap.
+    let count = body.line_count(inner.width);
+    frame.render_widget(body.scroll((scroll as u16, 0)), inner);
     count
-}
-
-/// Count rows using the same greedy word/whitespace behavior as Ratatui's
-/// `Wrap { trim: false }`. `Paragraph::line_count` is still an unstable,
-/// crate-private API in Ratatui 0.29, so the detail pane keeps the small piece
-/// of measurement it needs locally.
-fn detail_wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
-    let width = width.max(1) as usize;
-    lines
-        .iter()
-        .map(|line| {
-            let text: String = line
-                .spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect();
-            let mut rows = 1usize;
-            let mut used = 0usize;
-            let mut rest = text.as_str();
-            while !rest.is_empty() {
-                let whitespace = rest.starts_with(char::is_whitespace);
-                let end = rest
-                    .find(|c: char| c.is_whitespace() != whitespace)
-                    .unwrap_or(rest.len());
-                let (run, tail) = rest.split_at(end);
-                rest = tail;
-                let run_width = UnicodeWidthStr::width(run);
-                if whitespace {
-                    // Whitespace that reaches the edge is consumed there
-                    // rather than creating an otherwise empty row.
-                    used = (used + run_width).min(width);
-                } else {
-                    if used > 0 && used + run_width > width {
-                        rows += 1;
-                        used = 0;
-                    }
-                    if run_width > width {
-                        rows += (run_width - 1) / width;
-                        used = run_width % width;
-                        if used == 0 {
-                            used = width;
-                        }
-                    } else {
-                        used += run_width;
-                    }
-                }
-            }
-            rows
-        })
-        .sum()
 }
 
 /// A compact `[label]` chip in the given accent color, with a leading space so
@@ -3022,34 +2971,86 @@ mod tests {
         assert!(!rendered.contains("hyperlink(url)"));
     }
 
-    #[test]
-    fn detail_pane_reports_rows_after_wrapping() {
+    /// Draw the detail pane into a pane far taller than its content and return
+    /// `(reported, painted)`: the row count `draw_comment_detail` hands back for
+    /// scroll clamping, and the true rendered height read off the terminal
+    /// buffer (index of the last row inside the border that got any ink, plus
+    /// one). The second value comes from `Paragraph`'s own output, so equality
+    /// pins the clamp to the real renderer rather than to a second opinion
+    /// about how wrapping works.
+    fn detail_rows_reported_and_painted(comment: &PrComment, width: u16) -> (usize, usize) {
         use ratatui::{Terminal, backend::TestBackend};
 
+        const HEIGHT: u16 = 120;
         let theme = Theme::default();
-        let mut comment = pr_comment_of_kind(1, CommentKind::Inline);
-        comment.diff_hunk = Some(format!("+{}", "x".repeat(100)));
-        let logical_lines = 7; // two headers, divider/label/hunk, divider/body
-        let backend = TestBackend::new(30, 30);
+        let backend = TestBackend::new(width, HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut rendered_rows = 0;
+        let mut reported = 0;
         terminal
             .draw(|frame| {
-                rendered_rows = draw_comment_detail(
+                reported = draw_comment_detail(
                     frame,
                     frame.area(),
-                    Some(&comment),
-                    std::slice::from_ref(&comment),
+                    Some(comment),
+                    std::slice::from_ref(comment),
                     0,
                     &theme,
                 );
             })
             .unwrap();
 
+        let buf = terminal.backend().buffer().clone();
+        let mut painted = 0;
+        // Row/col 0 and the last row/col are the pane border; content is inset.
+        for y in 1..HEIGHT - 1 {
+            if (1..width - 1).any(|x| !buf[(x, y)].symbol().trim().is_empty()) {
+                painted = y as usize;
+            }
+        }
         assert!(
-            rendered_rows > logical_lines,
-            "wrapped hunk rows must be included in the scroll count"
+            painted < HEIGHT as usize - 2,
+            "fixture must fit the test pane so `painted` is a real height, not a truncation"
         );
+        (reported, painted)
+    }
+
+    #[test]
+    fn detail_pane_row_count_matches_the_rows_paragraph_paints() {
+        // A word far wider than the pane, a whitespace run several pane-widths
+        // long, and ordinary prose that wraps on word boundaries — the three
+        // shapes where a row count can drift from what `Wrap { trim: false }`
+        // actually lays out.
+        let cases: [(&str, String); 3] = [
+            ("long unbroken word", format!("+{}", "x".repeat(100))),
+            ("whitespace run", format!("+{}", " ".repeat(100))),
+            ("wrapped prose", format!("+{}", "lorem ipsum dolor ".repeat(12))),
+        ];
+        for (label, hunk) in cases {
+            let mut comment = pr_comment_of_kind(1, CommentKind::Inline);
+            comment.diff_hunk = Some(hunk);
+            for width in [20, 30, 47] {
+                let (reported, painted) = detail_rows_reported_and_painted(&comment, width);
+                assert_eq!(
+                    reported, painted,
+                    "{label} at pane width {width}: scroll clamp must match rendered height"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detail_pane_row_count_grows_by_the_hunks_wrapped_height() {
+        // Pane width 30 leaves 28 inner columns. A 101-column hunk line
+        // ("+" plus 100 x's) occupies ceil(101 / 28) = 4 rows, and the hunk
+        // section also adds a divider and a "Diff hunk" label: 6 rows over the
+        // same comment with no hunk at all.
+        let bare = pr_comment_of_kind(1, CommentKind::Inline);
+        let mut with_hunk = bare.clone();
+        with_hunk.diff_hunk = Some(format!("+{}", "x".repeat(100)));
+
+        let (bare_rows, _) = detail_rows_reported_and_painted(&bare, 30);
+        let (hunk_rows, _) = detail_rows_reported_and_painted(&with_hunk, 30);
+        assert_eq!(hunk_rows - bare_rows, 6);
     }
 
     #[test]

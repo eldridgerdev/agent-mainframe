@@ -210,6 +210,15 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
         Span::styled(
             match state.focus {
                 LearningFocus::Qa => " read the answer  ",
+                // On a folder Enter opens or closes it. Saying so costs
+                // nothing — the hint is on the line either way — and it is the
+                // discovery path for the tree for anyone who never finds h/l.
+                _ if state
+                    .selected_entry()
+                    .is_some_and(|e| e.dir_path().is_some()) =>
+                {
+                    " open/close folder  "
+                }
                 _ => " open  ",
             },
             word,
@@ -246,9 +255,21 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
         Span::styled(" whole file  ", word),
         Span::styled("P", key),
         Span::styled(" whole project  ", word),
-        Span::styled("x", key),
-        Span::styled(" this change  ", word),
     ];
+    // `x` needs a diff, so in repo-tree scope it can only ever refuse. It used
+    // to be advertised there anyway; dropping it is both more honest and where
+    // the 14 columns for the tree hint came from.
+    if state.scope == BrowseScope::BranchChanges {
+        second.push(Span::styled("x", key));
+        second.push(Span::styled(" this change  ", word));
+    } else if state
+        .entries
+        .iter()
+        .any(|e| matches!(e, LearningListEntry::Dir { .. }))
+    {
+        second.push(Span::styled("h/l", key));
+        second.push(Span::styled(" folders  ", word));
+    }
     // The footer truncates from the right, so what goes here is rationed
     // against `q close` surviving at 140 columns. The two answer keys travel
     // together — both act on the selected entry, and offering one without the
@@ -342,25 +363,64 @@ fn file_row(
     width: usize,
     theme: &Theme,
 ) -> Line<'static> {
-    let (text, color) = match entry {
+    let (text, color, truncate_from_left) = match entry {
         LearningListEntry::StartHereHeader => (
             format!("{} Start here", if collapsed { "▸" } else { "▾" }),
             theme.warning.to_color(),
+            false,
         ),
         LearningListEntry::ProjectTour => (
             "  Tour this whole project".to_string(),
             theme.info.to_color(),
+            false,
         ),
+        LearningListEntry::Dir {
+            path,
+            depth,
+            expanded,
+            file_count,
+            truncated,
+        } => {
+            // Leaf name only. The full path is the pane title's job — this
+            // pane is ~32 columns at a 140-column terminal, which is what made
+            // the flat list render `…ude/commands/amf/ai-review.m` for three
+            // consecutive rows.
+            let name = leaf_name(path);
+            let marker = if *expanded { "▾" } else { "▸" };
+            let mut label = format!("{}{marker} {name}/", indent(*depth));
+            // A closed folder says its size, so skipping one is an informed
+            // choice rather than a guess.
+            if !*expanded {
+                label.push_str(&format!(" ({file_count})"));
+            }
+            if *truncated > 0 {
+                label.push_str(&format!(" +{truncated} not shown"));
+            }
+            (label, theme.primary.to_color(), false)
+        }
         LearningListEntry::File {
             path,
             group: LearningListGroup::StartHere,
             ..
-        } => (format!("  {path}"), theme.text.to_color()),
-        LearningListEntry::File { path, .. } => (path.clone(), theme.text.to_color()),
+        } => (format!("  {path}"), theme.text.to_color(), true),
+        LearningListEntry::File { path, depth, .. } => (
+            format!("{}{}", indent(*depth), leaf_name(path)),
+            theme.text.to_color(),
+            // Branch-changes rows are flat full paths and still want their
+            // tail; tree rows are leaf names that already fit.
+            *depth == 0,
+        ),
     };
 
     let cursor = if selected { "› " } else { "  " };
-    let body = truncate_left(&text, width.saturating_sub(cursor.len()));
+    let avail = width.saturating_sub(cursor.len());
+    // Truncating a tree row from the left would eat the indent that says where
+    // it sits, so those clip from the right instead.
+    let body = if truncate_from_left {
+        truncate_left(&text, avail)
+    } else {
+        truncate_right(&text, avail)
+    };
     let style = if selected {
         Style::default()
             .fg(color)
@@ -1496,22 +1556,43 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " What a question is about",
-        heading,
-    )));
+    lines.push(Line::from(Span::styled(" Finding your way around", heading)));
     for (k, text) in [
         ("j/k", "move the cursor in whichever pane has focus"),
         (
             "Tab",
             "move between the file list, the code, and your questions",
         ),
-        ("Enter", "open a file, or read the selected answer"),
+        (
+            "Enter",
+            "open or close a folder, open a file, or read an answer",
+        ),
+        ("l", "open the folder under the cursor, or step into it"),
+        ("h", "close the folder, or step out to the one above"),
+        ("Z", "open every folder in the project, or fold them all"),
+        ("z", "fold or unfold the Start here group"),
+    ] {
+        lines.push(key_row(k, text, key, body));
+    }
+    lines.push(Line::from(Span::styled(
+        " Folders are for finding files — resting on one changes nothing about",
+        muted,
+    )));
+    lines.push(Line::from(Span::styled(
+        " the question you have lined up.",
+        muted,
+    )));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " What a question is about",
+        heading,
+    )));
+    for (k, text) in [
         ("v / V", "start a line range / drop back to one line"),
         ("f", "the whole file"),
         ("P", "the whole project"),
         ("x", "the change under the cursor (branch changes only)"),
-        ("z", "fold or unfold the Start here group"),
     ] {
         lines.push(key_row(k, text, key, body));
     }
@@ -1630,6 +1711,22 @@ fn draw_scrollbar(frame: &mut Frame, area: Rect, total: usize, position: usize, 
 
 /// Keep the tail of a path: the filename matters more than the repo root it
 /// sits under when the pane is narrow.
+/// The last component of a repo-relative path — what a tree row is labelled
+/// with, since its ancestors are already on screen above it.
+fn leaf_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Two spaces per level. Deep trees are clamped so a long path can't push the
+/// name itself off a narrow pane: past the clamp the rows stop stepping right,
+/// which is worse than perfect but far better than an empty row.
+fn indent(depth: usize) -> String {
+    "  ".repeat(depth.min(MAX_INDENT_LEVELS))
+}
+
+/// How far tree rows step right before the indent stops growing.
+const MAX_INDENT_LEVELS: usize = 6;
+
 fn truncate_left(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -1780,6 +1877,118 @@ let files = list_repo_files(workdir)?;
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    fn dir_row(path: &str, depth: usize, expanded: bool, file_count: usize) -> LearningListEntry {
+        LearningListEntry::Dir {
+            path: path.to_string(),
+            depth,
+            expanded,
+            file_count,
+            truncated: 0,
+        }
+    }
+
+    fn tree_file_row(path: &str, depth: usize) -> LearningListEntry {
+        LearningListEntry::File {
+            path: path.to_string(),
+            group: LearningListGroup::Files,
+            diff_index: None,
+            depth,
+        }
+    }
+
+    /// The defect Epic 7 exists to fix: the file pane is ~32 columns at a
+    /// 140-column terminal, and a flat list rendered the full path there, so
+    /// three files in the same folder read as three near-identical truncated
+    /// stubs. A tree row shows the leaf name, which fits.
+    #[test]
+    fn a_deep_file_shows_its_name_not_a_truncated_path() {
+        let mut state = state();
+        state.entries = vec![
+            dir_row("src", 0, true, 3),
+            dir_row("src/app", 1, true, 2),
+            tree_file_row("src/app/learning.rs", 2),
+            tree_file_row("src/app/todos.rs", 2),
+        ];
+        let rendered = render(&mut state);
+
+        assert!(rendered.contains("learning.rs"), "{rendered}");
+        assert!(rendered.contains("todos.rs"), "{rendered}");
+        // The full path is gone from the list — it belongs to the pane title,
+        // which is where a name that no longer identifies a file gets resolved.
+        assert!(
+            !rendered.contains("src/app/learning.rs"),
+            "the list should not be repeating the whole path"
+        );
+        // …and the pane title still carries it, since the leaf name alone
+        // doesn't say which `learning.rs` this is.
+        assert!(rendered.contains("src/main.rs"), "{rendered}");
+    }
+
+    /// A closed folder says how much it is hiding, so skipping it is a choice
+    /// rather than a guess — and a folder truncated by the per-directory cap
+    /// says that too, rather than looking complete.
+    #[test]
+    fn a_closed_folder_says_what_is_inside_it() {
+        let mut state = state();
+        state.entries = vec![
+            dir_row("src", 0, false, 42),
+            LearningListEntry::Dir {
+                path: "generated".to_string(),
+                depth: 0,
+                expanded: true,
+                file_count: 9000,
+                truncated: 7000,
+            },
+        ];
+        let rendered = render(&mut state);
+        assert!(rendered.contains("src/ (42)"), "{rendered}");
+        assert!(rendered.contains("+7000 not shown"), "{rendered}");
+    }
+
+    /// The plan's standing warning: this footer has truncated `q close` off
+    /// the end twice already. The tree hint is added in the slot `x` gave up —
+    /// `x` needs a diff and could only refuse in repo-tree scope anyway.
+    #[test]
+    fn the_tree_hint_fits_the_footer_beside_everything_else() {
+        let mut state = state();
+        state.entries = vec![dir_row("src", 0, true, 3), tree_file_row("src/main.rs", 1)];
+        state.qa.push(answered_qa());
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("h/l folders"), "{rendered}");
+        assert!(
+            rendered.contains("q close"),
+            "the tree hint pushed the way out off the end: {rendered}"
+        );
+        assert!(rendered.contains("D ask again, reading the repo"), "{rendered}");
+        assert!(
+            !rendered.contains("x this change"),
+            "a key that can only refuse here should not be advertised here"
+        );
+
+        // Branch changes keeps `x` and drops the tree hint: that scope is flat.
+        state.scope = BrowseScope::BranchChanges;
+        let rendered = render(&mut state);
+        assert!(rendered.contains("x this change"), "{rendered}");
+        assert!(!rendered.contains("h/l folders"), "{rendered}");
+        assert!(rendered.contains("q close"), "{rendered}");
+    }
+
+    /// Enter is the key someone who never finds `h`/`l` will press, so on a
+    /// folder it says what it will do there.
+    #[test]
+    fn the_enter_hint_says_it_opens_a_folder_when_the_cursor_is_on_one() {
+        let mut state = state();
+        state.entries = vec![dir_row("src", 0, false, 3), tree_file_row("README.md", 0)];
+        state.selected_entry = 0;
+        assert!(render(&mut state).contains("Enter open/close folder"));
+
+        state.selected_entry = 1;
+        let rendered = render(&mut state);
+        assert!(rendered.contains("Enter open"), "{rendered}");
+        assert!(!rendered.contains("open/close folder"), "{rendered}");
     }
 
     #[test]

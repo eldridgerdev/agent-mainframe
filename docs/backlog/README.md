@@ -82,17 +82,27 @@ doc always says exactly what remains.
   (add/edit/notes/done/priority/reorder/delete + a scratchpad note),
   spawning an agent from a TODO with a pre-filled composer prompt, and
   quick-capture from any session view are all in place.
-- [Learning Mode](learning-mode-plan.md) — _In progress._ A read-only
-  overlay (`K`) for studying a project you didn't write: browse the repo
-  tree or just the branch's changes, anchor a question to a file, hunk,
-  line range, or the project as a whole, and get a headless answer from
-  the selected harness. Built for a newcomer — nothing mutates the repo,
+- [Learning Mode](learning-mode-plan.md) — _All epics shipped._ A read-only
+  overlay (`K`) for studying a project you didn't write: browse the repo as a
+  collapsible folder tree or just the branch's changes, anchor a question to a
+  file, hunk, line range, or the project as a whole, and get a headless answer
+  from the selected harness. Built for a newcomer — nothing mutates the repo,
   answers default to a define-your-terms "newcomer" level, starter
   questions and a "Start here" group give a first move, and follow-ups
   thread. Answers persist per project as anchored notes; making one
   actionable (a TODO) or escalating it into a live agent session are
-  explicit, optional gestures. Six epics: foundations, browsing, asking,
-  surface, acting on an answer, hardening.
+  explicit, optional gestures. Seven epics: foundations, browsing, asking,
+  surface, acting on an answer, hardening, and the file tree. Deferred work
+  is tracked separately in
+  [Learning Mode follow-ups](learning-mode-followups-plan.md).
+- [Learning Mode follow-ups](learning-mode-followups-plan.md) — _Backlog._
+  Three deferrals from the Learning Mode plan, one section each: anchor
+  drift (a stored `path:line-range` goes stale silently, the only
+  correctness problem of the three), alternative mechanisms for making an
+  answer actionable (seeded-and-scoped composer, inline suggested patch),
+  and turning an answer's "Where to look next" references into navigable
+  jumps — which also surfaces the fabricated paths a no-tools answer is
+  known to invent.
 - [Bug backlog](bug-backlog-plan.md) — _Backlog._ Running list of known
   bugs not yet scheduled for a fix, one section per bug. Currently
   tracks recently fixed dashboard, sidebar, and composer-pane regressions.

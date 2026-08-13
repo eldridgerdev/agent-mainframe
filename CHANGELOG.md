@@ -10,6 +10,23 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Learning Mode browses the project as a folder tree.** The file list used
+  to be every path in the repository, flat and alphabetical, in a pane about
+  32 columns wide — so on a real project the first screenful was a run of
+  truncated near-identical stubs and `src/` was dozens of keypresses down. It
+  is now a tree: folders you can open and close, file names shown without
+  their path, and each closed folder saying how many files it holds. It opens
+  with the top level visible and the way down to the **Start here** files
+  already unfolded, so the entry point is on screen without the rest of the
+  repository being. `l` and `h` (or `Enter`) open and close the folder under
+  the cursor, `Z` opens or folds every folder at once, and resting on a folder
+  changes nothing about the question you have lined up. Very large projects
+  are now limited per folder rather than by a single cap on the whole listing,
+  and a folder that hides part of its contents says so — which makes the
+  all-files view usable on a monorepo instead of merely truncated.
+
 ### Fixed
 
 - **Learning Mode says when its file list is incomplete.** In a project that

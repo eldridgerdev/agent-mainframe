@@ -213,6 +213,22 @@ entry point, and the manifest that project actually has. Press `t` at any time
 for starter questions ("Explain this line by line", "What would break if I
 deleted this?") that load into the prompt so you can edit them before asking.
 
+Below that group the project's files are a **folder tree**, so the list shows
+you the layout rather than a wall of paths. Folders open at the top level with
+the way down to the Start here files already unfolded, and each closed folder
+says how many files are inside it, so you can skip whole areas you have no
+business in yet.
+
+| Key | Moves you |
+| --- | --- |
+| `l` | Open the folder under the cursor, or step into an open one |
+| `h` | Close the folder, or step out to the one above |
+| `Z` | Open every folder in the project, or fold them all back |
+| `Enter` | The same, on a folder — and opens the file, on a file |
+
+Resting on a folder changes nothing about the question you have lined up;
+folders are only for finding files.
+
 Point at what you want to ask about with `f` (the whole file), `v` (start a line
 range), `P` (the whole project), or `x` (the change under the cursor, in
 branch-changes scope). Then ask one of two ways:

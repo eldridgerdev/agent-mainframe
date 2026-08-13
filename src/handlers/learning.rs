@@ -129,6 +129,16 @@ pub fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::PageUp => learning_move(app, -(PAGE_STEP as isize)),
         KeyCode::Enter => app.learning_activate_selection(),
 
+        // Moving around the tree. `l`/`Right` opens, `h`/`Left` closes or
+        // steps out — the shape every file tree uses, so it needs no
+        // explaining to anyone who has met one, and `Enter` covers anyone who
+        // hasn't.
+        KeyCode::Char('l') | KeyCode::Right => {
+            app.learning_expand_or_open();
+        }
+        KeyCode::Char('h') | KeyCode::Left => app.learning_collapse_or_parent(),
+        KeyCode::Char('Z') => app.learning_toggle_expand_all(),
+
         // What the next question is about.
         KeyCode::Char('v') => app.learning_start_range(),
         KeyCode::Char('V') => app.learning_clear_range(),
@@ -731,6 +741,48 @@ mod tests {
         assert_eq!(learning(&app).focus, LearningFocus::Qa);
         handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
         assert_eq!(learning(&app).focus, LearningFocus::FileList);
+    }
+
+    /// `l` and `h` walk the tree, and `Enter` does the same job for anyone who
+    /// never finds them. All three go through the file-list focus, which is
+    /// where `opened` does *not* leave the focus, so this also proves the keys
+    /// are routed by pane rather than swallowed globally.
+    #[test]
+    fn the_tree_keys_open_and_close_folders() {
+        let (_repo, mut app) = opened();
+        handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
+        handle_learning_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert_eq!(learning(&app).focus, LearningFocus::FileList);
+
+        let src = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.dir_path() == Some("src"))
+            .expect("the tree should have a src folder");
+        if let crate::app::AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = src;
+        }
+
+        // `src` opens by default (it holds a Start here candidate), so `h`
+        // closes it and `l` opens it again.
+        assert!(learning(&app).expanded_dirs.contains("src"));
+        handle_learning_key(&mut app, key(KeyCode::Char('h'))).unwrap();
+        assert!(!learning(&app).expanded_dirs.contains("src"));
+        handle_learning_key(&mut app, key(KeyCode::Char('l'))).unwrap();
+        assert!(learning(&app).expanded_dirs.contains("src"));
+
+        // Enter toggles it too, and leaves the cursor on the folder rather
+        // than shifting focus to the content pane the way it does for a file.
+        handle_learning_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert!(!learning(&app).expanded_dirs.contains("src"));
+        assert_eq!(learning(&app).focus, LearningFocus::FileList);
+        assert_eq!(
+            learning(&app).selected_entry().and_then(|e| e.dir_path()),
+            Some("src")
+        );
+
+        handle_learning_key(&mut app, key(KeyCode::Char('Z'))).unwrap();
+        assert!(learning(&app).expanded_dirs.contains("src"));
     }
 
     #[test]

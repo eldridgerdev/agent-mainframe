@@ -306,6 +306,20 @@ option, and answers are pitched at a first-time reader by default. See
   the pane addresses diff rows. Repo-tree scope also pins a **Start
   here** orientation group (existence-checked well-known files plus a
   repo-level tour question) until the project has any history.
+- **The repo-tree list is a tree, and `entries` is derived.** Repo-tree rows
+  come from `flatten_tree` (pure: path list + `expanded_dirs` → rows,
+  directories before files at each level); branch-changes stays flat. The
+  authority on what is open is `LearningViewState::expanded_dirs`, **not** the
+  `Dir` rows — every tree operation changes that set and rebuilds, so a cursor
+  has to be restored by identity (`row_key`), never by index. Two constraints
+  are load-bearing: `learning_rebuild_tree` works from the cached `repo_files`
+  and must not re-read the repository (expanding a folder cannot cost a `git
+  ls-files`), and `default_expanded_dirs` is seeded **once** per overlay
+  (`expanded_seeded`) so a reload never re-opens what the user closed. A
+  directory is navigation only — `LearningListEntry::path()` returns `None`
+  for one, which is what keeps resting on a folder from moving the loaded file
+  or the anchor. Size limits live per directory (`MAX_DIR_CHILDREN`, reported
+  on the folder's own row); `MAX_REPO_ENTRIES` is now only a memory valve.
 - **Anchors:** `LearningAnchor::{Project, File, Hunk, Lines}`; hunks
   exist only in branch-changes scope. The anchor is captured *with* the
   question (`AskAnchor`), not re-read at submit time, so a follow-up

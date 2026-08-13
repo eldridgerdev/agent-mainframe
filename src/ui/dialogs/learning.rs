@@ -1556,7 +1556,10 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(" Finding your way around", heading)));
+    lines.push(Line::from(Span::styled(
+        " Finding your way around",
+        heading,
+    )));
     for (k, text) in [
         ("j/k", "move the cursor in whichever pane has focus"),
         (
@@ -1962,7 +1965,10 @@ let files = list_repo_files(workdir)?;
             rendered.contains("q close"),
             "the tree hint pushed the way out off the end: {rendered}"
         );
-        assert!(rendered.contains("D ask again, reading the repo"), "{rendered}");
+        assert!(
+            rendered.contains("D ask again, reading the repo"),
+            "{rendered}"
+        );
         assert!(
             !rendered.contains("x this change"),
             "a key that can only refuse here should not be advertised here"

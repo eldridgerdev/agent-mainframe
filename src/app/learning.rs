@@ -679,16 +679,32 @@ impl App {
         true
     }
 
+    /// Tree movement only ever means something in the file list. Pressing it
+    /// while reading the content or the history is a wrong guess about which
+    /// pane has the cursor, so it is answered rather than swallowed — and never
+    /// allowed to move a cursor the user cannot see.
+    fn learning_require_file_list_focus(&mut self) -> bool {
+        let focused = match &self.mode {
+            AppMode::Learning(state) => state.focus == LearningFocus::FileList,
+            _ => return false,
+        };
+        if !focused {
+            self.learning_notice("That moves the file list, which isn't focused — press Tab.");
+        }
+        focused
+    }
+
     /// `l` / `Right`: open the folder under the cursor, step into an already
     /// open one, or — on a file — do what `Enter` does.
     pub fn learning_expand_or_open(&mut self) {
+        if !self.learning_require_file_list_focus() {
+            return;
+        }
         let state_kind = match &self.mode {
-            AppMode::Learning(state) if state.focus == LearningFocus::FileList => {
-                match state.selected_entry() {
-                    Some(LearningListEntry::Dir { expanded, .. }) => Some(*expanded),
-                    _ => None,
-                }
-            }
+            AppMode::Learning(state) => match state.selected_entry() {
+                Some(LearningListEntry::Dir { expanded, .. }) => Some(*expanded),
+                _ => None,
+            },
             _ => return,
         };
         match state_kind {
@@ -705,14 +721,16 @@ impl App {
     /// `h` / `Left`: close the folder under the cursor, or step out to the one
     /// containing this row.
     pub fn learning_collapse_or_parent(&mut self) {
+        if !self.learning_require_file_list_focus() {
+            return;
+        }
         let on_open_dir = matches!(
             &self.mode,
             AppMode::Learning(state)
-                if state.focus == LearningFocus::FileList
-                    && matches!(
-                        state.selected_entry(),
-                        Some(LearningListEntry::Dir { expanded: true, .. })
-                    )
+                if matches!(
+                    state.selected_entry(),
+                    Some(LearningListEntry::Dir { expanded: true, .. })
+                )
         );
         if on_open_dir {
             self.learning_toggle_dir();
@@ -722,8 +740,10 @@ impl App {
     }
 
     /// Move the cursor to the directory containing the current row, closing
-    /// nothing. On a top-level row there is no parent, which is said rather
-    /// than swallowed.
+    /// nothing. Two rows have nowhere to go: a top-level one, and one whose
+    /// folder has no row of its own (the flat branch-changes list, or a pinned
+    /// `Start here` file whose folder the root cap dropped). Each says so
+    /// rather than being swallowed.
     pub fn learning_jump_to_parent(&mut self) {
         let Some(path) = (match &self.mode {
             AppMode::Learning(state) => state
@@ -738,14 +758,41 @@ impl App {
             self.learning_notice("This is already at the top level of the project.");
             return;
         };
-        let parent = &path[..cut];
-        if let AppMode::Learning(state) = &mut self.mode
-            && let Some(idx) = state
-                .entries
-                .iter()
-                .position(|e| e.dir_path() == Some(parent))
-        {
-            state.selected_entry = idx;
+        let parent = path[..cut].to_string();
+        let found = match &mut self.mode {
+            AppMode::Learning(state) => {
+                match state
+                    .entries
+                    .iter()
+                    .position(|e| e.dir_path() == Some(parent.as_str()))
+                {
+                    Some(idx) => {
+                        state.selected_entry = idx;
+                        true
+                    }
+                    // A pinned `Start here` file, or any row in the flat
+                    // branch-changes list, can sit on screen while the folder
+                    // holding it has no row at all.
+                    None => false,
+                }
+            }
+            _ => return,
+        };
+        if found {
+            return;
+        }
+        let flat = matches!(
+            &self.mode,
+            AppMode::Learning(state) if state.scope != BrowseScope::RepoTree
+        );
+        if flat {
+            self.learning_notice(
+                "Changed files are listed flat, without folders — press s for the project tree.",
+            );
+        } else {
+            self.learning_notice(format!(
+                "{parent}/ isn't open in the tree, so there's nowhere to step out to — press Z to open every folder."
+            ));
         }
     }
 
@@ -756,10 +803,15 @@ impl App {
         let expand = match &self.mode {
             // Anything still closed means the gesture is "open it all"; only a
             // fully open tree collapses.
-            AppMode::Learning(state) => state
-                .entries
-                .iter()
-                .any(|e| matches!(e, LearningListEntry::Dir { expanded: false, .. })),
+            AppMode::Learning(state) => state.entries.iter().any(|e| {
+                matches!(
+                    e,
+                    LearningListEntry::Dir {
+                        expanded: false,
+                        ..
+                    }
+                )
+            }),
             _ => return,
         };
         if let AppMode::Learning(state) = &mut self.mode {
@@ -5143,12 +5195,12 @@ pub(crate) mod tests {
         app.learning_toggle_dir();
 
         let state = learning(&app);
-        assert_eq!(state.selected_entry().and_then(|e| e.dir_path()), Some("src"));
+        assert_eq!(
+            state.selected_entry().and_then(|e| e.dir_path()),
+            Some("src")
+        );
         assert!(
-            !state
-                .entries
-                .iter()
-                .any(|e| is_tree_file(e, "src/main.rs")),
+            !state.entries.iter().any(|e| is_tree_file(e, "src/main.rs")),
             "collapsing should have taken the children with it"
         );
 
@@ -5184,8 +5236,99 @@ pub(crate) mod tests {
         );
         app.learning_collapse_or_parent();
         let state = learning(&app);
-        assert_eq!(state.selected_entry().and_then(|e| e.dir_path()), Some("src"));
+        assert_eq!(
+            state.selected_entry().and_then(|e| e.dir_path()),
+            Some("src")
+        );
         assert!(!state.expanded_dirs.contains("src"));
+    }
+
+    /// Tree keys belong to the file list. Pressing them while reading the
+    /// content pane must not move a cursor that isn't on screen — and must say
+    /// so, in both directions, rather than doing nothing.
+    #[test]
+    fn tree_keys_do_nothing_but_explain_themselves_off_the_file_list() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/util.rs"));
+        let before = learning(&app).selected_entry;
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.focus = LearningFocus::Content;
+        }
+
+        app.learning_collapse_or_parent();
+        assert_eq!(
+            learning(&app).selected_entry,
+            before,
+            "`h` off the file list must not move the hidden cursor"
+        );
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("Tab"), "{notice:?}");
+
+        app.learning_expand_or_open();
+        assert_eq!(learning(&app).selected_entry, before);
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("Tab"), "{notice:?}");
+        assert!(
+            learning(&app).expanded_dirs.contains("src"),
+            "and nothing about the tree changed either"
+        );
+    }
+
+    /// A pinned `Start here` file keeps its row when the folder holding it has
+    /// none — the root truncated it away. Stepping out then has no target,
+    /// which is a refusal, and it says why.
+    #[test]
+    fn stepping_out_with_no_visible_parent_says_why() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        // Push `src` past the root's child cap: it sorts last, so it is the row
+        // that gets dropped, while pinned `src/main.rs` is unaffected.
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.repo_files = (0..MAX_DIR_CHILDREN)
+                .map(|i| format!("aaa{i:06}/file.rs"))
+                .collect();
+            state.repo_files.push("src/main.rs".to_string());
+        }
+        app.learning_rebuild_tree();
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .all(|e| e.dir_path() != Some("src"))
+        );
+        put_cursor_on(&mut app, |e| {
+            matches!(
+                e,
+                LearningListEntry::File { path, group: LearningListGroup::StartHere, .. }
+                    if path == "src/main.rs"
+            )
+        });
+
+        app.learning_collapse_or_parent();
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("src/"), "{notice:?}");
+        assert!(notice.contains('Z'), "{notice:?}");
+    }
+
+    /// The branch-changes list has no folders at all, so stepping out of a
+    /// nested path there points at the scope key instead of going quiet.
+    #[test]
+    fn stepping_out_in_branch_changes_scope_points_at_the_tree() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+        app.learning_toggle_scope();
+        assert_eq!(learning(&app).scope, BrowseScope::BranchChanges);
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/main.rs"));
+        app.learning_collapse_or_parent();
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("flat"), "{notice:?}");
     }
 
     /// At the top level there is nothing to step out to, so `h` says so rather
@@ -5236,12 +5379,7 @@ pub(crate) mod tests {
         app.learning_toggle_expand_all();
         let state = learning(&app);
         assert!(state.expanded_dirs.is_empty());
-        assert!(
-            !state
-                .entries
-                .iter()
-                .any(|e| is_tree_file(e, "src/main.rs"))
-        );
+        assert!(!state.entries.iter().any(|e| is_tree_file(e, "src/main.rs")));
     }
 
     /// Expanding and collapsing must not re-read the repository: on a large

@@ -4,8 +4,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
 use unicode_width::UnicodeWidthStr;
@@ -1872,6 +1872,12 @@ fn draw_comment_detail(
         .border_style(Style::default().fg(theme.text_muted.to_color()))
         .title(" Detail ");
     let inner = block.inner(area);
+    // This pane replaces content from comments whose rendered shapes can be
+    // completely different (a long highlighted hunk followed by a short
+    // review summary, for example). Clear the pane's cells explicitly before
+    // drawing the replacement so fragments from an earlier/underlying render
+    // cannot survive in rows the new Paragraph leaves blank.
+    frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
     let Some(c) = comment else {
@@ -2009,11 +2015,13 @@ fn draw_comment_detail(
         }
     }
 
-    let count = lines.len();
-    let body = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll as u16, 0));
-    frame.render_widget(body, inner);
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    // `scroll.y` is measured in rows after wrapping, not in the source
+    // `Vec<Line>` entries. `line_count` runs the same `WordWrapper` the
+    // renderer does, so the clamp can never disagree with what `Paragraph`
+    // actually draws — no matter how long diff lines or Markdown wrap.
+    let count = body.line_count(inner.width);
+    frame.render_widget(body.scroll((scroll as u16, 0)), inner);
     count
 }
 
@@ -2910,6 +2918,142 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn detail_pane_clears_content_already_drawn_in_its_area() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let summary = pr_comment_of_kind(
+            1,
+            CommentKind::ReviewSummary {
+                state: "COMMENTED".into(),
+            },
+        );
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                // Model cells left by a previously rendered diff/source pane
+                // in the same frame. The replacement summary is deliberately
+                // short, so these rows survive unless the detail pane owns and
+                // clears its complete area before drawing.
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from("stale source fragment"),
+                        Line::from("doneCursor, oldPid, cfg)"),
+                        Line::from("hyperlink(url)"),
+                    ]),
+                    frame.area(),
+                );
+                draw_comment_detail(
+                    frame,
+                    frame.area(),
+                    Some(&summary),
+                    std::slice::from_ref(&summary),
+                    0,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("comment 1"));
+        assert!(!rendered.contains("stale source fragment"));
+        assert!(!rendered.contains("doneCursor"));
+        assert!(!rendered.contains("hyperlink(url)"));
+    }
+
+    /// Draw the detail pane into a pane far taller than its content and return
+    /// `(reported, painted)`: the row count `draw_comment_detail` hands back for
+    /// scroll clamping, and the true rendered height read off the terminal
+    /// buffer (index of the last row inside the border that got any ink, plus
+    /// one). The second value comes from `Paragraph`'s own output, so equality
+    /// pins the clamp to the real renderer rather than to a second opinion
+    /// about how wrapping works.
+    fn detail_rows_reported_and_painted(comment: &PrComment, width: u16) -> (usize, usize) {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        const HEIGHT: u16 = 120;
+        let theme = Theme::default();
+        let backend = TestBackend::new(width, HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut reported = 0;
+        terminal
+            .draw(|frame| {
+                reported = draw_comment_detail(
+                    frame,
+                    frame.area(),
+                    Some(comment),
+                    std::slice::from_ref(comment),
+                    0,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let mut painted = 0;
+        // Row/col 0 and the last row/col are the pane border; content is inset.
+        for y in 1..HEIGHT - 1 {
+            if (1..width - 1).any(|x| !buf[(x, y)].symbol().trim().is_empty()) {
+                painted = y as usize;
+            }
+        }
+        assert!(
+            painted < HEIGHT as usize - 2,
+            "fixture must fit the test pane so `painted` is a real height, not a truncation"
+        );
+        (reported, painted)
+    }
+
+    #[test]
+    fn detail_pane_row_count_matches_the_rows_paragraph_paints() {
+        // A word far wider than the pane, a whitespace run several pane-widths
+        // long, and ordinary prose that wraps on word boundaries — the three
+        // shapes where a row count can drift from what `Wrap { trim: false }`
+        // actually lays out.
+        let cases: [(&str, String); 3] = [
+            ("long unbroken word", format!("+{}", "x".repeat(100))),
+            ("whitespace run", format!("+{}", " ".repeat(100))),
+            (
+                "wrapped prose",
+                format!("+{}", "lorem ipsum dolor ".repeat(12)),
+            ),
+        ];
+        for (label, hunk) in cases {
+            let mut comment = pr_comment_of_kind(1, CommentKind::Inline);
+            comment.diff_hunk = Some(hunk);
+            for width in [20, 30, 47] {
+                let (reported, painted) = detail_rows_reported_and_painted(&comment, width);
+                assert_eq!(
+                    reported, painted,
+                    "{label} at pane width {width}: scroll clamp must match rendered height"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detail_pane_row_count_grows_by_the_hunks_wrapped_height() {
+        // Pane width 30 leaves 28 inner columns. A 101-column hunk line
+        // ("+" plus 100 x's) occupies ceil(101 / 28) = 4 rows, and the hunk
+        // section also adds a divider and a "Diff hunk" label: 6 rows over the
+        // same comment with no hunk at all.
+        let bare = pr_comment_of_kind(1, CommentKind::Inline);
+        let mut with_hunk = bare.clone();
+        with_hunk.diff_hunk = Some(format!("+{}", "x".repeat(100)));
+
+        let (bare_rows, _) = detail_rows_reported_and_painted(&bare, 30);
+        let (hunk_rows, _) = detail_rows_reported_and_painted(&with_hunk, 30);
+        assert_eq!(hunk_rows - bare_rows, 6);
     }
 
     #[test]

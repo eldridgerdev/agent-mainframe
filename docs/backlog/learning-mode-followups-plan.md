@@ -190,6 +190,21 @@ their anchor — possibly addressed") is the right register.
         the marker reading as "this entry is broken". The block is now sized
         to what the text takes at the pane's real width.
         (`a_narrow_terminal_still_finishes_the_drift_sentence`.)
+      **Captured** as ten frames in `docs/screenshots/learning-mode-anchor-drift/`
+      (scenario `scripts/dev/screenshot/scenarios/learning-mode-anchor-drift.txt`),
+      driven against a throwaway instance seeded with a small demo repo, with one
+      real headless Claude run. This is the first Learning Mode scenario to use
+      `run:` steps as *content* rather than setup: drift only exists across a
+      close, an edit, and a reopen, so the two file edits have to happen between
+      the shots. One capture-harness gotcha worth recording for the next
+      scenario that starts a session: the scratch instance uses the **real**
+      AMF tmux socket (`~/.local/state/amf/tmux.sock`, logged at startup), not
+      an isolated one, so a feature session left behind by an earlier run
+      survives into the next — and a second `S` then lands on a duplicate
+      `claude-2` window name and fails with `tmux send-keys failed`. Three runs
+      were lost to a leftover `amf-notes-demo-feature` before that was spotted.
+      Kill the feature session between runs, or don't pass `--keep` to a
+      scenario that escalates.
 
 ### Open questions
 

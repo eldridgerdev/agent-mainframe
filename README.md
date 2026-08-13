@@ -267,9 +267,15 @@ start, and `D` tells you there is nothing deeper to ask for and points you at
 answer side by side, ask with an agent that offers both (`m`).
 
 Questions and answers are kept per project, so reopening `K` brings back what
-you asked before, with follow-ups still under the question they continue. Press
-`?` inside Learning Mode for the full key list; it opens by itself the first
-time you enter a project.
+you asked before, with follow-ups still under the question they continue. A
+question remembers the lines it was about, and the code moves on — so on the way
+in AMF checks each one against the project as it is now. An entry whose code has
+shifted is marked **moved** and the answer tells you where it went; one whose
+code is gone is marked **anchor lost**. Either way the question and the answer
+are kept exactly as they were: the point of the mark is that a stale line number
+should not read as an answer that was always wrong. Press `?` inside Learning
+Mode for the full key list; it opens by itself the first time you enter a
+project.
 
 ### Review changes before shipping
 

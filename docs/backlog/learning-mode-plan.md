@@ -9,10 +9,10 @@
   Documented in `README.md`, `CLAUDE.md`, and `CHANGELOG.md`. The work this
   plan deliberately deferred is filed as its own backlog item —
   [`learning-mode-followups-plan.md`](learning-mode-followups-plan.md)
-  (anchor drift, alternative actionable mechanisms, navigable "Where to look
-  next" references) — plus one entry in `bug-backlog-plan.md` that is not
-  specific to this feature. The open questions below are recorded as known
-  limits, not as remaining work.
+  (anchor drift, **since built**; alternative actionable mechanisms and
+  navigable "Where to look next" references, still open) — plus one entry in
+  `bug-backlog-plan.md` that is not specific to this feature. The open
+  questions below are recorded as known limits, not as remaining work.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -1510,12 +1510,14 @@ collapse. This is a second, general case of that, not a new mechanism.
 - **TODO-list noise.** Learning Mode writes into the same one-per-project
   list as the TODOs overlay. Whether learning-originated items need
   visual distinction or a separate list is undecided.
-- **Anchor staleness is a known, accepted v1 defect.** Q&A entries
-  reference `path:line-range` with no drift protection, so cleaning up
-  a file will silently misalign earlier entries — and explanatory notes
-  are exactly the entries meant to be long-lived, so this bites the
-  primary use case first. It is also the failure a newcomer is least
-  equipped to recognise: a stale anchor looks like a wrong answer.
+- ~~**Anchor staleness is a known, accepted v1 defect.**~~ **Closed** by
+  the anchor-drift section of
+  [`learning-mode-followups-plan.md`](learning-mode-followups-plan.md).
+  A reopened history now checks each stored `path:line-range` against the
+  file as it is now and marks the entry *moved* or *anchor lost*; the
+  stored range and the answer are left alone. What is *not* closed: the
+  answer's prose is not re-checked, so an entry marked "moved" can still
+  describe an older version of the code — see that doc's open questions.
 - **Entry key `K` is proposed but not user-validated.** Verified
   unbound in `handle_normal_key`, and `L` is confirmed taken by the
   prompt library, but the mnemonic is a judgment call. Being in

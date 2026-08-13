@@ -24,7 +24,8 @@ use super::super::dashboard::centered_rect;
 use super::editor_view::{count_wrapped_editor_lines, editor_lines, sync_editor_scroll};
 use crate::app::learning::STARTER_QUESTIONS;
 use crate::app::{
-    BrowseScope, LearningAnchor, LearningFocus, LearningHarnessPicker, LearningListEntry,
+    BrowseScope, LearningAnchor, LearningAnchorDrift, LearningFocus, LearningHarnessPicker,
+    LearningListEntry,
     LearningListGroup, LearningQa, LearningQaIntent, LearningQaStatus, LearningQuestionEditor,
     LearningRunMode, LearningStarterPicker, LearningViewState,
 };
@@ -696,7 +697,8 @@ fn draw_qa_list(frame: &mut Frame, area: Rect, state: &mut LearningViewState, th
     {
         let selected = i == state.selected_qa;
         let indented = qa.parent_qa_id.is_some();
-        lines.push(qa_headline(qa, selected, indented, theme));
+        let drift = state.anchor_drift.get(&qa.id).copied();
+        lines.push(qa_headline(qa, drift, selected, indented, theme));
         lines.push(qa_question_line(qa, selected, indented, width, theme));
     }
     frame.render_widget(Paragraph::new(lines), inner);
@@ -710,7 +712,13 @@ fn draw_qa_list(frame: &mut Frame, area: Rect, state: &mut LearningViewState, th
     );
 }
 
-fn qa_headline(qa: &LearningQa, selected: bool, indented: bool, theme: &Theme) -> Line<'static> {
+fn qa_headline(
+    qa: &LearningQa,
+    drift: Option<LearningAnchorDrift>,
+    selected: bool,
+    indented: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let intent_color = match qa.intent {
         LearningQaIntent::Explain => theme.info.to_color(),
         LearningQaIntent::Action => theme.warning.to_color(),
@@ -739,6 +747,19 @@ fn qa_headline(qa: &LearningQa, selected: bool, indented: bool, theme: &Theme) -
         Span::styled("  ", Style::default()),
         Span::styled(qa.status.word(), Style::default().fg(status_color)),
     ];
+    // Ahead of even the acted-on markers: this one says the row's line numbers
+    // can't be trusted, and a reader who doesn't see it has no way to tell a
+    // stale anchor from an answer that was always wrong.
+    if let Some(drift) = drift {
+        spans.push(Span::styled(
+            format!("  {}", drift.marker()),
+            Style::default().fg(if drift.is_lost() {
+                theme.danger.to_color()
+            } else {
+                theme.warning.to_color()
+            }),
+        ));
+    }
     // Markers before provenance: this pane is narrow enough that the headline
     // overflows, and the renderer truncates from the right. "You already acted
     // on this" is worth more than which harness answered, so the harness is
@@ -828,7 +849,28 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
         (None, Some(notice)) => Some((notice.clone(), theme.info.to_color())),
         (None, None) => None,
     };
-    let mut constraints = vec![Constraint::Length(3), Constraint::Min(1)];
+    // A drifted anchor gets its own line under the header rather than a clause
+    // in the title, because the title is where the *stored* range is printed
+    // and that is the claim being corrected. Two rows, since the sentence runs
+    // past one at any realistic pane width.
+    let drift = state.drift_for(&qa.id);
+    let drift_text =
+        drift.map(|drift| format!("⚠ {}", drift.describe(qa.anchor.line_range_for_display())));
+    let mut constraints = vec![Constraint::Length(3)];
+    if let Some(text) = &drift_text {
+        // Sized to what it actually takes at this width rather than a fixed two
+        // rows: the sentence runs to about 160 characters, which fits in two at
+        // 140 columns and needs three by 80 — and a sentence clipped mid-clause
+        // is how "the answer below is unchanged" stops being said at exactly
+        // the widths where the reassurance matters most.
+        let rows = text
+            .chars()
+            .count()
+            .div_ceil((inner.width as usize).max(1))
+            .clamp(1, 4);
+        constraints.push(Constraint::Length(rows as u16));
+    }
+    constraints.push(Constraint::Min(1));
     if banner.is_some() {
         constraints.push(Constraint::Length(1));
     }
@@ -837,13 +879,29 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
+    let body_chunk = chunks[if drift.is_some() { 2 } else { 1 }];
     let footer_chunk = chunks[chunks.len() - 1];
     if let Some((message, color)) = &banner {
         frame.render_widget(
             Paragraph::new(Span::styled(message.clone(), Style::default().fg(*color)))
                 .style(Style::default().bg(theme.effective_header_bg()))
                 .wrap(Wrap { trim: true }),
-            chunks[2],
+            chunks[chunks.len() - 2],
+        );
+    }
+    if let (Some(drift), Some(text)) = (drift, drift_text) {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                text,
+                Style::default().fg(if drift.is_lost() {
+                    theme.danger.to_color()
+                } else {
+                    theme.warning.to_color()
+                }),
+            ))
+            .style(Style::default().bg(theme.effective_header_bg()))
+            .wrap(Wrap { trim: true }),
+            chunks[1],
         );
     }
 
@@ -871,7 +929,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 .unwrap_or_else(|| "answer.md".to_string());
             super::markdown::draw_markdown_document(
                 frame,
-                chunks[1],
+                body_chunk,
                 answer,
                 Path::new(&source),
                 &mut state.answer_scroll,
@@ -888,7 +946,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 ))
                 .style(Style::default().bg(theme.effective_header_bg()))
                 .wrap(Wrap { trim: true }),
-                chunks[1],
+                body_chunk,
             );
         }
         (None, None) => {
@@ -899,7 +957,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 ))
                 .style(Style::default().bg(theme.effective_header_bg()))
                 .wrap(Wrap { trim: true }),
-                chunks[1],
+                body_chunk,
             );
         }
     }
@@ -1633,6 +1691,10 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         " S is the one way out of read-only: it opens a normal agent session,",
         " which can change files. The question is filled in for you, and",
         " nothing is sent until you press Enter on it.",
+        " A question remembers the lines it was asked about. When the code",
+        " later moves, the entry is marked moved and the answer tells you",
+        " where it went; when it's gone, it's marked anchor lost. Either way",
+        " the question and the answer are kept exactly as they were.",
     ] {
         lines.push(Line::from(Span::styled(note, muted)));
     }
@@ -1796,7 +1858,7 @@ mod tests {
 
     // ── whole-overlay rendering ──────────────────────────────
 
-    use crate::app::{LearningLevel, LearningRunMode};
+    use crate::app::{LearningAnchorLoss, LearningLevel, LearningRunMode};
     use crate::project::AgentKind;
     use std::path::PathBuf;
 
@@ -2453,6 +2515,118 @@ let files = list_repo_files(workdir)?;
         let rendered = render(&mut state);
         assert!(rendered.contains("TODO"), "actioned marker");
         assert!(rendered.contains("session"), "escalated marker");
+    }
+
+    /// A drifted anchor has to be visible in the list, not only once the
+    /// answer is opened: the list is where a reader decides which entry to
+    /// trust, and the whole failure being fixed is a stale anchor that looks
+    /// like an answer that was always wrong.
+    #[test]
+    fn a_drifted_anchor_is_marked_in_the_history() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Reanchored { start: 40, end: 44 },
+        );
+        assert!(render(&mut state).contains("moved"), "the moved marker");
+
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound),
+        );
+        assert!(
+            render(&mut state).contains("anchor lost"),
+            "the lost marker"
+        );
+    }
+
+    /// The marker survives beside the acted-on markers at a real width. The
+    /// headline truncates from the right, and this pane is ~32 columns, so a
+    /// marker added without checking is a marker nobody sees.
+    #[test]
+    fn the_drift_marker_survives_beside_the_acted_on_markers() {
+        let mut state = state();
+        let mut qa = answered_qa();
+        qa.todo_id = Some("todo-1".to_string());
+        qa.spawned_session_id = Some("sess-9".to_string());
+        state.qa.push(qa);
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone),
+        );
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("anchor lost"), "{rendered}");
+    }
+
+    /// Opening the answer says what happened in a sentence, quoting the range
+    /// it was stored with — and says the question and answer are untouched,
+    /// because "anchor lost" otherwise reads as "this entry is broken".
+    #[test]
+    fn the_answer_pane_says_where_the_code_went() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Reanchored { start: 40, end: 44 },
+        );
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("it was lines 1-2"), "{rendered}");
+        assert!(rendered.contains("now lines 40-44"), "{rendered}");
+        // The answer is still on screen underneath it.
+        assert!(rendered.contains("walks the tree once"), "{rendered}");
+    }
+
+    /// A lost anchor says so in the pane, and says the answer below survives.
+    #[test]
+    fn a_lost_anchor_says_the_answer_is_still_there() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous),
+        );
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("more than one place"), "{rendered}");
+        assert!(rendered.contains("unchanged"), "{rendered}");
+        assert!(rendered.contains("walks the tree once"), "{rendered}");
+    }
+
+    /// The longest of the three sentences still finishes at a narrow width.
+    /// The clause that gets clipped when the block is a fixed two rows is the
+    /// last one — which is the one saying the entry is intact, and the reason
+    /// the marker doesn't read as "this answer is broken".
+    #[test]
+    fn a_narrow_terminal_still_finishes_the_drift_sentence() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous),
+        );
+
+        let rendered = render_at(&mut state, 80, 30);
+        assert!(rendered.contains("unchanged"), "{rendered}");
+        assert!(rendered.contains("walks the tree once"), "the answer too");
+    }
+
+    /// An answer with no drift loses no room to the line that would say so.
+    #[test]
+    fn an_answer_that_did_not_drift_gives_up_no_space_to_saying_so() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+
+        let rendered = render(&mut state);
+        assert!(!rendered.contains("has moved since"), "{rendered}");
+        assert!(!rendered.contains("anchor lost"), "{rendered}");
+        assert!(rendered.contains("walks the tree once"), "{rendered}");
     }
 
     #[test]

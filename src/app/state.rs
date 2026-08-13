@@ -3080,6 +3080,17 @@ impl LearningAnchor {
         }
     }
 
+    /// The 1-based inclusive line range this anchor actually names, for prose
+    /// that quotes it back. Unlike [`line_range`](Self::line_range) — which is
+    /// the persistence shape and reuses `line_start` to hold a hunk index —
+    /// this is `None` for every anchor that does not cover specific lines.
+    pub fn line_range_for_display(self) -> Option<(usize, usize)> {
+        match self {
+            LearningAnchor::Lines { start, end } => Some((start, end)),
+            _ => None,
+        }
+    }
+
     /// Plain-words description echoed above the question input, e.g.
     /// `lines 40-58 of src/app/learning.rs`.
     pub fn describe(self, path: Option<&str>) -> String {
@@ -3092,6 +3103,90 @@ impl LearningAnchor {
                 format!("line {start} of {path}")
             }
             LearningAnchor::Lines { start, end } => format!("lines {start}-{end} of {path}"),
+        }
+    }
+}
+
+/// What became of a stored Q&A anchor when it was checked against the file as
+/// it stands now.
+///
+/// Computed when the history loads and **never persisted**. The row's
+/// `selection_text` is the evidence, so the verdict can always be re-derived,
+/// and the stored `line_start`/`line_end` stay what they have always been: the
+/// historical fact of where the question was asked. Overwriting them would
+/// trade a recoverable answer for an unrecoverable one.
+///
+/// Absence of a verdict means "still where it was stored, as far as we can
+/// tell" — which is also what a row with nothing to check against reports, so
+/// the common case costs nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningAnchorDrift {
+    /// The code moved and was found again, at this 1-based inclusive range.
+    Reanchored { start: usize, end: usize },
+    /// The code the question was asked about can no longer be pointed at.
+    Lost(LearningAnchorLoss),
+}
+
+/// Why an anchor was given up on. Each reads differently to the user: a
+/// deleted file is not the same event as code that was rewritten, and neither
+/// is the same as code that now appears in several places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningAnchorLoss {
+    /// The file itself is no longer in the working directory.
+    FileGone,
+    /// The file is there, but the selected text is not in it any more.
+    NotFound,
+    /// The selected text now appears more than once, so there is no honest
+    /// way to say which copy the question was about.
+    Ambiguous,
+}
+
+#[allow(dead_code)]
+impl LearningAnchorDrift {
+    /// Compact marker for the Q&A history row.
+    pub fn marker(self) -> &'static str {
+        match self {
+            LearningAnchorDrift::Reanchored { .. } => "⚠ moved",
+            LearningAnchorDrift::Lost(_) => "⚠ anchor lost",
+        }
+    }
+
+    /// Whether this is a loss rather than a relocation — the two are coloured
+    /// differently, because one of them still points at the right code.
+    pub fn is_lost(self) -> bool {
+        matches!(self, LearningAnchorDrift::Lost(_))
+    }
+
+    /// Full sentence for the answer pane, given the range the row was stored
+    /// with. Says what happened *and* that the question and answer are intact,
+    /// since a newcomer's reading of "anchor lost" is otherwise "this entry is
+    /// broken".
+    pub fn describe(self, stored: Option<(usize, usize)>) -> String {
+        let was = match stored {
+            Some((start, end)) if start == end => format!("line {start}"),
+            Some((start, end)) => format!("lines {start}-{end}"),
+            None => "this file".to_string(),
+        };
+        match self {
+            LearningAnchorDrift::Reanchored { start, end } if start == end => {
+                format!("The code has moved since this was asked: it was {was}, it is now line {start}.")
+            }
+            LearningAnchorDrift::Reanchored { start, end } => {
+                format!(
+                    "The code has moved since this was asked: it was {was}, it is now lines {start}-{end}."
+                )
+            }
+            LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone) => {
+                "This file is no longer in the project, so there is nothing left to point at. The question and answer below are unchanged.".to_string()
+            }
+            LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound) => {
+                format!(
+                    "The code this was asked about is no longer in the file, so {was} now shows something else. The question and answer below are unchanged."
+                )
+            }
+            LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous) => {
+                "This code now appears in more than one place in the file, so there is no way to say which copy the question was about. The question and answer below are unchanged.".to_string()
+            }
         }
     }
 }
@@ -3622,6 +3717,14 @@ pub struct LearningViewState {
     pub question: Option<LearningQuestionEditor>,
     /// Q&A history for this project, oldest first, follow-ups after parents.
     pub qa: Vec<LearningQa>,
+    /// Anchors that no longer point where they were stored, by `LearningQa::id`.
+    ///
+    /// Deliberately a side table rather than a field on the row: a verdict is a
+    /// judgment about the working directory as it is right now, not something
+    /// the row carries, and keeping the two apart is what stops it being
+    /// written back over the range the question was actually asked at. A row
+    /// with no entry here is anchored as stored.
+    pub anchor_drift: std::collections::HashMap<String, LearningAnchorDrift>,
     pub selected_qa: usize,
     pub qa_scroll: usize,
     /// Answer pane state — offset plus the render cache

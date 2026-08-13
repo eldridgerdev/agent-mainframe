@@ -12,6 +12,21 @@ are tagged.
 
 ### Added
 
+- **Learning Mode says when a past question's code has moved.** A question
+  remembers the lines it was asked about, and until now nothing checked them
+  again — so editing a file left every earlier entry pointing at whatever had
+  since taken those line numbers, with no way to tell. That bites the notes
+  Learning Mode is most for: an explanation you keep is exactly the one you
+  come back to months later, and a stale anchor doesn't look stale, it looks
+  like an answer that was always wrong. Reopening a project now checks each
+  stored question against the code as it is now. An entry whose code moved is
+  marked **moved**, and opening it says where the code went; one whose code is
+  gone — rewritten, or in a deleted file — is marked **anchor lost**. Code that
+  now appears in more than one place is reported lost rather than guessed at.
+  The question and answer are never touched, and neither is the range the
+  question was asked at. Handing a moved entry to a live agent (`S`) or keeping
+  it as a to-do (`a`) carries the warning along, so neither one sends anybody to
+  read the wrong lines.
 - **Learning Mode browses the project as a folder tree.** The file list used
   to be every path in the repository, flat and alphabetical, in a pane about
   32 columns wide — so on a real project the first screenful was a run of

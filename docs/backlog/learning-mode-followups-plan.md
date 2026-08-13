@@ -1,6 +1,7 @@
 # Learning Mode follow-ups
 
-- **Status:** Backlog
+- **Status:** Anchor drift is done; navigable references and the
+  alternative actionable mechanisms are still backlog.
 - **Owner:** unassigned
 - **Relates to:** [Learning Mode](learning-mode-plan.md) (shipped in
   `v0.36.0`), `src/app/learning.rs`, `src/ui/dialogs/learning.rs`,
@@ -21,6 +22,10 @@ composer are never drawn"*.
 
 ## Anchor drift: a stored `path:line-range` silently goes stale
 
+- **Status:** Done. Content matching against the stored `selection_text`,
+  run once per overlay open, with the three outcomes marked in the Q&A
+  history, stated in the answer pane, and carried into `S` and `a`. The
+  section below is kept as the record of what was decided and why.
 - **Priority:** highest of the three. This is the only one that makes
   Learning Mode *wrong* rather than merely less useful.
 
@@ -70,27 +75,144 @@ their anchor — possibly addressed") is the right register.
 
 ### Progress
 
-- [ ] Decide between content-match and SHA+snippet (or both), and
-      whether `reanchor_file_comments` can be shared rather than
-      duplicated.
-- [ ] Re-anchor on history load, next to `reconcile_interrupted_qa`,
-      which is already the place where a stored row is reconciled with
-      the current world.
-- [ ] Render the three outcomes distinctly in the Q&A history and the
-      answer pane; a lost anchor keeps its question and answer, since
-      those are still the only copy of what someone asked.
-- [ ] Tests: an anchor whose code moved down, an anchor whose file was
-      deleted, an anchor whose text now appears twice (ambiguous — treat
-      as lost rather than guessing), and one that did not move at all
-      (must not be reported as re-anchored).
+- [x] **Content match, and no sharing with `reanchor_file_comments`.**
+      Strategy (1), as the plan recommended; the SHA+snippet option was not
+      needed and stays unbuilt. The Final Review helper could not be reused:
+      it relocates a `DiffLineLocation` inside a diff using a captured
+      single line plus its neighbours (`CommentAnchorContext`), and a
+      `learning_qa` row has neither — it has plain 1-based file lines and
+      the *whole* selection. Matching that block is both simpler and
+      stronger evidence than line-plus-neighbours, so `expected_block` +
+      `locate_block` + `check_anchor_drift` are their own pure functions in
+      `src/app/learning.rs`. Comparison is **trimmed and blank-line-free**,
+      so a `rustfmt` pass is not reported as movement — re-indentation is
+      named in the problem statement and is the most common way a range
+      moves without the code changing at all.
+- [x] Re-anchored on history load: `App::learning_check_anchor_drift`, run
+      from `open_learning_mode` right after the content loads. Not literally
+      inside `load_learning_qa` — it needs the workdir, which is only
+      assembled once the overlay state exists — but it is the same job as
+      `reconcile_interrupted_qa` (that one reconciles the *runs*, this one
+      the *code* they were about), and the doc comment says so. Eager, per
+      the open question below. One read per distinct file, deduped.
+- [x] Three outcomes, distinct in both places. `LearningAnchorDrift::{
+      Reanchored, Lost(FileGone | NotFound | Ambiguous)}` lives in a side
+      table (`LearningViewState::anchor_drift`) keyed by row id rather than
+      as a field on `LearningQa` — a verdict is a judgment about the working
+      directory right now, not something the row carries, and keeping them
+      apart is what stops it being written back over the range the question
+      was actually asked at. The history row gains `⚠ moved` / `⚠ anchor
+      lost` (ahead of `→ TODO` / `→ session`, since the headline truncates
+      from the right and "these line numbers can't be trusted" outranks
+      "you already acted on this"), the answer pane gains a sentence under
+      its header quoting the stored range and the new one, and the overlay
+      raises a one-line summary on open. Three decisions came out of
+      building it:
+      - **The stored range is not overwritten, and neither outcome is
+        persisted.** `selection_text` is the evidence, so the verdict is
+        re-derived every open — which costs nothing and means a re-anchor
+        that was really a branch switch un-reports itself when the branch
+        switches back. Overwriting `line_start`/`line_end` would trade a
+        recoverable answer for an unrecoverable one, and would lose the
+        historical fact of where the question was asked.
+        (`re_anchoring_does_not_rewrite_the_range_it_was_asked_at`.)
+      - **"We didn't look" is not one of the three outcomes.** A file that
+        is present but unreadable, a row with no captured selection, and a
+        whole-file anchor whose file still exists all report *nothing* —
+        a marker meaning "unchecked" would be worse than no marker, because
+        the reader cannot tell it apart from "checked and fine".
+        (`a_file_that_could_not_be_read_claims_nothing`,
+        `a_row_with_no_captured_selection_is_left_alone`.)
+      - **A diff-sourced selection can be lost but never re-anchored.** Its
+        stored range comes from `new_line.or(old_line)` (`anchor_for_cursor`),
+        so a selection opening on a removed line is already numbered off the
+        base side — precise enough to point a reader at, but not a baseline
+        to measure movement against. "That code is no longer in the file"
+        survives that; "it moved to line 61" does not. `expected_block`
+        strips the markers and drops the removed rows, so what is searched
+        for is what could still be there.
+        (`a_diff_anchor_is_reported_lost_but_never_moved`.)
+      The verdict also travels: `escalation_seed` and `todo_body` take it as
+      a parameter and state it. Both hand a `path:start-end` locator to
+      something that will go and read it, and the seed quotes the *original*
+      excerpt underneath — so a silent stale locator there is the exact route
+      from a stale anchor to a confidently wrong answer, which is the failure
+      this item exists to close.
+- [x] Tests. Pure: `an_anchor_that_did_not_move_is_not_reported`,
+      `re_indenting_the_code_is_not_movement`,
+      `code_that_moved_down_is_found_again`,
+      `a_moved_range_reports_both_of_its_ends`,
+      `code_that_was_rewritten_loses_its_anchor`,
+      `code_that_now_appears_twice_is_lost_rather_than_guessed_at`,
+      `a_copy_made_elsewhere_does_not_unanchor_the_original`,
+      `a_deleted_file_takes_every_anchor_in_it`,
+      `a_file_that_could_not_be_read_claims_nothing`,
+      `a_whole_file_anchor_only_notices_the_file_going_away`,
+      `the_project_anchor_never_drifts`,
+      `a_diff_selection_is_matched_on_what_survived_it`,
+      `a_diff_anchor_is_reported_lost_but_never_moved`,
+      `a_row_with_no_captured_selection_is_left_alone`. Overlay level, all
+      DB-backed and editing the file behind the overlay's back:
+      `a_question_reloads_marked_when_its_code_moved`,
+      `re_anchoring_does_not_rewrite_the_range_it_was_asked_at`,
+      `a_question_whose_file_was_deleted_reloads_marked_lost`,
+      `an_untouched_project_reloads_with_nothing_marked`. Hand-off:
+      `a_drifted_answer_is_handed_over_saying_where_the_code_went`,
+      `a_drifted_answer_is_kept_saying_where_the_code_went`. Render:
+      `a_drifted_anchor_is_marked_in_the_history`,
+      `the_drift_marker_survives_beside_the_acted_on_markers`,
+      `the_answer_pane_says_where_the_code_went`,
+      `a_lost_anchor_says_the_answer_is_still_there`,
+      `a_narrow_terminal_still_finishes_the_drift_sentence`,
+      `an_answer_that_did_not_drift_gives_up_no_space_to_saying_so`.
+      Suite: 1955 passing / 0 failing, `cargo clippy --all-targets` clean,
+      no `println!`/`eprintln!` introduced.
+      **Verified against real Claude**, driving the built binary in a 140×44
+      tmux against a throwaway XDG root and a seeded demo repo: asked about
+      `lines 3-6 of src/main.rs` (the `load` function), closed the overlay,
+      added five lines above it, and reopened. The row came back
+      `? explain  answered  ⚠ moved`, the banner read *"The project changed
+      since some of these were asked: 1 moved with the code (the answer still
+      fits)"*, and the answer pane kept its `lines 3-6` title over *"it was
+      lines 3-6, it is now lines 7-10"* with the real markdown answer intact
+      below. Renaming the file away then reloaded it as `⚠ anchor lost` with
+      the file-gone sentence, and `S` on that row landed in a composer whose
+      seed carried the warning directly under *"Where I was reading:
+      src/main.rs:3-6"*. Two fixes came out of reading the rendered output
+      rather than the code, neither of which any unit test had:
+      - **"1 no longer point at code that is there."** The summary pluralised
+        one branch and not the other. Guarded now by asserting the
+        single-entry wording, not just the phrase.
+      - **The drift sentence was clipped at narrow widths.** The block was a
+        fixed two rows, which fits the longest of the three sentences at 140
+        columns and not at 80 — and the clause that falls off the end is
+        *"The question and answer below are unchanged"*, the one that stops
+        the marker reading as "this entry is broken". The block is now sized
+        to what the text takes at the pane's real width.
+        (`a_narrow_terminal_still_finishes_the_drift_sentence`.)
 
 ### Open questions
 
-- Ambiguous matches: if `selection_text` occurs more than once, is the
-  nearest-to-original the right pick, or is "lost" more honest? Leaning
-  lost.
-- Whether drift is checked eagerly on load (simple, costs a read per
-  distinct file) or lazily when an entry is selected.
+- ~~Ambiguous matches~~ — **settled as lost.** Two candidates means there
+  is no honest way to say which copy the question was about, and guessing
+  is a smaller version of the problem the item exists to remove. Note the
+  qualifier that fell out of building it: a duplicate is only ambiguous if
+  the *original* also moved. Code still sitting where it was stored stays
+  anchored however many copies have since been made elsewhere, or else
+  extracting a repeated idiom would break every note about the original.
+- ~~Eager or lazy~~ — **eager, on load.** The marker's whole job is to be
+  there before the reader believes the row's line numbers, which a
+  check-on-select cannot do.
+- **A drifted answer is still an answer written about the old code.** The
+  anchor is re-pointed; the prose is not re-checked. An answer that quotes
+  a variable which has since been renamed is now marked "moved" and reads
+  as freshly correct. `D` (re-ask with the repo open) is the existing
+  mitigation and the marker at least makes the staleness visible, but a
+  "this answer may describe an older version" register is not attempted.
+- **The check only runs on open.** Editing a file from another AMF session
+  while the overlay is up will not re-mark anything until it is reopened.
+  A cheap re-check on scope toggle (`s`, which already re-reads) would
+  cover most of it if this turns out to matter.
 
 ## Alternative mechanisms for making an answer actionable
 
@@ -207,8 +329,9 @@ trusts it.
 None of these blocks anything, and Learning Mode is usable end to end
 without them. Suggested order if they are picked up:
 
-1. **Anchor drift**, because it is the only correctness problem in the
-   list and it degrades the feature's primary use case over time.
+1. ~~**Anchor drift**~~ — **done**, taken first because it was the only
+   correctness problem in the list and it degraded the feature's primary
+   use case over time.
 2. **Navigable references**, because it is mostly wiring over machinery
    that already exists, and because it partially mitigates the
    fabricated-reference problem that has been observed in real runs.

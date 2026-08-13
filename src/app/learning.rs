@@ -16,14 +16,15 @@
 //! module is written before anything calls it. The allow comes off in Epic 6.
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::app::{
-    App, AppMode, BrowseScope, LearningAnchor, LearningFocus, LearningLevel, LearningListEntry,
-    LearningListGroup, LearningQa, LearningQaIntent, LearningViewState, Selection, StartIntent,
+    App, AppMode, BrowseScope, LearningAnchor, LearningAnchorDrift, LearningAnchorLoss,
+    LearningFocus, LearningLevel, LearningListEntry, LearningListGroup, LearningQa,
+    LearningQaIntent, LearningViewState, Selection, StartIntent,
 };
 use crate::diff::{DiffFile, DiffLineLocation};
 use crate::project::AgentKind;
@@ -133,6 +134,7 @@ impl LearningViewState {
             focus: LearningFocus::FileList,
             question: None,
             qa: Vec::new(),
+            anchor_drift: HashMap::new(),
             selected_qa: 0,
             qa_scroll: 0,
             answer_open: false,
@@ -174,6 +176,12 @@ impl LearningViewState {
                 self.anchor,
                 LearningAnchor::Hunk { .. } | LearningAnchor::Lines { .. }
             )
+    }
+
+    /// What became of a stored row's anchor, if it no longer points where it
+    /// was stored. `None` is the ordinary case.
+    pub fn drift_for(&self, qa_id: &str) -> Option<LearningAnchorDrift> {
+        self.anchor_drift.get(qa_id).copied()
     }
 
     /// The inclusive cursor span, as indices into the content pane.
@@ -262,6 +270,7 @@ impl App {
                 .unwrap_or(0);
         }
         self.learning_load_selected_content();
+        self.learning_check_anchor_drift();
         self.learning_show_onboarding_if_new();
         let (entries, history) = match &self.mode {
             AppMode::Learning(state) => (state.entries.len(), state.qa.len()),
@@ -409,6 +418,95 @@ impl App {
             let _ = self.persist_learning_qa(row);
         }
         rows
+    }
+
+    /// Check every stored anchor against the working directory as it is now,
+    /// and say what has moved.
+    ///
+    /// This is the other half of reconciling a loaded history with the current
+    /// world — [`reconcile_interrupted_qa`](Self::reconcile_interrupted_qa)
+    /// does it for runs, this does it for the code they were about. It runs
+    /// here rather than inside the history load because it needs the workdir,
+    /// which is only assembled once the overlay's state exists.
+    ///
+    /// Eager rather than on-selection, deliberately: the point of the marker is
+    /// to be there *before* the user reads a row and believes its line numbers.
+    /// The cost is one read per distinct file in the history, deduped below.
+    fn learning_check_anchor_drift(&mut self) {
+        let (workdir, rows) = match &self.mode {
+            AppMode::Learning(state) => (state.workdir.clone(), state.qa.clone()),
+            _ => return,
+        };
+        if rows.is_empty() {
+            return;
+        }
+        let mut targets: HashMap<String, AnchorTarget> = HashMap::new();
+        let mut drift: HashMap<String, LearningAnchorDrift> = HashMap::new();
+        for qa in &rows {
+            let Some(path) = qa.file_path.clone() else {
+                continue;
+            };
+            if !targets.contains_key(&path) {
+                let full = workdir.join(&path);
+                let target = if !full.exists() {
+                    AnchorTarget::Gone
+                } else {
+                    match load_file_lines(&full, &path) {
+                        Ok(lines) => AnchorTarget::Lines(lines),
+                        Err(e) => {
+                            self.log_warn(
+                                "learning",
+                                format!(
+                                    "couldn't re-check the anchor for {path}: {e} \
+                                     (past questions about it keep their stored lines)"
+                                ),
+                            );
+                            AnchorTarget::Unreadable
+                        }
+                    }
+                };
+                targets.insert(path.clone(), target);
+            }
+            if let Some(verdict) = check_anchor_drift(qa, &targets[&path]) {
+                drift.insert(qa.id.clone(), verdict);
+            }
+        }
+        let moved = drift.values().filter(|d| !d.is_lost()).count();
+        let lost = drift.values().filter(|d| d.is_lost()).count();
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.anchor_drift = drift;
+        }
+        if moved == 0 && lost == 0 {
+            return;
+        }
+        self.log_info(
+            "learning",
+            format!("{moved} past question(s) re-anchored, {lost} lost their anchor"),
+        );
+        let mut parts = Vec::new();
+        if moved > 0 {
+            parts.push(format!(
+                "{moved} moved with the code (the answer still fits)"
+            ));
+        }
+        if lost > 0 {
+            parts.push(format!(
+                "{lost} no longer {} at code that is there",
+                if lost == 1 { "points" } else { "point" }
+            ));
+        }
+        let summary = format!(
+            "The project changed since some of these were asked: {}. They are marked in Questions.",
+            parts.join(", ")
+        );
+        // Not `learning_notice`: that clears `error`, and a file the overlay
+        // couldn't open on the way in is about the screen in front of the user
+        // right now, which outranks a note about history. The row markers carry
+        // this either way — the banner only says where to look.
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.notice = Some(summary);
+            state.notice_qa_id = None;
+        }
     }
 
     /// Switch between "all files in this project" and "files changed on this
@@ -1550,6 +1648,159 @@ pub fn selection_text(state: &LearningViewState) -> String {
     }
 }
 
+// ── anchor drift ─────────────────────────────────────────────
+
+/// The file a stored anchor points at, as it stands now.
+enum AnchorTarget {
+    /// The file is not in the working directory any more.
+    Gone,
+    /// It is there, but this overlay can't read it (too big, binary, no
+    /// permission). Nothing can be checked, and nothing is claimed.
+    Unreadable,
+    Lines(Vec<String>),
+}
+
+/// The lines a stored selection expects to still find in the file.
+///
+/// A plain-source selection is its own lines. A *diff* selection carries `+` /
+/// `-` / ` ` markers, so the markers come off and the removed rows go with them
+/// — those lines are precisely the ones that are not in the file. Every line is
+/// trimmed, because re-indenting a file is drift the user does not want
+/// reported and is the single most common way a stored range moves without the
+/// code changing at all.
+///
+/// Blank lines are dropped rather than matched: they carry no evidence, and a
+/// selection that opens or closes on one would otherwise anchor on whitespace.
+fn expected_block(selection_text: &str, is_diff: bool) -> Vec<String> {
+    selection_text
+        .lines()
+        .filter_map(|line| {
+            if !is_diff {
+                return Some(line.trim());
+            }
+            match line.chars().next() {
+                Some('+') | Some(' ') => Some(line[1..].trim()),
+                // A removed row, or a `\ No newline` marker: not in the file.
+                _ => None,
+            }
+        })
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// Where a block of lines sits in `lines` now, relative to where it was stored.
+#[derive(Debug, PartialEq, Eq)]
+enum BlockMatch {
+    /// Found at the stored position — nothing to report.
+    AsStored,
+    Moved { start: usize, end: usize },
+    NotFound,
+    /// Found in more than one place. Guessing which is the original is exactly
+    /// the kind of quiet wrongness this whole check exists to remove, so it is
+    /// reported as a loss instead.
+    Ambiguous,
+}
+
+/// Find `block` in `lines`, comparing trimmed text and ignoring blank lines, so
+/// that a re-indent or an added blank line is not read as movement.
+///
+/// `stored_start` is 1-based. The stored position is checked first, so a block
+/// that legitimately appears twice — a repeated idiom, a duplicated `match`
+/// arm — is *not* ambiguous as long as it is still where it was left.
+fn locate_block(lines: &[String], stored_start: usize, block: &[String]) -> BlockMatch {
+    if block.is_empty() {
+        return BlockMatch::AsStored;
+    }
+    // The file's significant lines, paired with the 1-based line they came from.
+    let significant: Vec<(usize, &str)> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| (i + 1, line.trim()))
+        .filter(|(_, line)| !line.is_empty())
+        .collect();
+    if significant.len() < block.len() {
+        return BlockMatch::NotFound;
+    }
+    let matches_at = |offset: usize| {
+        significant[offset..offset + block.len()]
+            .iter()
+            .zip(block)
+            .all(|((_, have), want)| *have == want.as_str())
+    };
+    let mut found: Option<(usize, usize)> = None;
+    let mut count = 0usize;
+    for offset in 0..=(significant.len() - block.len()) {
+        if !matches_at(offset) {
+            continue;
+        }
+        let start = significant[offset].0;
+        let end = significant[offset + block.len() - 1].0;
+        if start == stored_start {
+            return BlockMatch::AsStored;
+        }
+        count += 1;
+        if count == 1 {
+            found = Some((start, end));
+        }
+    }
+    match (count, found) {
+        (0, _) => BlockMatch::NotFound,
+        (1, Some((start, end))) => BlockMatch::Moved { start, end },
+        _ => BlockMatch::Ambiguous,
+    }
+}
+
+/// What became of one stored row's anchor, given the file as it stands now.
+///
+/// `None` means "as stored, as far as can be told" — which covers both the
+/// happy path and every row there is no evidence to judge: the project anchor,
+/// a row whose selection was never captured, and a file that is there but
+/// unreadable. Silence is the right answer for those; the alternative is a
+/// marker that means "we didn't look", which is worse than no marker at all.
+///
+/// A *diff*-sourced selection is only ever reported lost, never re-anchored.
+/// Its stored range is built from `new_line.or(old_line)`
+/// ([`anchor_for_cursor`]), so a range that opens on a removed line is already
+/// numbered off the base side of the diff — precise enough to point a reader at,
+/// but not a baseline to measure movement against. "This code is no longer in
+/// the file" is a claim that survives that; "it moved to line 61" is not.
+fn check_anchor_drift(qa: &LearningQa, target: &AnchorTarget) -> Option<LearningAnchorDrift> {
+    if qa.file_path.is_none() || qa.anchor == LearningAnchor::Project {
+        return None;
+    }
+    let lines = match target {
+        AnchorTarget::Gone => {
+            return Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone));
+        }
+        AnchorTarget::Unreadable => return None,
+        AnchorTarget::Lines(lines) => lines,
+    };
+    // A whole-file anchor moves with its file: as long as the file is there,
+    // the anchor is exactly as good as it ever was.
+    let stored_start = match qa.anchor {
+        LearningAnchor::File => return None,
+        LearningAnchor::Hunk { .. } => 0,
+        LearningAnchor::Lines { start, .. } => start,
+        LearningAnchor::Project => return None,
+    };
+    let block = expected_block(&qa.selection_text, qa.selection_is_diff);
+    match locate_block(lines, stored_start, &block) {
+        BlockMatch::AsStored => None,
+        BlockMatch::NotFound => Some(LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound)),
+        BlockMatch::Ambiguous => Some(LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous)),
+        BlockMatch::Moved { start, end } => {
+            if qa.selection_is_diff {
+                // Found, so the code is still there — but see the note above on
+                // why a diff-sourced range is not measured against.
+                None
+            } else {
+                Some(LearningAnchorDrift::Reanchored { start, end })
+            }
+        }
+    }
+}
+
 // ── prompt building ──────────────────────────────────────────
 
 /// Lines of surrounding file shown either side of the selection. Enough for
@@ -2654,6 +2905,10 @@ impl App {
             return;
         }
 
+        let drift = match &self.mode {
+            AppMode::Learning(state) => state.drift_for(&qa.id),
+            _ => None,
+        };
         if let AppMode::Learning(state) = &mut self.mode {
             state.error = None;
             state.clear_notice();
@@ -2664,7 +2919,7 @@ impl App {
             state.action_editor = Some(crate::app::LearningActionEditor {
                 qa_id: qa.id.clone(),
                 title: crate::editor::TextEditor::new(todo_title_seed(&qa)),
-                body: todo_body(&qa),
+                body: todo_body(&qa, drift),
                 error: replacing_deleted
                     .then(|| "The item this was on has been deleted — this adds a new one.".into()),
                 scroll: 0,
@@ -2925,8 +3180,20 @@ fn truncate_title(title: &str, max: usize) -> String {
 /// The note body: where the question was anchored, what was asked, and enough
 /// of the answer to recognise it. This is what a spawned agent receives
 /// verbatim (`App::todo_spawn_prompt`), so it has to stand on its own.
-pub fn todo_body(qa: &LearningQa) -> String {
+pub fn todo_body(qa: &LearningQa, drift: Option<LearningAnchorDrift>) -> String {
     let mut body = format!("From Learning Mode — {}\n", anchor_locator(qa));
+    // The locator above is where the question was asked, which is a historical
+    // fact and stays as it is. If the code has moved since, saying so here is
+    // the difference between a note that leads somewhere and one that quietly
+    // points at whatever now occupies those lines — and this body is handed to
+    // an agent verbatim by `todo_spawn_prompt`, so a silent stale locator would
+    // send it to read the wrong code.
+    if let Some(drift) = drift {
+        body.push_str(&format!(
+            "\n{}\n",
+            drift.describe(qa.anchor.line_range_for_display())
+        ));
+    }
     body.push_str(&format!("\nAsked: {}\n", qa.question.trim()));
 
     let answer = qa.answer.as_deref().unwrap_or("").trim();
@@ -3102,7 +3369,14 @@ impl App {
             format!("escalated a question to session {session_id} ({label})"),
         );
 
-        let seed = escalation_seed(&qa);
+        // Read before `enter_view` changes the mode: the overlay's drift map
+        // goes with it, and this seed is the last thing that can carry the
+        // warning across.
+        let drift = match &self.mode {
+            AppMode::Learning(state) => state.drift_for(&qa.id),
+            _ => None,
+        };
+        let seed = escalation_seed(&qa, drift);
         self.selection = Selection::Session(pi, fi, si);
         if let Err(e) = self.enter_view_without_auto_compose() {
             self.log_error("learning", format!("couldn't open the new session: {e}"));
@@ -3213,7 +3487,7 @@ pub fn learning_session_label(qa: &LearningQa) -> String {
 /// belongs at the *end* rather than the top: the composer opens with the cursor
 /// after the last line, so the tail is what is on screen when the user arrives.
 /// It is also true and useful to the agent reading it.
-pub fn escalation_seed(qa: &LearningQa) -> String {
+pub fn escalation_seed(qa: &LearningQa, drift: Option<LearningAnchorDrift>) -> String {
     let mut seed = String::from(match qa.intent {
         LearningQaIntent::Explain => {
             "I've been reading this code in AMF's Learning Mode and want to keep going with you.\n"
@@ -3223,6 +3497,17 @@ pub fn escalation_seed(qa: &LearningQa) -> String {
         }
     });
     seed.push_str(&format!("\nWhere I was reading: {}\n", anchor_locator(qa)));
+    // The live agent is about to go and read that location. If the file has
+    // moved on since the question was asked, sending it there without saying so
+    // is how a stale anchor turns into a confidently wrong answer — the one
+    // failure this mode is least able to afford, because the excerpt below
+    // still shows the code the user remembers.
+    if let Some(drift) = drift {
+        seed.push_str(&format!(
+            "{}\n",
+            drift.describe(qa.anchor.line_range_for_display())
+        ));
+    }
 
     if !qa.selection_text.trim().is_empty() {
         seed.push_str(if qa.selection_is_diff {
@@ -6656,6 +6941,350 @@ pub(crate) mod tests {
         );
     }
 
+    // ── anchor drift ─────────────────────────────────────────
+
+    fn lines_of(text: &str) -> Vec<String> {
+        text.lines().map(ToOwned::to_owned).collect()
+    }
+
+    /// An anchored row over `src/util.rs`, the file the overlay tests below
+    /// edit behind the overlay's back.
+    fn anchored_qa(start: usize, end: usize, selection: &str) -> LearningQa {
+        let mut qa = qa_row("qa-1", None);
+        qa.file_path = Some("src/util.rs".to_string());
+        qa.anchor = LearningAnchor::Lines { start, end };
+        qa.selection_text = selection.to_string();
+        qa
+    }
+
+    /// The base case, and the one that must stay silent: nothing changed, so
+    /// nothing is reported. A check that cried drift on an untouched file would
+    /// be worse than no check at all.
+    #[test]
+    fn an_anchor_that_did_not_move_is_not_reported() {
+        let file = lines_of("fn a() {}\nfn b() {}\nfn c() {}");
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            None,
+            "the code is exactly where it was left"
+        );
+    }
+
+    /// Re-indenting a file moves every line's text but none of its meaning.
+    /// Comparison is trimmed so a `rustfmt` pass isn't reported as drift.
+    #[test]
+    fn re_indenting_the_code_is_not_movement() {
+        let file = lines_of("fn a() {\n        let x = 1;\n}");
+        let qa = anchored_qa(2, 2, "    let x = 1;");
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Lines(file)), None);
+    }
+
+    /// The common case the plan names: lines were added above, so the code the
+    /// question was about is now further down. It is found again and the new
+    /// range is reported.
+    #[test]
+    fn code_that_moved_down_is_found_again() {
+        let file = lines_of("use std::fmt;\n\nfn a() {}\nfn b() {}\nfn c() {}");
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 })
+        );
+    }
+
+    /// Both ends of a multi-line selection move together, and blank lines
+    /// inside the file don't shift the range's reported end.
+    #[test]
+    fn a_moved_range_reports_both_of_its_ends() {
+        let file = lines_of("// header\n\nfn b() {\n    work();\n}\n");
+        let qa = anchored_qa(1, 3, "fn b() {\n    work();\n}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Reanchored { start: 3, end: 5 })
+        );
+    }
+
+    /// Code that is simply gone. The entry keeps its question and answer — they
+    /// are still the only record of what someone asked — but it stops claiming
+    /// the line numbers mean anything.
+    #[test]
+    fn code_that_was_rewritten_loses_its_anchor() {
+        let file = lines_of("fn a() {}\nfn renamed() {}\nfn c() {}");
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound))
+        );
+    }
+
+    /// The plan's open question, settled towards honesty: two candidates means
+    /// there is no way to say which one the question was about, so it is
+    /// reported lost rather than re-anchored to a guess.
+    #[test]
+    fn code_that_now_appears_twice_is_lost_rather_than_guessed_at() {
+        let file = lines_of("fn a() {}\nfn dup() {}\nfn c() {}\nfn dup() {}");
+        let qa = anchored_qa(3, 3, "fn dup() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous))
+        );
+    }
+
+    /// …but a duplicate is only ambiguous if the original moved. Code that is
+    /// still where it was stored is anchored, however many copies of it have
+    /// since been made elsewhere — otherwise extracting a repeated idiom would
+    /// break every note about the original.
+    #[test]
+    fn a_copy_made_elsewhere_does_not_unanchor_the_original() {
+        let file = lines_of("fn a() {}\nfn dup() {}\nfn c() {}\nfn dup() {}");
+        let qa = anchored_qa(2, 2, "fn dup() {}");
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Lines(file)), None);
+    }
+
+    /// A file that is no longer in the project is its own outcome, and reads
+    /// differently to a rewritten one.
+    #[test]
+    fn a_deleted_file_takes_every_anchor_in_it() {
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Gone),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone))
+        );
+    }
+
+    /// A file that is there but can't be read claims nothing. "We didn't look"
+    /// is not one of the three outcomes, and a marker that meant it would be
+    /// worse than no marker.
+    #[test]
+    fn a_file_that_could_not_be_read_claims_nothing() {
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Unreadable), None);
+    }
+
+    /// A whole-file anchor moves with its file: as long as the file is there,
+    /// the anchor is as good as it ever was, whatever the contents now say.
+    #[test]
+    fn a_whole_file_anchor_only_notices_the_file_going_away() {
+        let mut qa = anchored_qa(1, 1, "anything at all");
+        qa.anchor = LearningAnchor::File;
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(lines_of("something else"))),
+            None
+        );
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Gone),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone))
+        );
+    }
+
+    /// A project anchor has no file and cannot drift.
+    #[test]
+    fn the_project_anchor_never_drifts() {
+        let mut qa = anchored_qa(1, 1, "");
+        qa.anchor = LearningAnchor::Project;
+        qa.file_path = None;
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Gone), None);
+    }
+
+    /// A diff excerpt is matched on the lines that are actually in the file —
+    /// its removals are dropped along with the markers.
+    #[test]
+    fn a_diff_selection_is_matched_on_what_survived_it() {
+        let block = expected_block("-let x = 1;\n+let x = 2;\n let y = 3;", true);
+        assert_eq!(block, vec!["let x = 2;", "let y = 3;"]);
+    }
+
+    /// A diff-sourced anchor can be reported lost but never re-anchored: its
+    /// stored range is numbered off `new_line.or(old_line)`, so a selection
+    /// opening on a removed line is already measured against the base side.
+    /// "That code is gone" survives that; "it moved to line 9" does not.
+    #[test]
+    fn a_diff_anchor_is_reported_lost_but_never_moved() {
+        let mut qa = anchored_qa(2, 3, "+fn b() {}\n let y = 3;");
+        qa.selection_is_diff = true;
+
+        let moved = lines_of("// added\n// added\nfn b() {}\nlet y = 3;");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(moved)),
+            None,
+            "still in the file, so nothing is claimed either way"
+        );
+
+        let gone = lines_of("fn renamed() {}\nlet y = 3;");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(gone)),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound))
+        );
+    }
+
+    /// A row with nothing captured has nothing to check against, and says so by
+    /// staying quiet.
+    #[test]
+    fn a_row_with_no_captured_selection_is_left_alone() {
+        let qa = anchored_qa(2, 2, "   \n\n");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(lines_of("a\nb\nc"))),
+            None
+        );
+    }
+
+    /// An overlay with a real database, opened on `src/util.rs` — a file the
+    /// test can then edit behind the overlay's back.
+    fn app_on_util(contents: &str) -> (TempDir, TempDir, App) {
+        let repo = repo_with_branch_change();
+        std::fs::write(repo.path().join("src/util.rs"), contents).unwrap();
+        let db_dir = TempDir::new().unwrap();
+        let mut app = app_at(repo.path(), true);
+        app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+        app.open_learning_mode(0, 0).unwrap();
+        for _ in 0..learning(&app).entries.len() {
+            if learning(&app).content_path.as_deref() == Some("src/util.rs") {
+                break;
+            }
+            app.learning_select_next_entry();
+        }
+        assert_eq!(learning(&app).content_path.as_deref(), Some("src/util.rs"));
+        (repo, db_dir, app)
+    }
+
+    /// End to end: ask about a line, add code above it, reopen. The entry comes
+    /// back marked, pointing at where the code went — and the overlay says so
+    /// on the way in, because the marker is in a pane the user may not be
+    /// looking at.
+    #[test]
+    fn a_question_reloads_marked_when_its_code_moved() {
+        let (repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\nfn c() {}\n");
+        app.learning_cursor_move(1);
+        let id = ask_and_answer(&mut app, "What is this?", "It is b.");
+        assert_eq!(
+            learning(&app).qa.iter().find(|r| r.id == id).unwrap().anchor,
+            LearningAnchor::Lines { start: 2, end: 2 }
+        );
+        app.close_learning_mode();
+
+        std::fs::write(
+            repo.path().join("src/util.rs"),
+            "use std::fmt;\n\nfn a() {}\nfn b() {}\nfn c() {}\n",
+        )
+        .unwrap();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let state = learning(&app);
+        assert_eq!(
+            state.drift_for(&id),
+            Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 })
+        );
+        let banner = state.notice.clone().unwrap_or_default();
+        assert!(banner.contains("moved with the code"), "{banner}");
+    }
+
+    /// The stored range is the historical fact of where the question was asked,
+    /// and re-anchoring does not overwrite it — which is also what lets the
+    /// verdict be re-derived on every open instead of being believed once.
+    #[test]
+    fn re_anchoring_does_not_rewrite_the_range_it_was_asked_at() {
+        let (repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\nfn c() {}\n");
+        app.learning_cursor_move(1);
+        let id = ask_and_answer(&mut app, "What is this?", "It is b.");
+        app.close_learning_mode();
+        std::fs::write(
+            repo.path().join("src/util.rs"),
+            "use std::fmt;\n\nfn a() {}\nfn b() {}\nfn c() {}\n",
+        )
+        .unwrap();
+
+        app.open_learning_mode(0, 0).unwrap();
+        let row = learning(&app)
+            .qa
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            row.anchor,
+            LearningAnchor::Lines { start: 2, end: 2 },
+            "the row still records where it was asked"
+        );
+        assert_eq!(row.answer.as_deref(), Some("It is b."));
+    }
+
+    /// A deleted file leaves its questions readable and honest about it.
+    #[test]
+    fn a_question_whose_file_was_deleted_reloads_marked_lost() {
+        let (repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\n");
+        let id = ask_and_answer(&mut app, "What is this?", "It is a.");
+        app.close_learning_mode();
+        std::fs::remove_file(repo.path().join("src/util.rs")).unwrap();
+
+        app.open_learning_mode(0, 0).unwrap();
+        let state = learning(&app);
+        assert_eq!(
+            state.drift_for(&id),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone))
+        );
+        let row = state.qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(
+            row.answer.as_deref(),
+            Some("It is a."),
+            "the answer is still the only copy of what was said"
+        );
+        let banner = state.notice.clone().unwrap_or_default();
+        assert!(
+            banner.contains("1 no longer points at code"),
+            "one lost anchor reads as one: {banner}"
+        );
+    }
+
+    /// Reopening a project nobody has touched says nothing at all.
+    #[test]
+    fn an_untouched_project_reloads_with_nothing_marked() {
+        let (_repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\n");
+        let id = ask_and_answer(&mut app, "What is this?", "It is a.");
+        app.close_learning_mode();
+
+        app.open_learning_mode(0, 0).unwrap();
+        let state = learning(&app);
+        assert!(state.drift_for(&id).is_none());
+        assert!(state.anchor_drift.is_empty());
+        assert!(
+            state.notice.is_none(),
+            "nothing drifted, so nothing is announced: {:?}",
+            state.notice
+        );
+    }
+
+    /// Handing a drifted answer to a live agent has to say the code moved. The
+    /// excerpt in the seed still shows what the user remembers, so without this
+    /// the agent is sent to read a location that no longer holds it — the exact
+    /// route from a stale anchor to a confidently wrong answer.
+    #[test]
+    fn a_drifted_answer_is_handed_over_saying_where_the_code_went() {
+        let mut qa = anchored_qa(2, 2, "fn b() {}");
+        qa.answer = Some("It is b.".to_string());
+        let seed = escalation_seed(&qa, Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 }));
+        assert!(seed.contains("src/util.rs:2"), "{seed}");
+        assert!(seed.contains("it is now line 4"), "{seed}");
+
+        let lost = escalation_seed(&qa, Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone)));
+        assert!(lost.contains("no longer in the project"), "{lost}");
+
+        let clean = escalation_seed(&qa, None);
+        assert!(!clean.contains("moved"), "nothing to say when nothing moved");
+    }
+
+    /// The same for a note kept on the TODO list: `todo_spawn_prompt` appends
+    /// this body verbatim, so a silent stale locator would travel just as far.
+    #[test]
+    fn a_drifted_answer_is_kept_saying_where_the_code_went() {
+        let mut qa = anchored_qa(2, 2, "fn b() {}");
+        qa.answer = Some("It is b.".to_string());
+        let body = todo_body(&qa, Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 }));
+        assert!(body.contains("src/util.rs:2"), "{body}");
+        assert!(body.contains("it is now line 4"), "{body}");
+        assert!(!todo_body(&qa, None).contains("moved"));
+    }
+
     /// Re-filing is a durable decision about how an entry is kept, so it has
     /// to be there on the next open rather than only until the overlay closes.
     #[test]
@@ -7220,7 +7849,7 @@ pub(crate) mod tests {
         let answer: String = (0..40).map(|i| format!("line {i}\n")).collect();
         let qa = qa_with(&answer, LearningQaIntent::Explain);
 
-        let body = todo_body(&qa);
+        let body = todo_body(&qa, None);
         assert!(body.contains("src/main.rs:4-9"));
         assert!(body.contains("Why is this here?"));
         assert!(body.contains("line 0"));
@@ -7398,7 +8027,7 @@ pub(crate) mod tests {
             LearningQaIntent::Explain,
         );
 
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
 
         assert!(
             seed.contains("src/main.rs:4-9"),
@@ -7418,7 +8047,7 @@ pub(crate) mod tests {
     #[test]
     fn a_shallow_answer_is_handed_over_with_its_limits_stated() {
         let shallow = qa_with("Look at src/nonexistent.rs.", LearningQaIntent::Explain);
-        let seed = escalation_seed(&shallow);
+        let seed = escalation_seed(&shallow, None);
         assert!(
             seed.contains("could only see the excerpt"),
             "the live agent has to know what this answer was worth: {seed}"
@@ -7426,7 +8055,7 @@ pub(crate) mod tests {
 
         let mut deep = qa_with("Look at src/main.rs.", LearningQaIntent::Explain);
         deep.run_mode = crate::app::LearningRunMode::DeepDive;
-        let seed = escalation_seed(&deep);
+        let seed = escalation_seed(&deep, None);
         assert!(
             !seed.contains("could only see the excerpt"),
             "this one did read the repository: {seed}"
@@ -7438,14 +8067,14 @@ pub(crate) mod tests {
     /// the other requests work.
     #[test]
     fn the_seed_asks_for_what_the_entry_was_filed_as() {
-        let explain = escalation_seed(&qa_with("It parses argv.", LearningQaIntent::Explain));
+        let explain = escalation_seed(&qa_with("It parses argv.", LearningQaIntent::Explain), None);
         assert!(explain.contains("carry on"), "{explain}");
         assert!(
             !explain.to_lowercase().contains("make that change"),
             "an explanation must not turn into a work order: {explain}"
         );
 
-        let action = escalation_seed(&qa_with("Split this function.", LearningQaIntent::Action));
+        let action = escalation_seed(&qa_with("Split this function.", LearningQaIntent::Action), None);
         assert!(action.contains("make that change"), "{action}");
 
         // Whichever it is, the last thing on screen when the composer opens
@@ -7468,10 +8097,10 @@ pub(crate) mod tests {
     fn a_newcomer_seed_asks_the_live_agent_to_explain_itself() {
         let mut qa = qa_with("It parses argv.", LearningQaIntent::Action);
         assert_eq!(qa.level, LearningLevel::Newcomer);
-        assert!(escalation_seed(&qa).contains("new to this codebase"));
+        assert!(escalation_seed(&qa, None).contains("new to this codebase"));
 
         qa.level = LearningLevel::Familiar;
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
         assert!(
             !seed.contains("new to this codebase"),
             "someone who switched to familiar asked for the denser version: {seed}"
@@ -7488,7 +8117,7 @@ pub(crate) mod tests {
         qa.status = crate::app::LearningQaStatus::Failed;
         qa.error = Some("claude: command not found".to_string());
 
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
 
         assert!(seed.contains("Why is this here?"), "the question survives");
         assert!(seed.contains("never got an answer"), "{seed}");
@@ -7499,7 +8128,7 @@ pub(crate) mod tests {
         let long: String = (1..=200).map(|n| format!("line {n}\n")).collect::<String>();
         let qa = qa_with(&long, LearningQaIntent::Explain);
 
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
 
         assert!(seed.contains("line 1\n"));
         assert!(!seed.contains("line 200"), "the tail is cut: {seed}");
@@ -7515,7 +8144,7 @@ pub(crate) mod tests {
         qa.selection_is_diff = true;
         qa.selection_text = "-fn old() {}\n+fn new() {}".to_string();
 
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
 
         assert!(seed.contains("unified diff"), "{seed}");
         assert!(seed.contains("+fn new() {}"), "markers survive: {seed}");

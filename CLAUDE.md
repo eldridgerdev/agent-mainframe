@@ -324,6 +324,24 @@ option, and answers are pitched at a first-time reader by default. See
   exist only in branch-changes scope. The anchor is captured *with* the
   question (`AskAnchor`), not re-read at submit time, so a follow-up
   asked after browsing away still quotes its parent's code.
+- **Anchor drift is derived, never stored.** `learning_check_anchor_drift`
+  runs once per open (beside `reconcile_interrupted_qa`, which reconciles
+  *runs* the same way this reconciles the *code*) and fills
+  `LearningViewState::anchor_drift`, a side table keyed by row id.
+  `check_anchor_drift` matches the row's `selection_text` against the file
+  as it is now — trimmed, blank lines dropped, the stored position checked
+  before the whole-file search, so a re-indent isn't movement and a copy
+  made elsewhere doesn't unanchor the original. Two invariants: the row's
+  `line_start`/`line_end` are **never rewritten** (they record where the
+  question was asked, and keeping them is what lets the verdict be
+  re-derived rather than believed once), and *no verdict* is the answer
+  for everything there is no evidence to judge — an unreadable file, an
+  empty selection, a `File` anchor whose file still exists. A
+  diff-sourced selection (`selection_is_diff`) can be reported `Lost` but
+  never `Reanchored`: its range comes from `new_line.or(old_line)`, so it
+  is not a baseline to measure against. The verdict rides along into
+  `escalation_seed` and `todo_body`, which would otherwise send an agent
+  to read a location the code has left.
 - **Two intents, one history.** `LearningQaIntent::{Explain, Action}` —
   `e` asks for a teaching answer, `c` for a change proposal. Intent only
   shapes prompt framing and affordance ordering, and is re-labelable

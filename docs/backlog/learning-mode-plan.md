@@ -1,14 +1,14 @@
 # Learning Mode
 
 - **Status:** In progress — Epics 1 (foundations), 2 (browsing), 3
-  (asking), 4 (surface), and 5 (acting on an answer) complete, and Epic 6
-  hardening is done bar its docs. Learning Mode is reachable from the
-  dashboard with `K` and usable end to end: browse, select, ask, read the
-  answer, ask a follow-up, send a doubtful answer back with the repo
-  readable, re-file an entry as the other kind of question, keep an answer
-  as a to-do, and hand one to a live agent session. What remains is Epic 6's
-  `README.md` / `CLAUDE.md` pass and filing the deferred
-  follow-ups, plus Epic 7 (a
+  (asking), 4 (surface), and 5 (acting on an answer) are complete, and Epic
+  6 is done apart from filing the deferred follow-ups. Learning Mode is
+  reachable from the dashboard with `K`, usable end to end (browse, select,
+  ask, read the answer, ask a follow-up, send a doubtful answer back with
+  the repo readable, re-file an entry as the other kind of question, keep an
+  answer as a to-do, and hand one to a live agent session), and documented
+  in `README.md`, `CLAUDE.md`, and `CHANGELOG.md`. What remains is filing
+  the deferred follow-ups as their own backlog items, plus Epic 7 (a
   collapsible file tree, so the file list teaches the repo's layout instead
   of hiding it behind truncated paths), which blocks on nothing and can run
   in parallel.
@@ -306,7 +306,7 @@ created `todos.id` is stored on the Q&A row so the entry renders as
 "actioned →" and repeat invocation jumps to the item instead of
 duplicating it.
 
-### Persistence (`src/db/learning.rs` + `MIGRATION_017`)
+### Persistence (`src/db/learning.rs` + `MIGRATION_019`)
 
 - `learning_sessions` — `id`, `project_id`, `feature_id`, `title`,
   `harness`, `level` (`newcomer` / `familiar`), `onboarding_seen`
@@ -319,17 +319,19 @@ duplicating it.
   `action`), `level`, `answer`, `harness`, `run_mode` (`no_tools` /
   `deep_dive`), `status`, `todo_id` (nullable — set only when the user
   made it actionable), `spawned_session_id`, `created_at`,
-  `updated_at`, and `selection_is_diff` (added by `MIGRATION_018`).
+  `updated_at`, and `selection_is_diff` (added by `MIGRATION_020`).
   `selection_is_diff` cannot be re-derived from the other columns: a
   line anchor looks the same whether it came from the repo tree or from
   a diff, and the browse scope that told them apart is not stored — so a
   follow-up would otherwise label its parent's excerpt from wherever
   browsing had since ended up. Rows written before it default to 0.
 - Append `("Add learning_sessions + learning_qa tables for Learning
-  Mode", MIGRATION_017)` to the migration list in
-  `src/db/migrations.rs` (current tail is `MIGRATION_016`, schema
-  version 16; the loop derives the target version from array position,
-  so appending is sufficient) and follow `MIGRATION_011`'s todo-table
+  Mode", MIGRATION_019)` to the migration list in
+  `src/db/migrations.rs` (the tail when this was written was
+  `MIGRATION_016`; the editor-tracking pair landed first, so the
+  learning tables became 019. The loop derives the target version from
+  array position, so appending is sufficient) and follow
+  `MIGRATION_011`'s todo-table
   shape: plain TEXT `project_id`/`feature_id` with no FK to
   projects/features, explicit delete helpers, `ON DELETE CASCADE` from
   session to Q&A rows and from a parent Q&A row to its follow-ups.
@@ -444,7 +446,7 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `LearningLevel`, `LearningRunMode`, and `LearningQaStatus` to
       `src/app/state.rs`; add `AppMode::Learning(Box<LearningViewState>)`
       to the `AppMode` enum. Verified with `cargo check`.
-- [x] Add `MIGRATION_017` (`learning_sessions` with
+- [x] Add `MIGRATION_019` (`learning_sessions` with
       `level`/`harness`/`onboarding_seen`; `learning_qa` including
       `intent`, `level`, nullable `parent_qa_id`, `todo_id`,
       `spawned_session_id`) to the list in `src/db/migrations.rs`
@@ -452,7 +454,7 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `src/db/learning.rs` with load/create/list/upsert/delete methods
       on `AmfDb`, plus per-project cleanup mirroring
       `delete_list_for_project` (wired into `delete_project`).
-      Verified: `migration_017_upgrades_a_v016_database`,
+      Verified: `migration_019_upgrades_a_pre_learning_database`,
       `fresh_database_lands_at_the_latest_version`,
       `migrations_are_idempotent`, twelve `db::learning` round-trip /
       cascade tests, and a manual replay against a copy of the real
@@ -1228,7 +1230,7 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       warnings introduced by this feature. `cargo build` and
       `cargo clippy --all-targets` are both clean, and the full suite is
       1902 passing / 0 failing.
-- [ ] Update `README.md` (feature bullet, the dashboard keybindings
+- [x] Update `README.md` (feature bullet, the dashboard keybindings
       table, and a `### Learning Mode` section written for a first-time
       reader: what it is for, that it never edits files, the two ask
       keys, starter questions, and the newcomer/familiar levels),
@@ -1237,7 +1239,7 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `src/db/learning.rs` under the `## Architecture` sections, plus a
       Learning Mode section describing the explain/change split and the
       level/threading model), and `CHANGELOG.md`.
-      **`CHANGELOG.md` is done** — an `Added` block under `[Unreleased]`
+      **`CHANGELOG.md`** — an `Added` block (since shipped in `v0.36.0`)
       covering `K`, the two ask keys, starter questions, the levels, the
       non-blocking queue, per-project history, harness choice, and the
       five keys that act on an answer: `F` (follow-ups), `D` (deep dive),
@@ -1246,8 +1248,35 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       incomplete-file-list warning, the file errors that now say what to do
       next, failures being recorded in the debug log, and a reopened history
       keeping its follow-ups with the question they continue. It covers every
-      built behaviour and claims nothing that isn't. `README.md` and
-      `CLAUDE.md` are still open.
+      built behaviour and claims nothing that isn't. This docs pass adds a
+      `Documentation` block under `[Unreleased]`, following the existing
+      precedent for README-only changes, ending on "nothing about AMF's
+      behavior changes" — because nothing does.
+      **`README.md`** — a bullet under *What AMF does*, `K` in the dashboard
+      keybindings table, and *Understand a codebase you didn't write* as the
+      **first** user workflow, since it is the one that needs no prior AMF
+      knowledge. Written for someone who has not used the mode: what it is,
+      that nothing in it changes their files and `S` is the single exception,
+      that they do not have to know what to ask (Start here, `t`), the two ask
+      keys and the five answer keys as small tables, the newcomer/familiar
+      split, and why `D` exists — a no-tools answer can name files that do not
+      exist, which is the mode's sharpest edge and is stated rather than
+      buried.
+      **`CLAUDE.md`** — `learning.rs` added to the `app/`, `ui/dialogs/`, and
+      `handlers/` lists, `K` added to the `handle_normal_key` summary, and a
+      `### Learning Mode` section after Feature TODOs. It documents the parts
+      that are not re-derivable from reading one file: the read-only
+      invariant and its one exception; that intent and level shape prompt
+      wording only; that run mode comes off `effective_for` so the label and
+      the dispatched command agree; and, at most length, that `parent_qa_id`
+      and `deep_dive_of_qa_id` are two different relationships — the trap that
+      cost a review finding once already.
+      Two drift fixes came out of writing it: the plan named the learning
+      tables `MIGRATION_017`/`018`, but editor tracking landed first and took
+      those numbers, so they are really `019`/`020` (plus `021`), and the
+      verification note cited a migration test by a name it does not have
+      (`migration_019_upgrades_a_pre_learning_database`). A plan that cites
+      the wrong schema version is worse than one that cites none.
 - [ ] File follow-up items for the deferred work: anchor-drift
       resolution (commit SHA + snippet or fuzzy match, modeled on
       `App::reanchor_line_comments`), the alternative actionable

@@ -79,6 +79,10 @@ app/
 ├── plan_interview.rs # guided discovery, AI rounds, plan review
 ├── todos.rs         # native TODOs overlay (open/close, add,
 │                    # edit, toggle, reorder, spawn agent)
+├── learning.rs      # Learning Mode overlay: browse, select,
+│                    # prompt builders, headless queue, answer
+│                    # actions (follow-up, deep dive, re-file,
+│                    # keep, escalate)
 ├── resource_gate.rs # pre-start agent/memory gate, pending-start
 │                    # stash + replay, autostart policy
 ├── editor_ops.rs    # kill_tracked_editors(): close editors AMF
@@ -121,7 +125,7 @@ Key dispatch per mode:
 
 - `handle_normal_key()` - j/k nav, N/n create, Enter
   view/collapse, c start, x stop, s switch, d delete,
-  h help, r refresh, q quit
+  h help, r refresh, K Learning Mode, q quit
 - `handle_view_key()` - Ctrl+Q exit, Ctrl+Space leader,
   else forward to tmux via `crossterm_key_to_tmux()`
 - `handle_leader_key()` - q/t/s/n/p/r/x/h after
@@ -198,6 +202,9 @@ Key dispatch per mode:
      investigation
    - `todos.rs` - native TODOs list view, delete confirm,
      and quick-capture overlay
+   - `learning.rs` - Learning Mode: file list, content pane,
+     Q&A history, answer pane (markdown), starter/harness
+     pickers, keep-as-TODO editor, help overlay
    - `resource_gate.rs` - pre-start agent/memory warning
    - `dormant.rs` - dormant-features overlay
 - `centered_rect(percent_x, percent_y, area) -> Rect`
@@ -223,6 +230,8 @@ Key dispatch is split across focused modules:
 - `handlers/plan_interview.rs` - discovery and plan-review key handling
 - `handlers/todos.rs` - native TODOs overlay + quick-capture
   key dispatch
+- `handlers/learning.rs` - Learning Mode overlay key dispatch
+  (layered: help → pickers → question prompt → answer pane)
 - `handlers/dormant.rs` - dormant-features overlay key dispatch
 - `handlers/mouse.rs` - mouse event handling
 
@@ -269,6 +278,92 @@ native (non-tmux) overlay:
   `AppMode::TodosHostReassign` — a prompt to **re-home** the list onto
   a surviving feature (`set_todo_list_host_feature`) or **delete** it.
   `Esc` keeps the list by re-homing onto the first surviving feature.
+
+### Learning Mode
+
+A read-only code reader with an agent attached, for someone who did
+not write the code in front of them. Built for a newcomer: nothing in
+the mode mutates the repository, a blank prompt is never the only
+option, and answers are pitched at a first-time reader by default. See
+`docs/backlog/learning-mode-plan.md` for the full rationale.
+
+- **Surface:** `AppMode::Learning(Box<LearningViewState>)`, opened with
+  `K` on the dashboard (`open_learning_mode_for_selection` — a project
+  row opens its first feature). It borrows the Final Review viewer's
+  chrome, **not** its state machine, and creates **no `SessionKind`
+  row**: Learning Mode is not a session and never appears in the tree or
+  switcher.
+- **Read-only invariant:** the only path out of it that can change files
+  is escalation (`S`), which opens an ordinary agent session and says so
+  in the seed. Keep it that way — relaxing it is a scope decision, not a
+  convenience patch.
+- **Browsing:** `BrowseScope::RepoTree` lists via
+  `diff::list_repo_files` (`git ls-files`, with a capped plain walk for
+  non-git projects); `BrowseScope::BranchChanges` uses
+  `diff::load_snapshot`, the same call the diff viewer makes. In
+  branch-changes scope `learning_load_selected_content` still hydrates
+  the **whole file**, so an anchor keeps its surrounding context while
+  the pane addresses diff rows. Repo-tree scope also pins a **Start
+  here** orientation group (existence-checked well-known files plus a
+  repo-level tour question) until the project has any history.
+- **Anchors:** `LearningAnchor::{Project, File, Hunk, Lines}`; hunks
+  exist only in branch-changes scope. The anchor is captured *with* the
+  question (`AskAnchor`), not re-read at submit time, so a follow-up
+  asked after browsing away still quotes its parent's code.
+- **Two intents, one history.** `LearningQaIntent::{Explain, Action}` —
+  `e` asks for a teaching answer, `c` for a change proposal. Intent only
+  shapes prompt framing and affordance ordering, and is re-labelable
+  afterwards (`i`) without rewriting the answer.
+- **Level:** `LearningLevel::{Newcomer, Familiar}` is a per-session
+  setting (`L`), not per-question. It changes prompt wording only — not
+  tools, model, or visibility — and each row records the level it was
+  answered at, so a reloaded answer explains why it reads the way it
+  does.
+- **Prompts** are pure functions: `build_prompt` over a
+  `LearningPromptContext`, composed from `intent_instructions`,
+  `level_instructions`, and `run_mode_instructions`. Run mode comes off
+  the run that will *actually* be dispatched
+  (`LearningRunMode::effective_for` downgrades every Codex request to
+  `DeepDive`, since `codex exec` has no no-tools mode), so the label,
+  the stored row, and the command always agree.
+- **Execution:** `HeadlessRunner::run(..., restricted = true)` for the
+  default answer, `run_read_only` for a deep dive (`D`). Runs are
+  non-blocking and several may be in flight: a persistent `mpsc` channel
+  on `App` plus a thread per run, drained by
+  `poll_learning_answers_bg()` next to the other `poll_*_bg` calls in
+  `main.rs`. An answer that lands after the overlay closed is still
+  persisted (`finish_learning_qa_in_db`), and a row left `running` by a
+  previous process is failed on load by `reconcile_interrupted_qa`
+  rather than reloading as "thinking…" forever.
+- **Threading has two distinct relationships.** `parent_qa_id` is a
+  follow-up (`F`) — the parent's turn goes into the prompt.
+  `deep_dive_of_qa_id` is a rerun (`D`) — the row it replaced is stored
+  under it for reading side by side, but `learning_ancestor_turns` steps
+  *over* it, so a follow-up on a verified answer never carries the
+  shallow one's (possibly invented) evidence forward. Ordering goes
+  through `thread_insert_index` for live inserts and `thread_rows` on
+  reload, so there is one notion of order rather than two.
+- **Acting on an answer:** `a` keeps it as a project TODO (via
+  quick-capture's route, so the `SessionKind::Todos` session exists
+  before the item does — a `todo_lists` row with no session is
+  unreachable), `S` escalates to a live agent session
+  (`create_agent_session_labeled` → `enter_view_without_auto_compose` →
+  `open_compose_seeded`, editable and unsent). Both record their link on
+  the row (`todo_id`, `spawned_session_id`) and a repeat press jumps to
+  what exists rather than creating a second; a stale link is dropped and
+  the replacement announced.
+- **Persistence:** `learning_sessions` + `learning_qa`
+  (`MIGRATION_019`, extended by `MIGRATION_020`'s `selection_is_diff`
+  and `MIGRATION_021`'s `deep_dive_of_qa_id`), accessed via
+  `src/db/learning.rs`. Kept out of the `ProjectStore` JSON like the
+  todo tables, with `delete_learning_sessions_for_project` wired into
+  project deletion. As with todos, the in-memory list is the overlay's
+  source of truth and the mode works without a DB — it just says so
+  rather than pretending history was kept.
+- **Every refusal says why.** A missing key, a swallowed keypress, or a
+  banner that describes a state the row isn't in are the failure modes
+  this mode exists to avoid; new actions should state what happened and
+  which key to press instead.
 
 ### Agent Limits & Resource Health (resources/)
 

@@ -39,6 +39,9 @@ are tagged.
   that could not be read, and saved-history problems now appear in the debug
   log (`D` on the dashboard) with the path involved, so a question that went
   nowhere can be traced after the fact instead of vanishing.
+- **PR review summaries render cleanly in the Detail pane.** Opening a review
+  summary no longer leaves garbled fragments from diff or source lines mixed
+  into the review text, and scrolling stays aligned when content wraps.
 
 ### Migration
 

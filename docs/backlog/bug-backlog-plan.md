@@ -14,6 +14,38 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~PR review summaries render with garbled diff fragments~~ (Fixed)
+
+- **Status:** Fixed (2026-08-12, issue #527)
+- **Reported:** 2026-08-11
+- **Relates to:** PR Triage Detail pane (`src/ui/dialogs/pr_review.rs`)
+- **Root cause:** The Detail pane replaced comments with different rendered
+  shapes without first clearing every cell it owned, allowing fragments from
+  previously drawn diff/source content to remain wherever a shorter review
+  summary left blank space. Its scroll bound also counted logical lines rather
+  than the rows those lines occupied after wrapping.
+- **Fix:** Clear the complete Detail pane before rendering a selected comment
+  and clamp scrolling against the wrapped display-row count. Regression tests
+  cover both stale-cell removal and wrapped-row measurement.
+
+### Repro
+
+1. On macOS, open PR Triage for a pull request containing inline diff comments
+   and a top-level review summary.
+2. Select content with long diff/source lines, then open the review summary in
+   the Detail pane.
+3. Scroll through the summary at a width where its text wraps.
+
+### Expected
+
+The Detail pane shows only the selected review summary and its metadata, with
+clean blank rows and scrolling aligned to the rendered text.
+
+### Actual
+
+Partial diff/source lines can remain mixed into the summary, and the scroll
+limit can disagree with the content's wrapped height.
+
 ## ~~OSC 8 hyperlinks do not open through AMF's managed tmux server on macOS~~ (Fixed)
 
 - **Status:** Fixed (2026-07-31)

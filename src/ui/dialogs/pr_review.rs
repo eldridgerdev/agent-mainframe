@@ -4,8 +4,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
 use unicode_width::UnicodeWidthStr;
@@ -1872,6 +1872,12 @@ fn draw_comment_detail(
         .border_style(Style::default().fg(theme.text_muted.to_color()))
         .title(" Detail ");
     let inner = block.inner(area);
+    // This pane replaces content from comments whose rendered shapes can be
+    // completely different (a long highlighted hunk followed by a short
+    // review summary, for example). Clear the pane's cells explicitly before
+    // drawing the replacement so fragments from an earlier/underlying render
+    // cannot survive in rows the new Paragraph leaves blank.
+    frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
     let Some(c) = comment else {
@@ -2009,12 +2015,65 @@ fn draw_comment_detail(
         }
     }
 
-    let count = lines.len();
+    let count = detail_wrapped_line_count(&lines, inner.width);
     let body = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll((scroll as u16, 0));
+    // `scroll.y` is measured in rows after wrapping, not in the source
+    // `Vec<Line>` entries. Record that same rendered-row count so long diff
+    // lines and Markdown can never make the clamp disagree with Paragraph.
     frame.render_widget(body, inner);
     count
+}
+
+/// Count rows using the same greedy word/whitespace behavior as Ratatui's
+/// `Wrap { trim: false }`. `Paragraph::line_count` is still an unstable,
+/// crate-private API in Ratatui 0.29, so the detail pane keeps the small piece
+/// of measurement it needs locally.
+fn detail_wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
+    let width = width.max(1) as usize;
+    lines
+        .iter()
+        .map(|line| {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            let mut rows = 1usize;
+            let mut used = 0usize;
+            let mut rest = text.as_str();
+            while !rest.is_empty() {
+                let whitespace = rest.starts_with(char::is_whitespace);
+                let end = rest
+                    .find(|c: char| c.is_whitespace() != whitespace)
+                    .unwrap_or(rest.len());
+                let (run, tail) = rest.split_at(end);
+                rest = tail;
+                let run_width = UnicodeWidthStr::width(run);
+                if whitespace {
+                    // Whitespace that reaches the edge is consumed there
+                    // rather than creating an otherwise empty row.
+                    used = (used + run_width).min(width);
+                } else {
+                    if used > 0 && used + run_width > width {
+                        rows += 1;
+                        used = 0;
+                    }
+                    if run_width > width {
+                        rows += (run_width - 1) / width;
+                        used = run_width % width;
+                        if used == 0 {
+                            used = width;
+                        }
+                    } else {
+                        used += run_width;
+                    }
+                }
+            }
+            rows
+        })
+        .sum()
 }
 
 /// A compact `[label]` chip in the given accent color, with a leading space so
@@ -2910,6 +2969,87 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn detail_pane_clears_content_already_drawn_in_its_area() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let summary = pr_comment_of_kind(
+            1,
+            CommentKind::ReviewSummary {
+                state: "COMMENTED".into(),
+            },
+        );
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                // Model cells left by a previously rendered diff/source pane
+                // in the same frame. The replacement summary is deliberately
+                // short, so these rows survive unless the detail pane owns and
+                // clears its complete area before drawing.
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from("stale source fragment"),
+                        Line::from("doneCursor, oldPid, cfg)"),
+                        Line::from("hyperlink(url)"),
+                    ]),
+                    frame.area(),
+                );
+                draw_comment_detail(
+                    frame,
+                    frame.area(),
+                    Some(&summary),
+                    std::slice::from_ref(&summary),
+                    0,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("comment 1"));
+        assert!(!rendered.contains("stale source fragment"));
+        assert!(!rendered.contains("doneCursor"));
+        assert!(!rendered.contains("hyperlink(url)"));
+    }
+
+    #[test]
+    fn detail_pane_reports_rows_after_wrapping() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let mut comment = pr_comment_of_kind(1, CommentKind::Inline);
+        comment.diff_hunk = Some(format!("+{}", "x".repeat(100)));
+        let logical_lines = 7; // two headers, divider/label/hunk, divider/body
+        let backend = TestBackend::new(30, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut rendered_rows = 0;
+        terminal
+            .draw(|frame| {
+                rendered_rows = draw_comment_detail(
+                    frame,
+                    frame.area(),
+                    Some(&comment),
+                    std::slice::from_ref(&comment),
+                    0,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        assert!(
+            rendered_rows > logical_lines,
+            "wrapped hunk rows must be included in the scroll count"
+        );
     }
 
     #[test]

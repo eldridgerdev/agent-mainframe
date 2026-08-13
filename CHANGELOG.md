@@ -49,8 +49,10 @@ are tagged.
   not yet know what to ask, the two ask keys and the five keys that act on an
   answer, and the newcomer/familiar reading levels. It also says why `D`
   exists: an ordinary answer only sees the code on screen, so it can name
-  files or line numbers that do not exist. `K` is in the dashboard keybindings
-  table.
+  files or line numbers that do not exist — and that Codex is the exception,
+  since it always reads the repository on the first request, so its answers
+  are deep dives already and `D` refuses rather than re-running one. `K` is in
+  the dashboard keybindings table.
 - **`CLAUDE.md` documents Learning Mode's architecture** — the four new
   modules, the read-only invariant and its one exception, and the distinction
   between a follow-up and a deep dive, which are two different relationships

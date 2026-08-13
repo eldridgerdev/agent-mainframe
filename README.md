@@ -234,7 +234,7 @@ Once an answer is on screen, five keys act on it:
 | Key | Action |
 | --- | --- |
 | `F` | Ask a follow-up; the agent keeps the question and answer you just read |
-| `D` | Ask again with the repository readable — slower, but it checks |
+| `D` | Ask again with the repository readable — slower, but it checks (except on Codex, see below) |
 | `i` | Re-file the entry as the other kind; the answer text is left alone |
 | `a` | Keep the answer as a to-do on the project's TODO list |
 | `S` | Hand it to a live agent session, with the prompt filled in and unsent |
@@ -243,6 +243,12 @@ Once an answer is on screen, five keys act on it:
 it can name files or line numbers that don't exist. `D` re-asks the same
 question with the repository open and keeps both answers so you can read them
 against each other.
+
+Codex is the exception: it has no way to answer without reading the repository,
+so every Codex answer already read it — the row says *read the repo* from the
+start, and `D` tells you there is nothing deeper to ask for and points you at
+`F` instead. If you want the on-screen-only answer and the repository-checked
+answer side by side, ask with an agent that offers both (`m`).
 
 Questions and answers are kept per project, so reopening `K` brings back what
 you asked before, with follow-ups still under the question they continue. Press

@@ -458,9 +458,13 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `fresh_database_lands_at_the_latest_version`,
       `migrations_are_idempotent`, twelve `db::learning` round-trip /
       cascade tests, and a manual replay against a copy of the real
-      `~/.config/amf/amf.db` (v16 → 17, 8 projects, cascades both ways,
-      `integrity_check` ok). Two notes: `learning_qa` also carries an
-      `error` column (a failed row must reload with its reason), and
+      `~/.config/amf/amf.db` (v18 → 21, 8 projects, cascades both ways,
+      `integrity_check` and `foreign_key_check` ok). Re-run after the
+      renumbering below, against a copy rewound to a genuine pre-Learning-Mode
+      state (learning tables dropped, `schema_version` rows ≥ 19 removed) —
+      019/020/021 touch nothing else, so the rewind is faithful. Two notes:
+      `learning_qa` also carries an `error` column (a failed row must reload
+      with its reason), and
       `project_id` is deliberately not UNIQUE — one-session-per-project
       is enforced in `load_or_create_session` while the lifecycle
       question stays open.
@@ -1271,12 +1275,16 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       the dispatched command agree; and, at most length, that `parent_qa_id`
       and `deep_dive_of_qa_id` are two different relationships — the trap that
       cost a review finding once already.
-      Two drift fixes came out of writing it: the plan named the learning
-      tables `MIGRATION_017`/`018`, but editor tracking landed first and took
-      those numbers, so they are really `019`/`020` (plus `021`), and the
-      verification note cited a migration test by a name it does not have
-      (`migration_019_upgrades_a_pre_learning_database`). A plan that cites
-      the wrong schema version is worse than one that cites none.
+      One drift fix came out of writing it, in three places: the plan named
+      the learning tables `MIGRATION_017`/`018`, but editor tracking landed
+      first and took those numbers, so they are really `019`/`020` (plus
+      `021`). The Epic 1 verification note inherited the same numbering — it
+      cited the migration test as `migration_017_upgrades_a_v016_database`
+      (the real name is `migration_019_upgrades_a_pre_learning_database`) and
+      recorded the manual replay as v16 → 17. Both are corrected, and the
+      replay was re-run at the real numbers rather than renumbered on paper.
+      A plan that cites the wrong schema version is worse than one that cites
+      none.
 - [ ] File follow-up items for the deferred work: anchor-drift
       resolution (commit SHA + snippet or fuzzy match, modeled on
       `App::reanchor_line_comments`), the alternative actionable

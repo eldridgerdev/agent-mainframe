@@ -291,6 +291,8 @@ Select a feature and press `G` to open PR Triage. You can inspect review
 threads, send an individual or batched fix prompt to an agent, reply, and mark
 threads done. Press `W` to have AMF run its own review of the PR diff. GitHub
 actions are presented for confirmation before AMF writes to the pull request.
+An unchanged AI-drafted reply discloses the harness, best-effort model,
+estimated tokens, and estimated cost of the session that wrote it.
 
 To seed review memory from earlier reviews, open the PR picker and press `b`.
 If `G` opened the feature's pull request directly, press `g` from PR Triage to

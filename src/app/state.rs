@@ -2689,6 +2689,10 @@ pub struct ReplyState {
     /// Only ever `true` for [`super::pr_review::ReplyKind::Done`] — see
     /// [`super::pr_review::App::open_reply`].
     pub agent_drafted: bool,
+    /// Best-effort details about the agent session that produced the draft.
+    /// Captured when the reply opens so the confirmation UI previews the exact
+    /// disclosure that will be posted with an unchanged AI-authored reply.
+    pub generation_metadata: Option<crate::app::pr_review::ReplyGenerationMetadata>,
     /// The exact body the editor was seeded with when the dialog opened.
     /// Compared against the current editor text at post time: if the user has
     /// changed it, the draft is no longer purely the agent's own words, so

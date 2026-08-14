@@ -1306,12 +1306,12 @@ impl App {
         comment_id: u64,
     ) -> Option<String> {
         let db = self.db.as_ref()?;
-        let (_, base_head_sha) = db
-            .load_pr_comment_reply_draft_with_base(pr_number, comment_id)
+        let draft = db
+            .load_pr_comment_reply_draft_row(pr_number, comment_id)
             .ok()
             .flatten()?;
         let review = db
-            .load_pr_review_cache(pr_number, &base_head_sha)
+            .load_pr_review_cache(pr_number, &draft.base_head_sha)
             .ok()
             .flatten()?;
         let comment = review.comments.into_iter().find(|c| c.id == comment_id)?;

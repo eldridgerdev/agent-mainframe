@@ -941,30 +941,10 @@ fn draw_reply_dialog(
     frame.render_widget(block, area);
 
     let agent_drafted = crate::app::pr_review::reply_effective_agent_drafted(reply);
-    let disclosure_rows = if agent_drafted && reply.generation_metadata.is_some() {
-        3
-    } else {
-        1
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),                  // reply body
-            Constraint::Length(disclosure_rows), // generation + attribution disclosure
-            Constraint::Length(1),               // key hints
-        ])
-        .split(inner);
-
-    let body_lines = super::editor_view::editor_lines(&reply.editor, theme, "(type a reply)");
-    frame.render_widget(
-        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
-        chunks[0],
-    );
 
     // Attribution is appended at post time, not part of the editable buffer
-    // above (an empty "not needed" reason would otherwise start with a footer
-    // already sitting in it) — this line previews what will actually be sent.
+    // below (an empty "not needed" reason would otherwise start with a footer
+    // already sitting in it) — this block previews what will actually be sent.
     // Re-evaluated against the live editor text (not the stored flag alone) so
     // editing a captured draft away from the agent's own words drops the AI
     // attribution in the preview too.
@@ -988,7 +968,32 @@ fn draw_reply_dialog(
         format!("will post with a \"{attribution}\" footer"),
         Style::default().fg(theme.text_muted.to_color()),
     )));
-    frame.render_widget(Paragraph::new(disclosure), chunks[1]);
+    // The point of this block is to let the user read the disclosure *before*
+    // it is posted, so it wraps rather than clipping: a provider-qualified
+    // model name ("anthropic/claude-opus-4-5-20251101") runs past a narrow
+    // dialog on its own. `line_count` runs the same wrapper the renderer does,
+    // so the rows reserved always match the rows drawn. Capped so a freak-long
+    // model name can't squeeze the reply body and key hints off the dialog.
+    let disclosure = Paragraph::new(disclosure).wrap(Wrap { trim: false });
+    let max_disclosure_rows = inner.height.saturating_sub(2).max(1);
+    let disclosure_rows = (disclosure.line_count(inner.width) as u16).clamp(1, max_disclosure_rows);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),                  // reply body
+            Constraint::Length(disclosure_rows), // generation + attribution disclosure
+            Constraint::Length(1),               // key hints
+        ])
+        .split(inner);
+
+    let body_lines = super::editor_view::editor_lines(&reply.editor, theme, "(type a reply)");
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    frame.render_widget(disclosure, chunks[1]);
 
     let hints = if reply.editing {
         "[esc] done editing"
@@ -2713,7 +2718,7 @@ mod tests {
             ),
             agent_drafted: true,
             generation_metadata: Some(crate::app::pr_review::ReplyGenerationMetadata {
-                harness: "Codex".to_string(),
+                harness: Some("Codex".to_string()),
                 model: Some("gpt-5.5".to_string()),
                 estimated_tokens: Some(1_500),
                 estimated_cost: Some("$0.04".to_string()),
@@ -2741,6 +2746,56 @@ mod tests {
         assert!(rendered.contains("estimated tokens ~1.5k"));
         assert!(rendered.contains("estimated cost $0.04"));
         assert!(!rendered.contains("posted via AMF"));
+    }
+
+    /// The disclosure previews what will be posted, so it has to be readable in
+    /// full. At a narrow width a provider-qualified model name runs well past
+    /// the dialog; it must wrap onto another row rather than being cut off.
+    #[test]
+    fn agent_drafted_reply_dialog_wraps_a_long_disclosure() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let reply = crate::app::ReplyState {
+            comment_id: 1,
+            kind: crate::app::pr_review::ReplyKind::Done,
+            editor: crate::editor::TextEditor::new("Fixed the guard.".to_string()),
+            agent_drafted: true,
+            generation_metadata: Some(crate::app::pr_review::ReplyGenerationMetadata {
+                harness: Some("Opencode".to_string()),
+                model: Some("anthropic/claude-opus-4-5-20251101".to_string()),
+                estimated_tokens: Some(1_500),
+                estimated_cost: Some("$0.04".to_string()),
+            }),
+            original_seed: "Fixed the guard.".to_string(),
+            editing: false,
+        };
+        let theme = Theme::default();
+        let backend = TestBackend::new(60, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_reply_dialog(frame, &reply, "alice", &theme))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rows: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        let has = |needle: &str| rows.iter().any(|row| row.contains(needle));
+
+        // None of the three lines fits on one row at this width, so finding
+        // each one's tail proves it wrapped rather than being clipped.
+        assert!(has("AI generation: harness Opencode · model"));
+        assert!(has("anthropic/claude-opus-4-5-20251101"));
+        assert!(has("estimated tokens ~1.5k · estimated cost"));
+        assert!(has("$0.04"));
+        assert!(has("will post with a \"— drafted by AI via"));
+        assert!(has("AMF\" footer"));
+        // The reply body and the key hints keep their rows.
+        assert!(has("Fixed the guard."));
+        assert!(has("[⏎] post"));
     }
 
     fn render_harness_pick(existing_live_label: Option<String>) -> String {

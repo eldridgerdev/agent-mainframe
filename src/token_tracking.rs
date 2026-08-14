@@ -29,7 +29,7 @@ pub struct TokenUsageSource {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionTokenUsage {
     pub source: TokenUsageSource,
     pub input_tokens: u64,

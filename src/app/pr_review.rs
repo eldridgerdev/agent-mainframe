@@ -282,23 +282,63 @@ pub(crate) const AI_ATTRIBUTION_FOOTER: &str = "— drafted by AI via AMF";
 /// footer identifies their origin without turning them into follow-up replies.
 pub(crate) const AI_REVIEW_ATTRIBUTION_FOOTER: &str = "— AI review via AMF";
 
+/// Which agent session AMF asked for a reply draft, captured at fix injection
+/// and persisted with the draft (`db::pr_comment_triage::begin_reply_draft`).
+///
+/// The disclosure has to describe the session that actually wrote the draft.
+/// Reading that off the pane's *current* fix target instead would attribute it
+/// to whatever is selected by the time the reply opens: re-entering PR Triage
+/// resets the target to the default, and deleting the session leaves nothing to
+/// read at all — so a Codex draft could be posted as Claude's work, or lose its
+/// disclosure entirely. Pinning the session id at injection is what makes the
+/// later reading verifiable rather than assumed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplyDraftProvenance {
+    pub harness: String,
+    /// AMF feature-session id of the session the fix was injected into.
+    pub session_id: String,
+    /// Model as known at injection time — usually `None`, since a session
+    /// created by this very fix has no transcript yet. Kept as the fallback for
+    /// when the session no longer exists to be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The target session's usage immediately before the fix ran. The
+    /// disclosure reports the delta against it, so a long-lived triage session's
+    /// earlier spend is not billed to this draft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_baseline: Option<crate::token_tracking::SessionTokenUsage>,
+}
+
 /// Best-effort provenance attached to an unchanged agent-written reply draft.
-/// Usage and cost are the PR triage session's delta for the current pane visit:
+/// Usage and cost are the drafting session's delta since the fix was injected:
 /// that is the narrowest reliable accounting boundary shared by every
 /// interactive harness without asking the agent to self-report its own usage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplyGenerationMetadata {
-    pub harness: String,
+    pub harness: Option<String>,
     pub model: Option<String>,
     pub estimated_tokens: Option<u64>,
     pub estimated_cost: Option<String>,
 }
 
 impl ReplyGenerationMetadata {
+    /// An agent draft whose provenance was never recorded (written before AMF
+    /// persisted it) or no longer decodes. The reply still discloses that it
+    /// was AI-generated and says every detail is unknown — the one thing it
+    /// must not do is fill the gap from an unrelated session.
+    pub fn unattributed() -> Self {
+        Self {
+            harness: None,
+            model: None,
+            estimated_tokens: None,
+            estimated_cost: None,
+        }
+    }
+
     pub fn source_disclosure(&self) -> String {
         format!(
             "AI generation: harness {} · model {}",
-            self.harness,
+            self.harness.as_deref().unwrap_or("unreported"),
             self.model.as_deref().unwrap_or("unreported")
         )
     }
@@ -1884,7 +1924,29 @@ impl App {
     /// Make this injection's reply-draft request ids authoritative and clear
     /// any previous draft for the same comments. A write failure is non-fatal:
     /// the fix still runs and `R` falls back to its existing deterministic seed.
-    fn begin_reply_draft_requests(&mut self, pr_number: u32, requests: &[ReplyDraftRequest]) {
+    ///
+    /// `provenance` pins the session the fix is being delivered to, so the
+    /// disclosure posted with the returned draft names that session rather than
+    /// whatever the pane's fix target resolves to later. Serializing it is
+    /// best-effort for the same reason the write is: a draft with no provenance
+    /// reports unavailable metadata, which is worse than the truth but not
+    /// wrong.
+    fn begin_reply_draft_requests(
+        &mut self,
+        pr_number: u32,
+        requests: &[ReplyDraftRequest],
+        provenance: Option<&ReplyDraftProvenance>,
+    ) {
+        let provenance = provenance.and_then(|provenance| {
+            serde_json::to_string(provenance)
+                .inspect_err(|error| {
+                    self.log_warn(
+                        "pr_review",
+                        format!("reply-draft provenance encode failed: {error}"),
+                    );
+                })
+                .ok()
+        });
         for request in requests {
             let result = match self.db.as_ref() {
                 Some(db) => db.begin_pr_comment_reply_draft(
@@ -1892,6 +1954,7 @@ impl App {
                     request.comment_id,
                     &request.request_id,
                     &request.base_head_sha,
+                    provenance.as_deref(),
                 ),
                 None => return,
             };
@@ -1907,15 +1970,37 @@ impl App {
         }
     }
 
-    fn load_reply_draft(&mut self, pr_number: u32, comment_id: u64) -> Option<(String, String)> {
+    fn load_reply_draft(
+        &mut self,
+        pr_number: u32,
+        comment_id: u64,
+    ) -> Option<crate::db::pr_comment_triage::ReplyDraftRow> {
         let result = self
             .db
             .as_ref()?
-            .load_pr_comment_reply_draft_with_base(pr_number, comment_id);
+            .load_pr_comment_reply_draft_row(pr_number, comment_id);
         match result {
-            Ok(draft) => draft.filter(|(body, _)| !body.trim().is_empty()),
+            Ok(draft) => draft.filter(|draft| !draft.body.trim().is_empty()),
             Err(error) => {
                 self.log_warn("pr_review", format!("reply-draft load failed: {error}"));
+                None
+            }
+        }
+    }
+
+    /// Decode a draft's stored provenance. A row written before provenance was
+    /// recorded, or one whose blob no longer parses, yields `None` — the reply
+    /// then discloses AI authorship with the details marked unavailable rather
+    /// than borrowing another session's.
+    fn decode_reply_draft_provenance(&mut self, raw: Option<&str>) -> Option<ReplyDraftProvenance> {
+        let raw = raw?;
+        match serde_json::from_str(raw) {
+            Ok(provenance) => Some(provenance),
+            Err(error) => {
+                self.log_warn(
+                    "pr_review",
+                    format!("reply-draft provenance decode failed: {error}"),
+                );
                 None
             }
         }
@@ -3049,7 +3134,11 @@ impl App {
             }
         };
 
-        self.begin_reply_draft_requests(pr_number, &reply_draft_requests);
+        // Captured from the session the prompt is about to be delivered to —
+        // the only point where "which agent wrote this draft" is knowable
+        // without guessing.
+        let provenance = self.reply_draft_provenance(pi, fi, si);
+        self.begin_reply_draft_requests(pr_number, &reply_draft_requests, provenance.as_ref());
 
         // The fix is committed: mark every targeted comment `Fixing` and persist
         // before we leave the pane, so re-opening the review (cache hit) shows
@@ -3313,19 +3402,28 @@ impl App {
             None
         };
         let has_draft = draft.is_some();
+        // Read off the draft's own record of the session that wrote it, not the
+        // pane's current fix target — which a re-opened triage pane has already
+        // reset to the default.
+        let generation_metadata = draft.as_ref().map(|draft| {
+            let provenance = self.decode_reply_draft_provenance(draft.provenance.as_deref());
+            match provenance {
+                Some(provenance) => self.reply_generation_metadata(&provenance),
+                None => ReplyGenerationMetadata::unattributed(),
+            }
+        });
         let seed = match draft {
-            Some((draft, base_head_sha)) => {
-                if let Some(sha) = commit_after_fix_request(&workdir, &comment, &base_head_sha) {
-                    format!("{}\n\nDone in `{sha}`.", draft.trim_end())
+            Some(draft) => {
+                if let Some(sha) =
+                    commit_after_fix_request(&workdir, &comment, &draft.base_head_sha)
+                {
+                    format!("{}\n\nDone in `{sha}`.", draft.body.trim_end())
                 } else {
-                    draft
+                    draft.body
                 }
             }
             None => seed,
         };
-        let generation_metadata = has_draft
-            .then(|| self.pr_review_reply_generation_metadata())
-            .flatten();
         // A captured draft is post-ready and opens in confirm view. Without one,
         // not-needed still starts in edit mode because the user must type a
         // reason; the deterministic done template remains post-ready.
@@ -3939,35 +4037,50 @@ impl App {
             .then_some(delta)
     }
 
-    /// Describe the concrete fix session that produced a captured reply draft.
-    /// Model discovery follows the same transcript/sidebar sources as the
-    /// dashboard. Some harnesses (notably Pi) do not expose an interactive
-    /// model or token stream; those fields remain explicit `unreported` /
-    /// `unavailable` values in the posted disclosure.
-    fn pr_review_reply_generation_metadata(&self) -> Option<ReplyGenerationMetadata> {
-        let AppMode::PrReview(state) = &self.mode else {
-            return None;
-        };
-        let (pi, fi) = self.pr_review_feature_for_target(state)?;
-        let feature = &self.store.projects[pi].features[fi];
-        let si = pr_triage_session_index(feature, state.fix_target)?;
-        let session = &feature.sessions[si];
-
+    /// Record which session AMF is about to ask for a reply draft, at the one
+    /// moment the answer is unambiguous: the fix injection that resolved it.
+    /// `None` for a non-agent window, which cannot produce a draft anyway.
+    fn reply_draft_provenance(
+        &self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+    ) -> Option<ReplyDraftProvenance> {
+        let feature = self.store.projects.get(pi)?.features.get(fi)?;
+        let session = feature.sessions.get(si)?;
         let harness = match session.kind {
             SessionKind::Claude => "Claude",
             SessionKind::Opencode => "Opencode",
             SessionKind::Codex => "Codex",
             SessionKind::Pi => "Pi",
             _ => return None,
-        }
-        .to_string();
+        };
+        Some(ReplyDraftProvenance {
+            harness: harness.to_string(),
+            session_id: session.id.clone(),
+            // Usually `None` here — a session created by this very fix has no
+            // transcript to read a model out of yet. The live lookup at reply
+            // time is the better source; this is what survives the session.
+            model: self.session_disclosure_model(feature, session),
+            usage_baseline: session.token_usage.clone(),
+        })
+    }
 
+    /// Model discovery for the disclosure, following the same transcript/sidebar
+    /// sources as the dashboard. Some harnesses (notably Pi) do not expose an
+    /// interactive model, so `None` is a normal answer and prints as
+    /// `unreported` rather than being guessed at.
+    fn session_disclosure_model(
+        &self,
+        feature: &Feature,
+        session: &crate::project::FeatureSession,
+    ) -> Option<String> {
         let source_id = session
             .token_usage_source
             .as_ref()
             .map(|source| source.id.as_str())
             .or(session.claude_session_id.as_deref());
-        let model = match session.kind {
+        match session.kind {
             SessionKind::Claude => source_id.and_then(|id| {
                 crate::app::claude_sessions::sidebar_metadata_for_session_id(&feature.workdir, id)
                     .ok()
@@ -4008,19 +4121,56 @@ impl App {
                         .to_string()
                 })
                 .filter(|model| !model.is_empty())
-        });
-
-        let usage = self.pr_review_triage_session_usage();
-        let estimated_tokens = usage.as_ref().map(|usage| usage.total_tokens);
-        let estimated_cost = usage.as_ref().map(|usage| {
-            crate::token_tracking::format_token_cost(usage, &self.config.token_pricing)
-        });
-        Some(ReplyGenerationMetadata {
-            harness,
-            model,
-            estimated_tokens,
-            estimated_cost,
         })
+    }
+
+    /// Locate a session by its AMF id, anywhere in the store. Deliberately not
+    /// scoped to the pane's fix target: a draft's provenance names one specific
+    /// session, and it must resolve to that session or to nothing.
+    fn feature_session_by_id(
+        &self,
+        session_id: &str,
+    ) -> Option<(&Feature, &crate::project::FeatureSession)> {
+        self.store.projects.iter().find_map(|project| {
+            project.features.iter().find_map(|feature| {
+                feature
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .map(|session| (feature, session))
+            })
+        })
+    }
+
+    /// Turn a draft's persisted provenance into the disclosure posted with it.
+    /// Harness comes straight from the record. Model and usage are read live
+    /// off the *named* session when it still exists — the transcript it needs
+    /// only appears after the fix runs — and fall back to the snapshot taken at
+    /// injection time (model) or to `unavailable` (usage) once it is gone.
+    /// Nothing here consults the pane's current fix target.
+    fn reply_generation_metadata(
+        &self,
+        provenance: &ReplyDraftProvenance,
+    ) -> ReplyGenerationMetadata {
+        let live = self.feature_session_by_id(&provenance.session_id);
+        let model = live
+            .and_then(|(feature, session)| self.session_disclosure_model(feature, session))
+            .or_else(|| provenance.model.clone());
+        let usage = live
+            .and_then(|(_, session)| session.token_usage.as_ref())
+            .map(|current| match &provenance.usage_baseline {
+                Some(baseline) => crate::token_tracking::token_usage_delta(current, baseline),
+                None => current.clone(),
+            })
+            .filter(|usage| usage.total_tokens > 0);
+        ReplyGenerationMetadata {
+            harness: Some(provenance.harness.clone()),
+            model,
+            estimated_tokens: usage.as_ref().map(|usage| usage.total_tokens),
+            estimated_cost: usage.as_ref().map(|usage| {
+                crate::token_tracking::format_token_cost(usage, &self.config.token_pricing)
+            }),
+        }
     }
 
     pub fn pr_review_scroll_detail_up(&mut self, amount: usize) {
@@ -5680,7 +5830,7 @@ mod tests {
     #[test]
     fn agent_drafted_replies_use_ai_attribution() {
         let metadata = ReplyGenerationMetadata {
-            harness: "Codex".to_string(),
+            harness: Some("Codex".to_string()),
             model: Some("gpt-5.5".to_string()),
             estimated_tokens: Some(1_500),
             estimated_cost: Some("$0.04".to_string()),

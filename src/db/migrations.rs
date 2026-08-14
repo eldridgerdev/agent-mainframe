@@ -100,6 +100,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Record which learning Q&A a deep dive re-ran, apart from its thread parent",
             MIGRATION_021,
         ),
+        (
+            "Pin an agent reply draft to the session that generated it",
+            MIGRATION_022,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -569,16 +573,46 @@ ALTER TABLE learning_qa
     ADD COLUMN deep_dive_of_qa_id TEXT;
 ";
 
+// Which agent session produced a reply draft, recorded when the fix is injected
+// rather than re-derived when the reply dialog opens.
+//
+// The disclosure posted with an unedited AI draft names a harness, a model and a
+// usage estimate. Reading those off the pane's *current* fix target attributes
+// the draft to whatever session happens to be selected now: re-opening PR Triage
+// resets the target to the default, and removing the session leaves nothing to
+// read at all, so a draft written by one agent could be posted under another's
+// name — or lose its disclosure entirely.
+//
+// One JSON column rather than four: it is written and read whole, only rows with
+// an agent draft ever have one, and the usage baseline inside it is a struct the
+// token tracker owns. NULL is the honest reading for a draft begun before this
+// column existed (or with no resolvable session): the metadata is then reported
+// as unavailable instead of guessed.
+const MIGRATION_022: &str = "
+ALTER TABLE pr_comment_reply_drafts
+    ADD COLUMN provenance TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
+
+    /// The tables a DB last touched around v018 actually has: 001's base schema
+    /// plus the reply-draft table 013/014 built. Fixtures that seed a version
+    /// this high have to stand up everything later migrations alter — 022 alters
+    /// `pr_comment_reply_drafts`.
+    fn seed_pre_learning_schema(conn: &Connection) {
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_013).unwrap();
+        conn.execute_batch(super::MIGRATION_014).unwrap();
+    }
 
     /// A DB last touched before Learning Mode existed (schema version 18)
     /// upgrades in place: only 019 replays, and it lands the two new tables.
     #[test]
     fn migration_019_upgrades_a_pre_learning_database() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(super::MIGRATION_001).unwrap();
+        seed_pre_learning_schema(&conn);
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -593,7 +627,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -613,7 +647,7 @@ mod tests {
     #[test]
     fn migration_020_backfills_existing_qa_rows_as_plain_source() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(super::MIGRATION_001).unwrap();
+        seed_pre_learning_schema(&conn);
         conn.execute_batch(super::MIGRATION_019).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
@@ -649,7 +683,7 @@ mod tests {
     #[test]
     fn migration_021_leaves_existing_qa_rows_without_a_rerun_origin() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(super::MIGRATION_001).unwrap();
+        seed_pre_learning_schema(&conn);
         conn.execute_batch(super::MIGRATION_019).unwrap();
         conn.execute_batch(super::MIGRATION_020).unwrap();
         conn.execute_batch(
@@ -688,7 +722,41 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
+    }
+
+    /// Migration 022 adds `provenance` to reply drafts written before it
+    /// existed. They come back NULL, and the reply then discloses AI authorship
+    /// with unknown details rather than borrowing another session's.
+    #[test]
+    fn migration_022_leaves_existing_reply_drafts_without_provenance() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_013).unwrap();
+        conn.execute_batch(super::MIGRATION_014).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (21, datetime('now'), 'seed');",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO pr_comment_reply_drafts
+                (pr_number, comment_id, request_id, body, updated_at, base_head_sha)
+             VALUES (7, 11, 'req', 'Fixed the guard.', datetime('now'), 'sha');",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let provenance: Option<String> = conn
+            .query_row(
+                "SELECT provenance FROM pr_comment_reply_drafts WHERE comment_id = 11",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(provenance, None);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -701,7 +769,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 21);
+        assert_eq!(rows, 22);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

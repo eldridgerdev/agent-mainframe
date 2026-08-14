@@ -128,6 +128,22 @@ list of one or more of:
   escape-free `NNN-<label>.txt` twin (`capture-pane -p`) — the cheap
   artifact for greppable content checks, so nothing has to parse or
   read the ANSI dump just to verify text.
+- `run:<cmd>` — `eval` an arbitrary shell command. The escape hatch for
+  anything the grammar above can't express: a second automation call
+  (this shell has `AMF_BIN` and the scratch instance's XDG vars
+  exported, so it talks to the same running instance), seeding
+  working-tree content a JSON payload can't carry, or **mouse input**,
+  which has no step of its own. Send the SGR bytes a real terminal
+  would, straight into the pane, and crossterm parses them into the
+  same event a physical mouse produces:
+
+  ```
+  # wheel down at column 40, row 20  ->  ESC [ < 65 ; 40 ; 20 M
+  run:tmux send-keys -t "$SESSION" -H 1b 5b 3c 36 35 3b 34 30 3b 32 30 4d
+  ```
+
+  Button 64 is wheel up, 0 is a left press, 3 a release.
+  `scenarios/plan-review-mouse-scroll.txt` is a worked example.
 
 Blank lines and lines starting with `#` are skipped, so comments can
 explain what a step does or which real keybinding it exercises. Multiple

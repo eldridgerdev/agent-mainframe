@@ -683,6 +683,21 @@ interview with prior answers pre-filled, get an updated
       rather than hardcoding Claude for every feature. Visual proof:
       `docs/screenshots/harness-aware-session-summary/`, regenerable via
       `scripts/dev/screenshot/scenarios/harness-aware-session-summary.txt`
+- [x] Make the mouse wheel scroll the review gate. The scroll handlers matched
+      a chain of modes and then fell through to dashboard selection movement,
+      with no case for the interview — so a wheel notch over a plan taller than
+      the screen silently moved the selection hidden behind the dialog. The
+      wheel now moves whichever pane the current phase renders (the plan, the
+      agent's review, or the plan/instruction editors) through a single
+      phase-to-offset accessor on the interview state; phases with nothing to
+      scroll swallow the event rather than falling through. Clicks inside the
+      dialog are inert for the same reason — the interview was missing from
+      `handle_click`'s dialog list, so a double-click could reach a feature row
+      underneath and start it. Visual proof:
+      `docs/screenshots/plan-review-mouse-scroll/`, regenerable via
+      `scripts/dev/screenshot/scenarios/plan-review-mouse-scroll.txt` — which
+      is also the first scenario to drive mouse input, injecting SGR wheel
+      bytes through the grammar's `run:` escape hatch
 
 ## Open questions
 

@@ -44,6 +44,25 @@ are tagged.
 
 ### Fixed
 
+- **A prompt AMF opens a session to deliver no longer disappears when the
+  resource warning asks first.** Accepting a plan, spawning an agent from a
+  TODO, and escalating a Learning Mode question all open a session and load a
+  prompt into its composer for you to review. If the machine was at the agent
+  cap or low on memory, the pre-start warning came up in between — and
+  answering it opened the session with an empty composer and said nothing, so
+  the plan looked handed over when it never was. The prompt now travels with
+  the parked start and is loaded once you confirm.
+
+- **The mouse wheel scrolls the plan you are reviewing.** A proposed plan is
+  usually taller than the screen, and scrolling it with the wheel did nothing
+  — worse than nothing, in fact: the wheel was moving the selection on the
+  dashboard hidden behind the dialog, so you could come out of a plan review
+  pointed at a different feature than you went in on. The wheel now scrolls
+  the plan, the agent's review of it, and the plan and instruction editors,
+  three lines at a time like every other scrollable view in AMF. Clicking
+  inside the dialog no longer reaches the dashboard underneath either, where
+  a double-click could open or start whichever feature happened to be there.
+
 - **Learning Mode says when its file list is incomplete.** In a project that
   is not a git repository, any folder AMF could not open was left out
   silently — and a list missing a whole folder looks exactly like a project

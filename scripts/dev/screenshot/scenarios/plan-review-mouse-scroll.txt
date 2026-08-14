@@ -1,0 +1,62 @@
+# plan-review-mouse-scroll: proves the mouse wheel scrolls the plan at the
+# review gate instead of moving the dashboard selection behind the dialog.
+#
+# Requires --seed with a create-project payload and --seed-feature with a
+# create-feature payload for the same project. A long draft plan is inserted
+# into the scratch database so the capture reaches the review gate without
+# spending tokens on synthesis, and so the pane has more content than fits --
+# a scroll capture needs something to move.
+#
+# The scenario grammar has no mouse step, so the wheel is injected as raw SGR
+# bytes through `run:`. `tmux send-keys -H` writes them straight into the
+# pane's pty, which is what crossterm parses into a MouseEvent:
+#
+#   ESC [ < 65 ; col ; row M   wheel down    1b 5b 3c 36 35 3b ...
+#   ESC [ < 64 ; col ; row M   wheel up      1b 5b 3c 36 34 3b ...
+#
+# Column 40, row 20 puts the pointer in the middle of the plan pane. The
+# handler ignores position, but a real terminal always sends one.
+
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db" --long
+wait:500
+
+# Select the seeded feature, open its on-demand interview, and resume the
+# already-synthesized draft straight into the review gate.
+key:j
+wait:400
+key:P
+wait:900
+key:r
+wait:900
+
+# THE BASELINE: the top of the plan, scroll offset 0.
+shot:review-gate-top
+
+# Four notches down, three lines each.
+run:tmux send-keys -t "$SESSION" -H 1b 5b 3c 36 35 3b 34 30 3b 32 30 4d
+wait:250
+run:tmux send-keys -t "$SESSION" -H 1b 5b 3c 36 35 3b 34 30 3b 32 30 4d
+wait:250
+shot:wheel-down-two-notches
+
+run:tmux send-keys -t "$SESSION" -H 1b 5b 3c 36 35 3b 34 30 3b 32 30 4d
+wait:250
+run:tmux send-keys -t "$SESSION" -H 1b 5b 3c 36 35 3b 34 30 3b 32 30 4d
+wait:250
+shot:wheel-down-four-notches
+
+# Back up one notch: the offset moves the other way, three lines at a time.
+run:tmux send-keys -t "$SESSION" -H 1b 5b 3c 36 34 3b 34 30 3b 32 30 4d
+wait:250
+shot:wheel-up-one-notch
+
+# `a` would spend tokens on an agent review, so the capture stops here and
+# backs out of the interview without accepting or generating anything. The
+# selection this returns to is not evidence of anything on its own -- with two
+# rows on the dashboard, wheel notches that did leak through could land back
+# where they started. That case is covered by a handler test, not a capture.
+key:Escape
+wait:300
+key:y
+wait:600
+shot:dashboard-after-cancel

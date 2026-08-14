@@ -331,12 +331,18 @@ option, and answers are pitched at a first-time reader by default. See
   `check_anchor_drift` matches the row's `selection_text` against the file
   as it is now — trimmed, blank lines dropped, the stored position checked
   before the whole-file search, so a re-indent isn't movement and a copy
-  made elsewhere doesn't unanchor the original. Two invariants: the row's
+  made elsewhere doesn't unanchor the original. Dropping lines shifts where
+  the evidence starts, so `ExpectedBlock::lead_offset` steps the stored
+  position past them; without it a selection opening on a blank line reports
+  as having slid down by its own whitespace. Two invariants: the row's
   `line_start`/`line_end` are **never rewritten** (they record where the
   question was asked, and keeping them is what lets the verdict be
   re-derived rather than believed once), and *no verdict* is the answer
   for everything there is no evidence to judge — an unreadable file, an
-  empty selection, a `File` anchor whose file still exists. A
+  empty selection, a `File` anchor whose file still exists. "Unreadable"
+  includes a file that can't be stat'd at all: the `Gone` verdict is
+  `ErrorKind::NotFound` specifically, not `Path::exists()`, which says the
+  same "no" to a deleted file and to an unreadable parent directory. A
   diff-sourced selection (`selection_is_diff`) can be reported `Lost` but
   never `Reanchored`: its range comes from `new_line.or(old_line)`, so it
   is not a baseline to measure against. The verdict rides along into

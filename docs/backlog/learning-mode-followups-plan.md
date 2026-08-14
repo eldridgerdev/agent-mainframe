@@ -1,7 +1,7 @@
 # Learning Mode follow-ups
 
-- **Status:** Anchor drift is done; navigable references and the
-  alternative actionable mechanisms are still backlog.
+- **Status:** Anchor drift is done; scoped question history, navigable
+  references, and the alternative actionable mechanisms are still backlog.
 - **Owner:** unassigned
 - **Relates to:** [Learning Mode](learning-mode-plan.md) (shipped in
   `v0.36.0`), `src/app/learning.rs`, `src/ui/dialogs/learning.rs`,
@@ -10,11 +10,11 @@
   (`feature-todos-plan.md`)
 
 Three pieces of work that Learning Mode's plan deferred rather than
-rejected. They are collected here — one `## ` section each, in the style
-of `bug-backlog-plan.md` — because each is a small extension to one
-shipped feature rather than a feature of its own, and because they were
-deferred as a set. Each section is self-contained; pick up any one of
-them without the others.
+rejected, plus a question-history scoping follow-up found through use.
+They are collected here — one `## ` section each, in the style of
+`bug-backlog-plan.md` — because each is a small extension to one shipped
+feature rather than a feature of its own. Each section is self-contained;
+pick up any one of them without the others.
 
 The fourth deferral from that plan is **not** Learning Mode's and lives
 in `bug-backlog-plan.md` instead: *"Toasts raised while landing in the
@@ -229,6 +229,81 @@ their anchor — possibly addressed") is the right register.
   A cheap re-check on scope toggle (`s`, which already re-reads) would
   cover most of it if this turns out to matter.
 
+## Scope question history to the selected file or the whole project
+
+### Why / problem
+
+The Questions pane currently exposes every saved question for the project at
+all times. Once a project has accumulated questions across several files, the
+history stops feeling attached to the code being read: unrelated entries take
+over the pane, and returning to a note about the selected file means searching
+the entire project history.
+
+Questions should have two explicit viewing scopes:
+
+1. **This file** — show only questions anchored to the selected file.
+2. **All files** — show the project's complete Learning Mode history,
+   including project-level questions.
+
+This is a view filter only. It must not change how questions are persisted,
+threaded, answered, or re-anchored.
+
+### Proposed design
+
+Add a visible scope control to the Questions pane, labelled in plain language
+(`This file` / `All files`). Default to `This file` whenever a file is
+selected; use `All files` when the current browser row is the project-level
+orientation entry and there is no selected file. The pane header should state
+the active scope and the matching/total counts so a filtered history cannot be
+mistaken for lost questions.
+
+Give the selected history entry a context-sensitive navigation action:
+
+- In **This file**, the action is **Jump to line**. Keep the current file
+  selected and move the code cursor/viewport to the entry's anchored line or
+  range.
+- In **All files**, the action is **Jump to file/line**. Select and load the
+  entry's file first, then move the code cursor/viewport to its anchored line
+  or range.
+
+Whole-file entries should jump to the file without inventing a line, and
+project-level entries have no jump action. Use the re-anchored location when
+anchor drift found one. When the anchor is lost, keep the question readable
+but disable the jump with the existing lost-anchor explanation rather than
+landing on unrelated code.
+
+Changing the selected file should immediately recompute the `This file`
+history and keep the history cursor on the same Q&A row when it is still in
+scope; otherwise select the nearest available row. Jumping from `All files`
+must not silently change the history scope, so the user can continue browsing
+the project-wide list.
+
+### Progress
+
+- [ ] Add the `This file` / `All files` question-history scope and expose it
+      in the Questions pane with matching/total counts.
+- [ ] Filter rendered history and history navigation without altering the
+      persisted project-wide Q&A collection or thread relationships.
+- [ ] Add **Jump to line** for file-scoped entries and **Jump to file/line**
+      for project-wide entries, including whole-file and project-anchor edge
+      cases.
+- [ ] Make jumps drift-aware: use a resolved moved range and disable jumps for
+      lost anchors.
+- [ ] Tests: switching files changes only the file-scoped rows; project scope
+      includes all file and project questions; a file-scoped jump lands on the
+      stored line; a project-wide jump loads the correct file and line; moved
+      anchors jump to the resolved range; lost and project anchors do not
+      offer a misleading jump.
+
+### Open questions
+
+- Whether the chosen history scope should survive closing Learning Mode. Start
+  session-local; persistence is only worthwhile if real use shows people
+  repeatedly prefer `All files`.
+- Whether in-flight questions from another file should remain visible while
+  `This file` is active. The header's global in-flight count should remain
+  truthful either way; a small out-of-scope activity indicator may be enough.
+
 ## Alternative mechanisms for making an answer actionable
 
 ### Why / problem
@@ -347,9 +422,12 @@ without them. Suggested order if they are picked up:
 1. ~~**Anchor drift**~~ — **done**, taken first because it was the only
    correctness problem in the list and it degraded the feature's primary
    use case over time.
-2. **Navigable references**, because it is mostly wiring over machinery
+2. **Scoped question history**, because the current always-global list gets
+   noisier with every file studied, and its jump action establishes the
+   location-navigation behavior that answer references can reuse.
+3. **Navigable references**, because it is mostly wiring over machinery
    that already exists, and because it partially mitigates the
    fabricated-reference problem that has been observed in real runs.
-3. **Alternative actionable mechanisms**, last and only if real use
+4. **Alternative actionable mechanisms**, last and only if real use
    shows the TODO path is not enough — the cheaper fixes to that path
    (a better seeded title) should be tried first.

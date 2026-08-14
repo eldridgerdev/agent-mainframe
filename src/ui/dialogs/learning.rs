@@ -853,22 +853,37 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
     // in the title, because the title is where the *stored* range is printed
     // and that is the claim being corrected. Two rows, since the sentence runs
     // past one at any realistic pane width.
-    let drift = state.drift_for(&qa.id);
-    let drift_text =
-        drift.map(|drift| format!("⚠ {}", drift.describe(qa.anchor.line_range_for_display())));
+    // Built up front so the height below is asked of the very widget that will
+    // draw it: character-count ÷ width under-counts word wrapping, and the row
+    // it drops is the last one — the clause saying the answer is still good.
+    let drift_para = state.drift_for(&qa.id).map(|drift| {
+        let text = format!("⚠ {}", drift.describe(qa.anchor.line_range_for_display()));
+        Paragraph::new(Span::styled(
+            text,
+            Style::default().fg(if drift.is_lost() {
+                theme.danger.to_color()
+            } else {
+                theme.warning.to_color()
+            }),
+        ))
+        .style(Style::default().bg(theme.effective_header_bg()))
+        .wrap(Wrap { trim: true })
+    });
     let mut constraints = vec![Constraint::Length(3)];
-    if let Some(text) = &drift_text {
-        // Sized to what it actually takes at this width rather than a fixed two
-        // rows: the sentence runs to about 160 characters, which fits in two at
-        // 140 columns and needs three by 80 — and a sentence clipped mid-clause
-        // is how "the answer below is unchanged" stops being said at exactly
-        // the widths where the reassurance matters most.
-        let rows = text
-            .chars()
-            .count()
-            .div_ceil((inner.width as usize).max(1))
-            .clamp(1, 4);
-        constraints.push(Constraint::Length(rows as u16));
+    if let Some(para) = &drift_para {
+        // Sized to what the paragraph renderer actually wraps to at this width
+        // rather than a fixed two rows: the sentence runs to about 160
+        // characters, which fits in two at 140 columns and needs three by 80 —
+        // and a sentence clipped mid-clause is how "the answer below is
+        // unchanged" stops being said at exactly the widths where the
+        // reassurance matters most. The only ceiling is what the pane can
+        // spare: header, footer, banner, and one row of answer come first,
+        // because a drift note that pushed the answer off screen would be
+        // trading one silence for another.
+        let reserved = 3 + 2 + 1 + u16::from(banner.is_some());
+        let max_rows = inner.height.saturating_sub(reserved).max(1);
+        let rows = (para.line_count(inner.width) as u16).clamp(1, max_rows);
+        constraints.push(Constraint::Length(rows));
     }
     constraints.push(Constraint::Min(1));
     if banner.is_some() {
@@ -879,7 +894,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
-    let body_chunk = chunks[if drift.is_some() { 2 } else { 1 }];
+    let body_chunk = chunks[if drift_para.is_some() { 2 } else { 1 }];
     let footer_chunk = chunks[chunks.len() - 1];
     if let Some((message, color)) = &banner {
         frame.render_widget(
@@ -889,20 +904,8 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
             chunks[chunks.len() - 2],
         );
     }
-    if let (Some(drift), Some(text)) = (drift, drift_text) {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                text,
-                Style::default().fg(if drift.is_lost() {
-                    theme.danger.to_color()
-                } else {
-                    theme.warning.to_color()
-                }),
-            ))
-            .style(Style::default().bg(theme.effective_header_bg()))
-            .wrap(Wrap { trim: true }),
-            chunks[1],
-        );
+    if let Some(para) = drift_para {
+        frame.render_widget(para, chunks[1]);
     }
 
     let header = Paragraph::new(vec![
@@ -2612,6 +2615,25 @@ let files = list_repo_files(workdir)?;
         );
 
         let rendered = render_at(&mut state, 80, 30);
+        assert!(rendered.contains("unchanged"), "{rendered}");
+        assert!(rendered.contains("walks the tree once"), "the answer too");
+    }
+
+    /// And it finishes at widths where no fixed ceiling would have let it:
+    /// character-count ÷ width under-counts word wrapping, so the block has to
+    /// be sized by the renderer that draws it rather than by arithmetic that
+    /// tops out at four rows.
+    #[test]
+    fn a_very_narrow_terminal_still_finishes_the_drift_sentence() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous),
+        );
+
+        let rendered = render_at(&mut state, 50, 30);
         assert!(rendered.contains("unchanged"), "{rendered}");
         assert!(rendered.contains("walks the tree once"), "the answer too");
     }

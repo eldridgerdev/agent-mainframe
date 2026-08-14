@@ -448,10 +448,24 @@ impl App {
             };
             if !targets.contains_key(&path) {
                 let full = workdir.join(&path);
-                let target = if !full.exists() {
-                    AnchorTarget::Gone
-                } else {
-                    match load_file_lines(&full, &path) {
+                // `Path::exists()` answers "no" both to a deleted file and to
+                // one this process simply can't stat — an unreadable parent
+                // directory, say. Only the first of those is `Gone`; reporting
+                // the second as a lost anchor would be the mode stating as fact
+                // something it was never able to look at.
+                let target = match std::fs::metadata(&full) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => AnchorTarget::Gone,
+                    Err(e) => {
+                        self.log_warn(
+                            "learning",
+                            format!(
+                                "couldn't reach {path} to re-check its anchor: {e} \
+                                 (past questions about it keep their stored lines)"
+                            ),
+                        );
+                        AnchorTarget::Unreadable
+                    }
+                    Ok(_) => match load_file_lines(&full, &path) {
                         Ok(lines) => AnchorTarget::Lines(lines),
                         Err(e) => {
                             self.log_warn(
@@ -463,7 +477,7 @@ impl App {
                             );
                             AnchorTarget::Unreadable
                         }
-                    }
+                    },
                 };
                 targets.insert(path.clone(), target);
             }
@@ -1671,22 +1685,44 @@ enum AnchorTarget {
 ///
 /// Blank lines are dropped rather than matched: they carry no evidence, and a
 /// selection that opens or closes on one would otherwise anchor on whitespace.
-fn expected_block(selection_text: &str, is_diff: bool) -> Vec<String> {
-    selection_text
-        .lines()
-        .filter_map(|line| {
-            if !is_diff {
-                return Some(line.trim());
-            }
+#[derive(Debug, PartialEq, Eq)]
+struct ExpectedBlock {
+    lines: Vec<String>,
+    /// How many lines were dropped *before* the first kept one. The stored
+    /// range starts at the selection's first line, which may well be one of
+    /// those, so this is the distance between "where the question was asked"
+    /// and "where the evidence starts" — without it an unchanged selection
+    /// that opens on a blank line reads as having moved down by exactly this
+    /// many rows.
+    lead_offset: usize,
+}
+
+fn expected_block(selection_text: &str, is_diff: bool) -> ExpectedBlock {
+    fn kept(line: &str, is_diff: bool) -> Option<&str> {
+        let text = if is_diff {
             match line.chars().next() {
-                Some('+') | Some(' ') => Some(line[1..].trim()),
+                Some('+') | Some(' ') => &line[1..],
                 // A removed row, or a `\ No newline` marker: not in the file.
-                _ => None,
+                _ => return None,
             }
-        })
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
+        } else {
+            line
+        };
+        let text = text.trim();
+        (!text.is_empty()).then_some(text)
+    }
+    let lead_offset = selection_text
+        .lines()
+        .take_while(|line| kept(line, is_diff).is_none())
+        .count();
+    ExpectedBlock {
+        lines: selection_text
+            .lines()
+            .filter_map(|line| kept(line, is_diff))
+            .map(ToOwned::to_owned)
+            .collect(),
+        lead_offset,
+    }
 }
 
 /// Where a block of lines sits in `lines` now, relative to where it was stored.
@@ -1705,9 +1741,12 @@ enum BlockMatch {
 /// Find `block` in `lines`, comparing trimmed text and ignoring blank lines, so
 /// that a re-indent or an added blank line is not read as movement.
 ///
-/// `stored_start` is 1-based. The stored position is checked first, so a block
-/// that legitimately appears twice — a repeated idiom, a duplicated `match`
-/// arm — is *not* ambiguous as long as it is still where it was left.
+/// `stored_start` is 1-based and names where the *first line of `block`* was
+/// stored — the caller has already stepped it past any leading lines the block
+/// dropped ([`ExpectedBlock::lead_offset`]). The stored position is checked
+/// first, so a block that legitimately appears twice — a repeated idiom, a
+/// duplicated `match` arm — is *not* ambiguous as long as it is still where it
+/// was left.
 fn locate_block(lines: &[String], stored_start: usize, block: &[String]) -> BlockMatch {
     if block.is_empty() {
         return BlockMatch::AsStored;
@@ -1785,7 +1824,16 @@ fn check_anchor_drift(qa: &LearningQa, target: &AnchorTarget) -> Option<Learning
         LearningAnchor::Project => return None,
     };
     let block = expected_block(&qa.selection_text, qa.selection_is_diff);
-    match locate_block(lines, stored_start, &block) {
+    // The evidence starts where the stored range starts *plus* whatever the
+    // block dropped off the front, so a selection opening on a blank line is
+    // still found where it was left. A hunk anchor has no stored line at all
+    // (0 above, which no 1-based line can equal); shifting that sentinel would
+    // turn it into a line number by accident.
+    let evidence_start = match stored_start {
+        0 => 0,
+        start => start.saturating_add(block.lead_offset),
+    };
+    match locate_block(lines, evidence_start, &block.lines) {
         BlockMatch::AsStored => None,
         BlockMatch::NotFound => Some(LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound)),
         BlockMatch::Ambiguous => Some(LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous)),
@@ -7092,7 +7140,33 @@ pub(crate) mod tests {
     #[test]
     fn a_diff_selection_is_matched_on_what_survived_it() {
         let block = expected_block("-let x = 1;\n+let x = 2;\n let y = 3;", true);
-        assert_eq!(block, vec!["let x = 2;", "let y = 3;"]);
+        assert_eq!(block.lines, vec!["let x = 2;", "let y = 3;"]);
+        assert_eq!(block.lead_offset, 1, "the removed row came off the front");
+    }
+
+    /// A selection that opens on a blank line is still where it was left: the
+    /// blank carries no evidence and is dropped, so the search starts one row
+    /// further down than the stored range does. Counting from the stored start
+    /// instead reports every such selection as having slid down by exactly the
+    /// number of leading blanks — drift invented out of the user's own
+    /// whitespace.
+    #[test]
+    fn a_selection_opening_on_a_blank_line_has_not_moved() {
+        let qa = anchored_qa(2, 4, "\n  fn b() {}\n  let y = 3;");
+        let file = lines_of("fn a() {}\n\nfn b() {}\nlet y = 3;\n");
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Lines(file)), None);
+    }
+
+    /// And the offset is a shift, not a blanket amnesty: the same selection
+    /// genuinely pushed down the file is still reported as re-anchored.
+    #[test]
+    fn a_blank_leading_selection_that_really_moved_still_reports() {
+        let qa = anchored_qa(2, 4, "\n  fn b() {}\n  let y = 3;");
+        let file = lines_of("fn a() {}\n\n// inserted\n// inserted\nfn b() {}\nlet y = 3;\n");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Reanchored { start: 5, end: 6 })
+        );
     }
 
     /// A diff-sourced anchor can be reported lost but never re-anchored: its
@@ -7234,6 +7308,42 @@ pub(crate) mod tests {
             banner.contains("1 no longer points at code"),
             "one lost anchor reads as one: {banner}"
         );
+    }
+
+    /// `Path::exists()` answers "no" to a file it cannot stat just as loudly as
+    /// to one that was deleted, and the two are not the same claim: a file
+    /// behind a directory this process can't read is almost certainly still
+    /// there. Unreadable means no verdict, here as everywhere else.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_behind_an_unreadable_directory_is_not_reported_gone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\n");
+        let id = ask_and_answer(&mut app, "What is this?", "It is a.");
+        app.close_learning_mode();
+
+        let dir = repo.path().join("src");
+        let restore = std::fs::metadata(&dir).unwrap().permissions();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root walks through mode bits, so there would be nothing to observe.
+        let unreadable = std::fs::metadata(dir.join("util.rs")).is_err();
+        let verdict = if unreadable {
+            app.open_learning_mode(0, 0).unwrap();
+            let verdict = learning(&app).drift_for(&id);
+            app.close_learning_mode();
+            Some(verdict)
+        } else {
+            None
+        };
+        std::fs::set_permissions(&dir, restore).unwrap();
+
+        if let Some(verdict) = verdict {
+            assert_eq!(
+                verdict, None,
+                "a file we could not look at is not a file that is gone"
+            );
+        }
     }
 
     /// Reopening a project nobody has touched says nothing at all.

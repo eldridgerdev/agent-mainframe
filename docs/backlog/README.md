@@ -96,13 +96,13 @@ doc always says exactly what remains.
   is tracked separately in
   [Learning Mode follow-ups](learning-mode-followups-plan.md).
 - [Learning Mode follow-ups](learning-mode-followups-plan.md) — _Backlog._
-  Three deferrals from the Learning Mode plan, one section each: anchor
-  drift (a stored `path:line-range` goes stale silently, the only
-  correctness problem of the three), alternative mechanisms for making an
-  answer actionable (seeded-and-scoped composer, inline suggested patch),
-  and turning an answer's "Where to look next" references into navigable
-  jumps — which also surfaces the fabricated paths a no-tools answer is
-  known to invent.
+  Three deferrals from the Learning Mode plan plus a follow-up found through
+  use: anchor drift (since fixed), question history scoped to the selected
+  file or the whole project with context-aware jumps, alternative mechanisms
+  for making an answer actionable (seeded-and-scoped composer, inline
+  suggested patch), and turning an answer's "Where to look next" references
+  into navigable jumps — which also surfaces the fabricated paths a no-tools
+  answer is known to invent.
 - [Bug backlog](bug-backlog-plan.md) — _Backlog._ Running list of known
   bugs not yet scheduled for a fix, one section per bug. Currently
   tracks recently fixed dashboard, sidebar, and composer-pane regressions.

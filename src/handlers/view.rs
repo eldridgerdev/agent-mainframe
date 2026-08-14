@@ -309,8 +309,8 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             app.push_toast_success("Stopped session");
         }
         KeyCode::Char('i') => {
-            if app.pending_inputs.is_empty() {
-                app.push_toast_warning("No pending input requests");
+            if app.attention_rows().is_empty() {
+                app.push_toast_warning("Nothing needs attention");
             } else {
                 let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                     AppMode::Viewing(v) => v,

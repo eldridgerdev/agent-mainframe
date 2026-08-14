@@ -8,12 +8,108 @@ use ratatui::{
 
 use crate::theme::Theme;
 
+/// Needs-attention counts as `(questions, completed, waiting)`.
+pub type AttentionCounts = (usize, usize, usize);
+
+/// Which needs-attention group a badge segment describes.
+enum AttentionGroup {
+    Question,
+    Completed,
+    Waiting,
+}
+
+/// The badge's segments, in display order, with zero-count groups omitted
+/// rather than shown as `0`.
+///
+/// Questions and completions are named separately because they call for
+/// different things from the user — an answer versus a look — and the whole
+/// point of the attention layer is that the dashboard can tell them apart.
+fn attention_segments(counts: AttentionCounts) -> Vec<(String, AttentionGroup)> {
+    let (questions, completed, waiting) = counts;
+    let mut segments = Vec::new();
+
+    if questions > 0 {
+        segments.push((
+            format!(
+                "{questions} question{}",
+                if questions == 1 { "" } else { "s" }
+            ),
+            AttentionGroup::Question,
+        ));
+    }
+    if completed > 0 {
+        segments.push((format!("{completed} to review"), AttentionGroup::Completed));
+    }
+    if waiting > 0 {
+        segments.push((format!("{waiting} waiting"), AttentionGroup::Waiting));
+    }
+    segments
+}
+
+/// The flat input-request count, the badge AMF showed before the attention
+/// layer existed.
+fn pending_badge_text(pending_count: usize) -> Option<String> {
+    (pending_count > 0).then(|| {
+        format!(
+            "  [{} input request{}]",
+            pending_count,
+            if pending_count == 1 { "" } else { "s" },
+        )
+    })
+}
+
+/// The header badge's plain text, so hit-testing can measure exactly what
+/// [`draw`] renders instead of reimplementing the decision. `None` when there
+/// is no badge.
+///
+/// The attention breakdown supersedes the flat count when any harness has told
+/// us why it stopped. The old count stays as the fallback for pending inputs
+/// the attention layer doesn't cover (diff reviews, change reasons) and for
+/// harnesses that report no lifecycle events at all.
+pub fn badge_text(attention: AttentionCounts, pending_count: usize) -> Option<String> {
+    let segments = attention_segments(attention);
+    if segments.is_empty() {
+        return pending_badge_text(pending_count);
+    }
+    let body: Vec<String> = segments.into_iter().map(|(text, _)| text).collect();
+    Some(format!("  [{}]", body.join(", ")))
+}
+
+/// The needs-attention breakdown, as coloured spans.
+fn attention_spans(counts: AttentionCounts, theme: &Theme) -> Vec<Span<'static>> {
+    let segments = attention_segments(counts);
+    if segments.is_empty() {
+        return Vec::new();
+    }
+
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let mut spans = vec![Span::styled("  [", muted)];
+    for (i, (text, group)) in segments.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(", ", muted));
+        }
+        let style = match group {
+            AttentionGroup::Question => Style::default()
+                .fg(theme.status_waiting.to_color())
+                .add_modifier(Modifier::BOLD),
+            AttentionGroup::Completed => Style::default()
+                .fg(theme.success.to_color())
+                .add_modifier(Modifier::BOLD),
+            AttentionGroup::Waiting => muted,
+        };
+        spans.push(Span::styled(text, style));
+    }
+    spans.push(Span::styled("]", muted));
+    spans
+}
+
 pub fn draw(
     frame: &mut Frame,
     area: Rect,
     cwd: &str,
     version: &str,
     pending_count: usize,
+    attention: AttentionCounts,
     theme: &Theme,
 ) {
     let block = Block::default()
@@ -37,13 +133,14 @@ pub fn draw(
         Span::styled(cwd, Style::default().fg(theme.text.to_color())),
     ];
 
-    if pending_count > 0 {
+    // Same precedence as `badge_text`, which hit-testing measures: the
+    // attention breakdown when there is one, the flat count otherwise.
+    let attention_spans = attention_spans(attention, theme);
+    if !attention_spans.is_empty() {
+        title_spans.extend(attention_spans);
+    } else if let Some(text) = pending_badge_text(pending_count) {
         title_spans.push(Span::styled(
-            format!(
-                "  [{} input request{}]",
-                pending_count,
-                if pending_count == 1 { "" } else { "s" },
-            ),
+            text,
             Style::default()
                 .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),

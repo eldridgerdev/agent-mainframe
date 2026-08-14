@@ -175,6 +175,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     };
 
                     let is_waiting_for_input = app.is_feature_waiting_for_input(&feature.name);
+                    let attention = app.feature_attention(&feature.tmux_session);
                     let is_thinking = app.is_feature_thinking(&feature.tmux_session);
                     let is_being_deleted =
                         app.is_feature_being_deleted(&project.name, &feature.name);
@@ -211,7 +212,18 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         let mut span = throbber.to_symbol_span(&app.throbber_state);
                         span.content = format!(" {} ", span.content).into();
                         span
+                    } else if let Some(state) = attention {
+                        // Why the session stopped, when the harness could say.
+                        Span::styled(
+                            format!(" {} ", state.glyph(app.config.nerd_font)),
+                            Style::default()
+                                .fg(state.color(&theme))
+                                .add_modifier(Modifier::BOLD),
+                        )
                     } else if is_waiting_for_input {
+                        // Stopped, but nothing told us why — the pre-attention
+                        // signal, kept for harnesses that report no lifecycle
+                        // events at all.
                         Span::styled(
                             " ? ",
                             Style::default()

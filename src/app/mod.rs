@@ -1,4 +1,5 @@
 pub(crate) mod ai_review;
+pub(crate) mod attention;
 mod automation;
 mod bookmarks;
 mod claude_session_picker;
@@ -506,6 +507,14 @@ pub struct AppConfig {
     /// disables dormant detection.
     #[serde(default = "default_dormant_last_accessed_hours")]
     pub dormant_last_accessed_hours: u64,
+    /// How long a needs-attention state (question / completed-awaiting-review)
+    /// stays on the dashboard before ageing out into plain idle. A session
+    /// nobody has answered for this long is no longer news, and leaving it in
+    /// the needs-attention list forever would drown the sessions that are.
+    /// `0` disables ageing, matching [`Self::max_concurrent_agents`] and
+    /// [`Self::low_memory_warn_mb`].
+    #[serde(default = "default_waiting_stale_minutes")]
+    pub waiting_stale_minutes: u64,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -576,6 +585,14 @@ fn default_dormant_last_accessed_hours() -> u64 {
     4
 }
 
+// Half an hour is long enough to survive a coffee break or a meeting — the
+// common reasons a question goes unanswered — and short enough that a
+// forgotten session drops out of the needs-attention list well before the
+// 60-minute dormancy check surfaces it in `z`.
+fn default_waiting_stale_minutes() -> u64 {
+    30
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum DiffReviewViewer {
     // The native AMF diff viewer is the only supported reviewer. The legacy
@@ -631,6 +648,7 @@ impl Default for AppConfig {
             kill_editor_on_stop: true,
             dormant_idle_minutes: default_dormant_idle_minutes(),
             dormant_last_accessed_hours: default_dormant_last_accessed_hours(),
+            waiting_stale_minutes: default_waiting_stale_minutes(),
         }
     }
 }
@@ -667,6 +685,13 @@ impl AppConfig {
     /// disabled (`0`). A platform with no memory signal also skips the gate.
     pub fn low_memory_threshold_mb(&self) -> Option<u64> {
         (self.low_memory_warn_mb > 0).then_some(self.low_memory_warn_mb)
+    }
+
+    /// How long a needs-attention state survives before ageing out, or `None`
+    /// when ageing is disabled (`0`).
+    pub fn waiting_stale_threshold(&self) -> Option<Duration> {
+        (self.waiting_stale_minutes > 0)
+            .then(|| Duration::from_secs(self.waiting_stale_minutes * 60))
     }
 
     /// The two dormancy thresholds as `(idle, last_accessed)` durations, or
@@ -904,6 +929,12 @@ pub struct App {
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
     pub thinking_features: std::collections::HashSet<String>,
+    /// Why each stopped session is stopped, keyed by `feature.tmux_session`
+    /// (the same granularity thinking status is tracked at). Deliberately
+    /// **not** persisted: it is rebuilt from hook events and starts empty
+    /// after a restart, so no `amf.db` migration is involved. Composed with
+    /// the persisted `ProjectStatus` at render time.
+    pub attention: HashMap<String, attention::AttentionRecord>,
     /// Rate-limits the opencode `capture-pane` thinking fallback: the
     /// 500ms thinking tick must not spawn a subprocess per feature.
     pub(crate) opencode_thinking_pane_cache: HashMap<String, (Instant, Option<bool>)>,
@@ -2282,6 +2313,7 @@ impl App {
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
+            attention: HashMap::new(),
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             awaiting_review_fixes: HashMap::new(),
@@ -2511,6 +2543,7 @@ impl App {
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
+            attention: HashMap::new(),
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             awaiting_review_fixes: HashMap::new(),

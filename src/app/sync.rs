@@ -579,8 +579,14 @@ impl App {
             }
         }
         for tmux_session in stopped_sessions {
+            self.clear_attention(&tmux_session);
             self.clear_sidebar_state_for_session(&tmux_session);
         }
+
+        // A question nobody has answered for `waiting_stale_minutes` has
+        // stopped being news; ageing it out keeps the needs-attention list
+        // showing what actually wants attention now.
+        self.age_out_attention();
 
         // A feature that came back up through any path (picker restart, another
         // AMF window) is no longer "stopped on purpose", so a future missing
@@ -823,6 +829,14 @@ impl App {
             let is_thinking = self.thinking_features.contains(&sid);
 
             if is_thinking {
+                // The session is producing output again, so whatever it was
+                // waiting on is moot. This is the "clear on new output" path
+                // for every harness whose thinking state AMF can observe;
+                // harnesses that report no thinking at all clear on open
+                // instead (see `HarnessCapabilities::clears_on_open`).
+                if self.clear_attention(&sid) {
+                    pending_inputs_changed = true;
+                }
                 if let Some(watch) = self.awaiting_review_fixes.get_mut(&sid) {
                     watch.started_thinking = true;
                 }
@@ -849,6 +863,18 @@ impl App {
             }
 
             if was_thinking && !is_thinking {
+                // Agent-agnostic completion signal, mirroring the pending-input
+                // fallback below: a session that stops working has finished a
+                // turn. Harness hooks report the same thing more promptly and
+                // more precisely; this covers the gap when a hook is missing or
+                // slow. `record_attention` refuses to downgrade a Question that
+                // is already standing, so a blocked agent keeps its state.
+                self.record_attention(
+                    &sid,
+                    &agent,
+                    crate::app::attention::AttentionState::CompletedAwaitingReview,
+                );
+
                 // A session we dispatched review-fix feedback to, that we've
                 // since observed actually start working, going idle means
                 // "fixes ready" — a more specific and actionable signal than

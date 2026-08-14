@@ -183,6 +183,9 @@ fn handle_click(
     button: crossterm::event::MouseButton,
     visible_rows: u16,
 ) -> Result<()> {
+    // Read before borrowing `app.mode` mutably below.
+    let attention_badge = crate::ui::pane::attention_badge_text(app.attention_rows().len());
+
     if let AppMode::Viewing(view) = &mut app.mode {
         if row == 0 {
             let name_start = 2;
@@ -192,13 +195,7 @@ fn handle_click(
                 return Ok(());
             }
 
-            let pending = app.pending_inputs.len();
-            if pending > 0 {
-                let inputs_text = format!(
-                    " | {} input{}",
-                    pending,
-                    if pending == 1 { "" } else { "s" }
-                );
+            if let Some(inputs_text) = attention_badge {
                 let inputs_len = inputs_text.len() as u16;
 
                 let mut header_len = 2;
@@ -250,18 +247,16 @@ fn handle_click(
         return Ok(());
     }
 
-    if row == 1 && !app.pending_inputs.is_empty() {
+    if row == 1
+        && let Some(badge_text) =
+            crate::ui::header::badge_text(app.attention_counts(), app.pending_inputs.len())
+    {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         let prefix_len = 19 + cwd.len() as u16;
-        let pending = app.pending_inputs.len();
-        let badge_text = format!(
-            "  [{} input request{}]",
-            pending,
-            if pending == 1 { "" } else { "s" }
-        );
         let badge_start = prefix_len;
+        // The badge is ASCII-only, so byte length is its rendered width.
         let badge_end = badge_start + badge_text.len() as u16;
         if col >= badge_start && col < badge_end {
             app.mode = AppMode::NotificationPicker(0, None);

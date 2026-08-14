@@ -80,6 +80,31 @@ function writeNotification(sessionId, cwd, message, type = "input-request") {
   debug("notify via file fallback", { sessionId, filePath })
 }
 
+// Report *why* a session stopped, for the dashboard's attention layer.
+// Separate from writeNotification: this only feeds the in-memory attention
+// map and never queues a pending input, so it cannot disturb the existing
+// notification flow. Best-effort — a failure here must not break the plugin.
+function writeAttention(sessionId, cwd, kind) {
+  debug("writeAttention", { sessionId, kind })
+  const payload = {
+    type: "attention",
+    source: "opencode-plugin",
+    session_id: sessionId,
+    cwd: cwd,
+    amf_event_kind: kind,
+    ...amfSessionMetadata(sessionId),
+  }
+
+  try {
+    execFileSync("amf", ["notify"], {
+      input: JSON.stringify(payload),
+      stdio: ["pipe", "ignore", "ignore"],
+    })
+  } catch (err) {
+    debug("attention via amf notify failed", { sessionId, err: String(err) })
+  }
+}
+
 function clearNotification(sessionId) {
   const age = Date.now() - (notifiedAt.get(sessionId) || 0)
   if (age > 0 && age < 1500) {
@@ -139,6 +164,8 @@ export const InputRequestPlugin = async ({ directory }) => {
           input.sessionId ||
           "question"
         writeNotification(sessionId, directory, "User input requested", "input-request")
+        // The `question` tool is opencode asking something outright.
+        writeAttention(sessionId, directory, "question")
       }
     },
     "session.status": async ({ event }) => {
@@ -156,6 +183,8 @@ export const InputRequestPlugin = async ({ directory }) => {
 
       if (status === "busy" || status === "running") {
         clearNotification(sessionId)
+        // New output: whatever the session was waiting on is moot.
+        writeAttention(sessionId, directory, "clear")
         return
       }
 
@@ -174,6 +203,9 @@ export const InputRequestPlugin = async ({ directory }) => {
           "Agent finished and is waiting for input",
           "input-request"
         )
+        // Working → idle is a finished turn, not a question. If the session
+        // had already raised a question, AMF keeps the question.
+        writeAttention(sessionId, directory, "completed")
       }
     },
   }

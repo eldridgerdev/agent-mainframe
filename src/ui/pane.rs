@@ -21,7 +21,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("H", "Bookmark session"),
     ("M", "Unbookmark session"),
     ("1-9", "Jump to bookmark slot"),
-    ("i", "Pending inputs"),
+    ("i", "Needs attention"),
     ("s", "Steering coach (experimental)"),
     ("g", "Generate summary"),
     ("l", "Latest prompt"),
@@ -153,6 +153,19 @@ fn rainbow_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
         .collect()
 }
 
+/// The embedded view's needs-attention badge, or `None` when nothing wants
+/// looking at. Public so hit-testing can measure exactly what the header
+/// renders rather than reimplementing it.
+pub fn attention_badge_text(attention_count: usize) -> Option<String> {
+    (attention_count > 0).then(|| {
+        format!(
+            " | {} need{} attention",
+            attention_count,
+            if attention_count == 1 { "s" } else { "" },
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)] // exercised only by unit tests
 pub fn draw(
@@ -161,7 +174,7 @@ pub fn draw(
     pane_content: &str,
     sidebar_data: Option<&AgentSidebarData>,
     leader_active: bool,
-    pending_count: usize,
+    attention_count: usize,
     tmux_cursor: Option<(u16, u16)>,
     compose_intercept: Option<bool>,
     next_prev_feature: (Option<char>, Option<char>),
@@ -175,7 +188,7 @@ pub fn draw(
         &[],
         sidebar_data,
         leader_active,
-        pending_count,
+        attention_count,
         tmux_cursor,
         compose_intercept,
         next_prev_feature,
@@ -192,7 +205,7 @@ pub(crate) fn draw_with_lines(
     pane_lines: &[Line<'static>],
     sidebar_data: Option<&AgentSidebarData>,
     leader_active: bool,
-    pending_count: usize,
+    attention_count: usize,
     tmux_cursor: Option<(u16, u16)>,
     compose_intercept: Option<bool>,
     next_prev_feature: (Option<char>, Option<char>),
@@ -308,13 +321,11 @@ pub(crate) fn draw_with_lines(
         ));
     }
 
-    if pending_count > 0 && !view.scroll_mode {
+    if !view.scroll_mode
+        && let Some(text) = attention_badge_text(attention_count)
+    {
         header_spans.push(Span::styled(
-            format!(
-                " | {} input{}",
-                pending_count,
-                if pending_count == 1 { "" } else { "s" },
-            ),
+            text,
             Style::default()
                 .fg(theme.danger.to_color())
                 .add_modifier(Modifier::BOLD),

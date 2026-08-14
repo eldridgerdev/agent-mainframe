@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::app::attention::AttentionState;
 use crate::app::toast::input_request_toast_message;
 use crate::app::util::latest_prompt_path;
 use crate::automation::{
@@ -58,6 +59,10 @@ struct IpcMsg {
     is_new_file: Option<bool>,
     reason: Option<String>,
     prompt: Option<String>,
+    /// Why the session stopped, on `type: "attention"` messages: `question`,
+    /// `completed`, `waiting`, or `clear`. Anything else degrades to
+    /// `waiting` — see [`AttentionState::from_event_kind`].
+    amf_event_kind: Option<String>,
 }
 
 /// Notification files older than this are considered abandoned and are
@@ -987,6 +992,58 @@ impl App {
             return;
         }
 
+        // Attention: why this session stopped. Deliberately terminal — it only
+        // updates the in-memory attention layer and never queues a pending
+        // input, so a harness can report its lifecycle here without any risk
+        // to the notification flow.
+        if msg_type == "attention" {
+            let kind = msg.amf_event_kind.as_deref();
+            let cwd_path = PathBuf::from(msg.cwd.as_deref().unwrap_or_default());
+            let amf_session = msg
+                .amf_tmux_session
+                .as_deref()
+                .or(msg.amf_session.as_deref());
+
+            let Some((_, _, _, Some((pi, fi)))) =
+                Some(self.project_feature_for_message(amf_session, &cwd_path))
+            else {
+                self.log_debug(
+                    "attention",
+                    format!("Unmatched attention event (kind={kind:?}, cwd={cwd_path:?})"),
+                );
+                return;
+            };
+
+            let feature = &self.store.projects[pi].features[fi];
+            let tmux_session = feature.tmux_session.clone();
+            let agent = feature.agent.clone();
+            let feature_name = feature.name.clone();
+
+            // "clear" is the harness telling us it started producing output
+            // again, which retires whatever it was waiting on.
+            if kind == Some("clear") {
+                if self.clear_attention(&tmux_session) {
+                    self.log_debug(
+                        "attention",
+                        format!("Cleared attention for {feature_name} (session={tmux_session})"),
+                    );
+                }
+                return;
+            }
+
+            let state = AttentionState::from_event_kind(kind);
+            self.record_attention(&tmux_session, &agent, state);
+            self.log_debug(
+                "attention",
+                format!(
+                    "{feature_name} (agent={}) reported {kind:?} -> {:?}",
+                    agent.display_name(),
+                    self.attention_for(&tmux_session).map(|record| record.state)
+                ),
+            );
+            return;
+        }
+
         if msg_type == "tool-start" {
             let cwd_path = PathBuf::from(msg.cwd.as_deref().unwrap_or_default());
             if let Some(feature_session_id) = msg.amf_feature_session_id.as_ref() {
@@ -1669,10 +1726,54 @@ impl App {
         true
     }
 
+    /// Select a feature by name and open it, for needs-attention rows that
+    /// carry no pending input to dispatch through.
+    fn jump_to_feature_named(&mut self, project_name: &str, feature_name: &str) -> Result<()> {
+        let target = self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+            (p.name == project_name).then(|| {
+                p.features
+                    .iter()
+                    .position(|f| f.name == feature_name)
+                    .map(|fi| (pi, fi))
+            })?
+        });
+
+        let Some((pi, fi)) = target else {
+            self.mode = AppMode::Normal;
+            self.message = Some("Notification cleared (no matching feature)".into());
+            return Ok(());
+        };
+
+        self.selection = Selection::Feature(pi, fi);
+        self.enter_view()
+    }
+
     pub fn handle_notification_select(&mut self) -> Result<()> {
-        let idx = match &self.mode {
+        let row_idx = match &self.mode {
             AppMode::NotificationPicker(i, _) => *i,
             _ => return Ok(()),
+        };
+
+        let Some(row) = self.attention_rows().into_iter().nth(row_idx) else {
+            self.mode = AppMode::Normal;
+            return Ok(());
+        };
+
+        // A row the attention layer raised on its own has no pending input to
+        // dispatch — there is nothing to consume or reply to, only a session
+        // to go to. The record itself is left standing: opening a session is
+        // not the same as dealing with it, so it clears when the agent
+        // produces output (or ages out), exactly as it would have without the
+        // detour through this list.
+        let idx = match row.pending_index() {
+            Some(idx) => idx,
+            None => {
+                if let crate::app::attention::AttentionRow::Attention { entry, .. } = row {
+                    return self.jump_to_feature_named(&entry.project_name, &entry.feature_name);
+                }
+                self.mode = AppMode::Normal;
+                return Ok(());
+            }
         };
 
         let input = match self.pending_inputs.get(idx) {

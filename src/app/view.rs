@@ -160,6 +160,21 @@ impl App {
             }
         });
 
+        // Clear-on-open, for harnesses that will never tell us they resumed.
+        // Harnesses AMF can observe thinking for clear themselves in
+        // `sync_thinking_status` when output actually resumes, which is the
+        // more accurate signal — opening a session is not the same as dealing
+        // with it, so we only fall back to it where nothing better exists.
+        if self.store.projects[pi]
+            .features
+            .get(fi)
+            .map(|feature| crate::app::attention::HarnessCapabilities::for_agent(&feature.agent))
+            .is_some_and(|capabilities| capabilities.clears_on_open())
+        {
+            let session = tmux_session.clone();
+            self.clear_attention(&session);
+        }
+
         let pending_project_name = project_name.clone();
         let pending_feature_name = feature_name.clone();
         let mut view = ViewState::new(

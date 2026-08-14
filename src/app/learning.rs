@@ -1730,7 +1730,10 @@ fn expected_block(selection_text: &str, is_diff: bool) -> ExpectedBlock {
 enum BlockMatch {
     /// Found at the stored position — nothing to report.
     AsStored,
-    Moved { start: usize, end: usize },
+    Moved {
+        start: usize,
+        end: usize,
+    },
     NotFound,
     /// Found in more than one place. Guessing which is the original is exactly
     /// the kind of quiet wrongness this whole check exists to remove, so it is
@@ -7232,7 +7235,12 @@ pub(crate) mod tests {
         app.learning_cursor_move(1);
         let id = ask_and_answer(&mut app, "What is this?", "It is b.");
         assert_eq!(
-            learning(&app).qa.iter().find(|r| r.id == id).unwrap().anchor,
+            learning(&app)
+                .qa
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .anchor,
             LearningAnchor::Lines { start: 2, end: 2 }
         );
         app.close_learning_mode();
@@ -7372,15 +7380,24 @@ pub(crate) mod tests {
     fn a_drifted_answer_is_handed_over_saying_where_the_code_went() {
         let mut qa = anchored_qa(2, 2, "fn b() {}");
         qa.answer = Some("It is b.".to_string());
-        let seed = escalation_seed(&qa, Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 }));
+        let seed = escalation_seed(
+            &qa,
+            Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 }),
+        );
         assert!(seed.contains("src/util.rs:2"), "{seed}");
         assert!(seed.contains("it is now line 4"), "{seed}");
 
-        let lost = escalation_seed(&qa, Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone)));
+        let lost = escalation_seed(
+            &qa,
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone)),
+        );
         assert!(lost.contains("no longer in the project"), "{lost}");
 
         let clean = escalation_seed(&qa, None);
-        assert!(!clean.contains("moved"), "nothing to say when nothing moved");
+        assert!(
+            !clean.contains("moved"),
+            "nothing to say when nothing moved"
+        );
     }
 
     /// The same for a note kept on the TODO list: `todo_spawn_prompt` appends
@@ -7389,7 +7406,10 @@ pub(crate) mod tests {
     fn a_drifted_answer_is_kept_saying_where_the_code_went() {
         let mut qa = anchored_qa(2, 2, "fn b() {}");
         qa.answer = Some("It is b.".to_string());
-        let body = todo_body(&qa, Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 }));
+        let body = todo_body(
+            &qa,
+            Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 }),
+        );
         assert!(body.contains("src/util.rs:2"), "{body}");
         assert!(body.contains("it is now line 4"), "{body}");
         assert!(!todo_body(&qa, None).contains("moved"));
@@ -8184,7 +8204,10 @@ pub(crate) mod tests {
             "an explanation must not turn into a work order: {explain}"
         );
 
-        let action = escalation_seed(&qa_with("Split this function.", LearningQaIntent::Action), None);
+        let action = escalation_seed(
+            &qa_with("Split this function.", LearningQaIntent::Action),
+            None,
+        );
         assert!(action.contains("make that change"), "{action}");
 
         // Whichever it is, the last thing on screen when the composer opens

@@ -25,9 +25,8 @@ use super::editor_view::{count_wrapped_editor_lines, editor_lines, sync_editor_s
 use crate::app::learning::STARTER_QUESTIONS;
 use crate::app::{
     BrowseScope, LearningAnchor, LearningAnchorDrift, LearningFocus, LearningHarnessPicker,
-    LearningListEntry,
-    LearningListGroup, LearningQa, LearningQaIntent, LearningQaStatus, LearningQuestionEditor,
-    LearningRunMode, LearningStarterPicker, LearningViewState,
+    LearningListEntry, LearningListGroup, LearningQa, LearningQaIntent, LearningQaStatus,
+    LearningQuestionEditor, LearningRunMode, LearningStarterPicker, LearningViewState,
 };
 use crate::highlight;
 use crate::theme::Theme;

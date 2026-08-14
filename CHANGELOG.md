@@ -44,6 +44,16 @@ are tagged.
 
 ### Fixed
 
+- **The mouse wheel scrolls the plan you are reviewing.** A proposed plan is
+  usually taller than the screen, and scrolling it with the wheel did nothing
+  — worse than nothing, in fact: the wheel was moving the selection on the
+  dashboard hidden behind the dialog, so you could come out of a plan review
+  pointed at a different feature than you went in on. The wheel now scrolls
+  the plan, the agent's review of it, and the plan and instruction editors,
+  three lines at a time like every other scrollable view in AMF. Clicking
+  inside the dialog no longer reaches the dashboard underneath either, where
+  a double-click could open or start whichever feature happened to be there.
+
 - **Learning Mode says when its file list is incomplete.** In a project that
   is not a git repository, any folder AMF could not open was left out
   silently — and a list missing a whole folder looks exactly like a project

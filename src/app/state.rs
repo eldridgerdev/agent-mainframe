@@ -5408,6 +5408,29 @@ impl PlanInterviewState {
         self.phase = PlanInterviewPhase::Review;
     }
 
+    /// The scroll offset of whatever pane the current phase puts on screen, if
+    /// that pane scrolls at all.
+    ///
+    /// Mouse-wheel events route through here so the wheel moves the plan (or
+    /// the advisory review, or an instruction editor) rather than the dashboard
+    /// list behind the dialog. `None` is a phase whose body always fits — the
+    /// caller still swallows the event so the hidden selection cannot drift.
+    /// Every one of these offsets is clamped by the renderer against the
+    /// laid-out content, so this only ever has to move it.
+    pub fn scroll_offset_mut(&mut self) -> Option<&mut usize> {
+        if self.abort_confirmation {
+            return None;
+        }
+        match self.phase {
+            PlanInterviewPhase::Review => Some(&mut self.review_scroll_offset),
+            PlanInterviewPhase::Critique => Some(&mut self.critique_scroll_offset),
+            PlanInterviewPhase::Editing
+            | PlanInterviewPhase::DirectedFeedback
+            | PlanInterviewPhase::Investigation => Some(&mut self.edit_scroll_offset),
+            _ => None,
+        }
+    }
+
     /// Open a blank multi-line instruction editor from the review gate.
     pub fn begin_directed_feedback(&mut self) -> bool {
         if self.phase != PlanInterviewPhase::Review || self.synthesized_plan.is_none() {

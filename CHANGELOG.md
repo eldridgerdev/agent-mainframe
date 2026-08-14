@@ -256,6 +256,14 @@ storage the first time it runs.
   configured while being explicit that adding swap trades an out-of-memory kill
   for heavy paging, and that lowering `max_concurrent_agents` is the fix for
   the cause.
+- **AI-drafted PR replies disclose how they were generated.** An unchanged
+  reply returned by a PR Triage fix session now includes the agent harness,
+  best-effort model name, estimated token usage, and estimated cost from the
+  current triage visit before AMF's existing AI-attribution footer. Harnesses
+  that do not expose model or usage telemetry say that it is unreported or
+  unavailable instead of silently omitting the field. Editing the draft still
+  changes it to a user-authored, AMF-posted reply and removes the AI generation
+  disclosure. No configuration or migration is required.
 
 - **Final Review has a `?` key that shows you all of its keys.** The review
   screen has grown a lot of bindings, and the two footer rows can only ever

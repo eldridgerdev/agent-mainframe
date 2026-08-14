@@ -13677,6 +13677,80 @@ fn pr_review_triage_session_usage_reports_only_growth_since_baseline() {
 }
 
 #[test]
+fn pr_review_agent_draft_captures_harness_model_usage_and_cost() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Claude,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    let source = TokenUsageSource {
+        provider: TokenUsageProvider::Claude,
+        id: "triage-session".to_string(),
+    };
+    let baseline = SessionTokenUsage {
+        source: source.clone(),
+        input_tokens: 1_000,
+        output_tokens: 200,
+        cache_read_tokens: 100,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1_300,
+    };
+    session.token_usage = Some(baseline.clone());
+
+    let db_dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    let AppMode::PrReview(state) = &mut app.mode else {
+        panic!("expected PR review pane");
+    };
+    state.usage_baselines.insert(source, baseline);
+    let tmux_session = app.store.projects[0].features[0].tmux_session.clone();
+    app.sidebar_model_cache
+        .insert(tmux_session, "Model: claude-sonnet-4-6".to_string());
+    let usage = app.store.projects[0].features[0].sessions[0]
+        .token_usage
+        .as_mut()
+        .unwrap();
+    usage.input_tokens += 400;
+    usage.output_tokens += 100;
+    usage.cache_read_tokens += 100;
+    usage.total_tokens += 600;
+    app.db
+        .as_ref()
+        .unwrap()
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .unwrap();
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .capture_pr_comment_reply_draft(7, 1, "request-1", "Fixed the guard.")
+            .unwrap()
+    );
+
+    app.pr_review_open_reply_done();
+
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    let metadata = state
+        .reply
+        .as_ref()
+        .and_then(|reply| reply.generation_metadata.as_ref())
+        .expect("captured drafts should disclose their generation details");
+    assert_eq!(metadata.harness, "Claude");
+    assert_eq!(metadata.model.as_deref(), Some("claude-sonnet-4-6"));
+    assert_eq!(metadata.estimated_tokens, Some(600));
+    assert_eq!(metadata.estimated_cost.as_deref(), Some("<$0.01"));
+}
+
+#[test]
 fn pr_review_triage_session_usage_hides_an_unchanged_baseline() {
     let mut store = store_with_feature(ProjectStatus::Active);
     let session = store.projects[0].features[0].add_session_named(

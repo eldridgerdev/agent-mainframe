@@ -282,6 +282,49 @@ pub(crate) const AI_ATTRIBUTION_FOOTER: &str = "— drafted by AI via AMF";
 /// footer identifies their origin without turning them into follow-up replies.
 pub(crate) const AI_REVIEW_ATTRIBUTION_FOOTER: &str = "— AI review via AMF";
 
+/// Best-effort provenance attached to an unchanged agent-written reply draft.
+/// Usage and cost are the PR triage session's delta for the current pane visit:
+/// that is the narrowest reliable accounting boundary shared by every
+/// interactive harness without asking the agent to self-report its own usage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyGenerationMetadata {
+    pub harness: String,
+    pub model: Option<String>,
+    pub estimated_tokens: Option<u64>,
+    pub estimated_cost: Option<String>,
+}
+
+impl ReplyGenerationMetadata {
+    pub fn source_disclosure(&self) -> String {
+        format!(
+            "AI generation: harness {} · model {}",
+            self.harness,
+            self.model.as_deref().unwrap_or("unreported")
+        )
+    }
+
+    pub fn usage_disclosure(&self) -> String {
+        let tokens = self
+            .estimated_tokens
+            .map(crate::token_tracking::format_token_count)
+            .map(|tokens| format!("~{tokens}"))
+            .unwrap_or_else(|| "unavailable".to_string());
+        let cost = self.estimated_cost.as_deref().unwrap_or("unavailable");
+        format!("estimated tokens {tokens} · estimated cost {cost}")
+    }
+
+    /// Compact GitHub-flavored Markdown line inserted immediately above the
+    /// stable attribution footer. Missing provider telemetry is explicit rather
+    /// than silently dropping one of the promised provenance fields.
+    pub fn disclosure(&self) -> String {
+        format!(
+            "_{} · {}_",
+            self.source_disclosure(),
+            self.usage_disclosure()
+        )
+    }
+}
+
 fn append_amf_attribution(body: &str) -> String {
     format!("{}\n\n{}", body.trim_end(), AMF_ATTRIBUTION_FOOTER)
 }
@@ -294,13 +337,28 @@ fn append_amf_attribution(body: &str) -> String {
 /// AI-authorship attribution (e.g. `ai_review`'s posted findings) needs its
 /// own distinct footer rather than reusing this one, or it would falsely
 /// register as an AMF-posted reply.
-pub(crate) fn append_ai_attribution(body: &str) -> String {
-    format!("{}\n\n{}", body.trim_end(), AI_ATTRIBUTION_FOOTER)
+pub(crate) fn append_ai_attribution(
+    body: &str,
+    metadata: Option<&ReplyGenerationMetadata>,
+) -> String {
+    match metadata {
+        Some(metadata) => format!(
+            "{}\n\n{}\n\n{}",
+            body.trim_end(),
+            metadata.disclosure(),
+            AI_ATTRIBUTION_FOOTER
+        ),
+        None => format!("{}\n\n{}", body.trim_end(), AI_ATTRIBUTION_FOOTER),
+    }
 }
 
-fn append_reply_attribution(body: &str, agent_drafted: bool) -> String {
+fn append_reply_attribution(
+    body: &str,
+    agent_drafted: bool,
+    metadata: Option<&ReplyGenerationMetadata>,
+) -> String {
     if agent_drafted {
-        append_ai_attribution(body)
+        append_ai_attribution(body, metadata)
     } else {
         append_amf_attribution(body)
     }
@@ -3265,6 +3323,9 @@ impl App {
             }
             None => seed,
         };
+        let generation_metadata = has_draft
+            .then(|| self.pr_review_reply_generation_metadata())
+            .flatten();
         // A captured draft is post-ready and opens in confirm view. Without one,
         // not-needed still starts in edit mode because the user must type a
         // reason; the deterministic done template remains post-ready.
@@ -3276,6 +3337,7 @@ impl App {
                 editor: TextEditor::new(seed.clone()),
                 editing,
                 agent_drafted: has_draft,
+                generation_metadata,
                 original_seed: seed,
             });
         }
@@ -3347,11 +3409,14 @@ impl App {
                     reply.comment_id,
                     reply.editor.text().trim().to_string(),
                     reply_effective_agent_drafted(reply),
+                    reply.generation_metadata.clone(),
                 ))
             }),
             _ => return Ok(()),
         };
-        let Some((workdir, pr, target, kind, comment_id, body, agent_drafted)) = prep else {
+        let Some((workdir, pr, target, kind, comment_id, body, agent_drafted, generation_metadata)) =
+            prep
+        else {
             return Ok(());
         };
 
@@ -3368,7 +3433,8 @@ impl App {
         // agent draft and channel-only AMF attribution for a deterministic or
         // user-written reply. The local note stays unmarked because it is
         // AMF's own record, not content read back from GitHub.
-        let posted_body = append_reply_attribution(&body, agent_drafted);
+        let posted_body =
+            append_reply_attribution(&body, agent_drafted, generation_metadata.as_ref());
         let result = match target {
             ReplyTarget::InlineThread { root_comment_id } => GhCli::reply_to_review_comment(
                 &workdir,
@@ -3871,6 +3937,90 @@ impl App {
             || delta.reasoning_tokens > 0
             || delta.total_tokens > 0)
             .then_some(delta)
+    }
+
+    /// Describe the concrete fix session that produced a captured reply draft.
+    /// Model discovery follows the same transcript/sidebar sources as the
+    /// dashboard. Some harnesses (notably Pi) do not expose an interactive
+    /// model or token stream; those fields remain explicit `unreported` /
+    /// `unavailable` values in the posted disclosure.
+    fn pr_review_reply_generation_metadata(&self) -> Option<ReplyGenerationMetadata> {
+        let AppMode::PrReview(state) = &self.mode else {
+            return None;
+        };
+        let (pi, fi) = self.pr_review_feature_for_target(state)?;
+        let feature = &self.store.projects[pi].features[fi];
+        let si = pr_triage_session_index(feature, state.fix_target)?;
+        let session = &feature.sessions[si];
+
+        let harness = match session.kind {
+            SessionKind::Claude => "Claude",
+            SessionKind::Opencode => "Opencode",
+            SessionKind::Codex => "Codex",
+            SessionKind::Pi => "Pi",
+            _ => return None,
+        }
+        .to_string();
+
+        let source_id = session
+            .token_usage_source
+            .as_ref()
+            .map(|source| source.id.as_str())
+            .or(session.claude_session_id.as_deref());
+        let model = match session.kind {
+            SessionKind::Claude => source_id.and_then(|id| {
+                crate::app::claude_sessions::sidebar_metadata_for_session_id(&feature.workdir, id)
+                    .ok()
+                    .flatten()
+                    .and_then(|metadata| metadata.model)
+            }),
+            SessionKind::Opencode => {
+                crate::app::opencode_storage::read_sidebar_data(&feature.workdir, source_id)
+                    .and_then(|sidebar| match (sidebar.provider, sidebar.model) {
+                        (Some(provider), Some(model))
+                            if !provider.trim().is_empty()
+                                && !provider.eq_ignore_ascii_case(model.trim()) =>
+                        {
+                            Some(format!("{}/{}", provider.trim(), model.trim()))
+                        }
+                        (_, Some(model)) if !model.trim().is_empty() => {
+                            Some(model.trim().to_string())
+                        }
+                        _ => None,
+                    })
+            }
+            SessionKind::Codex => source_id
+                .and_then(|id| self.cached_codex_session_model(&feature.workdir, id))
+                .map(ToOwned::to_owned)
+                .or_else(crate::codex_config::configured_model),
+            SessionKind::Pi => None,
+            _ => None,
+        }
+        .or_else(|| {
+            self.sidebar_model_cache
+                .get(&feature.tmux_session)
+                .map(|model| {
+                    model
+                        .trim()
+                        .strip_prefix("Model:")
+                        .unwrap_or(model.trim())
+                        .trim()
+                        .to_string()
+                })
+                .filter(|model| !model.is_empty())
+        });
+
+        let usage = self.pr_review_triage_session_usage();
+        let estimated_tokens = usage.as_ref().map(|usage| usage.total_tokens);
+        let estimated_cost = usage.as_ref().map(|usage| {
+            crate::token_tracking::format_token_cost(usage, &self.config.token_pricing)
+        });
+        Some(ReplyGenerationMetadata {
+            harness,
+            model,
+            estimated_tokens,
+            estimated_cost,
+        })
     }
 
     pub fn pr_review_scroll_detail_up(&mut self, amount: usize) {
@@ -5529,12 +5679,18 @@ mod tests {
 
     #[test]
     fn agent_drafted_replies_use_ai_attribution() {
+        let metadata = ReplyGenerationMetadata {
+            harness: "Codex".to_string(),
+            model: Some("gpt-5.5".to_string()),
+            estimated_tokens: Some(1_500),
+            estimated_cost: Some("$0.04".to_string()),
+        };
         assert_eq!(
-            append_reply_attribution("Fixed the guard.", true),
-            "Fixed the guard.\n\n— drafted by AI via AMF"
+            append_reply_attribution("Fixed the guard.", true, Some(&metadata)),
+            "Fixed the guard.\n\n_AI generation: harness Codex · model gpt-5.5 · estimated tokens ~1.5k · estimated cost $0.04_\n\n— drafted by AI via AMF"
         );
         assert_eq!(
-            append_reply_attribution("Done in `abc123`.", false),
+            append_reply_attribution("Done in `abc123`.", false, Some(&metadata)),
             "Done in `abc123`.\n\n— posted via AMF"
         );
     }
@@ -5545,6 +5701,7 @@ mod tests {
             kind: ReplyKind::Done,
             editor: TextEditor::new(current.to_string()),
             agent_drafted,
+            generation_metadata: None,
             original_seed: seed.to_string(),
             editing: false,
         }

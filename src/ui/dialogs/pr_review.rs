@@ -940,12 +940,19 @@ fn draw_reply_dialog(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let agent_drafted = crate::app::pr_review::reply_effective_agent_drafted(reply);
+    let disclosure_rows = if agent_drafted && reply.generation_metadata.is_some() {
+        3
+    } else {
+        1
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // reply body
-            Constraint::Length(1), // footer-disclosure note
-            Constraint::Length(1), // key hints
+            Constraint::Min(1),                  // reply body
+            Constraint::Length(disclosure_rows), // generation + attribution disclosure
+            Constraint::Length(1),               // key hints
         ])
         .split(inner);
 
@@ -961,18 +968,27 @@ fn draw_reply_dialog(
     // Re-evaluated against the live editor text (not the stored flag alone) so
     // editing a captured draft away from the agent's own words drops the AI
     // attribution in the preview too.
-    let attribution = if crate::app::pr_review::reply_effective_agent_drafted(reply) {
+    let attribution = if agent_drafted {
         crate::app::pr_review::AI_ATTRIBUTION_FOOTER
     } else {
         crate::app::pr_review::AMF_ATTRIBUTION_FOOTER
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("will post with a \"{attribution}\" footer"),
+    let mut disclosure = Vec::new();
+    if agent_drafted && let Some(metadata) = &reply.generation_metadata {
+        disclosure.push(Line::from(Span::styled(
+            metadata.source_disclosure(),
             Style::default().fg(theme.text_muted.to_color()),
-        ))),
-        chunks[1],
-    );
+        )));
+        disclosure.push(Line::from(Span::styled(
+            metadata.usage_disclosure(),
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+    }
+    disclosure.push(Line::from(Span::styled(
+        format!("will post with a \"{attribution}\" footer"),
+        Style::default().fg(theme.text_muted.to_color()),
+    )));
+    frame.render_widget(Paragraph::new(disclosure), chunks[1]);
 
     let hints = if reply.editing {
         "[esc] done editing"
@@ -2664,6 +2680,7 @@ mod tests {
             kind: crate::app::pr_review::ReplyKind::Done,
             editor: crate::editor::TextEditor::new("Done in `abc123`.".to_string()),
             agent_drafted: false,
+            generation_metadata: None,
             original_seed: "Done in `abc123`.".to_string(),
             editing: false,
         };
@@ -2695,6 +2712,12 @@ mod tests {
                 "Fixed the guard.\n\nDone in `abc123`.".to_string(),
             ),
             agent_drafted: true,
+            generation_metadata: Some(crate::app::pr_review::ReplyGenerationMetadata {
+                harness: "Codex".to_string(),
+                model: Some("gpt-5.5".to_string()),
+                estimated_tokens: Some(1_500),
+                estimated_cost: Some("$0.04".to_string()),
+            }),
             original_seed: "Fixed the guard.\n\nDone in `abc123`.".to_string(),
             editing: false,
         };
@@ -2713,6 +2736,10 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("drafted by AI via AMF"));
+        assert!(rendered.contains("AI generation: harness Codex"));
+        assert!(rendered.contains("model gpt-5.5"));
+        assert!(rendered.contains("estimated tokens ~1.5k"));
+        assert!(rendered.contains("estimated cost $0.04"));
         assert!(!rendered.contains("posted via AMF"));
     }
 

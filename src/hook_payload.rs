@@ -68,6 +68,10 @@ pub struct NotifyOptions {
     /// off the command line, where they would risk `ARG_MAX`. An unreadable
     /// path yields an empty string, matching the `jq --arg x ""` it replaces.
     pub file_fields: Vec<(String, String)>,
+    /// `key=true|false` fields set as JSON booleans rather than strings, for
+    /// the handful the dashboard deserializes into a `bool` (`is_new_file`).
+    /// Anything other than `true` is `false`.
+    pub bool_fields: Vec<(String, String)>,
     /// Fill in `prompt` from the harness's transcript shape when it is not
     /// already a top-level field. Codex reports the turn's messages rather
     /// than the prompt, so this recovers what the user actually typed.
@@ -100,7 +104,21 @@ pub fn build_payload(stdin: &str, env: &HookEnv, options: &NotifyOptions) -> Opt
 
     // The dashboard keys features by tmux session, so that wins when present;
     // the harness's id is the fallback for a hook running outside AMF's env.
-    let session_id = env.amf_session.clone().or(provider_session_id);
+    //
+    // An explicit `--field session_id=…` outranks both. It is applied further
+    // down like any other field, but it has to be consulted *here* too or a
+    // caller that supplies the identity itself — the diff-review plugin, which
+    // deliberately sends the provider's id — trips the "no identity" guard and
+    // gets nothing sent.
+    let explicit_session_id = options
+        .fields
+        .iter()
+        .find(|(key, _)| key == "session_id")
+        .map(|(_, value)| value.clone())
+        .filter(|value| !value.is_empty());
+    let session_id = explicit_session_id
+        .or_else(|| env.amf_session.clone())
+        .or(provider_session_id);
     match session_id {
         Some(id) => {
             payload.insert("session_id".to_string(), Value::String(id));
@@ -165,12 +183,64 @@ pub fn build_payload(stdin: &str, env: &HookEnv, options: &NotifyOptions) -> Opt
         let contents = std::fs::read_to_string(path).unwrap_or_default();
         payload.insert(key.clone(), Value::String(contents));
     }
+    for (key, value) in &options.bool_fields {
+        payload.insert(key.clone(), Value::Bool(value == "true"));
+    }
 
     for field in &options.require {
         string_field(&payload, field)?;
     }
 
     Some(Value::Object(payload))
+}
+
+/// Follow a dotted path (`tool_input.file_path`) into `value`.
+///
+/// Only object traversal: the hook payloads this reads are objects all the way
+/// down, and array indexing would invite paths that silently mean nothing.
+pub fn lookup_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path.split('.') {
+        current = current.as_object()?.get(segment)?;
+    }
+    Some(current)
+}
+
+/// The plain text a shell script wants for the first of `paths` that resolves,
+/// or `None` when none do.
+///
+/// Matches `jq -r`: a string yields its contents verbatim — no quoting, no
+/// escaping — because callers redirect it straight into a file that must hold
+/// the literal bytes. Anything non-string yields its compact JSON, so a bool
+/// reads as `true`/`false` and a nested object stays parseable.
+///
+/// Several paths are accepted so a caller can spell out the shapes it tolerates
+/// instead of running one extraction per shape.
+pub fn field_text(value: &Value, paths: &[String]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| lookup_path(value, path))
+        .filter(|found| !found.is_null())
+        .map(|found| match found {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        })
+}
+
+/// Whether a diff-review reply says the user rejected the change.
+///
+/// The reply is flat — `handlers::diff_review` sends
+/// `{type, decision, reason, skip, reject}` and nothing in the codebase nests
+/// it under a `response` key. `decision` is the current field; the `reject`
+/// boolean is checked too because both are sent and either alone is a complete
+/// answer.
+pub fn reply_is_reject(reply: &Value) -> bool {
+    if lookup_path(reply, "decision").and_then(Value::as_str) == Some("reject") {
+        return true;
+    }
+    lookup_path(reply, "reject")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// A field's value when it is a non-empty string, else `None`. Numbers and
@@ -465,6 +535,129 @@ mod tests {
     fn empty_stdin_still_reports_the_session() {
         let payload = build("", &opts("thinking-stop")).unwrap();
         assert_eq!(payload["session_id"], "amf-my-feat");
+    }
+
+    #[test]
+    fn field_text_reads_nested_paths_verbatim() {
+        let value: Value = serde_json::from_str(
+            r#"{"tool_name":"Edit","tool_input":{"file_path":"/a/b.rs","old_string":"fn a() {\n  1\n}"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            field_text(&value, &["tool_name".to_string()]).as_deref(),
+            Some("Edit")
+        );
+        // Multi-line content comes back byte-for-byte: callers redirect it
+        // straight into a file that has to hold exactly these bytes.
+        assert_eq!(
+            field_text(&value, &["tool_input.old_string".to_string()]).as_deref(),
+            Some("fn a() {\n  1\n}")
+        );
+        assert_eq!(
+            field_text(&value, &["tool_input.file_path".to_string()]).as_deref(),
+            Some("/a/b.rs")
+        );
+    }
+
+    #[test]
+    fn field_text_is_absent_for_missing_and_null_paths() {
+        let value: Value = serde_json::from_str(r#"{"a":{"b":1},"nulled":null}"#).unwrap();
+
+        assert!(field_text(&value, &["missing".to_string()]).is_none());
+        assert!(field_text(&value, &["a.missing".to_string()]).is_none());
+        // Descending through a non-object must not panic.
+        assert!(field_text(&value, &["a.b.c".to_string()]).is_none());
+        // A JSON null is "no value", matching `// empty`.
+        assert!(field_text(&value, &["nulled".to_string()]).is_none());
+    }
+
+    #[test]
+    fn field_text_takes_the_first_path_that_resolves() {
+        let value: Value = serde_json::from_str(r#"{"second":"hit"}"#).unwrap();
+        let paths = ["first".to_string(), "second".to_string()];
+        assert_eq!(field_text(&value, &paths).as_deref(), Some("hit"));
+    }
+
+    #[test]
+    fn field_text_renders_non_strings_as_json() {
+        let value: Value = serde_json::from_str(r#"{"flag":true,"n":3}"#).unwrap();
+        assert_eq!(
+            field_text(&value, &["flag".to_string()]).as_deref(),
+            Some("true")
+        );
+        assert_eq!(field_text(&value, &["n".to_string()]).as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn reject_is_read_from_the_flat_reply_amf_actually_sends() {
+        // `handlers::diff_review` sends this shape. The previous code looked
+        // under a `response` key that nothing ever writes, so a rejected Codex
+        // change was never reverted.
+        let rejected: Value = serde_json::from_str(
+            r#"{"type":"review-response","decision":"reject","reason":"no","skip":false,"reject":true}"#,
+        )
+        .unwrap();
+        assert!(reply_is_reject(&rejected));
+
+        for accepted in [
+            r#"{"type":"review-response","decision":"proceed","skip":false,"reject":false}"#,
+            r#"{"type":"review-response","decision":"cancel","skip":true,"reject":false}"#,
+            r#"{}"#,
+        ] {
+            let value: Value = serde_json::from_str(accepted).unwrap();
+            assert!(!reply_is_reject(&value), "should not reject: {accepted}");
+        }
+
+        // Either field alone is a complete answer.
+        let bool_only: Value = serde_json::from_str(r#"{"reject":true}"#).unwrap();
+        assert!(reply_is_reject(&bool_only));
+    }
+
+    #[test]
+    fn explicit_session_id_field_satisfies_the_identity_guard() {
+        // The diff-review plugin supplies the provider's id itself and carries
+        // the AMF session alongside; without AMF_SESSION set this must still
+        // build rather than trip the "no identity" guard.
+        let options = NotifyOptions {
+            event_type: Some("diff-review".to_string()),
+            fields: vec![
+                ("session_id".to_string(), "provider-uuid".to_string()),
+                ("amf_session".to_string(), "amf-feat".to_string()),
+            ],
+            ..Default::default()
+        };
+        let payload = build_payload("", &HookEnv::default(), &options).unwrap();
+
+        assert_eq!(payload["session_id"], "provider-uuid");
+        assert_eq!(payload["amf_session"], "amf-feat");
+    }
+
+    #[test]
+    fn explicit_session_id_outranks_the_tmux_session() {
+        let options = NotifyOptions {
+            fields: vec![("session_id".to_string(), "provider-uuid".to_string())],
+            ..Default::default()
+        };
+        let payload = build_payload("", &env(), &options).unwrap();
+        assert_eq!(payload["session_id"], "provider-uuid");
+    }
+
+    #[test]
+    fn bool_fields_are_json_booleans_not_strings() {
+        // `is_new_file` deserializes into an `Option<bool>`, so a quoted
+        // "true" would silently drop the flag.
+        let options = NotifyOptions {
+            bool_fields: vec![
+                ("is_new_file".to_string(), "true".to_string()),
+                ("other".to_string(), "false".to_string()),
+            ],
+            ..Default::default()
+        };
+        let payload = build_payload(r#"{"session_id":"s1"}"#, &env(), &options).unwrap();
+
+        assert_eq!(payload["is_new_file"], serde_json::json!(true));
+        assert_eq!(payload["other"], serde_json::json!(false));
     }
 
     #[test]

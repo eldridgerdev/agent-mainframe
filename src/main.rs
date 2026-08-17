@@ -132,6 +132,26 @@ enum Commands {
         #[arg(long = "reject-exit-code")]
         reject_exit_code: Option<u8>,
     },
+    /// Build a hook payload and print it instead of sending it, for scripts
+    /// that need the JSON as a file — the diff-review plugin both pipes it to
+    /// `notify-wait` and drops it in `.claude/notifications/` as the fallback
+    /// AMF polls when the socket reply never arrives.
+    #[command(name = "hook-payload", hide = true)]
+    HookPayload {
+        #[command(flatten)]
+        payload: PayloadArgs,
+    },
+    /// Read one field out of a hook's JSON on stdin and print it, so hook
+    /// scripts need no JSON parser of their own. Prints nothing and exits 0
+    /// when the field is absent — the shell idiom the scripts already use.
+    #[command(name = "hook-field", hide = true)]
+    HookField {
+        /// Dotted path(s) to try in order, e.g. `tool_input.file_path`. The
+        /// first that resolves wins, so a caller can spell out the reply
+        /// shapes it tolerates in one invocation.
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
     /// Return an agent-written PR review reply draft to the running AMF
     /// instance. Reads the reply body from stdin.
     #[command(name = "reply-draft", hide = true)]
@@ -179,6 +199,10 @@ struct PayloadArgs {
     /// bodies off the command line. Repeatable.
     #[arg(long = "field-from-file")]
     field_from_file: Vec<String>,
+    /// Set a JSON boolean field as `key=true|false`, for the fields the
+    /// dashboard deserializes into a `bool`. Repeatable.
+    #[arg(long = "bool-field")]
+    bool_field: Vec<String>,
     /// Recover `prompt` from the harness's transcript shape when the payload
     /// has no top-level prompt (Codex reports messages instead).
     #[arg(long = "derive-prompt")]
@@ -197,6 +221,7 @@ impl PayloadArgs {
             && self.require.is_empty()
             && self.field.is_empty()
             && self.field_from_file.is_empty()
+            && self.bool_field.is_empty()
             && !self.derive_prompt
     }
 
@@ -217,6 +242,7 @@ impl PayloadArgs {
             require: self.require,
             fields: pairs(self.field),
             file_fields: pairs(self.field_from_file),
+            bool_fields: pairs(self.bool_field),
             derive_prompt: self.derive_prompt,
         }
     }
@@ -388,6 +414,35 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(Commands::HookPayload { payload: args }) = cli.command {
+        use std::io::Read;
+        let mut stdin = String::new();
+        // Usually nothing: the caller supplies every field as a flag.
+        let _ = std::io::stdin().read_to_string(&mut stdin);
+
+        let env = hook_payload::HookEnv::from_process_env();
+        let Some(payload) = hook_payload::build_payload(&stdin, &env, &args.into_options()) else {
+            anyhow::bail!("refusing to build a payload with no session identity");
+        };
+        println!("{}", serde_json::to_string(&payload)?);
+        return Ok(());
+    }
+
+    if let Some(Commands::HookField { paths }) = &cli.command {
+        use std::io::Read;
+        let mut stdin = String::new();
+        let _ = std::io::stdin().read_to_string(&mut stdin);
+
+        // Unparseable or absent input is not an error: the caller is a hook
+        // script that treats "no value" as "nothing to do".
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(stdin.trim())
+            && let Some(text) = hook_payload::field_text(&value, paths)
+        {
+            print!("{text}");
+        }
+        return Ok(());
+    }
+
     if let Some(Commands::NotifyWait {
         timeout_ms,
         payload: payload_args,
@@ -420,11 +475,7 @@ fn main() -> Result<()> {
         let reply = ipc::send_wait(&ipc::socket_path(), &payload, Duration::from_millis(timeout_ms))?;
 
         if let Some(code) = reject_exit_code
-            && reply
-                .get("response")
-                .and_then(|response| response.get("reject"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
+            && hook_payload::reply_is_reject(&reply)
         {
             std::process::exit(i32::from(code));
         }

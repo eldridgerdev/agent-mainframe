@@ -1408,6 +1408,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ])
         .split(frame.area());
 
+    let (attention_counts, unexplained_pending) = app.attention_badge_counts();
     super::header::draw(
         frame,
         chunks[0],
@@ -1415,8 +1416,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
         env!("CARGO_PKG_VERSION"),
-        app.pending_inputs.len(),
-        app.attention_counts(),
+        unexplained_pending,
+        attention_counts,
         &app.theme,
     );
     super::list::draw(frame, app, chunks[1]);

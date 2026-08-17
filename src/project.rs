@@ -1262,7 +1262,34 @@ impl ProjectStore {
 /// fresh installs (or users who set `XDG_CONFIG_HOME` before ever
 /// running `amf`) land in the XDG-correct location.
 pub fn amf_config_dir() -> PathBuf {
+    #[cfg(test)]
+    return test_sandbox_root().join(".config").join("amf");
+    #[cfg(not(test))]
     amf_config_dir_with(dirs::config_dir(), dirs::home_dir())
+}
+
+/// Per-process stand-in for the user's home directory, used by the path
+/// resolvers below while the test binary is running.
+///
+/// This exists because `ensure_notify_scripts` writes executable hook scripts
+/// *unconditionally* — that is its job. Without isolation the suite overwrites
+/// the developer's live `~/.amf/hooks/` and `~/.config/amf/`, and a hook script
+/// newer than the `amf` binary on `$PATH` will break every running Claude Code
+/// session on the machine until it is repaired by hand. That is not
+/// hypothetical: it happened, and it locked a session out of every tool.
+///
+/// Deliberately not an environment variable: `std::env::set_var` is `unsafe` in
+/// the 2024 edition and process-global, so it would race across the parallel
+/// test threads. A `OnceLock` needs no ordering guarantee — the first resolver
+/// call in the process wins and every later one agrees.
+#[cfg(test)]
+fn test_sandbox_root() -> &'static PathBuf {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("amf-test-home-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        root
+    })
 }
 
 /// Directory for generated Claude hook executables.
@@ -1272,6 +1299,12 @@ pub fn amf_config_dir() -> PathBuf {
 /// Claude versions still route command hooks through a shell even when they
 /// use exec-form arguments.
 pub fn amf_claude_hooks_dir() -> PathBuf {
+    // The `.amf/hooks` shape is load-bearing even under test: it is the
+    // structural invariant `is_amf_claude_hook_command` uses to recognise a
+    // script as AMF-managed.
+    #[cfg(test)]
+    return test_sandbox_root().join(".amf").join("hooks");
+    #[cfg(not(test))]
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".amf")
@@ -1315,6 +1348,36 @@ pub fn store_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// The suite writes real executable hook scripts through
+    /// `ensure_notify_scripts`. If these resolvers ever point back at the
+    /// developer's actual home directory, running `cargo test` silently
+    /// rewrites their live hooks — and a script newer than the `amf` binary on
+    /// `$PATH` breaks every running Claude Code session on the machine.
+    #[test]
+    fn path_resolvers_are_sandboxed_away_from_the_real_home() {
+        let home = dirs::home_dir().expect("test host should have a home directory");
+        let sandbox = super::test_sandbox_root();
+
+        assert!(
+            !sandbox.starts_with(&home),
+            "test sandbox {sandbox:?} must not live under the real home {home:?}"
+        );
+        for dir in [super::amf_claude_hooks_dir(), super::amf_config_dir()] {
+            assert!(
+                dir.starts_with(sandbox),
+                "{dir:?} must resolve inside the test sandbox {sandbox:?}"
+            );
+            assert!(
+                !dir.starts_with(&home),
+                "{dir:?} must not resolve under the real home {home:?}"
+            );
+        }
+
+        // The `.amf/hooks` shape is what `is_amf_claude_hook_command` matches
+        // on, so the sandbox has to preserve it rather than use a flat path.
+        assert!(super::amf_claude_hooks_dir().ends_with(".amf/hooks"));
+    }
+
     /// Feature JSON written before the companion-triage link existed still
     /// deserializes — it simply isn't a triage feature.
     #[test]

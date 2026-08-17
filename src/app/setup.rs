@@ -51,7 +51,7 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":attention-hooks-v7");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":jqless-hooks-v9");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -1156,9 +1156,12 @@ pub fn ensure_notification_hooks(
         }),
     );
 
-    // Notification: Claude raises this when it needs the user — a permission
-    // prompt or an idle input wait. Either way the agent is blocked on an
-    // answer, which is what distinguishes a question from a finished turn.
+    // Notification: Claude raises this for anything it wants to tell the user,
+    // only some of which blocks the turn — a permission prompt does, while an
+    // idle nudge, an auth success, or a completed elicitation does not. The
+    // matcher cannot separate them, so `attention.sh notification` classifies
+    // the payload and reports a question only for the blocking ones; the rest
+    // report nothing rather than upgrading a standing completion.
     // Attention-only: this deliberately does not run notify.sh, so wiring a
     // previously-unused Claude event cannot change the pending-input flow.
     push_claude_hook_entry(
@@ -1167,7 +1170,7 @@ pub fn ensure_notification_hooks(
         serde_json::json!({
             "matcher": "",
             "hooks": [
-                claude_exec_hook_with_args(&attention_path, &["question"])
+                claude_exec_hook_with_args(&attention_path, &["notification"])
             ]
         }),
     );

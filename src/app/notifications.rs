@@ -924,6 +924,23 @@ impl App {
         // "clear" removes any pending notification for this
         // session, sent by clear-notify.sh on PreToolUse.
         if msg_type == "clear" {
+            // A clear is the harness saying it is running a tool again, which
+            // is the precise "new output" signal for a session that never
+            // stopped looking busy — a permission prompt answered mid-turn
+            // clears here rather than waiting for the thinking transition
+            // `sync.rs` will never see.
+            let cwd_path = PathBuf::from(msg.cwd.as_deref().unwrap_or_default());
+            let amf_session = msg
+                .amf_tmux_session
+                .as_deref()
+                .or(msg.amf_session.as_deref());
+            if let (_, _, _, Some((pi, fi))) =
+                self.project_feature_for_message(amf_session, &cwd_path)
+            {
+                let tmux_session = self.store.projects[pi].features[fi].tmux_session.clone();
+                self.clear_attention(&tmux_session);
+            }
+
             if let Some(ref sid) = msg.session_id {
                 let before = self.pending_inputs.len();
                 self.pending_inputs.retain(|i| &i.session_id != sid);
@@ -1032,7 +1049,12 @@ impl App {
             }
 
             let state = AttentionState::from_event_kind(kind);
-            self.record_attention(&tmux_session, &agent, state);
+            self.record_attention(
+                &tmux_session,
+                &agent,
+                state,
+                crate::app::attention::AttentionSource::Hook,
+            );
             self.log_debug(
                 "attention",
                 format!(

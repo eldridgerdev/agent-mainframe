@@ -19,7 +19,9 @@ are tagged.
   permission, and cannot continue without an answer), **Completed** (its turn
   ended and the work wants a look), or **Waiting** (stopped, reason unknown).
   The state shows on the feature's row and in a header count broken out by
-  kind, and `i` is now one needs-attention list — questions first, oldest
+  kind — with anything the states cannot explain, such as a diff review or a
+  change reason, still counted alongside them — and `i` is now one
+  needs-attention list — questions first, oldest
   first within each group — replacing the flat input-request picker. Inside a
   session, `Ctrl+Space` then `i` opens the same list and the sidebar reports
   the session's own state. AMF does not capture the agent's message; open the
@@ -35,17 +37,21 @@ are tagged.
 ### Changed
 
 - **Harness fidelity varies, and AMF does not guess.** Claude Code and
-  OpenCode report all three states. Codex reports completions but cannot
-  distinguish a question, so its questions show as **Waiting**. **Pi has no
-  hook mechanism at all**, so its sessions carry no state — they behave
-  exactly as they did before this release rather than showing a generic
-  waiting marker.
+  OpenCode report all three states. Codex fires one hook when a turn ends and
+  cannot say whether it finished or is asking, so its sessions show as
+  **Waiting** either way rather than being labelled done. **Pi has no hook
+  mechanism at all**, so its sessions carry no state — they behave exactly as
+  they did before this release rather than showing a generic waiting marker.
 - **Claude workspaces regain a `Notification` hook.** AMF used to strip it,
   because the old wiring queued a pending input for what is only a permission
   prompt. The new wiring runs the attention script alone: it records why the
-  session stopped and never touches the notification flow. AMF-generated hook
-  scripts live under `~/.config/amf/hooks/` and are rewritten on the next
-  startup after upgrading; nothing you wrote yourself is touched.
+  session stopped and never touches the notification flow. Only notifications
+  that actually block the turn — permission prompts and elicitations — become
+  a **Question**; idle nudges, sign-in notices, and completion messages report
+  nothing, so they cannot relabel work that has already finished.
+  AMF-generated hook scripts live under `~/.config/amf/hooks/` and are
+  rewritten on the next startup after upgrading; nothing you wrote yourself is
+  touched.
 
 ## [v0.36.0] - 2026-08-12
 

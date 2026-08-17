@@ -14,6 +14,7 @@ mod github;
 mod handlers;
 mod headless;
 mod highlight;
+mod hook_payload;
 mod http_client;
 mod ipc;
 mod markdown;
@@ -95,9 +96,28 @@ enum Commands {
         command: AutomationCommands,
     },
     /// Send a notification to the running AMF instance via the
-    /// IPC socket. Reads JSON from stdin. Used by hook scripts.
+    /// IPC socket. Reads the harness's raw hook JSON from stdin and merges in
+    /// AMF's session metadata from the environment. Used by hook scripts,
+    /// which is why it does the JSON work they would otherwise need `jq` for.
     #[command(hide = true)]
-    Notify,
+    Notify {
+        #[command(flatten)]
+        payload: PayloadArgs,
+        /// On delivery failure, touch `<DIR>/<session id>` — the `/tmp`
+        /// sentinel the sync loop falls back to when the socket is down. The
+        /// directory is passed rather than the full path because only this
+        /// command knows which session id won.
+        #[arg(long = "fallback-touch")]
+        fallback_touch: Option<std::path::PathBuf>,
+        /// On delivery failure, remove `<DIR>/<session id>` — the clearing
+        /// half of `--fallback-touch`.
+        #[arg(long = "fallback-remove")]
+        fallback_remove: Option<std::path::PathBuf>,
+        /// On delivery failure, write this payload field to
+        /// `<cwd>/.claude/<name>`.
+        #[arg(long = "fallback-write-field", num_args = 2, value_names = ["FIELD", "NAME"])]
+        fallback_write_field: Vec<String>,
+    },
     /// Send a notification and wait for an IPC response JSON.
     /// Used by review hooks that require a decision.
     #[command(hide = true)]
@@ -105,6 +125,12 @@ enum Commands {
         /// Timeout in milliseconds while waiting for reply.
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
+        #[command(flatten)]
+        payload: PayloadArgs,
+        /// Exit with this status when the reply says the change was rejected,
+        /// so a caller can branch on `$?` instead of parsing the reply JSON.
+        #[arg(long = "reject-exit-code")]
+        reject_exit_code: Option<u8>,
     },
     /// Return an agent-written PR review reply draft to the running AMF
     /// instance. Reads the reply body from stdin.
@@ -124,6 +150,76 @@ enum Commands {
         session_id: String,
         status_text: String,
     },
+}
+
+/// Flags that shape the IPC payload, shared by `notify` and `notify-wait`.
+///
+/// These exist so hook scripts do not have to build JSON themselves. Before
+/// they did, every script shelled out to `jq` — an undeclared dependency that
+/// failed silently, since each script discarded jq's stderr and exited 0.
+#[derive(clap::Args, Debug, Clone)]
+struct PayloadArgs {
+    /// Payload `type`, which is how the dashboard dispatches. Omitted for
+    /// hooks that forward the harness's own payload untouched.
+    #[arg(long = "type")]
+    event_type: Option<String>,
+    /// Payload `source`, for diagnostics.
+    #[arg(long)]
+    source: Option<String>,
+    /// Payload `amf_event_kind` — the attention layer's reason-for-stopping.
+    #[arg(long = "event-kind")]
+    event_kind: Option<String>,
+    /// Send nothing unless this field is present and non-empty. Repeatable.
+    #[arg(long = "require")]
+    require: Vec<String>,
+    /// Set a literal string field as `key=value`. Repeatable.
+    #[arg(long = "field")]
+    field: Vec<String>,
+    /// Set a string field from a file's contents as `key=path`. Keeps file
+    /// bodies off the command line. Repeatable.
+    #[arg(long = "field-from-file")]
+    field_from_file: Vec<String>,
+    /// Recover `prompt` from the harness's transcript shape when the payload
+    /// has no top-level prompt (Codex reports messages instead).
+    #[arg(long = "derive-prompt")]
+    derive_prompt: bool,
+}
+
+impl PayloadArgs {
+    /// `true` when no flag was given, meaning the caller wants its stdin
+    /// forwarded verbatim. `notify-wait` relies on this: the diff-review
+    /// plugin builds a complete payload itself and sets `session_id` to the
+    /// *provider's* id, which the enrichment would otherwise overwrite.
+    fn is_empty(&self) -> bool {
+        self.event_type.is_none()
+            && self.source.is_none()
+            && self.event_kind.is_none()
+            && self.require.is_empty()
+            && self.field.is_empty()
+            && self.field_from_file.is_empty()
+            && !self.derive_prompt
+    }
+
+    fn into_options(self) -> hook_payload::NotifyOptions {
+        // A value may itself contain `=`, so split once on the first.
+        fn pairs(entries: Vec<String>) -> Vec<(String, String)> {
+            entries
+                .iter()
+                .filter_map(|entry| entry.split_once('='))
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect()
+        }
+
+        hook_payload::NotifyOptions {
+            event_type: self.event_type,
+            source: self.source,
+            event_kind: self.event_kind,
+            require: self.require,
+            fields: pairs(self.field),
+            file_fields: pairs(self.field_from_file),
+            derive_prompt: self.derive_prompt,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -167,6 +263,49 @@ enum AutomationCommands {
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
     },
+}
+
+/// Best-effort delivery fallbacks for when the IPC socket is unavailable —
+/// AMF not running, or shutting down. These used to live in each hook script
+/// after the `amf notify` pipeline failed; they moved here so the scripts need
+/// no JSON parsing to work out which session they are writing about.
+///
+/// Every step is best-effort: a hook must never fail the agent's turn because
+/// a sentinel could not be written.
+fn run_notify_fallbacks(
+    payload: &serde_json::Value,
+    touch_dir: Option<&std::path::Path>,
+    remove_dir: Option<&std::path::Path>,
+    write_field: &[String],
+) {
+    let session_id = payload
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    if !session_id.is_empty() {
+        if let Some(dir) = touch_dir {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::File::create(dir.join(session_id));
+        }
+        if let Some(dir) = remove_dir {
+            let _ = std::fs::remove_file(dir.join(session_id));
+        }
+    }
+
+    // `--fallback-write-field <FIELD> <NAME>`: persist a payload field under
+    // the session's `.claude/` so the dashboard can pick it up later.
+    if let [field, name] = write_field
+        && let Some(value) = payload.get(field).and_then(serde_json::Value::as_str)
+        && let Some(cwd) = payload.get("cwd").and_then(serde_json::Value::as_str)
+        && !value.is_empty()
+        && !cwd.is_empty()
+    {
+        let dir = std::path::Path::new(cwd).join(".claude");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let _ = std::fs::write(dir.join(name), value);
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -216,31 +355,80 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Commands::Notify) = cli.command {
+    if let Some(Commands::Notify {
+        payload: payload_args,
+        fallback_touch,
+        fallback_remove,
+        fallback_write_field,
+    }) = cli.command
+    {
         use std::io::Read;
-        let mut payload = String::new();
-        std::io::stdin().read_to_string(&mut payload)?;
-        let payload = payload.trim();
-        if payload.is_empty() {
+        let mut stdin = String::new();
+        // A hook with nothing on stdin is still worth sending: the session
+        // identity comes from the environment, not the pipe.
+        let _ = std::io::stdin().read_to_string(&mut stdin);
+
+        let env = hook_payload::HookEnv::from_process_env();
+        let Some(payload) = hook_payload::build_payload(&stdin, &env, &payload_args.into_options())
+        else {
+            // A missing required field or no session identity at all: there is
+            // nothing the dashboard could do with this, so it is not an error.
             return Ok(());
+        };
+
+        let sent = ipc::send(&ipc::socket_path(), &serde_json::to_string(&payload)?).is_ok();
+        if !sent {
+            run_notify_fallbacks(
+                &payload,
+                fallback_touch.as_deref(),
+                fallback_remove.as_deref(),
+                &fallback_write_field,
+            );
         }
-        let socket = ipc::socket_path();
-        // Propagate error so hook scripts get a non-zero exit
-        // code and can fall back to file-based delivery.
-        ipc::send(&socket, payload)?;
         return Ok(());
     }
 
-    if let Some(Commands::NotifyWait { timeout_ms }) = cli.command {
+    if let Some(Commands::NotifyWait {
+        timeout_ms,
+        payload: payload_args,
+        reject_exit_code,
+    }) = cli.command
+    {
         use std::io::Read;
-        let mut payload = String::new();
-        std::io::stdin().read_to_string(&mut payload)?;
-        let payload = payload.trim();
-        if payload.is_empty() {
-            return Ok(());
+        let mut stdin = String::new();
+        std::io::stdin().read_to_string(&mut stdin)?;
+
+        // With no payload flags this stays a verbatim passthrough, which the
+        // diff-review plugin depends on — it builds its own payload and sets
+        // `session_id` to the provider's id, not the tmux session.
+        let payload = if payload_args.is_empty() {
+            let trimmed = stdin.trim();
+            if trimmed.is_empty() {
+                return Ok(());
+            }
+            trimmed.to_string()
+        } else {
+            let env = hook_payload::HookEnv::from_process_env();
+            let Some(built) =
+                hook_payload::build_payload(&stdin, &env, &payload_args.into_options())
+            else {
+                return Ok(());
+            };
+            serde_json::to_string(&built)?
+        };
+
+        let reply = ipc::send_wait(&ipc::socket_path(), &payload, Duration::from_millis(timeout_ms))?;
+
+        if let Some(code) = reject_exit_code
+            && reply
+                .get("response")
+                .and_then(|response| response.get("reject"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        {
+            std::process::exit(i32::from(code));
         }
-        let socket = ipc::socket_path();
-        let reply = ipc::send_wait(&socket, payload, Duration::from_millis(timeout_ms))?;
+
         println!(
             "{}",
             serde_json::to_string(&reply).unwrap_or_else(|_| "{}".to_string())

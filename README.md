@@ -253,9 +253,9 @@ AMF does not capture the agent's message — open the session to read the
 question or the summary.
 
 Fidelity depends on the harness. Claude Code and OpenCode report all three
-states. Codex reports completions but cannot distinguish a question, so its
-questions appear as **Waiting**. Pi has no hook mechanism, so its sessions
-carry no state at all. States are not saved: after an AMF restart, sessions
+states. Codex fires one hook when a turn ends and cannot say whether it
+finished or is asking, so its sessions show as **Waiting** either way. Pi has
+no hook mechanism, so its sessions carry no state at all. States are not saved: after an AMF restart, sessions
 show as ordinary active until their next event.
 
 ### Keep the machine from filling up

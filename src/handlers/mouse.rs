@@ -247,9 +247,10 @@ fn handle_click(
         return Ok(());
     }
 
+    let (attention_counts, unexplained_pending) = app.attention_badge_counts();
     if row == 1
         && let Some(badge_text) =
-            crate::ui::header::badge_text(app.attention_counts(), app.pending_inputs.len())
+            crate::ui::header::badge_text(attention_counts, unexplained_pending)
     {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())

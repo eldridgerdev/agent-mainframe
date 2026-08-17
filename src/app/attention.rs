@@ -120,8 +120,9 @@ impl HarnessCapabilities {
     ///   `Stop` marks a completion, and `UserPromptSubmit`/`PreToolUse` mark
     ///   new output.
     /// - **Codex** runs `codex-notify.sh`, which fires once when the turn ends
-    ///   and cannot separate a question from a completion; its `thinking-stop`
-    ///   event does give reliable new-output tracking.
+    ///   and cannot separate a question from a completion — so it can claim
+    ///   neither, and everything it reports narrows to `Waiting`. Its
+    ///   `thinking-stop` event does give reliable new-output tracking.
     /// - **Opencode** runs the AMF plugins, which raise an explicit
     ///   `input-request`, plus sidebar/pane thinking detection for new output.
     /// - **Pi** has no hook mechanism at all (`src/pi.rs` is a version probe),
@@ -135,7 +136,7 @@ impl HarnessCapabilities {
             },
             AgentKind::Codex => Self {
                 reports_question: false,
-                reports_completed: true,
+                reports_completed: false,
                 reports_new_output: true,
             },
             AgentKind::Opencode => Self {
@@ -166,6 +167,23 @@ impl HarnessCapabilities {
     pub fn clears_on_open(&self) -> bool {
         !self.reports_new_output
     }
+}
+
+/// Where an attention state came from, which decides whether it may replace a
+/// standing `Question`.
+///
+/// The distinction matters because AMF has two signals of very different
+/// quality. A harness hook is the agent itself saying what happened, so a
+/// `Stop` really does end the turn that a permission prompt interrupted.
+/// `sync.rs`'s thinking-transition fallback only observes that a session went
+/// quiet, which is exactly what a blocked agent looks like — so it must never
+/// talk a `Question` down into a completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionSource {
+    /// A harness lifecycle event (`type: "attention"`), which is authoritative.
+    Hook,
+    /// Inferred by `sync.rs` from the thinking transition.
+    Inferred,
 }
 
 /// A session's current attention state plus the provenance needed to age it
@@ -254,17 +272,22 @@ impl App {
     /// Record why `tmux_session` is stopped, narrowing the state to what
     /// `agent` can actually report.
     ///
-    /// A `Question` always wins over a `CompletedAwaitingReview` already held
-    /// for the same session: a harness that asks something after finishing is
-    /// blocked on the answer, and the question is the more urgent of the two.
-    /// Any other new state replaces what was there, and re-raising the state a
-    /// session already holds keeps the original timestamp so ageing measures
-    /// how long the user has been ignoring it, not how chatty the harness is.
+    /// A `Question` already held for the session survives anything `Inferred`
+    /// that would talk it down: a session blocked on a permission prompt looks
+    /// exactly like one that went quiet, and the fallback must not overwrite
+    /// the harness's better signal. A [`AttentionSource::Hook`] event does
+    /// replace it — an actual `Stop` means the turn the question interrupted
+    /// has since ended, so the question is answered and stale.
+    ///
+    /// Re-raising the state a session already holds keeps the original
+    /// timestamp, so ageing measures how long the user has been ignoring it,
+    /// not how chatty the harness is.
     pub fn record_attention(
         &mut self,
         tmux_session: &str,
         agent: &AgentKind,
         state: AttentionState,
+        source: AttentionSource,
     ) {
         let incoming = AttentionRecord::new(agent.clone(), state, Utc::now());
 
@@ -272,7 +295,8 @@ impl App {
             if existing.state == incoming.state {
                 return;
             }
-            if existing.state == AttentionState::Question
+            if source == AttentionSource::Inferred
+                && existing.state == AttentionState::Question
                 && incoming.state != AttentionState::Question
             {
                 return;
@@ -296,6 +320,13 @@ impl App {
     /// Age out records older than `waiting_stale_minutes`, which have stopped
     /// being news. Returns whether anything was dropped.
     ///
+    /// The session's generic `input-request` goes with the record. The two are
+    /// the same stop seen through the old signal and the new one — dropping
+    /// only the record would leave the request behind as a standalone row, and
+    /// the session would never actually leave the `i` list. Pending inputs that
+    /// mean something else (diff reviews, change reasons, review-ready) are
+    /// separate work and are left alone.
+    ///
     /// `0` disables ageing entirely, in which case this is a no-op.
     pub fn age_out_attention(&mut self) -> bool {
         let Some(threshold) = self.config.waiting_stale_threshold() else {
@@ -306,10 +337,40 @@ impl App {
         };
 
         let now = Utc::now();
-        let before = self.attention.len();
-        self.attention
-            .retain(|_, record| now.signed_duration_since(record.since) < threshold);
-        before != self.attention.len()
+        let stale: Vec<String> = self
+            .attention
+            .iter()
+            .filter(|(_, record)| now.signed_duration_since(record.since) >= threshold)
+            .map(|(session, _)| session.clone())
+            .collect();
+        if stale.is_empty() {
+            return false;
+        }
+
+        let stale_features: Vec<(String, String)> = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| {
+                project
+                    .features
+                    .iter()
+                    .filter(|feature| stale.contains(&feature.tmux_session))
+                    .map(|feature| (project.name.clone(), feature.name.clone()))
+            })
+            .collect();
+
+        for session in &stale {
+            self.attention.remove(session);
+        }
+        self.pending_inputs.retain(|input| {
+            input.notification_type != "input-request"
+                || !stale_features.iter().any(|(project, feature)| {
+                    input.project_name.as_deref() == Some(project.as_str())
+                        && input.feature_name.as_deref() == Some(feature.as_str())
+                })
+        });
+        true
     }
 
     /// Every session that wants looking at, ordered the way the needs-attention
@@ -401,17 +462,27 @@ impl App {
         rows
     }
 
-    /// Counts for the header/status bar as `(questions, completed, waiting)`.
-    pub fn attention_counts(&self) -> (usize, usize, usize) {
+    /// What the header badge counts: the attention breakdown plus the number
+    /// of pending inputs the attention layer did *not* explain.
+    ///
+    /// Both halves are needed. A diff review, a change reason, or a
+    /// review-ready prompt is real work the badge has always advertised, and
+    /// it must not disappear from the count just because some other session
+    /// happens to hold an attention record. Derived from
+    /// [`Self::attention_rows`] so the badge and the `i` overlay can never
+    /// disagree about how many things are waiting.
+    pub fn attention_badge_counts(&self) -> ((usize, usize, usize), usize) {
         let mut counts = (0usize, 0usize, 0usize);
-        for entry in self.needs_attention() {
-            match entry.record.state {
-                AttentionState::Question => counts.0 += 1,
-                AttentionState::CompletedAwaitingReview => counts.1 += 1,
-                AttentionState::Waiting => counts.2 += 1,
+        let mut unexplained = 0usize;
+        for row in self.attention_rows() {
+            match row.state() {
+                Some(AttentionState::Question) => counts.0 += 1,
+                Some(AttentionState::CompletedAwaitingReview) => counts.1 += 1,
+                Some(AttentionState::Waiting) => counts.2 += 1,
+                None => unexplained += 1,
             }
         }
-        counts
+        (counts, unexplained)
     }
 }
 
@@ -438,15 +509,15 @@ mod tests {
             );
         }
 
-        // Codex can say "done" but cannot say "asking", so a question narrows
-        // while a completion survives.
+        // Codex fires one hook at turn end that cannot separate "asking" from
+        // "done", so neither claim survives: both narrow to Waiting.
         assert_eq!(
             record(AgentKind::Codex, AttentionState::Question).state,
             AttentionState::Waiting
         );
         assert_eq!(
             record(AgentKind::Codex, AttentionState::CompletedAwaitingReview).state,
-            AttentionState::CompletedAwaitingReview
+            AttentionState::Waiting
         );
     }
 

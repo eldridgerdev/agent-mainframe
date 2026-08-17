@@ -16,6 +16,10 @@ enum AttentionGroup {
     Question,
     Completed,
     Waiting,
+    /// Pending inputs the attention layer cannot explain: diff reviews, change
+    /// reasons, review-ready prompts, and harnesses that report no lifecycle
+    /// events at all.
+    Pending,
 }
 
 /// The badge's segments, in display order, with zero-count groups omitted
@@ -24,7 +28,10 @@ enum AttentionGroup {
 /// Questions and completions are named separately because they call for
 /// different things from the user — an answer versus a look — and the whole
 /// point of the attention layer is that the dashboard can tell them apart.
-fn attention_segments(counts: AttentionCounts) -> Vec<(String, AttentionGroup)> {
+/// Unexplained pending inputs are always appended rather than replaced by the
+/// breakdown: they are separate work, so one session's question must not hide
+/// another session's diff review from the count.
+fn badge_segments(counts: AttentionCounts, pending_count: usize) -> Vec<(String, AttentionGroup)> {
     let (questions, completed, waiting) = counts;
     let mut segments = Vec::new();
 
@@ -43,41 +50,37 @@ fn attention_segments(counts: AttentionCounts) -> Vec<(String, AttentionGroup)> 
     if waiting > 0 {
         segments.push((format!("{waiting} waiting"), AttentionGroup::Waiting));
     }
+    if pending_count > 0 {
+        segments.push((
+            format!(
+                "{pending_count} input request{}",
+                if pending_count == 1 { "" } else { "s" }
+            ),
+            AttentionGroup::Pending,
+        ));
+    }
     segments
-}
-
-/// The flat input-request count, the badge AMF showed before the attention
-/// layer existed.
-fn pending_badge_text(pending_count: usize) -> Option<String> {
-    (pending_count > 0).then(|| {
-        format!(
-            "  [{} input request{}]",
-            pending_count,
-            if pending_count == 1 { "" } else { "s" },
-        )
-    })
 }
 
 /// The header badge's plain text, so hit-testing can measure exactly what
 /// [`draw`] renders instead of reimplementing the decision. `None` when there
 /// is no badge.
 ///
-/// The attention breakdown supersedes the flat count when any harness has told
-/// us why it stopped. The old count stays as the fallback for pending inputs
-/// the attention layer doesn't cover (diff reviews, change reasons) and for
-/// harnesses that report no lifecycle events at all.
+/// `pending_count` is the number of pending inputs *not* already described by
+/// an attention row, so a session that both raised an input request and told
+/// us why it stopped is counted once.
 pub fn badge_text(attention: AttentionCounts, pending_count: usize) -> Option<String> {
-    let segments = attention_segments(attention);
+    let segments = badge_segments(attention, pending_count);
     if segments.is_empty() {
-        return pending_badge_text(pending_count);
+        return None;
     }
     let body: Vec<String> = segments.into_iter().map(|(text, _)| text).collect();
     Some(format!("  [{}]", body.join(", ")))
 }
 
-/// The needs-attention breakdown, as coloured spans.
-fn attention_spans(counts: AttentionCounts, theme: &Theme) -> Vec<Span<'static>> {
-    let segments = attention_segments(counts);
+/// The badge breakdown, as coloured spans.
+fn badge_spans(counts: AttentionCounts, pending_count: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let segments = badge_segments(counts, pending_count);
     if segments.is_empty() {
         return Vec::new();
     }
@@ -96,6 +99,9 @@ fn attention_spans(counts: AttentionCounts, theme: &Theme) -> Vec<Span<'static>>
                 .fg(theme.success.to_color())
                 .add_modifier(Modifier::BOLD),
             AttentionGroup::Waiting => muted,
+            AttentionGroup::Pending => Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
         };
         spans.push(Span::styled(text, style));
     }
@@ -133,19 +139,8 @@ pub fn draw(
         Span::styled(cwd, Style::default().fg(theme.text.to_color())),
     ];
 
-    // Same precedence as `badge_text`, which hit-testing measures: the
-    // attention breakdown when there is one, the flat count otherwise.
-    let attention_spans = attention_spans(attention, theme);
-    if !attention_spans.is_empty() {
-        title_spans.extend(attention_spans);
-    } else if let Some(text) = pending_badge_text(pending_count) {
-        title_spans.push(Span::styled(
-            text,
-            Style::default()
-                .fg(theme.warning.to_color())
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
+    // Same segments as `badge_text`, which hit-testing measures.
+    title_spans.extend(badge_spans(attention, pending_count, theme));
 
     let title = Paragraph::new(Line::from(title_spans));
     frame.render_widget(title, inner);

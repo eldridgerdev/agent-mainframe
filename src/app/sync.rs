@@ -829,12 +829,19 @@ impl App {
             let is_thinking = self.thinking_features.contains(&sid);
 
             if is_thinking {
-                // The session is producing output again, so whatever it was
-                // waiting on is moot. This is the "clear on new output" path
-                // for every harness whose thinking state AMF can observe;
-                // harnesses that report no thinking at all clear on open
-                // instead (see `HarnessCapabilities::clears_on_open`).
-                if self.clear_attention(&sid) {
+                // Only the *transition* back into thinking means the session
+                // started producing output again. Clearing on every poll while
+                // thinking would retire attention the session raised while it
+                // was already busy — Claude keeps its thinking marker set
+                // through a permission prompt, and OpenCode stays busy while
+                // its `question` tool is open, so a real Question would be
+                // dropped within one poll of being raised.
+                //
+                // This is the "clear on new output" path for every harness
+                // whose thinking state AMF can observe; harnesses that report
+                // no thinking at all clear on open instead (see
+                // `HarnessCapabilities::clears_on_open`).
+                if !was_thinking && self.clear_attention(&sid) {
                     pending_inputs_changed = true;
                 }
                 if let Some(watch) = self.awaiting_review_fixes.get_mut(&sid) {
@@ -867,12 +874,14 @@ impl App {
                 // fallback below: a session that stops working has finished a
                 // turn. Harness hooks report the same thing more promptly and
                 // more precisely; this covers the gap when a hook is missing or
-                // slow. `record_attention` refuses to downgrade a Question that
-                // is already standing, so a blocked agent keeps its state.
+                // slow. It is `Inferred`, so it cannot downgrade a Question a
+                // harness raised: a blocked agent looks exactly like a quiet
+                // one from here.
                 self.record_attention(
                     &sid,
                     &agent,
                     crate::app::attention::AttentionState::CompletedAwaitingReview,
+                    crate::app::attention::AttentionSource::Inferred,
                 );
 
                 // A session we dispatched review-fix feedback to, that we've

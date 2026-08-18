@@ -14,6 +14,38 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~PR review summaries render with garbled diff fragments~~ (Fixed)
+
+- **Status:** Fixed (2026-08-12, issue #527)
+- **Reported:** 2026-08-11
+- **Relates to:** PR Triage Detail pane (`src/ui/dialogs/pr_review.rs`)
+- **Root cause:** The Detail pane replaced comments with different rendered
+  shapes without first clearing every cell it owned, allowing fragments from
+  previously drawn diff/source content to remain wherever a shorter review
+  summary left blank space. Its scroll bound also counted logical lines rather
+  than the rows those lines occupied after wrapping.
+- **Fix:** Clear the complete Detail pane before rendering a selected comment
+  and clamp scrolling against the wrapped display-row count. Regression tests
+  cover both stale-cell removal and wrapped-row measurement.
+
+### Repro
+
+1. On macOS, open PR Triage for a pull request containing inline diff comments
+   and a top-level review summary.
+2. Select content with long diff/source lines, then open the review summary in
+   the Detail pane.
+3. Scroll through the summary at a width where its text wraps.
+
+### Expected
+
+The Detail pane shows only the selected review summary and its metadata, with
+clean blank rows and scrolling aligned to the rendered text.
+
+### Actual
+
+Partial diff/source lines can remain mixed into the summary, and the scroll
+limit can disagree with the content's wrapped height.
+
 ## ~~OSC 8 hyperlinks do not open through AMF's managed tmux server on macOS~~ (Fixed)
 
 - **Status:** Fixed (2026-07-31)
@@ -128,6 +160,58 @@ is anchored to.
 
 Intermittently, the agent applies or explains the fix against different lines
 than the comment refers to and reports that it mis-anchored the comment.
+
+## Toasts raised while landing in the composer are never drawn
+
+- **Status:** Backlog
+- **Reported:** 2026-08-13
+- **Relates to:** `src/ui/dashboard.rs` (the `AppMode::Compose` branch, ~line
+  1276), `src/app/compose.rs::open_compose_seeded`, and every caller that
+  seeds a composer — the prompt library, `App::todos_spawn_agent`, and
+  Learning Mode's escalation (`S`).
+- **Lead:** `ui::dashboard` draws the `Compose` branch and `return`s before
+  the shared `super::draw_toasts` call at the end of the function. The
+  PR-review family of full-screen modes hit the same problem and each solved
+  it by calling `draw_toasts` themselves before returning (there is a comment
+  at `src/ui/dashboard.rs:991` explaining exactly this); the `Compose` branch
+  never got the same treatment. So *any* toast pushed while landing in the
+  composer is silently swallowed until the mode changes.
+
+  This is not hypothetical: `open_compose_seeded` pushes
+  `"Prompt loaded — review and send"` (`src/app/compose.rs:445`) as its own
+  last act, so that toast has presumably never been seen by anyone. It was
+  found while building Learning Mode's escalation, whose first cut raised a
+  "this session can change files" toast on arrival — the single most important
+  thing that key had to say, invisible in the one place it was said.
+
+  **The fix is not simply adding the call.** Toasts stack from the
+  bottom-right, which is exactly where the compose box is drawn, so they would
+  cover the prompt the user is meant to be reading. Options: move the toast
+  stack for this mode, draw it above the compose box, or decide the composer
+  is a place where a toast is the wrong channel and require callers to use
+  `self.message` instead (which `promote_message_to_toast` surfaces the moment
+  the user steps back out). Learning Mode's escalation took a fourth route as
+  a local workaround — it moved the statement into the seed text itself, as
+  the seed's last line, since the composer opens with the cursor after the
+  last line — but that does not generalize to callers with nothing to append
+  to.
+
+### Repro
+
+1. From a session view, open the prompt library (leader + `P`) and inject any
+   saved prompt, or press `g` on a TODO, or press `S` on a Learning Mode
+   answer.
+2. Watch the bottom-right corner as the composer opens.
+
+### Expected
+
+The toast the seeding path pushed (e.g. "Prompt loaded — review and send")
+appears over the composer, or is deliberately routed somewhere it can be seen.
+
+### Actual
+
+Nothing appears. The toast is queued but never drawn, and it expires while the
+composer is open, so it is not shown on return either.
 
 ## AI Review pane doesn't refresh PR Triage after posting
 

@@ -33,6 +33,35 @@ are tagged.
   sessions show as ordinary active until their next event. Ageing out changes
   nothing about the session itself: a waiting session still counts toward
   `max_concurrent_agents` and still qualifies as dormant under `z`.
+- **Learning Mode says when a past question's code has moved.** A question
+  remembers the lines it was asked about, and until now nothing checked them
+  again — so editing a file left every earlier entry pointing at whatever had
+  since taken those line numbers, with no way to tell. That bites the notes
+  Learning Mode is most for: an explanation you keep is exactly the one you
+  come back to months later, and a stale anchor doesn't look stale, it looks
+  like an answer that was always wrong. Reopening a project now checks each
+  stored question against the code as it is now. An entry whose code moved is
+  marked **moved**, and opening it says where the code went; one whose code is
+  gone — rewritten, or in a deleted file — is marked **anchor lost**. Code that
+  now appears in more than one place is reported lost rather than guessed at.
+  The question and answer are never touched, and neither is the range the
+  question was asked at. Handing a moved entry to a live agent (`S`) or keeping
+  it as a to-do (`a`) carries the warning along, so neither one sends anybody to
+  read the wrong lines.
+- **Learning Mode browses the project as a folder tree.** The file list used
+  to be every path in the repository, flat and alphabetical, in a pane about
+  32 columns wide — so on a real project the first screenful was a run of
+  truncated near-identical stubs and `src/` was dozens of keypresses down. It
+  is now a tree: folders you can open and close, file names shown without
+  their path, and each closed folder saying how many files it holds. It opens
+  with the top level visible and the way down to the **Start here** files
+  already unfolded, so the entry point is on screen without the rest of the
+  repository being. `l` and `h` (or `Enter`) open and close the folder under
+  the cursor, `Z` opens or folds every folder at once, and resting on a folder
+  changes nothing about the question you have lined up. Very large projects
+  are now limited per folder rather than by a single cap on the whole listing,
+  and a folder that hides part of its contents says so — which makes the
+  all-files view usable on a monorepo instead of merely truncated.
 
 ### Changed
 
@@ -52,6 +81,80 @@ are tagged.
   AMF-generated hook scripts live under `~/.config/amf/hooks/` and are
   rewritten on the next startup after upgrading; nothing you wrote yourself is
   touched.
+
+### Fixed
+
+- **A prompt AMF opens a session to deliver no longer disappears when the
+  resource warning asks first.** Accepting a plan, spawning an agent from a
+  TODO, and escalating a Learning Mode question all open a session and load a
+  prompt into its composer for you to review. If the machine was at the agent
+  cap or low on memory, the pre-start warning came up in between — and
+  answering it opened the session with an empty composer and said nothing, so
+  the plan looked handed over when it never was. The prompt now travels with
+  the parked start and is loaded once you confirm.
+
+- **The mouse wheel scrolls the plan you are reviewing.** A proposed plan is
+  usually taller than the screen, and scrolling it with the wheel did nothing
+  — worse than nothing, in fact: the wheel was moving the selection on the
+  dashboard hidden behind the dialog, so you could come out of a plan review
+  pointed at a different feature than you went in on. The wheel now scrolls
+  the plan, the agent's review of it, and the plan and instruction editors,
+  three lines at a time like every other scrollable view in AMF. Clicking
+  inside the dialog no longer reaches the dashboard underneath either, where
+  a double-click could open or start whichever feature happened to be there.
+
+- **Learning Mode says when its file list is incomplete.** In a project that
+  is not a git repository, any folder AMF could not open was left out
+  silently — and a list missing a whole folder looks exactly like a project
+  that does not have one. It now tells you how many folders are missing and
+  where to see which ones.
+- **Learning Mode's file errors now tell you what to do next.** Opening a
+  binary file, a file too large to show, or one you do not have permission to
+  read used to stop at the diagnosis. Each message now ends with a way
+  forward, and names the file the way the list does instead of printing its
+  full path.
+- **The scope key rebuilds the file list when it cannot switch scope.** In a
+  project that is not a git repository there are no branch changes to switch
+  to, so `s` used to only say so. That left the advice for a file that had
+  been moved or deleted since the list was built — press `s` to rebuild it —
+  doing nothing in exactly the projects it was written for. `s` now rebuilds
+  the list in place there, and still explains why the scope did not change.
+- **Reopening Learning Mode keeps each conversation together.** Follow-up
+  questions are shown indented under the question they continue, but on a
+  reopen they were laid out in the order they had been asked — so a follow-up
+  asked after a couple of other questions came back indented under whichever
+  unrelated question happened to precede it. History now reads on the second
+  visit the way it read on the first, and answers you sent back for a deeper
+  look stay next to the answer they were checking.
+- **Learning Mode failures are recorded.** Files that would not open, folders
+  that could not be read, and saved-history problems now appear in the debug
+  log (`D` on the dashboard) with the path involved, so a question that went
+  nowhere can be traced after the fact instead of vanishing.
+- **PR review summaries render cleanly in the Detail pane.** Opening a review
+  summary no longer leaves garbled fragments from diff or source lines mixed
+  into the review text, and scrolling stays aligned when content wraps.
+
+### Documentation
+
+- **The README now covers Learning Mode.** A new *Understand a codebase you
+  didn't write* workflow — placed first, because it is the one that needs no
+  prior knowledge of AMF — explains what the mode is for, that nothing in it
+  changes your files and `S` is the single exception, how to start when you do
+  not yet know what to ask, the two ask keys and the five keys that act on an
+  answer, and the newcomer/familiar reading levels. It also says why `D`
+  exists: an ordinary answer only sees the code on screen, so it can name
+  files or line numbers that do not exist — and that Codex is the exception,
+  since it always reads the repository on the first request, so its answers
+  are deep dives already and `D` refuses rather than re-running one. `K` is in
+  the dashboard keybindings table.
+- **`CLAUDE.md` documents Learning Mode's architecture** — the four new
+  modules, the read-only invariant and its one exception, and the distinction
+  between a follow-up and a deep dive, which are two different relationships
+  between Q&A rows rather than one. Nothing about AMF's behavior changes.
+
+### Migration
+
+No migration is required.
 
 ## [v0.36.0] - 2026-08-12
 
@@ -212,6 +315,19 @@ storage the first time it runs.
   configured while being explicit that adding swap trades an out-of-memory kill
   for heavy paging, and that lowering `max_concurrent_agents` is the fix for
   the cause.
+- **AI-drafted PR replies disclose how they were generated.** An unchanged
+  reply returned by a PR Triage fix session now includes the agent harness,
+  best-effort model name, estimated token usage, and estimated cost for that
+  fix before AMF's existing AI-attribution footer. The details are recorded
+  against the session the fix was injected into, so re-opening PR Triage,
+  switching fix targets, or removing a session never re-attributes a draft to a
+  different agent — a draft whose session is gone keeps its harness and model
+  and reports usage as unavailable. Harnesses that do not expose model or usage
+  telemetry say that it is unreported or unavailable instead of silently
+  omitting the field. Editing the draft still changes it to a user-authored,
+  AMF-posted reply and removes the AI generation disclosure. The database
+  migrates in place on first launch; drafts captured before the upgrade post
+  with their details marked unreported.
 
 - **Final Review has a `?` key that shows you all of its keys.** The review
   screen has grown a lot of bindings, and the two footer rows can only ever

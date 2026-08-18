@@ -1,0 +1,136 @@
+# learning-mode-anchor-drift: a stored question's line range is checked
+# against the code as it is now, every time the overlay opens
+# (docs/backlog/learning-mode-followups-plan.md, "Anchor drift").
+#
+# A learning_qa row stores file_path + line_start/line_end. Editing the
+# file afterwards used to leave every earlier entry pointing at whatever
+# had since taken those line numbers, silently — and a stale anchor does
+# not look stale, it looks like an answer that was always wrong. This
+# scenario is the whole argument: ask a real question about lines 3-6,
+# move that code down, reopen, and read what the entry says about itself.
+#
+# The `run:` steps are load-bearing rather than setup. Anchor drift only
+# exists across a close/reopen with a file edit in between, so the edit
+# has to happen mid-scenario; it edits the seeded repo directly, which is
+# also how a real user's agent would have changed it.
+#
+# Needs a seeded project + feature at /tmp/amf-drift-demo and asks one
+# real question, so the harness must be authenticated:
+#   ./amf-capture.sh --scenario scenarios/learning-mode-anchor-drift.txt \
+#       --seed /tmp/amf-drift-proj.json \
+#       --seed-feature /tmp/amf-drift-feat.json \
+#       --geometry 140x44
+#
+# 140x44 to match the rest of the Learning Mode captures: the drift
+# sentence is sized to the pane, so this shows the two-row form.
+
+wait:1500
+shot:dashboard
+
+# K on the feature opens Learning Mode. A project's first visit opens the
+# help overlay by itself; Escape starts browsing.
+key:j
+wait:500
+key:K
+wait:2000
+key:Escape
+wait:800
+shot:start-here
+
+# Down the pinned Start here group: tour -> README.md -> src/main.rs.
+# Enter loads the file and moves focus to the code pane.
+key:j
+key:j
+wait:400
+key:Enter
+wait:1000
+shot:file-loaded
+
+# Cursor to line 3, then v starts a range and j extends it over load().
+key:j
+key:j
+wait:300
+key:v
+key:j
+key:j
+key:j
+wait:500
+shot:range-selected
+
+# One real headless question about lines 3-6.
+key:e
+wait:800
+text:What does this function do?
+wait:500
+key:Tab
+wait:30000
+wait:30000
+shot:answered
+
+# Close the overlay, then move the code: five lines added above load(),
+# which puts it at lines 7-10.
+key:q
+wait:1000
+run:cp /tmp/amf-drift-demo-after.rs /tmp/amf-drift-demo/src/main.rs
+wait:600
+
+# Reopening re-checks every stored anchor. The row is marked, and the
+# overlay says so on the way in — the marker lives in a pane the user may
+# not be looking at.
+key:K
+wait:3000
+shot:reopened-marked-moved
+
+# Opening the entry keeps the range it was asked at in the title and says
+# underneath where that code went. The answer itself is untouched.
+key:Tab
+key:Tab
+wait:500
+key:Enter
+wait:1200
+shot:answer-says-where-the-code-went
+
+# Now the harsher case: the file itself goes away.
+key:Escape
+wait:500
+key:q
+wait:1000
+run:git -C /tmp/amf-drift-demo mv src/main.rs src/app.rs
+wait:600
+
+key:K
+wait:3000
+shot:reopened-anchor-lost
+
+key:Tab
+key:Tab
+wait:500
+key:Enter
+wait:1200
+shot:answer-says-the-file-is-gone
+
+# S hands the entry to a live agent session. The seed carries the warning
+# with it — this is the one path that sends something else off to read a
+# location the code has left, so a silent stale locator here is the whole
+# failure arriving by the back door.
+key:S
+wait:30000
+wait:15000
+key:PageUp
+key:PageUp
+key:PageUp
+key:PageUp
+key:PageUp
+key:PageUp
+key:PageUp
+key:PageUp
+key:PageUp
+key:PageUp
+key:PageUp
+key:PageUp
+wait:1000
+shot:escalation-seed-carries-the-warning
+
+# Leave the draft unsent.
+key:Escape
+wait:500

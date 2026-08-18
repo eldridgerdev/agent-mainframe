@@ -13831,6 +13831,201 @@ fn pr_review_triage_session_usage_reports_only_growth_since_baseline() {
 }
 
 #[test]
+fn pr_review_agent_draft_captures_harness_model_usage_and_cost() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Claude,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    let source = TokenUsageSource {
+        provider: TokenUsageProvider::Claude,
+        id: "triage-session".to_string(),
+    };
+    let baseline = SessionTokenUsage {
+        source: source.clone(),
+        input_tokens: 1_000,
+        output_tokens: 200,
+        cache_read_tokens: 100,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1_300,
+    };
+    session.token_usage = Some(baseline.clone());
+
+    let db_dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    let tmux_session = app.store.projects[0].features[0].tmux_session.clone();
+    app.sidebar_model_cache
+        .insert(tmux_session, "Model: claude-sonnet-4-6".to_string());
+    let session_id = app.store.projects[0].features[0].sessions[0].id.clone();
+    let usage = app.store.projects[0].features[0].sessions[0]
+        .token_usage
+        .as_mut()
+        .unwrap();
+    usage.input_tokens += 400;
+    usage.output_tokens += 100;
+    usage.cache_read_tokens += 100;
+    usage.total_tokens += 600;
+    // What `pr_review_inject_fix` records at injection time.
+    persist_draft_with_provenance(
+        &app,
+        Some(&crate::app::pr_review::ReplyDraftProvenance {
+            harness: "Claude".to_string(),
+            session_id,
+            model: None,
+            usage_baseline: Some(baseline),
+        }),
+    );
+
+    app.pr_review_open_reply_done();
+
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    let metadata = state
+        .reply
+        .as_ref()
+        .and_then(|reply| reply.generation_metadata.as_ref())
+        .expect("captured drafts should disclose their generation details");
+    assert_eq!(metadata.harness.as_deref(), Some("Claude"));
+    assert_eq!(metadata.model.as_deref(), Some("claude-sonnet-4-6"));
+    // Only the spend since the fix was injected, not the session's whole life.
+    assert_eq!(metadata.estimated_tokens, Some(600));
+    assert_eq!(metadata.estimated_cost.as_deref(), Some("<$0.01"));
+    let _ = source;
+}
+
+/// Write a captured draft for PR 7 / comment 1 straight into the DB, with the
+/// provenance a fix injection would have recorded alongside it.
+fn persist_draft_with_provenance(
+    app: &App,
+    provenance: Option<&crate::app::pr_review::ReplyDraftProvenance>,
+) {
+    let encoded = provenance.map(|p| serde_json::to_string(p).unwrap());
+    let db = app.db.as_ref().unwrap();
+    db.begin_pr_comment_reply_draft(7, 1, "request-1", "sha", encoded.as_deref())
+        .unwrap();
+    assert!(
+        db.capture_pr_comment_reply_draft(7, 1, "request-1", "Fixed the guard.")
+            .unwrap()
+    );
+}
+
+/// The reviewer's case: PR Triage is re-opened (which resets `fix_target` to the
+/// default) and a *different* agent session is now what that target resolves to.
+/// The disclosure has to keep naming the session that wrote the draft.
+#[test]
+fn pr_review_agent_draft_metadata_ignores_a_changed_fix_target() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    // The session the fix actually went to, and a second one the reset fix
+    // target lands on instead.
+    let drafting = store.projects[0].features[0].add_session_named(
+        SessionKind::Codex,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    drafting.token_usage = Some(SessionTokenUsage {
+        source: TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "drafting".to_string(),
+        },
+        input_tokens: 400,
+        output_tokens: 100,
+        cache_read_tokens: 100,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 600,
+    });
+    let drafting_id = drafting.id.clone();
+
+    let db_dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    persist_draft_with_provenance(
+        &app,
+        Some(&crate::app::pr_review::ReplyDraftProvenance {
+            harness: "Codex".to_string(),
+            session_id: drafting_id,
+            model: Some("gpt-5.5".to_string()),
+            usage_baseline: None,
+        }),
+    );
+    // Whatever the pane now points at is irrelevant: swap the session out for a
+    // Claude one under the same triage label.
+    app.store.projects[0].features[0].sessions[0].kind = SessionKind::Claude;
+    app.store.projects[0].features[0].sessions[0].id = "some-other-session".to_string();
+
+    app.pr_review_open_reply_done();
+
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    let metadata = state
+        .reply
+        .as_ref()
+        .and_then(|reply| reply.generation_metadata.as_ref())
+        .expect("captured drafts should disclose their generation details");
+    assert_eq!(metadata.harness.as_deref(), Some("Codex"));
+    assert_eq!(metadata.model.as_deref(), Some("gpt-5.5"));
+    // The drafting session is gone, so its usage is unknown — never the
+    // replacement session's numbers.
+    assert_eq!(metadata.estimated_tokens, None);
+    assert_eq!(metadata.estimated_cost, None);
+}
+
+/// A draft persisted before AMF recorded provenance still discloses that it was
+/// AI-generated; the details it cannot vouch for read as unreported.
+#[test]
+fn pr_review_agent_draft_without_provenance_discloses_unknown_details() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(
+        SessionKind::Claude,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+
+    let db_dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    persist_draft_with_provenance(&app, None);
+
+    app.pr_review_open_reply_done();
+
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    let reply = state.reply.as_ref().expect("expected a reply dialog");
+    assert!(reply.agent_drafted);
+    let metadata = reply
+        .generation_metadata
+        .as_ref()
+        .expect("an agent draft always discloses, even with nothing to report");
+    assert_eq!(metadata.harness, None);
+    assert_eq!(
+        metadata.source_disclosure(),
+        "AI generation: harness unreported · model unreported"
+    );
+    assert_eq!(
+        metadata.usage_disclosure(),
+        "estimated tokens unavailable · estimated cost unavailable"
+    );
+}
+
+#[test]
 fn pr_review_triage_session_usage_hides_an_unchanged_baseline() {
     let mut store = store_with_feature(ProjectStatus::Active);
     let session = store.projects[0].features[0].add_session_named(
@@ -15187,7 +15382,7 @@ fn pr_review_reply_done_prefers_the_agent_draft() {
     app.db
         .as_ref()
         .unwrap()
-        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha", None)
         .unwrap();
     app.handle_ipc_message_value(serde_json::json!({
         "type": "pr-reply-draft",
@@ -15220,7 +15415,7 @@ fn pr_review_reply_not_needed_ignores_a_captured_fix_draft() {
     app.db
         .as_ref()
         .unwrap()
-        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha", None)
         .unwrap();
     app.handle_ipc_message_value(serde_json::json!({
         "type": "pr-reply-draft",
@@ -15255,7 +15450,7 @@ fn reply_draft_toast_context_uses_the_cached_comments_path_and_snippet() {
     app.db
         .as_ref()
         .unwrap()
-        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha", None)
         .unwrap();
     app.handle_ipc_message_value(serde_json::json!({
         "type": "pr-reply-draft",
@@ -15280,7 +15475,7 @@ fn reply_draft_toast_context_none_without_a_cached_review() {
     app.db
         .as_ref()
         .unwrap()
-        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha", None)
         .unwrap();
     app.handle_ipc_message_value(serde_json::json!({
         "type": "pr-reply-draft",
@@ -15304,7 +15499,7 @@ fn pr_review_reply_draft_ipc_ignores_an_expired_request() {
     app.db
         .as_ref()
         .unwrap()
-        .begin_pr_comment_reply_draft(7, 1, "current", "sha")
+        .begin_pr_comment_reply_draft(7, 1, "current", "sha", None)
         .unwrap();
 
     app.handle_ipc_message_value(serde_json::json!({
@@ -15502,7 +15697,7 @@ fn pr_review_agent_draft_includes_the_post_injection_commit_that_touched_the_fil
     app.db
         .as_ref()
         .unwrap()
-        .begin_pr_comment_reply_draft(7, 1, "request-1", &base_sha)
+        .begin_pr_comment_reply_draft(7, 1, "request-1", &base_sha, None)
         .unwrap();
     app.handle_ipc_message_value(serde_json::json!({
         "type": "pr-reply-draft",
@@ -15592,7 +15787,7 @@ fn pr_review_editing_a_captured_draft_drops_ai_attribution() {
     app.db
         .as_ref()
         .unwrap()
-        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha")
+        .begin_pr_comment_reply_draft(7, 1, "request-1", "sha", None)
         .unwrap();
     app.handle_ipc_message_value(serde_json::json!({
         "type": "pr-reply-draft",

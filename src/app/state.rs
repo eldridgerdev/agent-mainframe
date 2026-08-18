@@ -2689,6 +2689,10 @@ pub struct ReplyState {
     /// Only ever `true` for [`super::pr_review::ReplyKind::Done`] — see
     /// [`super::pr_review::App::open_reply`].
     pub agent_drafted: bool,
+    /// Best-effort details about the agent session that produced the draft.
+    /// Captured when the reply opens so the confirmation UI previews the exact
+    /// disclosure that will be posted with an unchanged AI-authored reply.
+    pub generation_metadata: Option<crate::app::pr_review::ReplyGenerationMetadata>,
     /// The exact body the editor was seeded with when the dialog opened.
     /// Compared against the current editor text at post time: if the user has
     /// changed it, the draft is no longer purely the agent's own words, so
@@ -3080,6 +3084,17 @@ impl LearningAnchor {
         }
     }
 
+    /// The 1-based inclusive line range this anchor actually names, for prose
+    /// that quotes it back. Unlike [`line_range`](Self::line_range) — which is
+    /// the persistence shape and reuses `line_start` to hold a hunk index —
+    /// this is `None` for every anchor that does not cover specific lines.
+    pub fn line_range_for_display(self) -> Option<(usize, usize)> {
+        match self {
+            LearningAnchor::Lines { start, end } => Some((start, end)),
+            _ => None,
+        }
+    }
+
     /// Plain-words description echoed above the question input, e.g.
     /// `lines 40-58 of src/app/learning.rs`.
     pub fn describe(self, path: Option<&str>) -> String {
@@ -3092,6 +3107,90 @@ impl LearningAnchor {
                 format!("line {start} of {path}")
             }
             LearningAnchor::Lines { start, end } => format!("lines {start}-{end} of {path}"),
+        }
+    }
+}
+
+/// What became of a stored Q&A anchor when it was checked against the file as
+/// it stands now.
+///
+/// Computed when the history loads and **never persisted**. The row's
+/// `selection_text` is the evidence, so the verdict can always be re-derived,
+/// and the stored `line_start`/`line_end` stay what they have always been: the
+/// historical fact of where the question was asked. Overwriting them would
+/// trade a recoverable answer for an unrecoverable one.
+///
+/// Absence of a verdict means "still where it was stored, as far as we can
+/// tell" — which is also what a row with nothing to check against reports, so
+/// the common case costs nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningAnchorDrift {
+    /// The code moved and was found again, at this 1-based inclusive range.
+    Reanchored { start: usize, end: usize },
+    /// The code the question was asked about can no longer be pointed at.
+    Lost(LearningAnchorLoss),
+}
+
+/// Why an anchor was given up on. Each reads differently to the user: a
+/// deleted file is not the same event as code that was rewritten, and neither
+/// is the same as code that now appears in several places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningAnchorLoss {
+    /// The file itself is no longer in the working directory.
+    FileGone,
+    /// The file is there, but the selected text is not in it any more.
+    NotFound,
+    /// The selected text now appears more than once, so there is no honest
+    /// way to say which copy the question was about.
+    Ambiguous,
+}
+
+#[allow(dead_code)]
+impl LearningAnchorDrift {
+    /// Compact marker for the Q&A history row.
+    pub fn marker(self) -> &'static str {
+        match self {
+            LearningAnchorDrift::Reanchored { .. } => "⚠ moved",
+            LearningAnchorDrift::Lost(_) => "⚠ anchor lost",
+        }
+    }
+
+    /// Whether this is a loss rather than a relocation — the two are coloured
+    /// differently, because one of them still points at the right code.
+    pub fn is_lost(self) -> bool {
+        matches!(self, LearningAnchorDrift::Lost(_))
+    }
+
+    /// Full sentence for the answer pane, given the range the row was stored
+    /// with. Says what happened *and* that the question and answer are intact,
+    /// since a newcomer's reading of "anchor lost" is otherwise "this entry is
+    /// broken".
+    pub fn describe(self, stored: Option<(usize, usize)>) -> String {
+        let was = match stored {
+            Some((start, end)) if start == end => format!("line {start}"),
+            Some((start, end)) => format!("lines {start}-{end}"),
+            None => "this file".to_string(),
+        };
+        match self {
+            LearningAnchorDrift::Reanchored { start, end } if start == end => {
+                format!("The code has moved since this was asked: it was {was}, it is now line {start}.")
+            }
+            LearningAnchorDrift::Reanchored { start, end } => {
+                format!(
+                    "The code has moved since this was asked: it was {was}, it is now lines {start}-{end}."
+                )
+            }
+            LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone) => {
+                "This file is no longer in the project, so there is nothing left to point at. The question and answer below are unchanged.".to_string()
+            }
+            LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound) => {
+                format!(
+                    "The code this was asked about is no longer in the file, so {was} now shows something else. The question and answer below are unchanged."
+                )
+            }
+            LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous) => {
+                "This code now appears in more than one place in the file, so there is no way to say which copy the question was about. The question and answer below are unchanged.".to_string()
+            }
         }
     }
 }
@@ -3407,22 +3506,72 @@ pub enum LearningListEntry {
     /// The repo-level orientation question — anchors to the project rather
     /// than to any file.
     ProjectTour,
+    /// A directory in the repo tree. Navigation only: a directory is not a
+    /// question anchor, so resting on one leaves the loaded file and the
+    /// anchor exactly where they were. Only ever built in repo-tree scope.
+    Dir {
+        /// Repo-relative path with no trailing slash, e.g. `src/app`. This is
+        /// the key `LearningViewState::expanded_dirs` stores.
+        path: String,
+        /// Nesting depth; 0 for a top-level directory.
+        depth: usize,
+        expanded: bool,
+        /// Files anywhere beneath this directory, so a collapsed row can still
+        /// say how much it is hiding.
+        file_count: usize,
+        /// Children not listed because this one directory exceeded
+        /// `MAX_DIR_CHILDREN`. Non-zero rows say so rather than looking
+        /// complete — the whole-listing cap this replaced had the same duty.
+        truncated: usize,
+    },
     /// A file. `diff_index` indexes `LearningViewState::diff_files` in
-    /// branch-changes scope and is `None` in repo-tree scope.
+    /// branch-changes scope and is `None` in repo-tree scope. `depth` is the
+    /// tree indent; it is 0 for the flat branch-changes list and for the
+    /// `Start here` group, neither of which is a tree.
     File {
         path: String,
         group: LearningListGroup,
         diff_index: Option<usize>,
+        depth: usize,
     },
 }
 
 #[allow(dead_code)]
 impl LearningListEntry {
-    /// The repo-relative path this row loads, if it loads one.
+    /// The repo-relative path this row loads, if it loads one. Deliberately
+    /// `None` for a directory: this is what the content pane and the anchor
+    /// follow, and a directory must move neither.
     pub fn path(&self) -> Option<&str> {
         match self {
             LearningListEntry::File { path, .. } => Some(path.as_str()),
             _ => None,
+        }
+    }
+
+    /// The directory this row is, if it is one.
+    pub fn dir_path(&self) -> Option<&str> {
+        match self {
+            LearningListEntry::Dir { path, .. } => Some(path.as_str()),
+            _ => None,
+        }
+    }
+
+    /// A stable identity for the row, used to put the cursor back on the same
+    /// thing after the list is rebuilt. Unlike `path()` this covers
+    /// directories, because collapsing one must leave the cursor on it.
+    pub fn row_key(&self) -> Option<(bool, &str)> {
+        match self {
+            LearningListEntry::Dir { path, .. } => Some((true, path.as_str())),
+            LearningListEntry::File { path, .. } => Some((false, path.as_str())),
+            _ => None,
+        }
+    }
+
+    /// How far the row is indented in the tree.
+    pub fn depth(&self) -> usize {
+        match self {
+            LearningListEntry::Dir { depth, .. } | LearningListEntry::File { depth, .. } => *depth,
+            _ => 0,
         }
     }
 
@@ -3534,6 +3683,22 @@ pub struct LearningViewState {
     pub selected_entry: usize,
     pub list_scroll: usize,
     pub start_here_collapsed: bool,
+    /// Which repo-tree directories are expanded, by repo-relative path. The
+    /// tree is rebuilt from this on every reload, so it — not `entries` — is
+    /// what expansion state actually lives in. Seeded on open with the
+    /// ancestors of the `Start here` candidates, so `src/` is open at the file
+    /// a newcomer is most likely to want.
+    pub expanded_dirs: std::collections::BTreeSet<String>,
+    /// Whether that seeding has happened. It runs once per overlay, so a later
+    /// reload can't re-open a directory the user deliberately closed.
+    pub expanded_seeded: bool,
+    /// The repo's flat path list, kept so expanding or collapsing a directory
+    /// rebuilds `entries` from memory instead of shelling out to `git ls-files`
+    /// again. `entries` is derived from this plus `expanded_dirs`; this is the
+    /// input, and it only changes when the listing is genuinely re-read.
+    pub repo_files: Vec<String>,
+    /// The surviving `Start here` candidates, cached for the same reason.
+    pub start_here: Vec<String>,
     /// Diff snapshot backing `BrowseScope::BranchChanges`.
     pub diff_files: Vec<crate::diff::DiffFile>,
     /// Lines of the loaded file, and the path they came from.
@@ -3556,6 +3721,14 @@ pub struct LearningViewState {
     pub question: Option<LearningQuestionEditor>,
     /// Q&A history for this project, oldest first, follow-ups after parents.
     pub qa: Vec<LearningQa>,
+    /// Anchors that no longer point where they were stored, by `LearningQa::id`.
+    ///
+    /// Deliberately a side table rather than a field on the row: a verdict is a
+    /// judgment about the working directory as it is right now, not something
+    /// the row carries, and keeping the two apart is what stops it being
+    /// written back over the range the question was actually asked at. A row
+    /// with no entry here is anchored as stored.
+    pub anchor_drift: std::collections::HashMap<String, LearningAnchorDrift>,
     pub selected_qa: usize,
     pub qa_scroll: usize,
     /// Answer pane state — offset plus the render cache
@@ -5237,6 +5410,29 @@ impl PlanInterviewState {
             self.mark_plan_changed();
         }
         self.phase = PlanInterviewPhase::Review;
+    }
+
+    /// The scroll offset of whatever pane the current phase puts on screen, if
+    /// that pane scrolls at all.
+    ///
+    /// Mouse-wheel events route through here so the wheel moves the plan (or
+    /// the advisory review, or an instruction editor) rather than the dashboard
+    /// list behind the dialog. `None` is a phase whose body always fits — the
+    /// caller still swallows the event so the hidden selection cannot drift.
+    /// Every one of these offsets is clamped by the renderer against the
+    /// laid-out content, so this only ever has to move it.
+    pub fn scroll_offset_mut(&mut self) -> Option<&mut usize> {
+        if self.abort_confirmation {
+            return None;
+        }
+        match self.phase {
+            PlanInterviewPhase::Review => Some(&mut self.review_scroll_offset),
+            PlanInterviewPhase::Critique => Some(&mut self.critique_scroll_offset),
+            PlanInterviewPhase::Editing
+            | PlanInterviewPhase::DirectedFeedback
+            | PlanInterviewPhase::Investigation => Some(&mut self.edit_scroll_offset),
+            _ => None,
+        }
     }
 
     /// Open a blank multi-line instruction editor from the review gate.

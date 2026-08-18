@@ -4,7 +4,7 @@ pub mod editors;
 pub mod learning;
 mod migrations;
 pub mod plan_interviews;
-mod pr_comment_triage;
+pub mod pr_comment_triage;
 mod pr_review_cache;
 mod session_status;
 pub mod store;
@@ -175,6 +175,7 @@ impl AmfDb {
         comment_id: u64,
         request_id: &str,
         base_head_sha: &str,
+        provenance: Option<&str>,
     ) -> Result<()> {
         pr_comment_triage::begin_reply_draft(
             &self.conn,
@@ -182,6 +183,7 @@ impl AmfDb {
             comment_id,
             request_id,
             base_head_sha,
+            provenance,
         )
     }
 
@@ -203,15 +205,15 @@ impl AmfDb {
     ) -> Result<Option<String>> {
         Ok(
             pr_comment_triage::load_reply_draft(&self.conn, pr_number, comment_id)?
-                .map(|(body, _)| body),
+                .map(|row| row.body),
         )
     }
 
-    pub fn load_pr_comment_reply_draft_with_base(
+    pub fn load_pr_comment_reply_draft_row(
         &self,
         pr_number: u32,
         comment_id: u64,
-    ) -> Result<Option<(String, String)>> {
+    ) -> Result<Option<pr_comment_triage::ReplyDraftRow>> {
         pr_comment_triage::load_reply_draft(&self.conn, pr_number, comment_id)
     }
 

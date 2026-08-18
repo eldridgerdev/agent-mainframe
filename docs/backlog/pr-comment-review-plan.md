@@ -509,6 +509,29 @@ from the last *N* PRs) is reached from the PR entry flow:
       (`append_amf_attribution` wording/trimming; a render test proving the
       disclosure line appears in the dialog). → `src/app/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`.
+- [x] **Disclose how an AI-drafted reply was generated.** When the fix
+      harness returns a reviewer-facing draft and the user posts it unchanged,
+      AMF now includes the harness, best-effort model name, estimated token
+      usage, and estimated cost for that fix immediately above the existing
+      `— drafted by AI via AMF` footer. The confirmation dialog previews the
+      same details before posting, wrapped so a long provider-qualified model
+      name is readable rather than clipped. A harness that does not expose
+      model or usage telemetry says `unreported` or `unavailable`, and editing
+      the draft still changes it to a user-authored AMF reply without the AI
+      provenance line. The stable final footer remains last, so refreshed
+      threads continue to recognize and collate AMF replies. →
+      `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/token_tracking.rs`, `src/ui/dialogs/pr_review.rs`.
+      **Provenance is pinned, not re-derived.** `ReplyDraftProvenance`
+      (harness, AMF session id, model snapshot, pre-fix usage baseline) is
+      captured at fix injection — the only moment the drafting session is
+      unambiguous — and persisted with the draft as a JSON column
+      (`MIGRATION_022`). Reading the pane's *current* fix target instead would
+      misattribute a draft after PR Triage is re-opened (which resets the
+      target) or drop the disclosure entirely once the session is removed.
+      Model and usage are still read live off the *named* session, since the
+      transcript only exists after the fix runs; both fall back honestly when
+      it is gone. → `src/db/pr_comment_triage.rs`, `src/db/migrations.rs`.
 - **Acceptance:** from the pane, reply to a comment to report a fix
   (`Done in <sha>`) or explain why one isn't needed, and optionally resolve the
   thread.

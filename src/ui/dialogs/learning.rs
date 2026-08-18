@@ -24,9 +24,9 @@ use super::super::dashboard::centered_rect;
 use super::editor_view::{count_wrapped_editor_lines, editor_lines, sync_editor_scroll};
 use crate::app::learning::STARTER_QUESTIONS;
 use crate::app::{
-    BrowseScope, LearningAnchor, LearningFocus, LearningHarnessPicker, LearningListEntry,
-    LearningListGroup, LearningQa, LearningQaIntent, LearningQaStatus, LearningQuestionEditor,
-    LearningRunMode, LearningStarterPicker, LearningViewState,
+    BrowseScope, LearningAnchor, LearningAnchorDrift, LearningFocus, LearningHarnessPicker,
+    LearningListEntry, LearningListGroup, LearningQa, LearningQaIntent, LearningQaStatus,
+    LearningQuestionEditor, LearningRunMode, LearningStarterPicker, LearningViewState,
 };
 use crate::highlight;
 use crate::theme::Theme;
@@ -210,6 +210,15 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
         Span::styled(
             match state.focus {
                 LearningFocus::Qa => " read the answer  ",
+                // On a folder Enter opens or closes it. Saying so costs
+                // nothing — the hint is on the line either way — and it is the
+                // discovery path for the tree for anyone who never finds h/l.
+                _ if state
+                    .selected_entry()
+                    .is_some_and(|e| e.dir_path().is_some()) =>
+                {
+                    " open/close folder  "
+                }
                 _ => " open  ",
             },
             word,
@@ -246,9 +255,21 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: 
         Span::styled(" whole file  ", word),
         Span::styled("P", key),
         Span::styled(" whole project  ", word),
-        Span::styled("x", key),
-        Span::styled(" this change  ", word),
     ];
+    // `x` needs a diff, so in repo-tree scope it can only ever refuse. It used
+    // to be advertised there anyway; dropping it is both more honest and where
+    // the 14 columns for the tree hint came from.
+    if state.scope == BrowseScope::BranchChanges {
+        second.push(Span::styled("x", key));
+        second.push(Span::styled(" this change  ", word));
+    } else if state
+        .entries
+        .iter()
+        .any(|e| matches!(e, LearningListEntry::Dir { .. }))
+    {
+        second.push(Span::styled("h/l", key));
+        second.push(Span::styled(" folders  ", word));
+    }
     // The footer truncates from the right, so what goes here is rationed
     // against `q close` surviving at 140 columns. The two answer keys travel
     // together — both act on the selected entry, and offering one without the
@@ -342,25 +363,64 @@ fn file_row(
     width: usize,
     theme: &Theme,
 ) -> Line<'static> {
-    let (text, color) = match entry {
+    let (text, color, truncate_from_left) = match entry {
         LearningListEntry::StartHereHeader => (
             format!("{} Start here", if collapsed { "▸" } else { "▾" }),
             theme.warning.to_color(),
+            false,
         ),
         LearningListEntry::ProjectTour => (
             "  Tour this whole project".to_string(),
             theme.info.to_color(),
+            false,
         ),
+        LearningListEntry::Dir {
+            path,
+            depth,
+            expanded,
+            file_count,
+            truncated,
+        } => {
+            // Leaf name only. The full path is the pane title's job — this
+            // pane is ~32 columns at a 140-column terminal, which is what made
+            // the flat list render `…ude/commands/amf/ai-review.m` for three
+            // consecutive rows.
+            let name = leaf_name(path);
+            let marker = if *expanded { "▾" } else { "▸" };
+            let mut label = format!("{}{marker} {name}/", indent(*depth));
+            // A closed folder says its size, so skipping one is an informed
+            // choice rather than a guess.
+            if !*expanded {
+                label.push_str(&format!(" ({file_count})"));
+            }
+            if *truncated > 0 {
+                label.push_str(&format!(" +{truncated} not shown"));
+            }
+            (label, theme.primary.to_color(), false)
+        }
         LearningListEntry::File {
             path,
             group: LearningListGroup::StartHere,
             ..
-        } => (format!("  {path}"), theme.text.to_color()),
-        LearningListEntry::File { path, .. } => (path.clone(), theme.text.to_color()),
+        } => (format!("  {path}"), theme.text.to_color(), true),
+        LearningListEntry::File { path, depth, .. } => (
+            format!("{}{}", indent(*depth), leaf_name(path)),
+            theme.text.to_color(),
+            // Branch-changes rows are flat full paths and still want their
+            // tail; tree rows are leaf names that already fit.
+            *depth == 0,
+        ),
     };
 
     let cursor = if selected { "› " } else { "  " };
-    let body = truncate_left(&text, width.saturating_sub(cursor.len()));
+    let avail = width.saturating_sub(cursor.len());
+    // Truncating a tree row from the left would eat the indent that says where
+    // it sits, so those clip from the right instead.
+    let body = if truncate_from_left {
+        truncate_left(&text, avail)
+    } else {
+        truncate_right(&text, avail)
+    };
     let style = if selected {
         Style::default()
             .fg(color)
@@ -636,7 +696,8 @@ fn draw_qa_list(frame: &mut Frame, area: Rect, state: &mut LearningViewState, th
     {
         let selected = i == state.selected_qa;
         let indented = qa.parent_qa_id.is_some();
-        lines.push(qa_headline(qa, selected, indented, theme));
+        let drift = state.anchor_drift.get(&qa.id).copied();
+        lines.push(qa_headline(qa, drift, selected, indented, theme));
         lines.push(qa_question_line(qa, selected, indented, width, theme));
     }
     frame.render_widget(Paragraph::new(lines), inner);
@@ -650,7 +711,13 @@ fn draw_qa_list(frame: &mut Frame, area: Rect, state: &mut LearningViewState, th
     );
 }
 
-fn qa_headline(qa: &LearningQa, selected: bool, indented: bool, theme: &Theme) -> Line<'static> {
+fn qa_headline(
+    qa: &LearningQa,
+    drift: Option<LearningAnchorDrift>,
+    selected: bool,
+    indented: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let intent_color = match qa.intent {
         LearningQaIntent::Explain => theme.info.to_color(),
         LearningQaIntent::Action => theme.warning.to_color(),
@@ -679,6 +746,19 @@ fn qa_headline(qa: &LearningQa, selected: bool, indented: bool, theme: &Theme) -
         Span::styled("  ", Style::default()),
         Span::styled(qa.status.word(), Style::default().fg(status_color)),
     ];
+    // Ahead of even the acted-on markers: this one says the row's line numbers
+    // can't be trusted, and a reader who doesn't see it has no way to tell a
+    // stale anchor from an answer that was always wrong.
+    if let Some(drift) = drift {
+        spans.push(Span::styled(
+            format!("  {}", drift.marker()),
+            Style::default().fg(if drift.is_lost() {
+                theme.danger.to_color()
+            } else {
+                theme.warning.to_color()
+            }),
+        ));
+    }
     // Markers before provenance: this pane is narrow enough that the headline
     // overflows, and the renderer truncates from the right. "You already acted
     // on this" is worth more than which harness answered, so the harness is
@@ -768,7 +848,43 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
         (None, Some(notice)) => Some((notice.clone(), theme.info.to_color())),
         (None, None) => None,
     };
-    let mut constraints = vec![Constraint::Length(3), Constraint::Min(1)];
+    // A drifted anchor gets its own line under the header rather than a clause
+    // in the title, because the title is where the *stored* range is printed
+    // and that is the claim being corrected. Two rows, since the sentence runs
+    // past one at any realistic pane width.
+    // Built up front so the height below is asked of the very widget that will
+    // draw it: character-count ÷ width under-counts word wrapping, and the row
+    // it drops is the last one — the clause saying the answer is still good.
+    let drift_para = state.drift_for(&qa.id).map(|drift| {
+        let text = format!("⚠ {}", drift.describe(qa.anchor.line_range_for_display()));
+        Paragraph::new(Span::styled(
+            text,
+            Style::default().fg(if drift.is_lost() {
+                theme.danger.to_color()
+            } else {
+                theme.warning.to_color()
+            }),
+        ))
+        .style(Style::default().bg(theme.effective_header_bg()))
+        .wrap(Wrap { trim: true })
+    });
+    let mut constraints = vec![Constraint::Length(3)];
+    if let Some(para) = &drift_para {
+        // Sized to what the paragraph renderer actually wraps to at this width
+        // rather than a fixed two rows: the sentence runs to about 160
+        // characters, which fits in two at 140 columns and needs three by 80 —
+        // and a sentence clipped mid-clause is how "the answer below is
+        // unchanged" stops being said at exactly the widths where the
+        // reassurance matters most. The only ceiling is what the pane can
+        // spare: header, footer, banner, and one row of answer come first,
+        // because a drift note that pushed the answer off screen would be
+        // trading one silence for another.
+        let reserved = 3 + 2 + 1 + u16::from(banner.is_some());
+        let max_rows = inner.height.saturating_sub(reserved).max(1);
+        let rows = (para.line_count(inner.width) as u16).clamp(1, max_rows);
+        constraints.push(Constraint::Length(rows));
+    }
+    constraints.push(Constraint::Min(1));
     if banner.is_some() {
         constraints.push(Constraint::Length(1));
     }
@@ -777,14 +893,18 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
+    let body_chunk = chunks[if drift_para.is_some() { 2 } else { 1 }];
     let footer_chunk = chunks[chunks.len() - 1];
     if let Some((message, color)) = &banner {
         frame.render_widget(
             Paragraph::new(Span::styled(message.clone(), Style::default().fg(*color)))
                 .style(Style::default().bg(theme.effective_header_bg()))
                 .wrap(Wrap { trim: true }),
-            chunks[2],
+            chunks[chunks.len() - 2],
         );
+    }
+    if let Some(para) = drift_para {
+        frame.render_widget(para, chunks[1]);
     }
 
     let header = Paragraph::new(vec![
@@ -811,7 +931,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 .unwrap_or_else(|| "answer.md".to_string());
             super::markdown::draw_markdown_document(
                 frame,
-                chunks[1],
+                body_chunk,
                 answer,
                 Path::new(&source),
                 &mut state.answer_scroll,
@@ -828,7 +948,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 ))
                 .style(Style::default().bg(theme.effective_header_bg()))
                 .wrap(Wrap { trim: true }),
-                chunks[1],
+                body_chunk,
             );
         }
         (None, None) => {
@@ -839,7 +959,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 ))
                 .style(Style::default().bg(theme.effective_header_bg()))
                 .wrap(Wrap { trim: true }),
-                chunks[1],
+                body_chunk,
             );
         }
     }
@@ -1497,7 +1617,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " What a question is about",
+        " Finding your way around",
         heading,
     )));
     for (k, text) in [
@@ -1506,12 +1626,36 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
             "Tab",
             "move between the file list, the code, and your questions",
         ),
-        ("Enter", "open a file, or read the selected answer"),
+        (
+            "Enter",
+            "open or close a folder, open a file, or read an answer",
+        ),
+        ("l", "open the folder under the cursor, or step into it"),
+        ("h", "close the folder, or step out to the one above"),
+        ("Z", "open every folder in the project, or fold them all"),
+        ("z", "fold or unfold the Start here group"),
+    ] {
+        lines.push(key_row(k, text, key, body));
+    }
+    lines.push(Line::from(Span::styled(
+        " Folders are for finding files — resting on one changes nothing about",
+        muted,
+    )));
+    lines.push(Line::from(Span::styled(
+        " the question you have lined up.",
+        muted,
+    )));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " What a question is about",
+        heading,
+    )));
+    for (k, text) in [
         ("v / V", "start a line range / drop back to one line"),
         ("f", "the whole file"),
         ("P", "the whole project"),
         ("x", "the change under the cursor (branch changes only)"),
-        ("z", "fold or unfold the Start here group"),
     ] {
         lines.push(key_row(k, text, key, body));
     }
@@ -1549,6 +1693,10 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         " S is the one way out of read-only: it opens a normal agent session,",
         " which can change files. The question is filled in for you, and",
         " nothing is sent until you press Enter on it.",
+        " A question remembers the lines it was asked about. When the code",
+        " later moves, the entry is marked moved and the answer tells you",
+        " where it went; when it's gone, it's marked anchor lost. Either way",
+        " the question and the answer are kept exactly as they were.",
     ] {
         lines.push(Line::from(Span::styled(note, muted)));
     }
@@ -1630,6 +1778,22 @@ fn draw_scrollbar(frame: &mut Frame, area: Rect, total: usize, position: usize, 
 
 /// Keep the tail of a path: the filename matters more than the repo root it
 /// sits under when the pane is narrow.
+/// The last component of a repo-relative path — what a tree row is labelled
+/// with, since its ancestors are already on screen above it.
+fn leaf_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Two spaces per level. Deep trees are clamped so a long path can't push the
+/// name itself off a narrow pane: past the clamp the rows stop stepping right,
+/// which is worse than perfect but far better than an empty row.
+fn indent(depth: usize) -> String {
+    "  ".repeat(depth.min(MAX_INDENT_LEVELS))
+}
+
+/// How far tree rows step right before the indent stops growing.
+const MAX_INDENT_LEVELS: usize = 6;
+
 fn truncate_left(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -1696,7 +1860,7 @@ mod tests {
 
     // ── whole-overlay rendering ──────────────────────────────
 
-    use crate::app::{LearningLevel, LearningRunMode};
+    use crate::app::{LearningAnchorLoss, LearningLevel, LearningRunMode};
     use crate::project::AgentKind;
     use std::path::PathBuf;
 
@@ -1780,6 +1944,121 @@ let files = list_repo_files(workdir)?;
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    fn dir_row(path: &str, depth: usize, expanded: bool, file_count: usize) -> LearningListEntry {
+        LearningListEntry::Dir {
+            path: path.to_string(),
+            depth,
+            expanded,
+            file_count,
+            truncated: 0,
+        }
+    }
+
+    fn tree_file_row(path: &str, depth: usize) -> LearningListEntry {
+        LearningListEntry::File {
+            path: path.to_string(),
+            group: LearningListGroup::Files,
+            diff_index: None,
+            depth,
+        }
+    }
+
+    /// The defect Epic 7 exists to fix: the file pane is ~32 columns at a
+    /// 140-column terminal, and a flat list rendered the full path there, so
+    /// three files in the same folder read as three near-identical truncated
+    /// stubs. A tree row shows the leaf name, which fits.
+    #[test]
+    fn a_deep_file_shows_its_name_not_a_truncated_path() {
+        let mut state = state();
+        state.entries = vec![
+            dir_row("src", 0, true, 3),
+            dir_row("src/app", 1, true, 2),
+            tree_file_row("src/app/learning.rs", 2),
+            tree_file_row("src/app/todos.rs", 2),
+        ];
+        let rendered = render(&mut state);
+
+        assert!(rendered.contains("learning.rs"), "{rendered}");
+        assert!(rendered.contains("todos.rs"), "{rendered}");
+        // The full path is gone from the list — it belongs to the pane title,
+        // which is where a name that no longer identifies a file gets resolved.
+        assert!(
+            !rendered.contains("src/app/learning.rs"),
+            "the list should not be repeating the whole path"
+        );
+        // …and the pane title still carries it, since the leaf name alone
+        // doesn't say which `learning.rs` this is.
+        assert!(rendered.contains("src/main.rs"), "{rendered}");
+    }
+
+    /// A closed folder says how much it is hiding, so skipping it is a choice
+    /// rather than a guess — and a folder truncated by the per-directory cap
+    /// says that too, rather than looking complete.
+    #[test]
+    fn a_closed_folder_says_what_is_inside_it() {
+        let mut state = state();
+        state.entries = vec![
+            dir_row("src", 0, false, 42),
+            LearningListEntry::Dir {
+                path: "generated".to_string(),
+                depth: 0,
+                expanded: true,
+                file_count: 9000,
+                truncated: 7000,
+            },
+        ];
+        let rendered = render(&mut state);
+        assert!(rendered.contains("src/ (42)"), "{rendered}");
+        assert!(rendered.contains("+7000 not shown"), "{rendered}");
+    }
+
+    /// The plan's standing warning: this footer has truncated `q close` off
+    /// the end twice already. The tree hint is added in the slot `x` gave up —
+    /// `x` needs a diff and could only refuse in repo-tree scope anyway.
+    #[test]
+    fn the_tree_hint_fits_the_footer_beside_everything_else() {
+        let mut state = state();
+        state.entries = vec![dir_row("src", 0, true, 3), tree_file_row("src/main.rs", 1)];
+        state.qa.push(answered_qa());
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("h/l folders"), "{rendered}");
+        assert!(
+            rendered.contains("q close"),
+            "the tree hint pushed the way out off the end: {rendered}"
+        );
+        assert!(
+            rendered.contains("D ask again, reading the repo"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("x this change"),
+            "a key that can only refuse here should not be advertised here"
+        );
+
+        // Branch changes keeps `x` and drops the tree hint: that scope is flat.
+        state.scope = BrowseScope::BranchChanges;
+        let rendered = render(&mut state);
+        assert!(rendered.contains("x this change"), "{rendered}");
+        assert!(!rendered.contains("h/l folders"), "{rendered}");
+        assert!(rendered.contains("q close"), "{rendered}");
+    }
+
+    /// Enter is the key someone who never finds `h`/`l` will press, so on a
+    /// folder it says what it will do there.
+    #[test]
+    fn the_enter_hint_says_it_opens_a_folder_when_the_cursor_is_on_one() {
+        let mut state = state();
+        state.entries = vec![dir_row("src", 0, false, 3), tree_file_row("README.md", 0)];
+        state.selected_entry = 0;
+        assert!(render(&mut state).contains("Enter open/close folder"));
+
+        state.selected_entry = 1;
+        let rendered = render(&mut state);
+        assert!(rendered.contains("Enter open"), "{rendered}");
+        assert!(!rendered.contains("open/close folder"), "{rendered}");
     }
 
     #[test]
@@ -2238,6 +2517,137 @@ let files = list_repo_files(workdir)?;
         let rendered = render(&mut state);
         assert!(rendered.contains("TODO"), "actioned marker");
         assert!(rendered.contains("session"), "escalated marker");
+    }
+
+    /// A drifted anchor has to be visible in the list, not only once the
+    /// answer is opened: the list is where a reader decides which entry to
+    /// trust, and the whole failure being fixed is a stale anchor that looks
+    /// like an answer that was always wrong.
+    #[test]
+    fn a_drifted_anchor_is_marked_in_the_history() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Reanchored { start: 40, end: 44 },
+        );
+        assert!(render(&mut state).contains("moved"), "the moved marker");
+
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound),
+        );
+        assert!(
+            render(&mut state).contains("anchor lost"),
+            "the lost marker"
+        );
+    }
+
+    /// The marker survives beside the acted-on markers at a real width. The
+    /// headline truncates from the right, and this pane is ~32 columns, so a
+    /// marker added without checking is a marker nobody sees.
+    #[test]
+    fn the_drift_marker_survives_beside_the_acted_on_markers() {
+        let mut state = state();
+        let mut qa = answered_qa();
+        qa.todo_id = Some("todo-1".to_string());
+        qa.spawned_session_id = Some("sess-9".to_string());
+        state.qa.push(qa);
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone),
+        );
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("anchor lost"), "{rendered}");
+    }
+
+    /// Opening the answer says what happened in a sentence, quoting the range
+    /// it was stored with — and says the question and answer are untouched,
+    /// because "anchor lost" otherwise reads as "this entry is broken".
+    #[test]
+    fn the_answer_pane_says_where_the_code_went() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Reanchored { start: 40, end: 44 },
+        );
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("it was lines 1-2"), "{rendered}");
+        assert!(rendered.contains("now lines 40-44"), "{rendered}");
+        // The answer is still on screen underneath it.
+        assert!(rendered.contains("walks the tree once"), "{rendered}");
+    }
+
+    /// A lost anchor says so in the pane, and says the answer below survives.
+    #[test]
+    fn a_lost_anchor_says_the_answer_is_still_there() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous),
+        );
+
+        let rendered = render(&mut state);
+        assert!(rendered.contains("more than one place"), "{rendered}");
+        assert!(rendered.contains("unchanged"), "{rendered}");
+        assert!(rendered.contains("walks the tree once"), "{rendered}");
+    }
+
+    /// The longest of the three sentences still finishes at a narrow width.
+    /// The clause that gets clipped when the block is a fixed two rows is the
+    /// last one — which is the one saying the entry is intact, and the reason
+    /// the marker doesn't read as "this answer is broken".
+    #[test]
+    fn a_narrow_terminal_still_finishes_the_drift_sentence() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous),
+        );
+
+        let rendered = render_at(&mut state, 80, 30);
+        assert!(rendered.contains("unchanged"), "{rendered}");
+        assert!(rendered.contains("walks the tree once"), "the answer too");
+    }
+
+    /// And it finishes at widths where no fixed ceiling would have let it:
+    /// character-count ÷ width under-counts word wrapping, so the block has to
+    /// be sized by the renderer that draws it rather than by arithmetic that
+    /// tops out at four rows.
+    #[test]
+    fn a_very_narrow_terminal_still_finishes_the_drift_sentence() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+        state.anchor_drift.insert(
+            "qa-1".to_string(),
+            LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous),
+        );
+
+        let rendered = render_at(&mut state, 50, 30);
+        assert!(rendered.contains("unchanged"), "{rendered}");
+        assert!(rendered.contains("walks the tree once"), "the answer too");
+    }
+
+    /// An answer with no drift loses no room to the line that would say so.
+    #[test]
+    fn an_answer_that_did_not_drift_gives_up_no_space_to_saying_so() {
+        let mut state = state();
+        state.qa.push(answered_qa());
+        state.answer_open = true;
+
+        let rendered = render(&mut state);
+        assert!(!rendered.contains("has moved since"), "{rendered}");
+        assert!(!rendered.contains("anchor lost"), "{rendered}");
+        assert!(rendered.contains("walks the tree once"), "{rendered}");
     }
 
     #[test]

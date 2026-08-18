@@ -16,13 +16,15 @@
 //! module is written before anything calls it. The allow comes off in Epic 6.
 #![allow(dead_code)]
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::app::{
-    App, AppMode, BrowseScope, LearningAnchor, LearningFocus, LearningLevel, LearningListEntry,
-    LearningListGroup, LearningQa, LearningQaIntent, LearningViewState, Selection, StartIntent,
+    App, AppMode, BrowseScope, LearningAnchor, LearningAnchorDrift, LearningAnchorLoss,
+    LearningFocus, LearningLevel, LearningListEntry, LearningListGroup, LearningQa,
+    LearningQaIntent, LearningViewState, Selection, StartIntent,
 };
 use crate::diff::{DiffFile, DiffLineLocation};
 use crate::project::AgentKind;
@@ -52,10 +54,22 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// How much of a file is sniffed for a NUL byte before calling it binary.
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
-/// Cap on the repo-tree file list. A monorepo browsed by an unfamiliar user is
-/// the worst case for both listing cost and usefulness; the list is truncated
-/// rather than allowed to grow without bound.
-const MAX_REPO_ENTRIES: usize = 20_000;
+/// Safety valve on the repo-tree file list. This used to be the *browsing*
+/// limit at 20,000, back when the list was flat and every path in the repo was
+/// a row: past that the pane was unusable anyway, so capping the listing and
+/// capping what you could reach were the same decision. A tree only emits rows
+/// for what is expanded, so the two have come apart — reachability is now
+/// bounded per directory by `MAX_DIR_CHILDREN`, and this is only here to stop a
+/// pathological repository from being read into memory whole. It is deliberately
+/// far above any real project.
+const MAX_REPO_ENTRIES: usize = 200_000;
+
+/// Cap on the rows one directory contributes. This is the limit that actually
+/// bites, and it bites where the user can see it: a directory over the cap says
+/// how many children it is not showing, rather than the whole listing claiming
+/// to be complete. A single directory with thousands of entries is unbrowsable
+/// however it is rendered, and is nearly always generated output.
+const MAX_DIR_CHILDREN: usize = 2_000;
 
 /// Depth cap for the non-git fallback walk.
 const MAX_WALK_DEPTH: usize = 12;
@@ -105,6 +119,10 @@ impl LearningViewState {
             selected_entry: 0,
             list_scroll: 0,
             start_here_collapsed: false,
+            expanded_dirs: BTreeSet::new(),
+            expanded_seeded: false,
+            repo_files: Vec::new(),
+            start_here: Vec::new(),
             diff_files: Vec::new(),
             content: Vec::new(),
             content_path: None,
@@ -116,6 +134,7 @@ impl LearningViewState {
             focus: LearningFocus::FileList,
             question: None,
             qa: Vec::new(),
+            anchor_drift: HashMap::new(),
             selected_qa: 0,
             qa_scroll: 0,
             answer_open: false,
@@ -157,6 +176,12 @@ impl LearningViewState {
                 self.anchor,
                 LearningAnchor::Hunk { .. } | LearningAnchor::Lines { .. }
             )
+    }
+
+    /// What became of a stored row's anchor, if it no longer points where it
+    /// was stored. `None` is the ordinary case.
+    pub fn drift_for(&self, qa_id: &str) -> Option<LearningAnchorDrift> {
+        self.anchor_drift.get(qa_id).copied()
     }
 
     /// The inclusive cursor span, as indices into the content pane.
@@ -215,6 +240,8 @@ impl App {
             None => (String::new(), default_harness, LearningLevel::Newcomer),
         };
         let qa = self.load_learning_qa(&session_id);
+        let workdir_label = workdir.display().to_string();
+        let session_persisted = !session_id.is_empty();
 
         let mut state = LearningViewState::new(
             project_id,
@@ -243,7 +270,24 @@ impl App {
                 .unwrap_or(0);
         }
         self.learning_load_selected_content();
+        self.learning_check_anchor_drift();
         self.learning_show_onboarding_if_new();
+        let (entries, history) = match &self.mode {
+            AppMode::Learning(state) => (state.entries.len(), state.qa.len()),
+            _ => (0, 0),
+        };
+        self.log_info(
+            "learning",
+            format!(
+                "opened on {} ({entries} entries, {history} past question(s), {})",
+                workdir_label,
+                if session_persisted {
+                    "history is being saved"
+                } else {
+                    "history is in memory only"
+                }
+            ),
+        );
         Ok(())
     }
 
@@ -264,6 +308,10 @@ impl App {
                 .map(|_| (*pi, 0)),
         };
         let Some((pi, fi)) = target else {
+            self.log_warn(
+                "learning",
+                "asked to open on a project with no features — nothing to read".to_string(),
+            );
             self.message =
                 Some("Add a feature first — Learning Mode reads that feature's files".to_string());
             return Ok(());
@@ -319,7 +367,7 @@ impl App {
             return Vec::new();
         };
         match db.learning_qa(session_id) {
-            Ok(rows) => self.reconcile_interrupted_qa(rows),
+            Ok(rows) => thread_rows(self.reconcile_interrupted_qa(rows)),
             Err(e) => {
                 self.log_error(
                     "learning",
@@ -372,6 +420,109 @@ impl App {
         rows
     }
 
+    /// Check every stored anchor against the working directory as it is now,
+    /// and say what has moved.
+    ///
+    /// This is the other half of reconciling a loaded history with the current
+    /// world — [`reconcile_interrupted_qa`](Self::reconcile_interrupted_qa)
+    /// does it for runs, this does it for the code they were about. It runs
+    /// here rather than inside the history load because it needs the workdir,
+    /// which is only assembled once the overlay's state exists.
+    ///
+    /// Eager rather than on-selection, deliberately: the point of the marker is
+    /// to be there *before* the user reads a row and believes its line numbers.
+    /// The cost is one read per distinct file in the history, deduped below.
+    fn learning_check_anchor_drift(&mut self) {
+        let (workdir, rows) = match &self.mode {
+            AppMode::Learning(state) => (state.workdir.clone(), state.qa.clone()),
+            _ => return,
+        };
+        if rows.is_empty() {
+            return;
+        }
+        let mut targets: HashMap<String, AnchorTarget> = HashMap::new();
+        let mut drift: HashMap<String, LearningAnchorDrift> = HashMap::new();
+        for qa in &rows {
+            let Some(path) = qa.file_path.clone() else {
+                continue;
+            };
+            if !targets.contains_key(&path) {
+                let full = workdir.join(&path);
+                // `Path::exists()` answers "no" both to a deleted file and to
+                // one this process simply can't stat — an unreadable parent
+                // directory, say. Only the first of those is `Gone`; reporting
+                // the second as a lost anchor would be the mode stating as fact
+                // something it was never able to look at.
+                let target = match std::fs::metadata(&full) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => AnchorTarget::Gone,
+                    Err(e) => {
+                        self.log_warn(
+                            "learning",
+                            format!(
+                                "couldn't reach {path} to re-check its anchor: {e} \
+                                 (past questions about it keep their stored lines)"
+                            ),
+                        );
+                        AnchorTarget::Unreadable
+                    }
+                    Ok(_) => match load_file_lines(&full, &path) {
+                        Ok(lines) => AnchorTarget::Lines(lines),
+                        Err(e) => {
+                            self.log_warn(
+                                "learning",
+                                format!(
+                                    "couldn't re-check the anchor for {path}: {e} \
+                                     (past questions about it keep their stored lines)"
+                                ),
+                            );
+                            AnchorTarget::Unreadable
+                        }
+                    },
+                };
+                targets.insert(path.clone(), target);
+            }
+            if let Some(verdict) = check_anchor_drift(qa, &targets[&path]) {
+                drift.insert(qa.id.clone(), verdict);
+            }
+        }
+        let moved = drift.values().filter(|d| !d.is_lost()).count();
+        let lost = drift.values().filter(|d| d.is_lost()).count();
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.anchor_drift = drift;
+        }
+        if moved == 0 && lost == 0 {
+            return;
+        }
+        self.log_info(
+            "learning",
+            format!("{moved} past question(s) re-anchored, {lost} lost their anchor"),
+        );
+        let mut parts = Vec::new();
+        if moved > 0 {
+            parts.push(format!(
+                "{moved} moved with the code (the answer still fits)"
+            ));
+        }
+        if lost > 0 {
+            parts.push(format!(
+                "{lost} no longer {} at code that is there",
+                if lost == 1 { "points" } else { "point" }
+            ));
+        }
+        let summary = format!(
+            "The project changed since some of these were asked: {}. They are marked in Questions.",
+            parts.join(", ")
+        );
+        // Not `learning_notice`: that clears `error`, and a file the overlay
+        // couldn't open on the way in is about the screen in front of the user
+        // right now, which outranks a note about history. The row markers carry
+        // this either way — the banner only says where to look.
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.notice = Some(summary);
+            state.notice_qa_id = None;
+        }
+    }
+
     /// Switch between "all files in this project" and "files changed on this
     /// branch", reloading the list in place. Branch-changes scope needs git,
     /// so a non-git project stays where it is and says why.
@@ -380,14 +531,32 @@ impl App {
             AppMode::Learning(state) => state.is_git,
             _ => return,
         };
-        if let AppMode::Learning(state) = &mut self.mode {
-            if state.scope == BrowseScope::RepoTree && !is_git {
+        let stuck_in_repo_tree = matches!(
+            &self.mode,
+            AppMode::Learning(state) if state.scope == BrowseScope::RepoTree && !is_git
+        );
+        if stuck_in_repo_tree {
+            // There is no second scope to switch to, but the key still has a
+            // job here: rebuild the list in place. Elsewhere the advice for a
+            // file that vanished since the list was built is "press s" — and
+            // if this branch only explained itself and returned, that advice
+            // would be a no-op in exactly the projects it's aimed at.
+            self.learning_reload_entries();
+            self.learning_load_selected_content();
+            if let AppMode::Learning(state) = &mut self.mode
+                // A problem listing the files is more useful than the reminder
+                // that this isn't a repository, so it keeps the line.
+                && state.error.is_none()
+            {
                 state.error = Some(
-                    "This project isn't a git repository, so there are no branch changes to show."
+                    "This project isn't a git repository, so there are no branch changes to \
+                     show — rebuilt the file list instead."
                         .to_string(),
                 );
-                return;
             }
+            return;
+        }
+        if let AppMode::Learning(state) = &mut self.mode {
             state.scope = state.scope.toggled();
             state.selected_entry = 0;
             state.list_scroll = 0;
@@ -399,21 +568,27 @@ impl App {
 
     /// Rebuild the file list for the current scope.
     pub fn learning_reload_entries(&mut self) {
-        let Some((scope, workdir, is_git, has_history, collapsed)) = (match &self.mode {
-            AppMode::Learning(state) => Some((
-                state.scope,
-                state.workdir.clone(),
-                state.is_git,
-                !state.qa.is_empty(),
-                state.start_here_collapsed,
-            )),
-            _ => None,
-        }) else {
+        let Some((scope, workdir, is_git, has_history, mut expanded, expanded_seeded)) =
+            (match &self.mode {
+                AppMode::Learning(state) => Some((
+                    state.scope,
+                    state.workdir.clone(),
+                    state.is_git,
+                    !state.qa.is_empty(),
+                    state.expanded_dirs.clone(),
+                    state.expanded_seeded,
+                )),
+                _ => None,
+            })
+        else {
             return;
         };
 
         let mut load_error: Option<String> = None;
+        let mut unreadable: Vec<String> = Vec::new();
         let mut diff_files: Vec<DiffFile> = Vec::new();
+        let mut repo_files: Vec<String> = Vec::new();
+        let mut start_here_files: Vec<String> = Vec::new();
         let entries = match scope {
             BrowseScope::BranchChanges => match crate::diff::load_snapshot(&workdir, None, false) {
                 Ok(snapshot) => {
@@ -441,7 +616,9 @@ impl App {
                         }
                     }
                 } else {
-                    walk_files_capped(&workdir, MAX_REPO_ENTRIES, MAX_WALK_DEPTH)
+                    let walk = walk_files_capped(&workdir, MAX_REPO_ENTRIES, MAX_WALK_DEPTH);
+                    unreadable = walk.unreadable;
+                    walk.files
                 };
                 if let Some(total) = cap_repo_entries(&mut files, MAX_REPO_ENTRIES) {
                     load_error.get_or_insert(format!(
@@ -449,25 +626,333 @@ impl App {
                          Switch to branch changes to see what's actually changed."
                     ));
                 }
+                // A subtree that couldn't be opened leaves no trace in the
+                // list, so say it out loud: "this project has no such
+                // directory" and "AMF couldn't read it" look identical
+                // otherwise, and only one of them is true.
+                if !unreadable.is_empty() {
+                    load_error.get_or_insert(format!(
+                        "{} folder(s) here couldn't be read, so anything inside them is missing \
+                         from this list. See the debug log (D on the dashboard) for which.",
+                        unreadable.len()
+                    ));
+                }
                 let start_here = if has_history {
                     Vec::new()
                 } else {
                     start_here_candidates(&workdir)
                 };
-                build_repo_tree_entries(&files, &start_here, collapsed)
+                // First listing of this project: open the path down to the
+                // orientation files so the tree arrives useful rather than
+                // shut. Seeded once and never re-applied — after that the tree
+                // is the user's, and a reload that re-opened what they closed
+                // would be the overlay arguing with them.
+                if !expanded_seeded {
+                    expanded.extend(default_expanded_dirs(&start_here));
+                }
+                repo_files = files;
+                start_here_files = start_here;
+                Vec::new()
             }
         };
 
         if let AppMode::Learning(state) = &mut self.mode {
             state.diff_files = diff_files;
-            state.entries = entries;
+            if scope == BrowseScope::RepoTree {
+                state.repo_files = repo_files;
+                state.start_here = start_here_files;
+                state.expanded_dirs = expanded;
+                state.expanded_seeded = true;
+            } else {
+                state.entries = entries;
+            }
             if state.selected_entry >= state.entries.len() {
                 state.selected_entry = state.entries.len().saturating_sub(1);
             }
             state.error = load_error.clone();
         }
+        // Repo-tree rows come from the cached listing, so building them is the
+        // same step a collapse takes — one function, not two that have to be
+        // kept agreeing.
+        if scope == BrowseScope::RepoTree {
+            let overflow = self.learning_rebuild_tree();
+            if overflow > 0 {
+                let msg = format!(
+                    "{overflow} more item(s) sit at the top level than this list shows \
+                     (the limit is {MAX_DIR_CHILDREN} per folder). Open a folder to browse \
+                     inside it, or press s for just this branch's changes."
+                );
+                if let AppMode::Learning(state) = &mut self.mode {
+                    state.error.get_or_insert(msg.clone());
+                }
+                if load_error.is_none() {
+                    load_error = Some(msg);
+                }
+            }
+        }
         if let Some(msg) = load_error {
             self.log_warn("learning", msg);
+        }
+        for dir in unreadable {
+            self.log_warn("learning", format!("couldn't read the folder {dir}"));
+        }
+    }
+
+    /// Rebuild the repo-tree rows from the cached listing. No disk access:
+    /// expanding a directory must not re-run `git ls-files`, which on a large
+    /// repository would make the tree slower than the flat list it replaced.
+    /// Returns the root-level overflow, which only the caller that reads the
+    /// listing has anywhere to report.
+    fn learning_rebuild_tree(&mut self) -> usize {
+        let AppMode::Learning(state) = &mut self.mode else {
+            return 0;
+        };
+        if state.scope != BrowseScope::RepoTree {
+            return 0;
+        }
+        let (rows, overflow) = build_repo_tree_entries(
+            &state.repo_files,
+            &state.start_here,
+            state.start_here_collapsed,
+            &state.expanded_dirs,
+        );
+        state.entries = rows;
+        if state.selected_entry >= state.entries.len() {
+            state.selected_entry = state.entries.len().saturating_sub(1);
+        }
+        overflow
+    }
+
+    /// Rebuild the list and put the cursor back on the row it was on. Every
+    /// tree operation is "change `expanded_dirs`, then this": the rows are
+    /// derived, so the cursor is an index into something that no longer exists
+    /// by the time the new list is built.
+    ///
+    /// A directory keeps the cursor by its own path; a file keeps it by its
+    /// path too, and if that file is no longer listed (its folder was just
+    /// closed) the cursor falls back to the nearest ancestor directory still
+    /// on screen — the row that swallowed it — rather than to wherever the old
+    /// index happens to land.
+    fn learning_rebuild_keeping_cursor(&mut self) {
+        let key = match &self.mode {
+            AppMode::Learning(state) => state
+                .selected_entry()
+                .and_then(|e| e.row_key())
+                .map(|(is_dir, path)| (is_dir, path.to_string())),
+            _ => return,
+        };
+        self.learning_rebuild_tree();
+        let Some((was_dir, path)) = key else { return };
+        if let AppMode::Learning(state) = &mut self.mode {
+            let exact = state.entries.iter().position(|e| {
+                e.row_key()
+                    .is_some_and(|(d, p)| d == was_dir && p == path.as_str())
+            });
+            if let Some(idx) = exact {
+                state.selected_entry = idx;
+                return;
+            }
+            // The row is gone, so it was inside something that just closed.
+            // Walk up its path until a directory row exists.
+            let mut prefix = path.as_str();
+            while let Some(cut) = prefix.rfind('/') {
+                prefix = &prefix[..cut];
+                if let Some(idx) = state
+                    .entries
+                    .iter()
+                    .position(|e| e.dir_path() == Some(prefix))
+                {
+                    state.selected_entry = idx;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Open or close the directory under the cursor. No-op with a spoken
+    /// reason elsewhere — on a file this is routed to `learning_jump_to_parent`
+    /// by the key handler, so this only ever sees a directory.
+    pub fn learning_toggle_dir(&mut self) -> bool {
+        let Some(path) = (match &self.mode {
+            AppMode::Learning(state) => state
+                .selected_entry()
+                .and_then(|e| e.dir_path())
+                .map(str::to_string),
+            _ => None,
+        }) else {
+            return false;
+        };
+        if let AppMode::Learning(state) = &mut self.mode
+            && !state.expanded_dirs.remove(&path)
+        {
+            state.expanded_dirs.insert(path);
+        }
+        self.learning_rebuild_keeping_cursor();
+        true
+    }
+
+    /// Tree movement only ever means something in the file list. Pressing it
+    /// while reading the content or the history is a wrong guess about which
+    /// pane has the cursor, so it is answered rather than swallowed — and never
+    /// allowed to move a cursor the user cannot see.
+    fn learning_require_file_list_focus(&mut self) -> bool {
+        let focused = match &self.mode {
+            AppMode::Learning(state) => state.focus == LearningFocus::FileList,
+            _ => return false,
+        };
+        if !focused {
+            self.learning_notice("That moves the file list, which isn't focused — press Tab.");
+        }
+        focused
+    }
+
+    /// `l` / `Right`: open the folder under the cursor, step into an already
+    /// open one, or — on a file — do what `Enter` does.
+    pub fn learning_expand_or_open(&mut self) {
+        if !self.learning_require_file_list_focus() {
+            return;
+        }
+        let state_kind = match &self.mode {
+            AppMode::Learning(state) => match state.selected_entry() {
+                Some(LearningListEntry::Dir { expanded, .. }) => Some(*expanded),
+                _ => None,
+            },
+            _ => return,
+        };
+        match state_kind {
+            Some(false) => {
+                self.learning_toggle_dir();
+            }
+            // Already open, so the useful move is into it. The first child is
+            // always the next row — that is what flattening guarantees.
+            Some(true) => self.learning_select_next_entry(),
+            None => self.learning_activate_selection(),
+        }
+    }
+
+    /// `h` / `Left`: close the folder under the cursor, or step out to the one
+    /// containing this row.
+    pub fn learning_collapse_or_parent(&mut self) {
+        if !self.learning_require_file_list_focus() {
+            return;
+        }
+        let on_open_dir = matches!(
+            &self.mode,
+            AppMode::Learning(state)
+                if matches!(
+                    state.selected_entry(),
+                    Some(LearningListEntry::Dir { expanded: true, .. })
+                )
+        );
+        if on_open_dir {
+            self.learning_toggle_dir();
+        } else {
+            self.learning_jump_to_parent();
+        }
+    }
+
+    /// Move the cursor to the directory containing the current row, closing
+    /// nothing. Two rows have nowhere to go: a top-level one, and one whose
+    /// folder has no row of its own (the flat branch-changes list, or a pinned
+    /// `Start here` file whose folder the root cap dropped). Each says so
+    /// rather than being swallowed.
+    pub fn learning_jump_to_parent(&mut self) {
+        let Some(path) = (match &self.mode {
+            AppMode::Learning(state) => state
+                .selected_entry()
+                .and_then(|e| e.row_key())
+                .map(|(_, p)| p.to_string()),
+            _ => None,
+        }) else {
+            return;
+        };
+        let Some(cut) = path.rfind('/') else {
+            self.learning_notice("This is already at the top level of the project.");
+            return;
+        };
+        let parent = path[..cut].to_string();
+        let found = match &mut self.mode {
+            AppMode::Learning(state) => {
+                match state
+                    .entries
+                    .iter()
+                    .position(|e| e.dir_path() == Some(parent.as_str()))
+                {
+                    Some(idx) => {
+                        state.selected_entry = idx;
+                        true
+                    }
+                    // A pinned `Start here` file, or any row in the flat
+                    // branch-changes list, can sit on screen while the folder
+                    // holding it has no row at all.
+                    None => false,
+                }
+            }
+            _ => return,
+        };
+        if found {
+            return;
+        }
+        let flat = matches!(
+            &self.mode,
+            AppMode::Learning(state) if state.scope != BrowseScope::RepoTree
+        );
+        if flat {
+            self.learning_notice(
+                "Changed files are listed flat, without folders — press s for the project tree.",
+            );
+        } else {
+            self.learning_notice(format!(
+                "{parent}/ isn't open in the tree, so there's nowhere to step out to — press Z to open every folder."
+            ));
+        }
+    }
+
+    /// Open every directory that has one, or shut the tree back to its top
+    /// level. One key, because the useful gesture is "show me everything" and
+    /// its undo — and because the footer cannot afford two.
+    pub fn learning_toggle_expand_all(&mut self) {
+        let expand = match &self.mode {
+            // Anything still closed means the gesture is "open it all"; only a
+            // fully open tree collapses.
+            AppMode::Learning(state) => state.entries.iter().any(|e| {
+                matches!(
+                    e,
+                    LearningListEntry::Dir {
+                        expanded: false,
+                        ..
+                    }
+                )
+            }),
+            _ => return,
+        };
+        if let AppMode::Learning(state) = &mut self.mode {
+            if expand {
+                // Taken from the cached path list, not from the rows: the
+                // directories being opened are precisely the ones with no rows
+                // yet, so walking the visible tree would only ever open one
+                // level per press.
+                state.expanded_dirs = all_dir_paths(&state.repo_files);
+            } else {
+                state.expanded_dirs.clear();
+            }
+        }
+        self.learning_rebuild_keeping_cursor();
+        self.learning_notice(if expand {
+            "Opened every folder. Press Z again to fold them."
+        } else {
+            "Folded every folder. Enter opens one."
+        });
+    }
+
+    /// Raise a plain confirmation on the overlay's shared banner line. Unlike
+    /// `learning_notice_for_qa` this one isn't about a Q&A row, so it carries
+    /// no row id and survives the history cursor moving.
+    fn learning_notice(&mut self, message: impl Into<String>) {
+        if let AppMode::Learning(state) = &mut self.mode {
+            state.notice = Some(message.into());
+            state.notice_qa_id = None;
+            state.error = None;
         }
     }
 
@@ -483,7 +968,7 @@ impl App {
         if let AppMode::Learning(state) = &mut self.mode {
             state.start_here_collapsed = !state.start_here_collapsed;
         }
-        self.learning_reload_entries();
+        self.learning_rebuild_tree();
         // Keep the cursor on whatever file it was on, if that row survived.
         if let (AppMode::Learning(state), Some(path)) = (&mut self.mode, selected_path)
             && let Some(idx) = state
@@ -560,6 +1045,11 @@ impl App {
             // The orientation rows aren't files: the tour question anchors to
             // the project, and the header only toggles the group.
             LearningListEntry::StartHereHeader => {}
+            // A directory is navigation, not a selection. Resting on one
+            // deliberately leaves the loaded file and the anchor alone, so
+            // walking down to `src/app/learning.rs` never quietly drops the
+            // question you had lined up two folders ago.
+            LearningListEntry::Dir { .. } => {}
             LearningListEntry::ProjectTour => {
                 if let AppMode::Learning(state) = &mut self.mode {
                     state.content = Vec::new();
@@ -576,8 +1066,15 @@ impl App {
                 // file there comes from the snapshot rather than from disk.
                 let loaded = match scope {
                     BrowseScope::BranchChanges => Ok(diff_lines),
-                    BrowseScope::RepoTree => load_file_lines(&workdir.join(&path)),
+                    BrowseScope::RepoTree => load_file_lines(&workdir.join(&path), &path),
                 };
+                // Logged out here rather than inside the borrow: a file that
+                // won't open is the one failure the user meets while simply
+                // moving the cursor, so it belongs in the debug log too.
+                let load_failure = loaded
+                    .as_ref()
+                    .err()
+                    .map(|reason| format!("couldn't load {path} for browsing: {reason}"));
                 if let AppMode::Learning(state) = &mut self.mode {
                     match loaded {
                         Ok(lines) => {
@@ -594,6 +1091,9 @@ impl App {
                     state.cursor_line = 0;
                     state.selection_anchor = None;
                     state.anchor = LearningAnchor::File;
+                }
+                if let Some(msg) = load_failure {
+                    self.log_warn("learning", msg);
                 }
             }
         }
@@ -711,38 +1211,189 @@ pub fn start_here_candidates(workdir: &Path) -> Vec<String> {
 }
 
 /// The repo-tree file list: the pinned orientation group (when it has any
-/// members and hasn't been collapsed), then every file.
+/// members and hasn't been collapsed), then the repo as a collapsible tree.
+///
+/// Returns the rows plus the root-level overflow `flatten_tree` reports, which
+/// has no row of its own to be stated on.
 pub fn build_repo_tree_entries(
     files: &[String],
     start_here: &[String],
     collapsed: bool,
-) -> Vec<LearningListEntry> {
-    let mut entries = Vec::with_capacity(files.len() + start_here.len() + 2);
+    expanded: &BTreeSet<String>,
+) -> (Vec<LearningListEntry>, usize) {
+    let mut entries = Vec::with_capacity(start_here.len() + 2);
     if !start_here.is_empty() {
         entries.push(LearningListEntry::StartHereHeader);
         if !collapsed {
             entries.push(LearningListEntry::ProjectTour);
             for path in start_here {
+                // The orientation group is a reading list, not a tree: these
+                // are shortcuts to files that also appear in their real place
+                // below, so they stay flat at depth 0.
                 entries.push(LearningListEntry::File {
                     path: path.clone(),
                     group: LearningListGroup::StartHere,
                     diff_index: None,
+                    depth: 0,
                 });
             }
         }
     }
+    let (tree, root_overflow) = flatten_tree(files, expanded);
+    entries.extend(tree);
+    (entries, root_overflow)
+}
+
+/// One directory while the tree is being assembled. `BTreeMap`/sort do the
+/// ordering, so the flatten step never sorts.
+#[derive(Default)]
+struct TreeNode {
+    dirs: BTreeMap<String, TreeNode>,
+    /// Leaf names only — the full path is rebuilt on the way down.
+    files: Vec<String>,
+    /// Files anywhere beneath here, so a collapsed row can say what it hides.
+    file_count: usize,
+}
+
+impl TreeNode {
+    fn insert(&mut self, path: &str) {
+        let mut node = self;
+        let mut parts = path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            node.file_count += 1;
+            if parts.peek().is_none() {
+                node.files.push(part.to_string());
+                return;
+            }
+            node = node.dirs.entry(part.to_string()).or_default();
+        }
+    }
+}
+
+/// Flatten a path list into tree rows: at each level, directories before files,
+/// each in name order, descending only into directories listed in `expanded`.
+///
+/// This is the whole of Epic 7's ordering decision, and it is a pure function
+/// over the path list so the ordering, depth, and collapse behaviour are
+/// testable without an overlay.
+///
+/// Returns the rows plus how many *root-level* children were dropped by
+/// `MAX_DIR_CHILDREN`. Every other directory reports its own overflow on its
+/// row; the root has no row to report on, so it comes back here for the banner.
+pub fn flatten_tree(
+    files: &[String],
+    expanded: &BTreeSet<String>,
+) -> (Vec<LearningListEntry>, usize) {
+    let mut root = TreeNode::default();
     for path in files {
-        entries.push(LearningListEntry::File {
+        root.insert(path);
+    }
+    let root_children = root.dirs.len() + root.files.len();
+    let mut out = Vec::new();
+    push_level(&mut root, "", 0, expanded, &mut out);
+    (out, root_children.saturating_sub(MAX_DIR_CHILDREN))
+}
+
+fn push_level(
+    node: &mut TreeNode,
+    prefix: &str,
+    depth: usize,
+    expanded: &BTreeSet<String>,
+    out: &mut Vec<LearningListEntry>,
+) {
+    // Directories first so structure reads before contents: a newcomer
+    // scanning `src/` wants to see that `app/` exists before wading through
+    // the twenty files sitting beside it.
+    let mut budget = MAX_DIR_CHILDREN;
+
+    for (name, child) in node.dirs.iter_mut() {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        let path = join_path(prefix, name);
+        let is_expanded = expanded.contains(&path);
+        // Truncation is reported on the row that truncated, so it is computed
+        // here where the child's own budget is known.
+        let child_children = child.dirs.len() + child.files.len();
+        out.push(LearningListEntry::Dir {
             path: path.clone(),
+            depth,
+            expanded: is_expanded,
+            file_count: child.file_count,
+            truncated: child_children.saturating_sub(MAX_DIR_CHILDREN),
+        });
+        if is_expanded {
+            push_level(child, &path, depth + 1, expanded, out);
+        }
+    }
+
+    node.files.sort();
+    for name in node.files.iter() {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        out.push(LearningListEntry::File {
+            path: join_path(prefix, name),
             group: LearningListGroup::Files,
             diff_index: None,
+            depth,
         });
     }
-    entries
+}
+
+fn join_path(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}/{name}")
+    }
+}
+
+/// The directories to open when the overlay first lists a repository:
+/// every ancestor of a `Start here` candidate, and nothing else.
+///
+/// The plan weighed two honest defaults and rejected both. Everything expanded
+/// is the flat wall of rows the tree exists to replace; everything collapsed is
+/// structurally honest but puts `src/` — the only directory most newcomers want
+/// — behind a keypress they have to guess at. This is the middle: the top level
+/// is visible, and the path down to the files the orientation group already
+/// decided were worth reading is open, so `src/main.rs` is on screen at open.
+pub fn default_expanded_dirs(start_here: &[String]) -> BTreeSet<String> {
+    let mut dirs = BTreeSet::new();
+    for path in start_here {
+        let mut prefix = String::new();
+        // The last component is the file itself, so it is not a directory.
+        let parts: Vec<&str> = path.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            prefix = join_path(&prefix, part);
+            dirs.insert(prefix.clone());
+        }
+    }
+    dirs
+}
+
+/// Every directory that appears anywhere in a path list — what "expand all"
+/// expands. Derived from the paths rather than from the rows on screen, since
+/// a closed directory contributes no rows and is exactly what is being opened.
+pub fn all_dir_paths(files: &[String]) -> BTreeSet<String> {
+    let mut dirs = BTreeSet::new();
+    for path in files {
+        let mut prefix = String::new();
+        let parts: Vec<&str> = path.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            prefix = join_path(&prefix, part);
+            dirs.insert(prefix.clone());
+        }
+    }
+    dirs
 }
 
 /// The branch-changes file list. No orientation group here: the user already
-/// knows what they're looking for when they're reading their own diff.
+/// knows what they're looking for when they're reading their own diff — and no
+/// tree, because a handful of changed files needs no structure and the paths
+/// are the point.
 pub fn build_changed_entries(files: &[DiffFile]) -> Vec<LearningListEntry> {
     files
         .iter()
@@ -751,6 +1402,7 @@ pub fn build_changed_entries(files: &[DiffFile]) -> Vec<LearningListEntry> {
             path: file.path.clone(),
             group: LearningListGroup::Files,
             diff_index: Some(i),
+            depth: 0,
         })
         .collect()
 }
@@ -768,20 +1420,38 @@ pub fn diff_file_lines(file: &DiffFile) -> Vec<String> {
 
 /// Read a file for the content pane, or say why it can't be shown. The message
 /// is user-facing, so it names the limit rather than the errno.
-pub fn load_file_lines(path: &Path) -> Result<Vec<String>, String> {
-    let meta =
-        std::fs::metadata(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+/// `label` is what the message calls the file — the repo-relative path, not
+/// `path` itself. A workdir prefix is both noise (the pane title already names
+/// the file) and long enough to push the actual advice off the end of the
+/// line, which is how it read the first time this was captured.
+pub fn load_file_lines(path: &Path, label: &str) -> Result<Vec<String>, String> {
+    let meta = std::fs::metadata(path).map_err(|e| {
+        format!(
+            "Couldn't open {label}: {e}. It may have been moved or deleted since this list \
+             was built — press s to rebuild the list (twice, if that switches scope), \
+             or pick another file."
+        )
+    })?;
     if meta.len() > MAX_FILE_BYTES {
         return Err(format!(
-            "This file is {} — too big to show here (the limit is {} MB).",
+            "This file is {} — too big to show here (the limit is {} MB). Pick another file, \
+             or press P to ask about the project as a whole.",
             human_bytes(meta.len()),
             MAX_FILE_BYTES / (1024 * 1024)
         ));
     }
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+    let bytes = std::fs::read(path).map_err(|e| {
+        format!(
+            "Couldn't read {label}: {e}. Check you have permission to read it, \
+             or pick another file."
+        )
+    })?;
     if looks_binary(&bytes) {
-        return Err("This looks like a binary file, so there's nothing to read here.".to_string());
+        return Err(
+            "This looks like a binary file, so there's nothing to read here. \
+             Pick a source file from the list instead."
+                .to_string(),
+        );
     }
     let text = String::from_utf8_lossy(&bytes);
     Ok(text.lines().map(ToOwned::to_owned).collect())
@@ -800,17 +1470,36 @@ fn human_bytes(len: u64) -> String {
     }
 }
 
+/// A non-git listing, plus the directories the walk couldn't open.
+///
+/// The skipped directories are carried rather than dropped because their
+/// absence is invisible: a listing missing a whole subtree looks exactly like a
+/// project that doesn't have one, and this mode's user has no way to know
+/// better.
+pub struct RepoWalk {
+    pub files: Vec<String>,
+    pub unreadable: Vec<String>,
+}
+
 /// Depth- and entry-capped walk for projects git doesn't know about. There are
 /// no ignore rules to inherit here, so [`WALK_SKIP_DIRS`] stands in for them.
-pub fn walk_files_capped(root: &Path, max_entries: usize, max_depth: usize) -> Vec<String> {
+pub fn walk_files_capped(root: &Path, max_entries: usize, max_depth: usize) -> RepoWalk {
     let mut out = Vec::new();
+    let mut unreadable = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
         if out.len() >= max_entries || depth > max_depth {
             continue;
         }
-        let Ok(read) = std::fs::read_dir(&dir) else {
-            continue;
+        let read = match std::fs::read_dir(&dir) {
+            Ok(read) => read,
+            Err(e) => {
+                unreadable.push(format!(
+                    "{}: {e}",
+                    dir.strip_prefix(root).unwrap_or(&dir).display()
+                ));
+                continue;
+            }
         };
         for entry in read.flatten() {
             let path = entry.path();
@@ -832,7 +1521,11 @@ pub fn walk_files_capped(root: &Path, max_entries: usize, max_depth: usize) -> V
     }
     out.sort();
     out.truncate(max_entries);
-    out
+    unreadable.sort();
+    RepoWalk {
+        files: out,
+        unreadable,
+    }
 }
 
 /// Trim a repo-tree listing to `max_entries`, returning the original count
@@ -964,6 +1657,196 @@ pub fn selection_text(state: &LearningViewState) -> String {
                         .map(|slice| slice.join("\n"))
                         .unwrap_or_default()
                 }
+            }
+        }
+    }
+}
+
+// ── anchor drift ─────────────────────────────────────────────
+
+/// The file a stored anchor points at, as it stands now.
+enum AnchorTarget {
+    /// The file is not in the working directory any more.
+    Gone,
+    /// It is there, but this overlay can't read it (too big, binary, no
+    /// permission). Nothing can be checked, and nothing is claimed.
+    Unreadable,
+    Lines(Vec<String>),
+}
+
+/// The lines a stored selection expects to still find in the file.
+///
+/// A plain-source selection is its own lines. A *diff* selection carries `+` /
+/// `-` / ` ` markers, so the markers come off and the removed rows go with them
+/// — those lines are precisely the ones that are not in the file. Every line is
+/// trimmed, because re-indenting a file is drift the user does not want
+/// reported and is the single most common way a stored range moves without the
+/// code changing at all.
+///
+/// Blank lines are dropped rather than matched: they carry no evidence, and a
+/// selection that opens or closes on one would otherwise anchor on whitespace.
+#[derive(Debug, PartialEq, Eq)]
+struct ExpectedBlock {
+    lines: Vec<String>,
+    /// How many lines were dropped *before* the first kept one. The stored
+    /// range starts at the selection's first line, which may well be one of
+    /// those, so this is the distance between "where the question was asked"
+    /// and "where the evidence starts" — without it an unchanged selection
+    /// that opens on a blank line reads as having moved down by exactly this
+    /// many rows.
+    lead_offset: usize,
+}
+
+fn expected_block(selection_text: &str, is_diff: bool) -> ExpectedBlock {
+    fn kept(line: &str, is_diff: bool) -> Option<&str> {
+        let text = if is_diff {
+            match line.chars().next() {
+                Some('+') | Some(' ') => &line[1..],
+                // A removed row, or a `\ No newline` marker: not in the file.
+                _ => return None,
+            }
+        } else {
+            line
+        };
+        let text = text.trim();
+        (!text.is_empty()).then_some(text)
+    }
+    let lead_offset = selection_text
+        .lines()
+        .take_while(|line| kept(line, is_diff).is_none())
+        .count();
+    ExpectedBlock {
+        lines: selection_text
+            .lines()
+            .filter_map(|line| kept(line, is_diff))
+            .map(ToOwned::to_owned)
+            .collect(),
+        lead_offset,
+    }
+}
+
+/// Where a block of lines sits in `lines` now, relative to where it was stored.
+#[derive(Debug, PartialEq, Eq)]
+enum BlockMatch {
+    /// Found at the stored position — nothing to report.
+    AsStored,
+    Moved {
+        start: usize,
+        end: usize,
+    },
+    NotFound,
+    /// Found in more than one place. Guessing which is the original is exactly
+    /// the kind of quiet wrongness this whole check exists to remove, so it is
+    /// reported as a loss instead.
+    Ambiguous,
+}
+
+/// Find `block` in `lines`, comparing trimmed text and ignoring blank lines, so
+/// that a re-indent or an added blank line is not read as movement.
+///
+/// `stored_start` is 1-based and names where the *first line of `block`* was
+/// stored — the caller has already stepped it past any leading lines the block
+/// dropped ([`ExpectedBlock::lead_offset`]). The stored position is checked
+/// first, so a block that legitimately appears twice — a repeated idiom, a
+/// duplicated `match` arm — is *not* ambiguous as long as it is still where it
+/// was left.
+fn locate_block(lines: &[String], stored_start: usize, block: &[String]) -> BlockMatch {
+    if block.is_empty() {
+        return BlockMatch::AsStored;
+    }
+    // The file's significant lines, paired with the 1-based line they came from.
+    let significant: Vec<(usize, &str)> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| (i + 1, line.trim()))
+        .filter(|(_, line)| !line.is_empty())
+        .collect();
+    if significant.len() < block.len() {
+        return BlockMatch::NotFound;
+    }
+    let matches_at = |offset: usize| {
+        significant[offset..offset + block.len()]
+            .iter()
+            .zip(block)
+            .all(|((_, have), want)| *have == want.as_str())
+    };
+    let mut found: Option<(usize, usize)> = None;
+    let mut count = 0usize;
+    for offset in 0..=(significant.len() - block.len()) {
+        if !matches_at(offset) {
+            continue;
+        }
+        let start = significant[offset].0;
+        let end = significant[offset + block.len() - 1].0;
+        if start == stored_start {
+            return BlockMatch::AsStored;
+        }
+        count += 1;
+        if count == 1 {
+            found = Some((start, end));
+        }
+    }
+    match (count, found) {
+        (0, _) => BlockMatch::NotFound,
+        (1, Some((start, end))) => BlockMatch::Moved { start, end },
+        _ => BlockMatch::Ambiguous,
+    }
+}
+
+/// What became of one stored row's anchor, given the file as it stands now.
+///
+/// `None` means "as stored, as far as can be told" — which covers both the
+/// happy path and every row there is no evidence to judge: the project anchor,
+/// a row whose selection was never captured, and a file that is there but
+/// unreadable. Silence is the right answer for those; the alternative is a
+/// marker that means "we didn't look", which is worse than no marker at all.
+///
+/// A *diff*-sourced selection is only ever reported lost, never re-anchored.
+/// Its stored range is built from `new_line.or(old_line)`
+/// ([`anchor_for_cursor`]), so a range that opens on a removed line is already
+/// numbered off the base side of the diff — precise enough to point a reader at,
+/// but not a baseline to measure movement against. "This code is no longer in
+/// the file" is a claim that survives that; "it moved to line 61" is not.
+fn check_anchor_drift(qa: &LearningQa, target: &AnchorTarget) -> Option<LearningAnchorDrift> {
+    if qa.file_path.is_none() || qa.anchor == LearningAnchor::Project {
+        return None;
+    }
+    let lines = match target {
+        AnchorTarget::Gone => {
+            return Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone));
+        }
+        AnchorTarget::Unreadable => return None,
+        AnchorTarget::Lines(lines) => lines,
+    };
+    // A whole-file anchor moves with its file: as long as the file is there,
+    // the anchor is exactly as good as it ever was.
+    let stored_start = match qa.anchor {
+        LearningAnchor::File => return None,
+        LearningAnchor::Hunk { .. } => 0,
+        LearningAnchor::Lines { start, .. } => start,
+        LearningAnchor::Project => return None,
+    };
+    let block = expected_block(&qa.selection_text, qa.selection_is_diff);
+    // The evidence starts where the stored range starts *plus* whatever the
+    // block dropped off the front, so a selection opening on a blank line is
+    // still found where it was left. A hunk anchor has no stored line at all
+    // (0 above, which no 1-based line can equal); shifting that sentinel would
+    // turn it into a line number by accident.
+    let evidence_start = match stored_start {
+        0 => 0,
+        start => start.saturating_add(block.lead_offset),
+    };
+    match locate_block(lines, evidence_start, &block.lines) {
+        BlockMatch::AsStored => None,
+        BlockMatch::NotFound => Some(LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound)),
+        BlockMatch::Ambiguous => Some(LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous)),
+        BlockMatch::Moved { start, end } => {
+            if qa.selection_is_diff {
+                // Found, so the code is still there — but see the note above on
+                // why a diff-sourced range is not measured against.
+                None
+            } else {
+                Some(LearningAnchorDrift::Reanchored { start, end })
             }
         }
     }
@@ -1361,6 +2244,34 @@ pub fn thread_insert_index(rows: &[LearningQa], parent_id: &str) -> Option<usize
         }
     }
     Some(last + 1)
+}
+
+/// Reorder a stored history so every follow-up sits directly under the thread
+/// it continues, the way the live list keeps it.
+///
+/// Rows are stored — and reloaded — in the order they were asked, but a
+/// follow-up is asked *after* whatever else was asked in between. Replaying
+/// that order verbatim would leave it indented under an unrelated question,
+/// since the renderer takes its placement from the list and only its
+/// indentation from `parent_qa_id`. Threading here rather than at render time
+/// keeps one notion of order: `learning_enqueue` inserts a new row at exactly
+/// this position, so a reopened history reads the way it did when it was
+/// written.
+///
+/// A row whose parent is missing lands at the end rather than disappearing.
+pub fn thread_rows(rows: Vec<LearningQa>) -> Vec<LearningQa> {
+    let mut out: Vec<LearningQa> = Vec::with_capacity(rows.len());
+    for row in rows {
+        // Oldest first, so a parent is always placed before the rows that hang
+        // off it.
+        let at = row
+            .parent_qa_id
+            .as_deref()
+            .and_then(|parent| thread_insert_index(&out, parent))
+            .unwrap_or(out.len());
+        out.insert(at, row);
+    }
+    out
 }
 
 /// A finished headless run, delivered back to the UI thread.
@@ -2045,6 +2956,10 @@ impl App {
             return;
         }
 
+        let drift = match &self.mode {
+            AppMode::Learning(state) => state.drift_for(&qa.id),
+            _ => None,
+        };
         if let AppMode::Learning(state) = &mut self.mode {
             state.error = None;
             state.clear_notice();
@@ -2055,7 +2970,7 @@ impl App {
             state.action_editor = Some(crate::app::LearningActionEditor {
                 qa_id: qa.id.clone(),
                 title: crate::editor::TextEditor::new(todo_title_seed(&qa)),
-                body: todo_body(&qa),
+                body: todo_body(&qa, drift),
                 error: replacing_deleted
                     .then(|| "The item this was on has been deleted — this adds a new one.".into()),
                 scroll: 0,
@@ -2316,8 +3231,20 @@ fn truncate_title(title: &str, max: usize) -> String {
 /// The note body: where the question was anchored, what was asked, and enough
 /// of the answer to recognise it. This is what a spawned agent receives
 /// verbatim (`App::todo_spawn_prompt`), so it has to stand on its own.
-pub fn todo_body(qa: &LearningQa) -> String {
+pub fn todo_body(qa: &LearningQa, drift: Option<LearningAnchorDrift>) -> String {
     let mut body = format!("From Learning Mode — {}\n", anchor_locator(qa));
+    // The locator above is where the question was asked, which is a historical
+    // fact and stays as it is. If the code has moved since, saying so here is
+    // the difference between a note that leads somewhere and one that quietly
+    // points at whatever now occupies those lines — and this body is handed to
+    // an agent verbatim by `todo_spawn_prompt`, so a silent stale locator would
+    // send it to read the wrong code.
+    if let Some(drift) = drift {
+        body.push_str(&format!(
+            "\n{}\n",
+            drift.describe(qa.anchor.line_range_for_display())
+        ));
+    }
     body.push_str(&format!("\nAsked: {}\n", qa.question.trim()));
 
     let answer = qa.answer.as_deref().unwrap_or("").trim();
@@ -2493,7 +3420,14 @@ impl App {
             format!("escalated a question to session {session_id} ({label})"),
         );
 
-        let seed = escalation_seed(&qa);
+        // Read before `enter_view` changes the mode: the overlay's drift map
+        // goes with it, and this seed is the last thing that can carry the
+        // warning across.
+        let drift = match &self.mode {
+            AppMode::Learning(state) => state.drift_for(&qa.id),
+            _ => None,
+        };
+        let seed = escalation_seed(&qa, drift);
         self.selection = Selection::Session(pi, fi, si);
         if let Err(e) = self.enter_view_without_auto_compose() {
             self.log_error("learning", format!("couldn't open the new session: {e}"));
@@ -2604,7 +3538,7 @@ pub fn learning_session_label(qa: &LearningQa) -> String {
 /// belongs at the *end* rather than the top: the composer opens with the cursor
 /// after the last line, so the tail is what is on screen when the user arrives.
 /// It is also true and useful to the agent reading it.
-pub fn escalation_seed(qa: &LearningQa) -> String {
+pub fn escalation_seed(qa: &LearningQa, drift: Option<LearningAnchorDrift>) -> String {
     let mut seed = String::from(match qa.intent {
         LearningQaIntent::Explain => {
             "I've been reading this code in AMF's Learning Mode and want to keep going with you.\n"
@@ -2614,6 +3548,17 @@ pub fn escalation_seed(qa: &LearningQa) -> String {
         }
     });
     seed.push_str(&format!("\nWhere I was reading: {}\n", anchor_locator(qa)));
+    // The live agent is about to go and read that location. If the file has
+    // moved on since the question was asked, sending it there without saying so
+    // is how a stale anchor turns into a confidently wrong answer — the one
+    // failure this mode is least able to afford, because the excerpt below
+    // still shows the code the user remembers.
+    if let Some(drift) = drift {
+        seed.push_str(&format!(
+            "{}\n",
+            drift.describe(qa.anchor.line_range_for_display())
+        ));
+    }
 
     if !qa.selection_text.trim().is_empty() {
         seed.push_str(if qa.selection_is_diff {
@@ -2731,10 +3676,34 @@ impl App {
                             Some(LearningListEntry::StartHereHeader)
                         )
                 );
-                if on_header {
+                // Enter on a folder opens or closes it, so someone who never
+                // finds `l`/`h` can still browse the tree with the one key
+                // that already meant "open this".
+                let on_dir = matches!(
+                    &self.mode,
+                    AppMode::Learning(state)
+                        if matches!(state.selected_entry(), Some(LearningListEntry::Dir { .. }))
+                );
+                if on_dir {
+                    self.learning_toggle_dir();
+                } else if on_header {
                     self.learning_toggle_start_here();
                 } else {
-                    self.learning_load_selected_content();
+                    // Moving the cursor already loaded this file, so Enter on
+                    // it is only a focus change. Reloading would re-read the
+                    // file from disk and log the same failure twice, which is
+                    // how this was caught. A file that *failed* still reloads:
+                    // Enter is the only retry there is.
+                    let already_loaded = matches!(
+                        &self.mode,
+                        AppMode::Learning(state)
+                            if state.content_error.is_none()
+                                && state.content_path.as_deref()
+                                    == state.selected_entry().and_then(|e| e.path())
+                    );
+                    if !already_loaded {
+                        self.learning_load_selected_content();
+                    }
                     if let AppMode::Learning(state) = &mut self.mode {
                         state.focus = LearningFocus::Content;
                     }
@@ -3122,11 +4091,23 @@ impl App {
         if session_id.is_empty() {
             return;
         }
-        let already_seen = self
+        // A failed lookup counts as "seen": showing the intro on every open is
+        // a worse failure than never showing it, but it should not be silent.
+        let looked_up = self
             .db
             .as_ref()
-            .and_then(|db| db.learning_session_onboarding_seen(&session_id).ok())
-            .unwrap_or(true);
+            .map(|db| db.learning_session_onboarding_seen(&session_id));
+        let already_seen = match looked_up {
+            Some(Ok(seen)) => seen,
+            Some(Err(e)) => {
+                self.log_warn(
+                    "learning",
+                    format!("couldn't tell whether the Learning Mode intro has been shown: {e}"),
+                );
+                true
+            }
+            None => true,
+        };
         if already_seen {
             return;
         }
@@ -3410,37 +4391,250 @@ pub(crate) mod tests {
         assert!(start_here_candidates(dir.path()).is_empty());
     }
 
+    /// Shorthand for the tests below, which care about rows rather than the
+    /// root-overflow count.
+    fn tree_entries(
+        files: &[String],
+        start_here: &[String],
+        collapsed: bool,
+        expanded: &BTreeSet<String>,
+    ) -> Vec<LearningListEntry> {
+        build_repo_tree_entries(files, start_here, collapsed, expanded).0
+    }
+
+    fn expanded_set(dirs: &[&str]) -> BTreeSet<String> {
+        dirs.iter().map(|d| (*d).to_string()).collect()
+    }
+
     #[test]
     fn repo_tree_entries_pin_the_orientation_group_on_top() {
-        let entries = build_repo_tree_entries(
+        let entries = tree_entries(
             &["src/app/learning.rs".to_string(), "README.md".to_string()],
             &["README.md".to_string()],
             false,
+            &expanded_set(&["src", "src/app"]),
         );
         assert!(matches!(entries[0], LearningListEntry::StartHereHeader));
         assert!(matches!(entries[1], LearningListEntry::ProjectTour));
         assert_eq!(entries[2].path(), Some("README.md"));
-        // The pinned copy doesn't remove the file from the full list below.
-        assert_eq!(entries.len(), 5);
+        // The pinned copy doesn't remove the file from the tree below: `src`,
+        // `src/app`, the file inside it, and `README.md` in its real place.
+        assert_eq!(entries.len(), 7);
+        assert_eq!(entries[3].dir_path(), Some("src"));
+        assert_eq!(entries[4].dir_path(), Some("src/app"));
+        assert_eq!(entries[5].path(), Some("src/app/learning.rs"));
+        assert_eq!(entries[6].path(), Some("README.md"));
     }
 
     #[test]
     fn collapsing_the_group_keeps_only_its_header() {
-        let entries = build_repo_tree_entries(
+        let entries = tree_entries(
             &["src/main.rs".to_string()],
             &["README.md".to_string()],
             true,
+            &expanded_set(&["src"]),
         );
         assert!(matches!(entries[0], LearningListEntry::StartHereHeader));
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[1].path(), Some("src/main.rs"));
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[1].dir_path(), Some("src"));
+        assert_eq!(entries[2].path(), Some("src/main.rs"));
     }
 
     #[test]
     fn no_orientation_group_when_no_candidate_exists() {
-        let entries = build_repo_tree_entries(&["a.rs".to_string()], &[], false);
+        let entries = tree_entries(&["a.rs".to_string()], &[], false, &BTreeSet::new());
         assert_eq!(entries.len(), 1);
         assert!(entries[0].is_file());
+    }
+
+    // ── Epic 7: the tree ─────────────────────────────────────
+
+    /// Directories come before files at each level, each in name order, and a
+    /// closed directory contributes exactly one row.
+    #[test]
+    fn flattening_puts_directories_before_files_at_each_level() {
+        let files = vec![
+            "zebra.md".to_string(),
+            "src/main.rs".to_string(),
+            "Cargo.toml".to_string(),
+            "docs/guide.md".to_string(),
+        ];
+        let (rows, _) = flatten_tree(&files, &BTreeSet::new());
+        let labels: Vec<&str> = rows
+            .iter()
+            .map(|r| r.dir_path().or_else(|| r.path()).unwrap())
+            .collect();
+        assert_eq!(labels, vec!["docs", "src", "Cargo.toml", "zebra.md"]);
+        // Nothing is expanded, so neither directory shows its contents.
+        assert!(rows.iter().all(|r| r.depth() == 0));
+    }
+
+    /// Expanding a directory reveals its children one level deeper, and does
+    /// not open its subdirectories with it.
+    #[test]
+    fn expanding_a_directory_reveals_one_level() {
+        let files = vec![
+            "src/main.rs".to_string(),
+            "src/app/learning.rs".to_string(),
+            "src/app/todos.rs".to_string(),
+        ];
+        let (rows, _) = flatten_tree(&files, &expanded_set(&["src"]));
+        assert_eq!(rows[0].dir_path(), Some("src"));
+        assert_eq!(rows[0].depth(), 0);
+        assert_eq!(rows[1].dir_path(), Some("src/app"));
+        assert_eq!(rows[1].depth(), 1);
+        // `src/app` is closed, so its two files are not rows.
+        assert_eq!(rows[2].path(), Some("src/main.rs"));
+        assert_eq!(rows[2].depth(), 1);
+        assert_eq!(rows.len(), 3);
+
+        let (deeper, _) = flatten_tree(&files, &expanded_set(&["src", "src/app"]));
+        assert_eq!(deeper[2].path(), Some("src/app/learning.rs"));
+        assert_eq!(deeper[2].depth(), 2);
+        assert_eq!(deeper.len(), 5);
+    }
+
+    /// Collapsing and re-expanding returns exactly the rows you started with —
+    /// the tree is derived from `expanded_dirs`, so this is what says the
+    /// derivation has no memory of its own.
+    #[test]
+    fn collapse_and_expand_round_trips() {
+        let files = vec![
+            "src/app/learning.rs".to_string(),
+            "src/main.rs".to_string(),
+            "README.md".to_string(),
+        ];
+        let open = expanded_set(&["src", "src/app"]);
+        let (before, _) = flatten_tree(&files, &open);
+        let (collapsed, _) = flatten_tree(&files, &BTreeSet::new());
+        assert_eq!(collapsed.len(), 2);
+        let (after, _) = flatten_tree(&files, &open);
+        assert_eq!(before, after);
+    }
+
+    /// A closed folder says how many files it holds, counting everything below
+    /// it rather than only its immediate children — the number is there to
+    /// answer "is it worth opening this".
+    #[test]
+    fn a_closed_directory_counts_everything_beneath_it() {
+        let files = vec![
+            "src/a.rs".to_string(),
+            "src/app/b.rs".to_string(),
+            "src/app/deep/c.rs".to_string(),
+        ];
+        let (rows, _) = flatten_tree(&files, &BTreeSet::new());
+        assert!(matches!(
+            &rows[0],
+            LearningListEntry::Dir {
+                path,
+                file_count: 3,
+                expanded: false,
+                ..
+            } if path == "src"
+        ));
+    }
+
+    /// The opening state: the path down to each `Start here` file is open, and
+    /// nothing else is — so `src/main.rs` is on screen without the whole repo
+    /// being.
+    #[test]
+    fn the_tree_opens_at_the_start_here_files() {
+        let start_here = vec![
+            "README.md".to_string(),
+            "src/main.rs".to_string(),
+            "Cargo.toml".to_string(),
+        ];
+        let expanded = default_expanded_dirs(&start_here);
+        // `README.md` and `Cargo.toml` are at the root and open nothing.
+        assert_eq!(expanded, expanded_set(&["src"]));
+
+        let files = vec![
+            "src/main.rs".to_string(),
+            "src/app/learning.rs".to_string(),
+            "docs/guide.md".to_string(),
+        ];
+        let (rows, _) = flatten_tree(&files, &expanded);
+        assert!(rows.iter().any(|r| r.path() == Some("src/main.rs")));
+        // `docs` is visible as structure but not opened.
+        assert!(rows.iter().any(|r| r.dir_path() == Some("docs")));
+        assert!(rows.iter().all(|r| r.path() != Some("docs/guide.md")));
+    }
+
+    /// A nested candidate opens every directory above it, not just the last.
+    #[test]
+    fn the_opening_state_opens_the_whole_path_down() {
+        let expanded = default_expanded_dirs(&["a/b/c/main.rs".to_string()]);
+        assert_eq!(expanded, expanded_set(&["a", "a/b", "a/b/c"]));
+    }
+
+    /// One directory over the cap is truncated and *says so* on its own row,
+    /// rather than the listing looking complete. This is the honesty duty the
+    /// old whole-listing cap carried, moved to where it now applies.
+    #[test]
+    fn a_directory_over_the_cap_says_what_it_is_not_showing() {
+        let files: Vec<String> = (0..MAX_DIR_CHILDREN + 25)
+            .map(|i| format!("generated/file{i:06}.rs"))
+            .collect();
+        let (rows, root_overflow) = flatten_tree(&files, &expanded_set(&["generated"]));
+        assert_eq!(root_overflow, 0, "only one directory sits at the root");
+        assert!(matches!(
+            &rows[0],
+            LearningListEntry::Dir { truncated: 25, .. }
+        ));
+        // The row for the directory itself, plus its capped children.
+        assert_eq!(rows.len(), MAX_DIR_CHILDREN + 1);
+    }
+
+    /// The root has no row to be truthful on, so its overflow comes back to
+    /// the caller for the banner.
+    #[test]
+    fn root_level_overflow_is_reported_to_the_caller() {
+        let files: Vec<String> = (0..MAX_DIR_CHILDREN + 7)
+            .map(|i| format!("file{i:06}.rs"))
+            .collect();
+        let (rows, root_overflow) = flatten_tree(&files, &BTreeSet::new());
+        assert_eq!(root_overflow, 7);
+        assert_eq!(rows.len(), MAX_DIR_CHILDREN);
+    }
+
+    /// "Expand all" needs every directory in the repo, including ones with no
+    /// row on screen yet — that is the whole difference between it and pressing
+    /// `l` repeatedly.
+    #[test]
+    fn every_directory_is_reachable_by_expand_all() {
+        let files = vec![
+            "src/app/deep/x.rs".to_string(),
+            "docs/guide.md".to_string(),
+            "README.md".to_string(),
+        ];
+        assert_eq!(
+            all_dir_paths(&files),
+            expanded_set(&["docs", "src", "src/app", "src/app/deep"])
+        );
+        let (rows, _) = flatten_tree(&files, &all_dir_paths(&files));
+        assert!(rows.iter().any(|r| r.path() == Some("src/app/deep/x.rs")));
+    }
+
+    /// Branch-changes scope keeps the flat list the plan left it with: a
+    /// handful of changed paths needs no structure, and the paths are the point.
+    #[test]
+    fn branch_changes_stay_flat() {
+        let changed = |path: &str| crate::diff::DiffFile {
+            old_path: None,
+            path: path.to_string(),
+            status: crate::diff::DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: Vec::new(),
+        };
+        let rows = build_changed_entries(&[changed("src/app/learning.rs"), changed("README.md")]);
+        assert!(rows.iter().all(|r| r.depth() == 0));
+        assert!(rows.iter().all(|r| r.dir_path().is_none()));
+        assert_eq!(rows[0].path(), Some("src/app/learning.rs"));
     }
 
     #[test]
@@ -3518,16 +4712,123 @@ pub(crate) mod tests {
         let dir = TempDir::new().unwrap();
         let binary = dir.path().join("thing.bin");
         std::fs::write(&binary, [0x7f, 0x45, 0x00, 0x01]).unwrap();
-        let err = load_file_lines(&binary).unwrap_err();
+        let err = load_file_lines(&binary, "thing.bin").unwrap_err();
         assert!(err.contains("binary"), "{err}");
 
         let big = dir.path().join("huge.txt");
         std::fs::write(&big, vec![b'a'; (MAX_FILE_BYTES + 1) as usize]).unwrap();
-        let err = load_file_lines(&big).unwrap_err();
+        let err = load_file_lines(&big, "huge.txt").unwrap_err();
         assert!(err.contains("too big"), "{err}");
 
         let missing = dir.path().join("nope.txt");
-        assert!(load_file_lines(&missing).is_err());
+        assert!(load_file_lines(&missing, "nope.txt").is_err());
+    }
+
+    /// A file that won't open is the one failure met by simply moving the
+    /// cursor, so it has to reach both the pane (with a next step) and the
+    /// debug log (with the path, which the pane's message alone doesn't give
+    /// someone reading the log later).
+    #[test]
+    fn a_file_that_vanished_says_what_to_do_and_reaches_the_debug_log() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        // Select README.md, then delete it out from under the listing.
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("README.md"))
+            .expect("README.md should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        std::fs::remove_file(repo.path().join("README.md")).unwrap();
+        app.learning_load_selected_content();
+
+        let reason = learning(&app)
+            .content_error
+            .clone()
+            .expect("a missing file should say so");
+        assert!(
+            reason.contains("moved or deleted") && reason.contains("pick another file"),
+            "should say what to do next, got {reason}"
+        );
+        // The repo-relative path, not the absolute one: a workdir prefix is
+        // long enough to push the advice off the end of the line, which is
+        // exactly how this read the first time it was captured.
+        assert!(
+            reason.contains("Couldn't open README.md:"),
+            "should name the file the way the list does, got {reason}"
+        );
+        assert!(
+            !reason.contains(&repo.path().display().to_string()),
+            "the workdir prefix is noise the pane title already carries, got {reason}"
+        );
+
+        let logged = app
+            .debug_log
+            .entries()
+            .iter()
+            .any(|e| e.context == "learning" && e.message.contains("README.md"));
+        assert!(logged, "the load failure should name the file in the log");
+    }
+
+    /// Opening the cursored file is a focus change, not a second read: the
+    /// cursor move already loaded it. Caught by seeing the same failure logged
+    /// twice for one `Enter`.
+    #[test]
+    fn opening_the_file_already_under_the_cursor_does_not_read_it_again() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("src/util.rs"))
+            .expect("src/util.rs should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        app.learning_load_selected_content();
+        assert_eq!(learning(&app).content_path.as_deref(), Some("src/util.rs"));
+
+        // Change the file on disk, then press Enter. A reload would pick the
+        // new text up; a focus change leaves what was already read alone.
+        std::fs::write(repo.path().join("src/util.rs"), "pub fn changed() {}\n").unwrap();
+        app.learning_activate_selection();
+
+        assert_eq!(learning(&app).focus, LearningFocus::Content);
+        assert_eq!(learning(&app).content, vec!["pub fn ok() {}"]);
+    }
+
+    /// ...but a file that failed still reloads, because `Enter` is the only
+    /// retry there is.
+    #[test]
+    fn opening_a_file_that_failed_to_load_tries_it_again() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("src/util.rs"))
+            .expect("src/util.rs should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        // Fail the load, then make the file readable again.
+        std::fs::remove_file(repo.path().join("src/util.rs")).unwrap();
+        app.learning_load_selected_content();
+        assert!(learning(&app).content_error.is_some());
+
+        std::fs::write(repo.path().join("src/util.rs"), "pub fn back() {}\n").unwrap();
+        app.learning_activate_selection();
+
+        assert!(learning(&app).content_error.is_none());
+        assert_eq!(learning(&app).content, vec!["pub fn back() {}"]);
     }
 
     #[test]
@@ -3535,7 +4836,7 @@ pub(crate) mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("a.txt");
         std::fs::write(&path, "one\ntwo\n").unwrap();
-        assert_eq!(load_file_lines(&path).unwrap(), vec!["one", "two"]);
+        assert_eq!(load_file_lines(&path, "a.txt").unwrap(), vec!["one", "two"]);
     }
 
     // ── prompt builders ──────────────────────────────────────
@@ -4157,6 +5458,289 @@ pub(crate) mod tests {
         assert!(paths.contains(&"README.md"), "{paths:?}");
     }
 
+    /// Whether this row is `path` *in the tree*. The `Start here` group pins
+    /// its own copies of a few files above the tree, and those are a reading
+    /// list rather than tree rows — they neither indent nor disappear when
+    /// their folder is collapsed. Tests about the tree have to say which copy
+    /// they mean, or collapsing `src/` looks like it kept `src/main.rs`.
+    fn is_tree_file(entry: &LearningListEntry, path: &str) -> bool {
+        matches!(
+            entry,
+            LearningListEntry::File {
+                path: p,
+                group: LearningListGroup::Files,
+                ..
+            } if p == path
+        )
+    }
+
+    /// Move the file-list cursor onto whichever row matches, or fail loudly:
+    /// a silent no-match would make the assertions below pass on nothing.
+    fn put_cursor_on(app: &mut App, pred: impl Fn(&LearningListEntry) -> bool) {
+        let idx = learning(app)
+            .entries
+            .iter()
+            .position(&pred)
+            .unwrap_or_else(|| {
+                let rows: Vec<String> = learning(app)
+                    .entries
+                    .iter()
+                    .map(|e| format!("{e:?}"))
+                    .collect();
+                panic!("no matching row in {rows:#?}")
+            });
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        app.learning_load_selected_content();
+    }
+
+    /// A folder is navigation. Resting on one must not move the loaded file or
+    /// the anchor, or walking down to a file would silently drop the question
+    /// that was lined up two folders ago.
+    #[test]
+    fn a_folder_is_navigation_not_a_question_anchor() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/util.rs"));
+        let before = learning(&app).anchor;
+        assert_eq!(learning(&app).content_path.as_deref(), Some("src/util.rs"));
+
+        put_cursor_on(&mut app, |e| e.dir_path() == Some("src"));
+        assert_eq!(
+            learning(&app).content_path.as_deref(),
+            Some("src/util.rs"),
+            "the folder row must not unload the file"
+        );
+        assert_eq!(learning(&app).anchor, before);
+    }
+
+    /// Collapsing leaves the cursor on the folder that was collapsed, the way
+    /// `collapsing_the_orientation_group_keeps_the_cursor_on_its_file` does for
+    /// the group — the row list is rebuilt from scratch, so an index alone
+    /// would land somewhere unrelated.
+    #[test]
+    fn collapsing_a_folder_keeps_the_cursor_on_it() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.dir_path() == Some("src"));
+        app.learning_toggle_dir();
+
+        let state = learning(&app);
+        assert_eq!(
+            state.selected_entry().and_then(|e| e.dir_path()),
+            Some("src")
+        );
+        assert!(
+            !state.entries.iter().any(|e| is_tree_file(e, "src/main.rs")),
+            "collapsing should have taken the children with it"
+        );
+
+        app.learning_toggle_dir();
+        assert_eq!(
+            learning(&app).selected_entry().and_then(|e| e.dir_path()),
+            Some("src"),
+            "and re-expanding leaves it where it was"
+        );
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .any(|e| is_tree_file(e, "src/main.rs"))
+        );
+    }
+
+    /// Closing a folder from *inside* it: the row under the cursor stops
+    /// existing, so the cursor moves to the folder that swallowed it rather
+    /// than to whatever the old index now points at.
+    #[test]
+    fn closing_the_folder_you_are_inside_moves_the_cursor_to_it() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/util.rs"));
+        // `h` on a file steps out to its folder, and again closes it.
+        app.learning_collapse_or_parent();
+        assert_eq!(
+            learning(&app).selected_entry().and_then(|e| e.dir_path()),
+            Some("src")
+        );
+        app.learning_collapse_or_parent();
+        let state = learning(&app);
+        assert_eq!(
+            state.selected_entry().and_then(|e| e.dir_path()),
+            Some("src")
+        );
+        assert!(!state.expanded_dirs.contains("src"));
+    }
+
+    /// Tree keys belong to the file list. Pressing them while reading the
+    /// content pane must not move a cursor that isn't on screen — and must say
+    /// so, in both directions, rather than doing nothing.
+    #[test]
+    fn tree_keys_do_nothing_but_explain_themselves_off_the_file_list() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/util.rs"));
+        let before = learning(&app).selected_entry;
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.focus = LearningFocus::Content;
+        }
+
+        app.learning_collapse_or_parent();
+        assert_eq!(
+            learning(&app).selected_entry,
+            before,
+            "`h` off the file list must not move the hidden cursor"
+        );
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("Tab"), "{notice:?}");
+
+        app.learning_expand_or_open();
+        assert_eq!(learning(&app).selected_entry, before);
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("Tab"), "{notice:?}");
+        assert!(
+            learning(&app).expanded_dirs.contains("src"),
+            "and nothing about the tree changed either"
+        );
+    }
+
+    /// A pinned `Start here` file keeps its row when the folder holding it has
+    /// none — the root truncated it away. Stepping out then has no target,
+    /// which is a refusal, and it says why.
+    #[test]
+    fn stepping_out_with_no_visible_parent_says_why() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        // Push `src` past the root's child cap: it sorts last, so it is the row
+        // that gets dropped, while pinned `src/main.rs` is unaffected.
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.repo_files = (0..MAX_DIR_CHILDREN)
+                .map(|i| format!("aaa{i:06}/file.rs"))
+                .collect();
+            state.repo_files.push("src/main.rs".to_string());
+        }
+        app.learning_rebuild_tree();
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .all(|e| e.dir_path() != Some("src"))
+        );
+        put_cursor_on(&mut app, |e| {
+            matches!(
+                e,
+                LearningListEntry::File { path, group: LearningListGroup::StartHere, .. }
+                    if path == "src/main.rs"
+            )
+        });
+
+        app.learning_collapse_or_parent();
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("src/"), "{notice:?}");
+        assert!(notice.contains('Z'), "{notice:?}");
+    }
+
+    /// The branch-changes list has no folders at all, so stepping out of a
+    /// nested path there points at the scope key instead of going quiet.
+    #[test]
+    fn stepping_out_in_branch_changes_scope_points_at_the_tree() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+        app.learning_toggle_scope();
+        assert_eq!(learning(&app).scope, BrowseScope::BranchChanges);
+
+        put_cursor_on(&mut app, |e| e.path() == Some("src/main.rs"));
+        app.learning_collapse_or_parent();
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("flat"), "{notice:?}");
+    }
+
+    /// At the top level there is nothing to step out to, so `h` says so rather
+    /// than doing nothing — the swallowed keypress this mode exists to avoid.
+    #[test]
+    fn stepping_out_of_a_top_level_row_says_there_is_nowhere_to_go() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        put_cursor_on(&mut app, |e| e.dir_path() == Some("src"));
+        // `src` is open, so the first press closes it; the second has no parent.
+        app.learning_collapse_or_parent();
+        app.learning_collapse_or_parent();
+        let notice = learning(&app).notice.clone().unwrap_or_default();
+        assert!(notice.contains("top level"), "{notice:?}");
+    }
+
+    /// Expand-all opens folders that had no row on screen, which is the whole
+    /// difference between it and pressing `l` repeatedly — and pressing it
+    /// again folds the tree back.
+    #[test]
+    fn expand_all_opens_every_folder_and_folds_them_again() {
+        let repo = repo_with_branch_change();
+        std::fs::create_dir_all(repo.path().join("docs/deep")).unwrap();
+        std::fs::write(repo.path().join("docs/deep/notes.md"), "hi\n").unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "docs"]);
+
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+        // `docs` was never opened, so its contents have no rows yet.
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .all(|e| e.path() != Some("docs/deep/notes.md"))
+        );
+
+        app.learning_toggle_expand_all();
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .any(|e| e.path() == Some("docs/deep/notes.md"))
+        );
+
+        app.learning_toggle_expand_all();
+        let state = learning(&app);
+        assert!(state.expanded_dirs.is_empty());
+        assert!(!state.entries.iter().any(|e| is_tree_file(e, "src/main.rs")));
+    }
+
+    /// Expanding and collapsing must not re-read the repository: on a large
+    /// project that would make the tree slower than the flat list it replaced.
+    /// Proven by deleting a file behind the overlay's back — a listing that
+    /// re-ran `git ls-files` would notice.
+    #[test]
+    fn toggling_a_folder_does_not_re_read_the_repository() {
+        let repo = repo_with_branch_change();
+        let mut app = app_at(repo.path(), true);
+        app.open_learning_mode(0, 0).unwrap();
+
+        std::fs::remove_file(repo.path().join("src/util.rs")).unwrap();
+        put_cursor_on(&mut app, |e| e.dir_path() == Some("src"));
+        app.learning_toggle_dir();
+        app.learning_toggle_dir();
+        assert!(
+            learning(&app)
+                .entries
+                .iter()
+                .any(|e| e.path() == Some("src/util.rs")),
+            "the cached listing should have been reused"
+        );
+    }
+
     #[test]
     fn selecting_a_file_loads_its_content_and_a_line_anchor() {
         let repo = repo_with_branch_change();
@@ -4245,6 +5829,43 @@ pub(crate) mod tests {
         assert!(err.contains("git repository"), "{err}");
     }
 
+    /// The scope key can't switch scope in a non-git project, so it rebuilds
+    /// the list instead — which is what the vanished-file message tells the
+    /// user to press, and that message is only reachable from this scope.
+    #[test]
+    fn the_scope_key_rebuilds_a_non_git_list_it_cannot_switch() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("main.py"), "print('hi')\n").unwrap();
+        std::fs::write(dir.path().join("gone.py"), "print('bye')\n").unwrap();
+        let mut app = app_at(dir.path(), false);
+        app.open_learning_mode(0, 0).unwrap();
+
+        let idx = learning(&app)
+            .entries
+            .iter()
+            .position(|e| e.path() == Some("gone.py"))
+            .expect("gone.py should be listed");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_entry = idx;
+        }
+        app.learning_load_selected_content();
+        std::fs::remove_file(dir.path().join("gone.py")).unwrap();
+        app.learning_load_selected_content();
+        let content_error = learning(&app).content_error.clone().unwrap();
+        assert!(content_error.contains("press s"), "{content_error}");
+
+        app.learning_toggle_scope();
+        let state = learning(&app);
+        assert_eq!(state.scope, BrowseScope::RepoTree, "still no other scope");
+        let paths: Vec<&str> = state.entries.iter().filter_map(|e| e.path()).collect();
+        assert_eq!(paths, vec!["main.py"], "the vanished file is gone from it");
+        assert!(
+            state.content_error.is_none(),
+            "the surviving file loads: {:?}",
+            state.content_error
+        );
+    }
+
     /// With no DB (as in tests) the overlay still opens and browses; history is
     /// simply empty and nothing is persisted.
     #[test]
@@ -4256,6 +5877,31 @@ pub(crate) mod tests {
         assert!(learning(&app).qa.is_empty());
         assert!(learning(&app).session_id.is_empty());
         assert!(!learning(&app).entries.is_empty());
+    }
+
+    /// Without a database the overlay is still fully usable — questions are
+    /// asked and answered against the in-memory list — but that list is all
+    /// there is, so it goes when the overlay does. Asserted rather than assumed:
+    /// the alternative is refusing to answer at all, which would be worse.
+    #[test]
+    fn without_a_database_questions_still_work_but_do_not_outlive_the_overlay() {
+        let (_repo, mut app) = opened_app();
+        assert!(app.db.is_none());
+        let id = app
+            .learning_ask("What does this do?", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("It runs the program.".to_string()));
+        assert_eq!(
+            learning(&app).qa[0].answer.as_deref(),
+            Some("It runs the program.")
+        );
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+        assert!(
+            learning(&app).qa.is_empty(),
+            "there was nowhere to keep it, and nothing pretends otherwise"
+        );
     }
 
     #[test]
@@ -4296,13 +5942,47 @@ pub(crate) mod tests {
         std::fs::create_dir_all(dir.path().join("lib/deep")).unwrap();
         std::fs::write(dir.path().join("lib/deep/util.py"), "y").unwrap();
 
-        let files = walk_files_capped(dir.path(), 100, 12);
-        assert_eq!(files, vec!["lib/deep/util.py", "main.py"]);
+        let walk = walk_files_capped(dir.path(), 100, 12);
+        assert_eq!(walk.files, vec!["lib/deep/util.py", "main.py"]);
+        assert!(walk.unreadable.is_empty());
 
         // The entry cap truncates rather than growing without bound.
-        assert_eq!(walk_files_capped(dir.path(), 1, 12).len(), 1);
+        assert_eq!(walk_files_capped(dir.path(), 1, 12).files.len(), 1);
         // The depth cap keeps the walk shallow.
-        assert_eq!(walk_files_capped(dir.path(), 100, 0), vec!["main.py"]);
+        assert_eq!(walk_files_capped(dir.path(), 100, 0).files, vec!["main.py"]);
+    }
+
+    /// A folder the walk can't open leaves no gap in the list, so the walk has
+    /// to report it — otherwise "no such directory" and "AMF couldn't read it"
+    /// are indistinguishable to someone who doesn't know the project.
+    #[test]
+    #[cfg(unix)]
+    fn the_fallback_walk_reports_folders_it_could_not_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("main.py"), "print()").unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("secret.py"), "z").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let walk = walk_files_capped(dir.path(), 100, 12);
+        // Running as root defeats the permission bits entirely; the point of
+        // the test is the reporting path, so only assert it when it applies.
+        if walk.files.iter().any(|f| f.contains("secret")) {
+            return;
+        }
+        assert_eq!(walk.files, vec!["main.py"]);
+        assert_eq!(walk.unreadable.len(), 1);
+        assert!(
+            walk.unreadable[0].starts_with("locked:"),
+            "should name the folder it couldn't open, got {:?}",
+            walk.unreadable
+        );
+
+        // Leave it readable so the temp dir can clean itself up.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     // ── follow-ups ───────────────────────────────────────────
@@ -5125,6 +6805,39 @@ pub(crate) mod tests {
         );
     }
 
+    /// Stored order is the order things were asked; threaded order is the order
+    /// they are read in. Ids here are in ask order, so `b` and `e` were asked
+    /// long after the questions they continue.
+    #[test]
+    fn threading_a_stored_history_gathers_each_conversation() {
+        let stored = vec![
+            qa_row("a", None),
+            qa_row("d", None),
+            qa_row("b", Some("a")),
+            qa_row("e", Some("d")),
+            qa_row("c", Some("b")),
+        ];
+        let threaded = thread_rows(stored);
+        let ids: Vec<&str> = threaded.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["a", "b", "c", "d", "e"],
+            "each thread reads top to bottom, and roots keep the order they \
+             were asked in"
+        );
+    }
+
+    /// Orphans are not supposed to happen — the delete cascades — but a row
+    /// pointing at a parent that isn't there must still be readable rather than
+    /// dropped, since it is the only copy of a question someone asked.
+    #[test]
+    fn threading_keeps_a_row_whose_parent_is_gone() {
+        let stored = vec![qa_row("a", None), qa_row("orphan", Some("vanished"))];
+        let threaded = thread_rows(stored);
+        let ids: Vec<&str> = threaded.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "orphan"]);
+    }
+
     #[test]
     fn following_up_on_an_unanswered_question_says_to_wait() {
         let (_repo, mut app) = opened_app();
@@ -5279,6 +6992,429 @@ pub(crate) mod tests {
         );
     }
 
+    // ── anchor drift ─────────────────────────────────────────
+
+    fn lines_of(text: &str) -> Vec<String> {
+        text.lines().map(ToOwned::to_owned).collect()
+    }
+
+    /// An anchored row over `src/util.rs`, the file the overlay tests below
+    /// edit behind the overlay's back.
+    fn anchored_qa(start: usize, end: usize, selection: &str) -> LearningQa {
+        let mut qa = qa_row("qa-1", None);
+        qa.file_path = Some("src/util.rs".to_string());
+        qa.anchor = LearningAnchor::Lines { start, end };
+        qa.selection_text = selection.to_string();
+        qa
+    }
+
+    /// The base case, and the one that must stay silent: nothing changed, so
+    /// nothing is reported. A check that cried drift on an untouched file would
+    /// be worse than no check at all.
+    #[test]
+    fn an_anchor_that_did_not_move_is_not_reported() {
+        let file = lines_of("fn a() {}\nfn b() {}\nfn c() {}");
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            None,
+            "the code is exactly where it was left"
+        );
+    }
+
+    /// Re-indenting a file moves every line's text but none of its meaning.
+    /// Comparison is trimmed so a `rustfmt` pass isn't reported as drift.
+    #[test]
+    fn re_indenting_the_code_is_not_movement() {
+        let file = lines_of("fn a() {\n        let x = 1;\n}");
+        let qa = anchored_qa(2, 2, "    let x = 1;");
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Lines(file)), None);
+    }
+
+    /// The common case the plan names: lines were added above, so the code the
+    /// question was about is now further down. It is found again and the new
+    /// range is reported.
+    #[test]
+    fn code_that_moved_down_is_found_again() {
+        let file = lines_of("use std::fmt;\n\nfn a() {}\nfn b() {}\nfn c() {}");
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 })
+        );
+    }
+
+    /// Both ends of a multi-line selection move together, and blank lines
+    /// inside the file don't shift the range's reported end.
+    #[test]
+    fn a_moved_range_reports_both_of_its_ends() {
+        let file = lines_of("// header\n\nfn b() {\n    work();\n}\n");
+        let qa = anchored_qa(1, 3, "fn b() {\n    work();\n}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Reanchored { start: 3, end: 5 })
+        );
+    }
+
+    /// Code that is simply gone. The entry keeps its question and answer — they
+    /// are still the only record of what someone asked — but it stops claiming
+    /// the line numbers mean anything.
+    #[test]
+    fn code_that_was_rewritten_loses_its_anchor() {
+        let file = lines_of("fn a() {}\nfn renamed() {}\nfn c() {}");
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound))
+        );
+    }
+
+    /// The plan's open question, settled towards honesty: two candidates means
+    /// there is no way to say which one the question was about, so it is
+    /// reported lost rather than re-anchored to a guess.
+    #[test]
+    fn code_that_now_appears_twice_is_lost_rather_than_guessed_at() {
+        let file = lines_of("fn a() {}\nfn dup() {}\nfn c() {}\nfn dup() {}");
+        let qa = anchored_qa(3, 3, "fn dup() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous))
+        );
+    }
+
+    /// …but a duplicate is only ambiguous if the original moved. Code that is
+    /// still where it was stored is anchored, however many copies of it have
+    /// since been made elsewhere — otherwise extracting a repeated idiom would
+    /// break every note about the original.
+    #[test]
+    fn a_copy_made_elsewhere_does_not_unanchor_the_original() {
+        let file = lines_of("fn a() {}\nfn dup() {}\nfn c() {}\nfn dup() {}");
+        let qa = anchored_qa(2, 2, "fn dup() {}");
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Lines(file)), None);
+    }
+
+    /// A file that is no longer in the project is its own outcome, and reads
+    /// differently to a rewritten one.
+    #[test]
+    fn a_deleted_file_takes_every_anchor_in_it() {
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Gone),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone))
+        );
+    }
+
+    /// A file that is there but can't be read claims nothing. "We didn't look"
+    /// is not one of the three outcomes, and a marker that meant it would be
+    /// worse than no marker.
+    #[test]
+    fn a_file_that_could_not_be_read_claims_nothing() {
+        let qa = anchored_qa(2, 2, "fn b() {}");
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Unreadable), None);
+    }
+
+    /// A whole-file anchor moves with its file: as long as the file is there,
+    /// the anchor is as good as it ever was, whatever the contents now say.
+    #[test]
+    fn a_whole_file_anchor_only_notices_the_file_going_away() {
+        let mut qa = anchored_qa(1, 1, "anything at all");
+        qa.anchor = LearningAnchor::File;
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(lines_of("something else"))),
+            None
+        );
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Gone),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone))
+        );
+    }
+
+    /// A project anchor has no file and cannot drift.
+    #[test]
+    fn the_project_anchor_never_drifts() {
+        let mut qa = anchored_qa(1, 1, "");
+        qa.anchor = LearningAnchor::Project;
+        qa.file_path = None;
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Gone), None);
+    }
+
+    /// A diff excerpt is matched on the lines that are actually in the file —
+    /// its removals are dropped along with the markers.
+    #[test]
+    fn a_diff_selection_is_matched_on_what_survived_it() {
+        let block = expected_block("-let x = 1;\n+let x = 2;\n let y = 3;", true);
+        assert_eq!(block.lines, vec!["let x = 2;", "let y = 3;"]);
+        assert_eq!(block.lead_offset, 1, "the removed row came off the front");
+    }
+
+    /// A selection that opens on a blank line is still where it was left: the
+    /// blank carries no evidence and is dropped, so the search starts one row
+    /// further down than the stored range does. Counting from the stored start
+    /// instead reports every such selection as having slid down by exactly the
+    /// number of leading blanks — drift invented out of the user's own
+    /// whitespace.
+    #[test]
+    fn a_selection_opening_on_a_blank_line_has_not_moved() {
+        let qa = anchored_qa(2, 4, "\n  fn b() {}\n  let y = 3;");
+        let file = lines_of("fn a() {}\n\nfn b() {}\nlet y = 3;\n");
+        assert_eq!(check_anchor_drift(&qa, &AnchorTarget::Lines(file)), None);
+    }
+
+    /// And the offset is a shift, not a blanket amnesty: the same selection
+    /// genuinely pushed down the file is still reported as re-anchored.
+    #[test]
+    fn a_blank_leading_selection_that_really_moved_still_reports() {
+        let qa = anchored_qa(2, 4, "\n  fn b() {}\n  let y = 3;");
+        let file = lines_of("fn a() {}\n\n// inserted\n// inserted\nfn b() {}\nlet y = 3;\n");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(file)),
+            Some(LearningAnchorDrift::Reanchored { start: 5, end: 6 })
+        );
+    }
+
+    /// A diff-sourced anchor can be reported lost but never re-anchored: its
+    /// stored range is numbered off `new_line.or(old_line)`, so a selection
+    /// opening on a removed line is already measured against the base side.
+    /// "That code is gone" survives that; "it moved to line 9" does not.
+    #[test]
+    fn a_diff_anchor_is_reported_lost_but_never_moved() {
+        let mut qa = anchored_qa(2, 3, "+fn b() {}\n let y = 3;");
+        qa.selection_is_diff = true;
+
+        let moved = lines_of("// added\n// added\nfn b() {}\nlet y = 3;");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(moved)),
+            None,
+            "still in the file, so nothing is claimed either way"
+        );
+
+        let gone = lines_of("fn renamed() {}\nlet y = 3;");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(gone)),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound))
+        );
+    }
+
+    /// A row with nothing captured has nothing to check against, and says so by
+    /// staying quiet.
+    #[test]
+    fn a_row_with_no_captured_selection_is_left_alone() {
+        let qa = anchored_qa(2, 2, "   \n\n");
+        assert_eq!(
+            check_anchor_drift(&qa, &AnchorTarget::Lines(lines_of("a\nb\nc"))),
+            None
+        );
+    }
+
+    /// An overlay with a real database, opened on `src/util.rs` — a file the
+    /// test can then edit behind the overlay's back.
+    fn app_on_util(contents: &str) -> (TempDir, TempDir, App) {
+        let repo = repo_with_branch_change();
+        std::fs::write(repo.path().join("src/util.rs"), contents).unwrap();
+        let db_dir = TempDir::new().unwrap();
+        let mut app = app_at(repo.path(), true);
+        app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+        app.open_learning_mode(0, 0).unwrap();
+        for _ in 0..learning(&app).entries.len() {
+            if learning(&app).content_path.as_deref() == Some("src/util.rs") {
+                break;
+            }
+            app.learning_select_next_entry();
+        }
+        assert_eq!(learning(&app).content_path.as_deref(), Some("src/util.rs"));
+        (repo, db_dir, app)
+    }
+
+    /// End to end: ask about a line, add code above it, reopen. The entry comes
+    /// back marked, pointing at where the code went — and the overlay says so
+    /// on the way in, because the marker is in a pane the user may not be
+    /// looking at.
+    #[test]
+    fn a_question_reloads_marked_when_its_code_moved() {
+        let (repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\nfn c() {}\n");
+        app.learning_cursor_move(1);
+        let id = ask_and_answer(&mut app, "What is this?", "It is b.");
+        assert_eq!(
+            learning(&app)
+                .qa
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .anchor,
+            LearningAnchor::Lines { start: 2, end: 2 }
+        );
+        app.close_learning_mode();
+
+        std::fs::write(
+            repo.path().join("src/util.rs"),
+            "use std::fmt;\n\nfn a() {}\nfn b() {}\nfn c() {}\n",
+        )
+        .unwrap();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let state = learning(&app);
+        assert_eq!(
+            state.drift_for(&id),
+            Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 })
+        );
+        let banner = state.notice.clone().unwrap_or_default();
+        assert!(banner.contains("moved with the code"), "{banner}");
+    }
+
+    /// The stored range is the historical fact of where the question was asked,
+    /// and re-anchoring does not overwrite it — which is also what lets the
+    /// verdict be re-derived on every open instead of being believed once.
+    #[test]
+    fn re_anchoring_does_not_rewrite_the_range_it_was_asked_at() {
+        let (repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\nfn c() {}\n");
+        app.learning_cursor_move(1);
+        let id = ask_and_answer(&mut app, "What is this?", "It is b.");
+        app.close_learning_mode();
+        std::fs::write(
+            repo.path().join("src/util.rs"),
+            "use std::fmt;\n\nfn a() {}\nfn b() {}\nfn c() {}\n",
+        )
+        .unwrap();
+
+        app.open_learning_mode(0, 0).unwrap();
+        let row = learning(&app)
+            .qa
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            row.anchor,
+            LearningAnchor::Lines { start: 2, end: 2 },
+            "the row still records where it was asked"
+        );
+        assert_eq!(row.answer.as_deref(), Some("It is b."));
+    }
+
+    /// A deleted file leaves its questions readable and honest about it.
+    #[test]
+    fn a_question_whose_file_was_deleted_reloads_marked_lost() {
+        let (repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\n");
+        let id = ask_and_answer(&mut app, "What is this?", "It is a.");
+        app.close_learning_mode();
+        std::fs::remove_file(repo.path().join("src/util.rs")).unwrap();
+
+        app.open_learning_mode(0, 0).unwrap();
+        let state = learning(&app);
+        assert_eq!(
+            state.drift_for(&id),
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone))
+        );
+        let row = state.qa.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(
+            row.answer.as_deref(),
+            Some("It is a."),
+            "the answer is still the only copy of what was said"
+        );
+        let banner = state.notice.clone().unwrap_or_default();
+        assert!(
+            banner.contains("1 no longer points at code"),
+            "one lost anchor reads as one: {banner}"
+        );
+    }
+
+    /// `Path::exists()` answers "no" to a file it cannot stat just as loudly as
+    /// to one that was deleted, and the two are not the same claim: a file
+    /// behind a directory this process can't read is almost certainly still
+    /// there. Unreadable means no verdict, here as everywhere else.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_behind_an_unreadable_directory_is_not_reported_gone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\n");
+        let id = ask_and_answer(&mut app, "What is this?", "It is a.");
+        app.close_learning_mode();
+
+        let dir = repo.path().join("src");
+        let restore = std::fs::metadata(&dir).unwrap().permissions();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root walks through mode bits, so there would be nothing to observe.
+        let unreadable = std::fs::metadata(dir.join("util.rs")).is_err();
+        let verdict = if unreadable {
+            app.open_learning_mode(0, 0).unwrap();
+            let verdict = learning(&app).drift_for(&id);
+            app.close_learning_mode();
+            Some(verdict)
+        } else {
+            None
+        };
+        std::fs::set_permissions(&dir, restore).unwrap();
+
+        if let Some(verdict) = verdict {
+            assert_eq!(
+                verdict, None,
+                "a file we could not look at is not a file that is gone"
+            );
+        }
+    }
+
+    /// Reopening a project nobody has touched says nothing at all.
+    #[test]
+    fn an_untouched_project_reloads_with_nothing_marked() {
+        let (_repo, _db, mut app) = app_on_util("fn a() {}\nfn b() {}\n");
+        let id = ask_and_answer(&mut app, "What is this?", "It is a.");
+        app.close_learning_mode();
+
+        app.open_learning_mode(0, 0).unwrap();
+        let state = learning(&app);
+        assert!(state.drift_for(&id).is_none());
+        assert!(state.anchor_drift.is_empty());
+        assert!(
+            state.notice.is_none(),
+            "nothing drifted, so nothing is announced: {:?}",
+            state.notice
+        );
+    }
+
+    /// Handing a drifted answer to a live agent has to say the code moved. The
+    /// excerpt in the seed still shows what the user remembers, so without this
+    /// the agent is sent to read a location that no longer holds it — the exact
+    /// route from a stale anchor to a confidently wrong answer.
+    #[test]
+    fn a_drifted_answer_is_handed_over_saying_where_the_code_went() {
+        let mut qa = anchored_qa(2, 2, "fn b() {}");
+        qa.answer = Some("It is b.".to_string());
+        let seed = escalation_seed(
+            &qa,
+            Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 }),
+        );
+        assert!(seed.contains("src/util.rs:2"), "{seed}");
+        assert!(seed.contains("it is now line 4"), "{seed}");
+
+        let lost = escalation_seed(
+            &qa,
+            Some(LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone)),
+        );
+        assert!(lost.contains("no longer in the project"), "{lost}");
+
+        let clean = escalation_seed(&qa, None);
+        assert!(
+            !clean.contains("moved"),
+            "nothing to say when nothing moved"
+        );
+    }
+
+    /// The same for a note kept on the TODO list: `todo_spawn_prompt` appends
+    /// this body verbatim, so a silent stale locator would travel just as far.
+    #[test]
+    fn a_drifted_answer_is_kept_saying_where_the_code_went() {
+        let mut qa = anchored_qa(2, 2, "fn b() {}");
+        qa.answer = Some("It is b.".to_string());
+        let body = todo_body(
+            &qa,
+            Some(LearningAnchorDrift::Reanchored { start: 4, end: 4 }),
+        );
+        assert!(body.contains("src/util.rs:2"), "{body}");
+        assert!(body.contains("it is now line 4"), "{body}");
+        assert!(!todo_body(&qa, None).contains("moved"));
+    }
+
     /// Re-filing is a durable decision about how an entry is kept, so it has
     /// to be there on the next open rather than only until the overlay closes.
     #[test]
@@ -5305,6 +7441,126 @@ pub(crate) mod tests {
             Some("It retries forever."),
             "and the answer came back with it"
         );
+    }
+
+    /// Stored history comes back oldest-first, but a follow-up is asked *after*
+    /// whatever else was asked in between — so replaying that order verbatim
+    /// would indent it under an unrelated question. This is the same defect
+    /// `a_follow_up_lands_under_the_thread_it_continues` fixed for the live
+    /// list, arriving by the other door.
+    #[test]
+    fn a_reloaded_thread_keeps_its_follow_ups_under_their_parents() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let first = ask_and_answer(&mut app, "First question?", "First answer.");
+        let unrelated = ask_and_answer(&mut app, "Unrelated question?", "Unrelated answer.");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_qa = 0;
+        }
+        let child = follow_up(&mut app, "Follow-up?");
+        deliver(&mut app, &child, Ok("Follow-up answer.".to_string()));
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let ids: Vec<&str> = learning(&app).qa.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![first.as_str(), child.as_str(), unrelated.as_str()],
+            "a reopened history threads the same way the live one does"
+        );
+    }
+
+    /// A rerun sits in its original's place for the same reason, and it is
+    /// threaded by `parent_qa_id` like everything else.
+    #[test]
+    fn a_reloaded_deep_dive_stays_with_the_question_it_re_asked() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        let origin = ask_and_answer(&mut app, "What does this do?", "A guess.");
+        let unrelated = ask_and_answer(&mut app, "Unrelated question?", "Unrelated answer.");
+        if let AppMode::Learning(state) = &mut app.mode {
+            state.selected_qa = 0;
+        }
+        let deeper = app.learning_deep_dive().expect("the rerun starts");
+        deliver(
+            &mut app,
+            &deeper,
+            Ok("Checked against the repo.".to_string()),
+        );
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let ids: Vec<&str> = learning(&app).qa.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![origin.as_str(), deeper.as_str(), unrelated.as_str()],
+            "the rerun reloads under the answer it was checking"
+        );
+    }
+
+    /// Every anchor kind has to survive a reload: the file and lines a question
+    /// was asked about are what make its answer readable a week later, and a
+    /// follow-up asked after the reload quotes them again.
+    #[test]
+    fn a_reloaded_question_still_knows_what_it_was_asked_about() {
+        let (_repo, _db, mut app) = opened_app_with_db();
+        app.learning_cursor_move(0);
+        app.learning_start_range();
+        app.learning_cursor_move(1);
+        let anchor = learning(&app).anchor;
+        assert!(
+            matches!(anchor, LearningAnchor::Lines { .. }),
+            "the test selected a range: {anchor:?}"
+        );
+        let id = app
+            .learning_ask("Explain these lines.", LearningQaIntent::Explain, None)
+            .unwrap();
+        deliver(&mut app, &id, Ok("They parse the arguments.".to_string()));
+        let selection = learning(&app).qa[0].selection_text.clone();
+        assert!(!selection.is_empty(), "the question captured its lines");
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+
+        let row = learning(&app).qa[0].clone();
+        assert_eq!(row.anchor, anchor);
+        assert_eq!(row.file_path.as_deref(), Some("src/main.rs"));
+        assert_eq!(row.selection_text, selection);
+        assert_eq!(row.level, LearningLevel::Newcomer);
+        assert_eq!(row.intent, LearningQaIntent::Explain);
+    }
+
+    /// The intro is the newcomer's discovery path, so it opens unasked — but
+    /// only once. A second visit that reopens it reads as the mode not
+    /// remembering the user was here.
+    #[test]
+    fn the_intro_opens_on_the_first_visit_only() {
+        let repo = repo_with_branch_change();
+        let db_dir = TempDir::new().unwrap();
+        let mut app = app_at(repo.path(), true);
+        app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+
+        app.open_learning_mode(0, 0).unwrap();
+        assert!(
+            learning(&app).help_open,
+            "the first visit explains what this is"
+        );
+
+        app.close_learning_mode();
+        app.open_learning_mode(0, 0).unwrap();
+        assert!(
+            !learning(&app).help_open,
+            "and the second one does not repeat itself"
+        );
+    }
+
+    /// Without a database there is nowhere to record that the intro was shown,
+    /// so showing it would mean showing it on every single open.
+    #[test]
+    fn the_intro_stays_shut_when_there_is_nothing_to_remember_it_with() {
+        let (_repo, app) = opened_app();
+        assert!(app.db.is_none());
+        assert!(!learning(&app).help_open);
     }
 
     // ── keeping an answer as a to-do ─────────────────────────
@@ -5723,7 +7979,7 @@ pub(crate) mod tests {
         let answer: String = (0..40).map(|i| format!("line {i}\n")).collect();
         let qa = qa_with(&answer, LearningQaIntent::Explain);
 
-        let body = todo_body(&qa);
+        let body = todo_body(&qa, None);
         assert!(body.contains("src/main.rs:4-9"));
         assert!(body.contains("Why is this here?"));
         assert!(body.contains("line 0"));
@@ -5901,7 +8157,7 @@ pub(crate) mod tests {
             LearningQaIntent::Explain,
         );
 
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
 
         assert!(
             seed.contains("src/main.rs:4-9"),
@@ -5921,7 +8177,7 @@ pub(crate) mod tests {
     #[test]
     fn a_shallow_answer_is_handed_over_with_its_limits_stated() {
         let shallow = qa_with("Look at src/nonexistent.rs.", LearningQaIntent::Explain);
-        let seed = escalation_seed(&shallow);
+        let seed = escalation_seed(&shallow, None);
         assert!(
             seed.contains("could only see the excerpt"),
             "the live agent has to know what this answer was worth: {seed}"
@@ -5929,7 +8185,7 @@ pub(crate) mod tests {
 
         let mut deep = qa_with("Look at src/main.rs.", LearningQaIntent::Explain);
         deep.run_mode = crate::app::LearningRunMode::DeepDive;
-        let seed = escalation_seed(&deep);
+        let seed = escalation_seed(&deep, None);
         assert!(
             !seed.contains("could only see the excerpt"),
             "this one did read the repository: {seed}"
@@ -5941,14 +8197,17 @@ pub(crate) mod tests {
     /// the other requests work.
     #[test]
     fn the_seed_asks_for_what_the_entry_was_filed_as() {
-        let explain = escalation_seed(&qa_with("It parses argv.", LearningQaIntent::Explain));
+        let explain = escalation_seed(&qa_with("It parses argv.", LearningQaIntent::Explain), None);
         assert!(explain.contains("carry on"), "{explain}");
         assert!(
             !explain.to_lowercase().contains("make that change"),
             "an explanation must not turn into a work order: {explain}"
         );
 
-        let action = escalation_seed(&qa_with("Split this function.", LearningQaIntent::Action));
+        let action = escalation_seed(
+            &qa_with("Split this function.", LearningQaIntent::Action),
+            None,
+        );
         assert!(action.contains("make that change"), "{action}");
 
         // Whichever it is, the last thing on screen when the composer opens
@@ -5971,10 +8230,10 @@ pub(crate) mod tests {
     fn a_newcomer_seed_asks_the_live_agent_to_explain_itself() {
         let mut qa = qa_with("It parses argv.", LearningQaIntent::Action);
         assert_eq!(qa.level, LearningLevel::Newcomer);
-        assert!(escalation_seed(&qa).contains("new to this codebase"));
+        assert!(escalation_seed(&qa, None).contains("new to this codebase"));
 
         qa.level = LearningLevel::Familiar;
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
         assert!(
             !seed.contains("new to this codebase"),
             "someone who switched to familiar asked for the denser version: {seed}"
@@ -5991,7 +8250,7 @@ pub(crate) mod tests {
         qa.status = crate::app::LearningQaStatus::Failed;
         qa.error = Some("claude: command not found".to_string());
 
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
 
         assert!(seed.contains("Why is this here?"), "the question survives");
         assert!(seed.contains("never got an answer"), "{seed}");
@@ -6002,7 +8261,7 @@ pub(crate) mod tests {
         let long: String = (1..=200).map(|n| format!("line {n}\n")).collect::<String>();
         let qa = qa_with(&long, LearningQaIntent::Explain);
 
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
 
         assert!(seed.contains("line 1\n"));
         assert!(!seed.contains("line 200"), "the tail is cut: {seed}");
@@ -6018,7 +8277,7 @@ pub(crate) mod tests {
         qa.selection_is_diff = true;
         qa.selection_text = "-fn old() {}\n+fn new() {}".to_string();
 
-        let seed = escalation_seed(&qa);
+        let seed = escalation_seed(&qa, None);
 
         assert!(seed.contains("unified diff"), "{seed}");
         assert!(seed.contains("+fn new() {}"), "markers survive: {seed}");

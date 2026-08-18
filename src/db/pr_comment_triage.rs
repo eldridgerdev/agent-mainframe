@@ -86,30 +86,50 @@ pub fn evict_stale(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// A stored reply draft: the agent's body, the PR head it was requested
+/// against, and the opaque provenance blob describing the session that produced
+/// it (see [`begin_reply_draft`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyDraftRow {
+    pub body: String,
+    pub base_head_sha: String,
+    pub provenance: Option<String>,
+}
+
 /// Start a new reply-draft request for one comment. Replacing the request id
 /// and clearing `body` invalidates any prior draft before the fix prompt is
 /// delivered; a late response carrying the old id is ignored by [`capture_reply_draft`].
+///
+/// `provenance` is written at the same moment for the same reason as
+/// `request_id`: this is the only point where the session about to write the
+/// draft is known. It is stored opaquely (JSON owned by the caller) and travels
+/// with the draft, so the disclosure posted later describes the session that
+/// really generated it rather than whatever the pane is pointing at by then.
 pub fn begin_reply_draft(
     conn: &Connection,
     pr_number: u32,
     comment_id: u64,
     request_id: &str,
     base_head_sha: &str,
+    provenance: Option<&str>,
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO pr_comment_reply_drafts
-            (pr_number, comment_id, request_id, body, updated_at, base_head_sha)
-         VALUES (?1, ?2, ?3, NULL, datetime('now'), ?4)
+            (pr_number, comment_id, request_id, body, updated_at, base_head_sha,
+             provenance)
+         VALUES (?1, ?2, ?3, NULL, datetime('now'), ?4, ?5)
          ON CONFLICT(pr_number, comment_id) DO UPDATE SET
             request_id = excluded.request_id,
             body = NULL,
             updated_at = excluded.updated_at,
-            base_head_sha = excluded.base_head_sha",
+            base_head_sha = excluded.base_head_sha,
+            provenance = excluded.provenance",
         params![
             pr_number as i64,
             comment_id as i64,
             request_id,
-            base_head_sha
+            base_head_sha,
+            provenance
         ],
     )?;
     Ok(())
@@ -139,16 +159,28 @@ pub fn load_reply_draft(
     conn: &Connection,
     pr_number: u32,
     comment_id: u64,
-) -> Result<Option<(String, String)>> {
+) -> Result<Option<ReplyDraftRow>> {
     let row = conn
         .query_row(
-            "SELECT body, base_head_sha FROM pr_comment_reply_drafts
+            "SELECT body, base_head_sha, provenance FROM pr_comment_reply_drafts
              WHERE pr_number = ?1 AND comment_id = ?2",
             params![pr_number as i64, comment_id as i64],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
         .optional()?;
-    Ok(row.and_then(|(body, base_head_sha)| body.map(|body| (body, base_head_sha))))
+    Ok(row.and_then(|(body, base_head_sha, provenance)| {
+        body.map(|body| ReplyDraftRow {
+            body,
+            base_head_sha,
+            provenance,
+        })
+    }))
 }
 
 /// Remove a consumed reply draft after AMF successfully posts it.
@@ -225,7 +257,7 @@ mod tests {
     #[test]
     fn reply_draft_only_accepts_the_latest_request() {
         let (_tmp, db) = open_temp_db();
-        db.begin_pr_comment_reply_draft(7, 11, "old", "base-old")
+        db.begin_pr_comment_reply_draft(7, 11, "old", "base-old", Some("{\"harness\":\"Codex\"}"))
             .unwrap();
         assert!(
             db.capture_pr_comment_reply_draft(7, 11, "old", "First draft")
@@ -236,7 +268,7 @@ mod tests {
             Some("First draft")
         );
 
-        db.begin_pr_comment_reply_draft(7, 11, "new", "base-new")
+        db.begin_pr_comment_reply_draft(7, 11, "new", "base-new", Some("{\"harness\":\"Claude\"}"))
             .unwrap();
         assert_eq!(db.load_pr_comment_reply_draft(7, 11).unwrap(), None);
         assert!(
@@ -251,9 +283,15 @@ mod tests {
             db.load_pr_comment_reply_draft(7, 11).unwrap().as_deref(),
             Some("Current")
         );
+        // The provenance recorded when the *current* request began travels with
+        // the draft it produced — the superseded request's is gone with it.
         assert_eq!(
-            db.load_pr_comment_reply_draft_with_base(7, 11).unwrap(),
-            Some(("Current".to_string(), "base-new".to_string()))
+            db.load_pr_comment_reply_draft_row(7, 11).unwrap(),
+            Some(super::ReplyDraftRow {
+                body: "Current".to_string(),
+                base_head_sha: "base-new".to_string(),
+                provenance: Some("{\"harness\":\"Claude\"}".to_string()),
+            })
         );
 
         db.clear_pr_comment_reply_draft(7, 11).unwrap();

@@ -29,7 +29,7 @@ pub struct TokenUsageSource {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionTokenUsage {
     pub source: TokenUsageSource,
     pub input_tokens: u64,
@@ -981,6 +981,13 @@ pub fn format_token_usage_summary(
     } else {
         base
     }
+}
+
+/// Format only the estimated dollar cost for a usage snapshot. This keeps
+/// non-dashboard disclosures (for example, an AI-authored PR reply) on the
+/// same configured rates and rounding rules as AMF's usage meters.
+pub fn format_token_cost(usage: &SessionTokenUsage, pricing: &TokenPricingConfig) -> String {
+    format_dollar_cost(pricing.cost_usd(usage))
 }
 
 pub fn format_feature_token_usage(

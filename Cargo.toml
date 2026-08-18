@@ -14,7 +14,10 @@ name = "amf"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = "0.29"
+# `unstable-rendered-line-info` exposes `Paragraph::line_count`, which measures
+# a paragraph with the exact `WordWrapper` the renderer uses. Scroll clamps that
+# need post-wrap row counts use it instead of re-deriving Ratatui's wrapping.
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 throbber-widgets-tui = "0.8"
 crossterm = "0.28"
 clap = { version = "4", features = ["derive"] }

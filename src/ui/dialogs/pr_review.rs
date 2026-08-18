@@ -4,8 +4,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
 use unicode_width::UnicodeWidthStr;
@@ -940,12 +940,50 @@ fn draw_reply_dialog(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let agent_drafted = crate::app::pr_review::reply_effective_agent_drafted(reply);
+
+    // Attribution is appended at post time, not part of the editable buffer
+    // below (an empty "not needed" reason would otherwise start with a footer
+    // already sitting in it) — this block previews what will actually be sent.
+    // Re-evaluated against the live editor text (not the stored flag alone) so
+    // editing a captured draft away from the agent's own words drops the AI
+    // attribution in the preview too.
+    let attribution = if agent_drafted {
+        crate::app::pr_review::AI_ATTRIBUTION_FOOTER
+    } else {
+        crate::app::pr_review::AMF_ATTRIBUTION_FOOTER
+    };
+    let mut disclosure = Vec::new();
+    if agent_drafted && let Some(metadata) = &reply.generation_metadata {
+        disclosure.push(Line::from(Span::styled(
+            metadata.source_disclosure(),
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+        disclosure.push(Line::from(Span::styled(
+            metadata.usage_disclosure(),
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+    }
+    disclosure.push(Line::from(Span::styled(
+        format!("will post with a \"{attribution}\" footer"),
+        Style::default().fg(theme.text_muted.to_color()),
+    )));
+    // The point of this block is to let the user read the disclosure *before*
+    // it is posted, so it wraps rather than clipping: a provider-qualified
+    // model name ("anthropic/claude-opus-4-5-20251101") runs past a narrow
+    // dialog on its own. `line_count` runs the same wrapper the renderer does,
+    // so the rows reserved always match the rows drawn. Capped so a freak-long
+    // model name can't squeeze the reply body and key hints off the dialog.
+    let disclosure = Paragraph::new(disclosure).wrap(Wrap { trim: false });
+    let max_disclosure_rows = inner.height.saturating_sub(2).max(1);
+    let disclosure_rows = (disclosure.line_count(inner.width) as u16).clamp(1, max_disclosure_rows);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // reply body
-            Constraint::Length(1), // footer-disclosure note
-            Constraint::Length(1), // key hints
+            Constraint::Min(1),                  // reply body
+            Constraint::Length(disclosure_rows), // generation + attribution disclosure
+            Constraint::Length(1),               // key hints
         ])
         .split(inner);
 
@@ -955,24 +993,7 @@ fn draw_reply_dialog(
         chunks[0],
     );
 
-    // Attribution is appended at post time, not part of the editable buffer
-    // above (an empty "not needed" reason would otherwise start with a footer
-    // already sitting in it) — this line previews what will actually be sent.
-    // Re-evaluated against the live editor text (not the stored flag alone) so
-    // editing a captured draft away from the agent's own words drops the AI
-    // attribution in the preview too.
-    let attribution = if crate::app::pr_review::reply_effective_agent_drafted(reply) {
-        crate::app::pr_review::AI_ATTRIBUTION_FOOTER
-    } else {
-        crate::app::pr_review::AMF_ATTRIBUTION_FOOTER
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("will post with a \"{attribution}\" footer"),
-            Style::default().fg(theme.text_muted.to_color()),
-        ))),
-        chunks[1],
-    );
+    frame.render_widget(disclosure, chunks[1]);
 
     let hints = if reply.editing {
         "[esc] done editing"
@@ -1872,6 +1893,12 @@ fn draw_comment_detail(
         .border_style(Style::default().fg(theme.text_muted.to_color()))
         .title(" Detail ");
     let inner = block.inner(area);
+    // This pane replaces content from comments whose rendered shapes can be
+    // completely different (a long highlighted hunk followed by a short
+    // review summary, for example). Clear the pane's cells explicitly before
+    // drawing the replacement so fragments from an earlier/underlying render
+    // cannot survive in rows the new Paragraph leaves blank.
+    frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
     let Some(c) = comment else {
@@ -2009,11 +2036,13 @@ fn draw_comment_detail(
         }
     }
 
-    let count = lines.len();
-    let body = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll as u16, 0));
-    frame.render_widget(body, inner);
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    // `scroll.y` is measured in rows after wrapping, not in the source
+    // `Vec<Line>` entries. `line_count` runs the same `WordWrapper` the
+    // renderer does, so the clamp can never disagree with what `Paragraph`
+    // actually draws — no matter how long diff lines or Markdown wrap.
+    let count = body.line_count(inner.width);
+    frame.render_widget(body.scroll((scroll as u16, 0)), inner);
     count
 }
 
@@ -2656,6 +2685,7 @@ mod tests {
             kind: crate::app::pr_review::ReplyKind::Done,
             editor: crate::editor::TextEditor::new("Done in `abc123`.".to_string()),
             agent_drafted: false,
+            generation_metadata: None,
             original_seed: "Done in `abc123`.".to_string(),
             editing: false,
         };
@@ -2687,6 +2717,12 @@ mod tests {
                 "Fixed the guard.\n\nDone in `abc123`.".to_string(),
             ),
             agent_drafted: true,
+            generation_metadata: Some(crate::app::pr_review::ReplyGenerationMetadata {
+                harness: Some("Codex".to_string()),
+                model: Some("gpt-5.5".to_string()),
+                estimated_tokens: Some(1_500),
+                estimated_cost: Some("$0.04".to_string()),
+            }),
             original_seed: "Fixed the guard.\n\nDone in `abc123`.".to_string(),
             editing: false,
         };
@@ -2705,7 +2741,61 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("drafted by AI via AMF"));
+        assert!(rendered.contains("AI generation: harness Codex"));
+        assert!(rendered.contains("model gpt-5.5"));
+        assert!(rendered.contains("estimated tokens ~1.5k"));
+        assert!(rendered.contains("estimated cost $0.04"));
         assert!(!rendered.contains("posted via AMF"));
+    }
+
+    /// The disclosure previews what will be posted, so it has to be readable in
+    /// full. At a narrow width a provider-qualified model name runs well past
+    /// the dialog; it must wrap onto another row rather than being cut off.
+    #[test]
+    fn agent_drafted_reply_dialog_wraps_a_long_disclosure() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let reply = crate::app::ReplyState {
+            comment_id: 1,
+            kind: crate::app::pr_review::ReplyKind::Done,
+            editor: crate::editor::TextEditor::new("Fixed the guard.".to_string()),
+            agent_drafted: true,
+            generation_metadata: Some(crate::app::pr_review::ReplyGenerationMetadata {
+                harness: Some("Opencode".to_string()),
+                model: Some("anthropic/claude-opus-4-5-20251101".to_string()),
+                estimated_tokens: Some(1_500),
+                estimated_cost: Some("$0.04".to_string()),
+            }),
+            original_seed: "Fixed the guard.".to_string(),
+            editing: false,
+        };
+        let theme = Theme::default();
+        let backend = TestBackend::new(60, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_reply_dialog(frame, &reply, "alice", &theme))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rows: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        let has = |needle: &str| rows.iter().any(|row| row.contains(needle));
+
+        // None of the three lines fits on one row at this width, so finding
+        // each one's tail proves it wrapped rather than being clipped.
+        assert!(has("AI generation: harness Opencode · model"));
+        assert!(has("anthropic/claude-opus-4-5-20251101"));
+        assert!(has("estimated tokens ~1.5k · estimated cost"));
+        assert!(has("$0.04"));
+        assert!(has("will post with a \"— drafted by AI via"));
+        assert!(has("AMF\" footer"));
+        // The reply body and the key hints keep their rows.
+        assert!(has("Fixed the guard."));
+        assert!(has("[⏎] post"));
     }
 
     fn render_harness_pick(existing_live_label: Option<String>) -> String {
@@ -2910,6 +3000,142 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn detail_pane_clears_content_already_drawn_in_its_area() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let summary = pr_comment_of_kind(
+            1,
+            CommentKind::ReviewSummary {
+                state: "COMMENTED".into(),
+            },
+        );
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                // Model cells left by a previously rendered diff/source pane
+                // in the same frame. The replacement summary is deliberately
+                // short, so these rows survive unless the detail pane owns and
+                // clears its complete area before drawing.
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from("stale source fragment"),
+                        Line::from("doneCursor, oldPid, cfg)"),
+                        Line::from("hyperlink(url)"),
+                    ]),
+                    frame.area(),
+                );
+                draw_comment_detail(
+                    frame,
+                    frame.area(),
+                    Some(&summary),
+                    std::slice::from_ref(&summary),
+                    0,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("comment 1"));
+        assert!(!rendered.contains("stale source fragment"));
+        assert!(!rendered.contains("doneCursor"));
+        assert!(!rendered.contains("hyperlink(url)"));
+    }
+
+    /// Draw the detail pane into a pane far taller than its content and return
+    /// `(reported, painted)`: the row count `draw_comment_detail` hands back for
+    /// scroll clamping, and the true rendered height read off the terminal
+    /// buffer (index of the last row inside the border that got any ink, plus
+    /// one). The second value comes from `Paragraph`'s own output, so equality
+    /// pins the clamp to the real renderer rather than to a second opinion
+    /// about how wrapping works.
+    fn detail_rows_reported_and_painted(comment: &PrComment, width: u16) -> (usize, usize) {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        const HEIGHT: u16 = 120;
+        let theme = Theme::default();
+        let backend = TestBackend::new(width, HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut reported = 0;
+        terminal
+            .draw(|frame| {
+                reported = draw_comment_detail(
+                    frame,
+                    frame.area(),
+                    Some(comment),
+                    std::slice::from_ref(comment),
+                    0,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let mut painted = 0;
+        // Row/col 0 and the last row/col are the pane border; content is inset.
+        for y in 1..HEIGHT - 1 {
+            if (1..width - 1).any(|x| !buf[(x, y)].symbol().trim().is_empty()) {
+                painted = y as usize;
+            }
+        }
+        assert!(
+            painted < HEIGHT as usize - 2,
+            "fixture must fit the test pane so `painted` is a real height, not a truncation"
+        );
+        (reported, painted)
+    }
+
+    #[test]
+    fn detail_pane_row_count_matches_the_rows_paragraph_paints() {
+        // A word far wider than the pane, a whitespace run several pane-widths
+        // long, and ordinary prose that wraps on word boundaries — the three
+        // shapes where a row count can drift from what `Wrap { trim: false }`
+        // actually lays out.
+        let cases: [(&str, String); 3] = [
+            ("long unbroken word", format!("+{}", "x".repeat(100))),
+            ("whitespace run", format!("+{}", " ".repeat(100))),
+            (
+                "wrapped prose",
+                format!("+{}", "lorem ipsum dolor ".repeat(12)),
+            ),
+        ];
+        for (label, hunk) in cases {
+            let mut comment = pr_comment_of_kind(1, CommentKind::Inline);
+            comment.diff_hunk = Some(hunk);
+            for width in [20, 30, 47] {
+                let (reported, painted) = detail_rows_reported_and_painted(&comment, width);
+                assert_eq!(
+                    reported, painted,
+                    "{label} at pane width {width}: scroll clamp must match rendered height"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detail_pane_row_count_grows_by_the_hunks_wrapped_height() {
+        // Pane width 30 leaves 28 inner columns. A 101-column hunk line
+        // ("+" plus 100 x's) occupies ceil(101 / 28) = 4 rows, and the hunk
+        // section also adds a divider and a "Diff hunk" label: 6 rows over the
+        // same comment with no hunk at all.
+        let bare = pr_comment_of_kind(1, CommentKind::Inline);
+        let mut with_hunk = bare.clone();
+        with_hunk.diff_hunk = Some(format!("+{}", "x".repeat(100)));
+
+        let (bare_rows, _) = detail_rows_reported_and_painted(&bare, 30);
+        let (hunk_rows, _) = detail_rows_reported_and_painted(&with_hunk, 30);
+        assert_eq!(hunk_rows - bare_rows, 6);
     }
 
     #[test]

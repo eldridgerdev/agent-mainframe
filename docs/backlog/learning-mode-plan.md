@@ -1,17 +1,18 @@
 # Learning Mode
 
-- **Status:** In progress — Epics 1 (foundations), 2 (browsing), 3
-  (asking), 4 (surface), and 5 (acting on an answer) complete, plus a
-  first pass of Epic 6 hardening. Learning Mode is reachable from the
-  dashboard with `K` and usable end to end: browse, select, ask, read the
-  answer, ask a follow-up, send a doubtful answer back with the repo
-  readable, re-file an entry as the other kind of question, keep an answer
-  as a to-do, and hand one to a live agent session. What remains is Epic 6
-  (error handling and logging, the remaining tests, `README.md` /
-  `CLAUDE.md`, and filing the deferred follow-ups) and Epic 7 (a
-  collapsible file tree, so the file list teaches the repo's layout instead
-  of hiding it behind truncated paths), which blocks on nothing and can run
-  in parallel.
+- **Status:** All seven epics complete. Learning Mode is reachable from the
+  dashboard with `K` and usable end to end: browse the repo as a collapsible
+  tree or just the branch's changes, select a file, hunk, line range, or the
+  whole project, ask, read the answer, ask a follow-up, send a doubtful
+  answer back with the repo readable, re-file an entry as the other kind of
+  question, keep an answer as a to-do, and hand one to a live agent session.
+  Documented in `README.md`, `CLAUDE.md`, and `CHANGELOG.md`. The work this
+  plan deliberately deferred is filed as its own backlog item —
+  [`learning-mode-followups-plan.md`](learning-mode-followups-plan.md)
+  (anchor drift, **since built**; alternative actionable mechanisms and
+  navigable "Where to look next" references, still open) — plus one entry in
+  `bug-backlog-plan.md` that is not specific to this feature. The open
+  questions below are recorded as known limits, not as remaining work.
 - **Owner:** unassigned
 - **Relates to:** Final Review viewer (`src/app/review.rs`,
   `src/ui/dialogs/diff.rs`), Feature TODOs
@@ -306,7 +307,7 @@ created `todos.id` is stored on the Q&A row so the entry renders as
 "actioned →" and repeat invocation jumps to the item instead of
 duplicating it.
 
-### Persistence (`src/db/learning.rs` + `MIGRATION_017`)
+### Persistence (`src/db/learning.rs` + `MIGRATION_019`)
 
 - `learning_sessions` — `id`, `project_id`, `feature_id`, `title`,
   `harness`, `level` (`newcomer` / `familiar`), `onboarding_seen`
@@ -319,17 +320,19 @@ duplicating it.
   `action`), `level`, `answer`, `harness`, `run_mode` (`no_tools` /
   `deep_dive`), `status`, `todo_id` (nullable — set only when the user
   made it actionable), `spawned_session_id`, `created_at`,
-  `updated_at`, and `selection_is_diff` (added by `MIGRATION_018`).
+  `updated_at`, and `selection_is_diff` (added by `MIGRATION_020`).
   `selection_is_diff` cannot be re-derived from the other columns: a
   line anchor looks the same whether it came from the repo tree or from
   a diff, and the browse scope that told them apart is not stored — so a
   follow-up would otherwise label its parent's excerpt from wherever
   browsing had since ended up. Rows written before it default to 0.
 - Append `("Add learning_sessions + learning_qa tables for Learning
-  Mode", MIGRATION_017)` to the migration list in
-  `src/db/migrations.rs` (current tail is `MIGRATION_016`, schema
-  version 16; the loop derives the target version from array position,
-  so appending is sufficient) and follow `MIGRATION_011`'s todo-table
+  Mode", MIGRATION_019)` to the migration list in
+  `src/db/migrations.rs` (the tail when this was written was
+  `MIGRATION_016`; the editor-tracking pair landed first, so the
+  learning tables became 019. The loop derives the target version from
+  array position, so appending is sufficient) and follow
+  `MIGRATION_011`'s todo-table
   shape: plain TEXT `project_id`/`feature_id` with no FK to
   projects/features, explicit delete helpers, `ON DELETE CASCADE` from
   session to Q&A rows and from a parent Q&A row to its follow-ups.
@@ -444,7 +447,7 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `LearningLevel`, `LearningRunMode`, and `LearningQaStatus` to
       `src/app/state.rs`; add `AppMode::Learning(Box<LearningViewState>)`
       to the `AppMode` enum. Verified with `cargo check`.
-- [x] Add `MIGRATION_017` (`learning_sessions` with
+- [x] Add `MIGRATION_019` (`learning_sessions` with
       `level`/`harness`/`onboarding_seen`; `learning_qa` including
       `intent`, `level`, nullable `parent_qa_id`, `todo_id`,
       `spawned_session_id`) to the list in `src/db/migrations.rs`
@@ -452,13 +455,17 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `src/db/learning.rs` with load/create/list/upsert/delete methods
       on `AmfDb`, plus per-project cleanup mirroring
       `delete_list_for_project` (wired into `delete_project`).
-      Verified: `migration_017_upgrades_a_v016_database`,
+      Verified: `migration_019_upgrades_a_pre_learning_database`,
       `fresh_database_lands_at_the_latest_version`,
       `migrations_are_idempotent`, twelve `db::learning` round-trip /
       cascade tests, and a manual replay against a copy of the real
-      `~/.config/amf/amf.db` (v16 → 17, 8 projects, cascades both ways,
-      `integrity_check` ok). Two notes: `learning_qa` also carries an
-      `error` column (a failed row must reload with its reason), and
+      `~/.config/amf/amf.db` (v18 → 21, 8 projects, cascades both ways,
+      `integrity_check` and `foreign_key_check` ok). Re-run after the
+      renumbering below, against a copy rewound to a genuine pre-Learning-Mode
+      state (learning tables dropped, `schema_version` rows ≥ 19 removed) —
+      019/020/021 touch nothing else, so the rewind is faithful. Two notes:
+      `learning_qa` also carries an `error` column (a failed row must reload
+      with its reason), and
       `project_id` is deliberately not UNIQUE — one-session-per-project
       is enforced in `load_or_create_session` while the lifecycle
       question stays open.
@@ -1105,22 +1112,130 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       - `AmfDb::finish_learning_qa` persists a finished run by id rather
         than rewriting the whole row, so a completion can't overwrite an
         edit made while the answer was generating.
-- [ ] Add error handling and debug logging (`log_info` / `log_warn` /
+- [x] Add error handling and debug logging (`log_info` / `log_warn` /
       `log_error` with a `"learning"` context) for file load failures,
       headless run failures, and DB errors. User-facing errors must say
       what to do next, not just what failed (e.g. a missing harness CLI
       points at the `A` harness wizard). Confirm no
       `println!`/`eprintln!` was introduced.
-- [ ] Add tests covering: DB round-trip of a session plus Q&A rows
+      Headless failures (`headless_failure_message` — a missing CLI already
+      points at `A`), DB writes, the escalation and TODO paths, and the
+      listing failures were already covered as those epics landed. Auditing
+      the rest for silence found four gaps, all closed:
+      - **Loading a file logged nothing.** The one failure a user meets by
+        simply moving the cursor set `content_error` and stopped there, so
+        the debug log had no record of *which* file or why. It now logs a
+        `learning` warning carrying the path, which the banner itself can't
+        give someone reading the log afterwards.
+      - **The non-git walk dropped unreadable folders silently.** A
+        directory `read_dir` couldn't open was `continue`d past, and a
+        listing missing a whole subtree is indistinguishable from a project
+        that doesn't have one — the worst shape for a user who doesn't know
+        the layout. `walk_files_capped` now returns `RepoWalk { files,
+        unreadable }`; each skipped folder is logged by name and the banner
+        says how many are missing and where to look. Test:
+        `the_fallback_walk_reports_folders_it_could_not_read`.
+      - **The onboarding lookup swallowed its error.** `.ok().unwrap_or(true)`
+        is the right *behaviour* (an intro that reappears every open is worse
+        than one that never shows), but it should not be silent; the failure
+        is now logged and the fallback made explicit.
+      - **Two messages stopped at what failed.** The file-load errors gained
+        next steps, checked against the keys that actually exist in this
+        overlay: the project anchor is `P` (not `p`), and there is no reload
+        key, so a vanished file points at `s` twice rather than an `r` that
+        would do nothing — pointing at a dead key is the swallowed-keypress
+        failure this mode exists to avoid.
+      An `open` line (`entries`, past-question count, and whether history is
+      being saved or is memory-only) and the no-features refusal are now
+      logged too, so "`K` did nothing" is diagnosable from the log alone.
+      Verified: no `println!`/`eprintln!` in any of the four Learning Mode
+      files, `cargo clippy --all-targets` clean, and
+      `a_file_that_vanished_says_what_to_do_and_reaches_the_debug_log`
+      asserts both halves — the banner's next step and the log entry naming
+      the file.
+      **Captured** as six frames in `docs/screenshots/learning-mode-errors/`
+      (scenario `scripts/dev/screenshot/scenarios/learning-mode-errors.txt`),
+      driven against a throwaway instance seeded with a deliberately awkward
+      **non-git** project — a mode-000 folder, a mode-000 file, and a binary
+      file — so the fallback walk is the listing path under test. As with the
+      first capture, reading the rendered output found two defects no unit
+      test would have:
+      - **The message carried an absolute path.** `Couldn't read
+        /tmp/…/scratchpad/demo-notes-app/credentials.env: …` — a workdir
+        prefix long enough to push the advice itself onto a fourth line, and
+        duplicating what the pane title already says. `load_file_lines` now
+        takes the repo-relative label the file list uses; the log line was
+        already prefixing it, so the absolute path was redundant in both
+        places. Guarded by an assertion that the workdir prefix stays out.
+      - **One `Enter` read the file twice.** The duplicated log line is what
+        exposed it: moving the cursor already loads the file, so `Enter` was
+        re-reading it from disk before shifting focus. It now only changes
+        focus — *unless* the previous load failed, where `Enter` is the only
+        retry there is. Tests:
+        `opening_the_file_already_under_the_cursor_does_not_read_it_again`,
+        `opening_a_file_that_failed_to_load_tries_it_again`.
+- [x] Add tests covering: DB round-trip of a session plus Q&A rows
       including `intent`, `level`, `parent_qa_id`, `todo_id`, and
       `spawned_session_id`; follow-up cascade on parent delete; the
       no-DB in-memory path; scope toggling; anchor serialization
       (including the project anchor); and that an answered explain
       entry with no follow-up persists and reloads unchanged (the
       default, non-actioned path).
-- [ ] Run `cargo build`, `cargo clippy`, and the test suite; fix all
-      warnings introduced by this feature.
-- [ ] Update `README.md` (feature bullet, the dashboard keybindings
+      Most of the list was already standing from the epics that built it
+      (`qa_round_trips_every_field`, `answered_explain_entry_reloads_unchanged`,
+      `deleting_a_parent_cascades_to_follow_ups`,
+      `the_overlay_works_without_a_database`,
+      `toggling_scope_switches_to_the_branch_s_changed_files_and_back`,
+      `project_anchor_round_trips_without_a_file`). Auditing it against the
+      schema found four holes, and the first of them was a real defect:
+      - **A reopened history lost its threading.** Rows reload
+        `ORDER BY created_at`, but a follow-up is asked *after* whatever else
+        was asked in between — and the renderer takes a row's *placement* from
+        the list while taking only its *indentation* from `parent_qa_id`. So a
+        follow-up came back indented under an unrelated question: exactly the
+        defect Epic 5's `thread_insert_index` fixed for the live list, arriving
+        by the other door. `thread_rows` now reorders a loaded history through
+        that same function, so there is one notion of order rather than two
+        that agree until the overlay is closed. Deep dives thread by
+        `parent_qa_id` too, so they came along for free. Tests:
+        `a_reloaded_thread_keeps_its_follow_ups_under_their_parents`,
+        `a_reloaded_deep_dive_stays_with_the_question_it_re_asked`,
+        `threading_a_stored_history_gathers_each_conversation`,
+        `threading_keeps_a_row_whose_parent_is_gone` (an orphan is kept, not
+        dropped — it is the only copy of a question someone asked).
+      - **`selection_is_diff` was written but never asserted back**, though
+        the plan already records that it cannot be re-derived from the other
+        columns. Now asserted in `qa_round_trips_every_field`.
+      - **`parent_qa_id`'s value was never checked on reload.** The cascade
+        tests prove a follow-up is *reachable* from its parent, which is a
+        different claim from it coming back pointing at the right row — and it
+        is the second claim the threading above depends on.
+        (`a_follow_up_reloads_pointing_at_its_parent`.)
+      - **Only two of the four anchor kinds round-tripped.** `File` and
+        `Hunk { index }` were untested, and `Hunk` is the one with a payload
+        that isn't a line range. (`every_anchor_kind_round_trips`.)
+      **Captured** as five frames in
+      `docs/screenshots/learning-mode-thread-reload/` (scenario
+      `scripts/dev/screenshot/scenarios/learning-mode-thread-reload.txt`),
+      driven against a throwaway instance seeded with a small demo repo, with
+      three real headless Claude runs. The before/after pair renders the **same
+      scratch database** — the pre-fix frame is that database reopened by a
+      binary built without `thread_rows`, so the only difference between the two
+      images is the row order, and no second set of runs was paid for. The order
+      the scenario drives is the only one that shows the defect: a follow-up on
+      the *most recent* question is adjacent to its parent either way, which is
+      why every earlier capture of this feature missed it.
+      Also landed the overlay-level onboarding test Epic 4 deferred to here
+      (`the_intro_opens_on_the_first_visit_only`, plus
+      `the_intro_stays_shut_when_there_is_nothing_to_remember_it_with`), and
+      stated the no-DB contract as an assertion rather than an assumption:
+      `without_a_database_questions_still_work_but_do_not_outlive_the_overlay`
+      — the overlay answers questions, and nothing pretends they were kept.
+- [x] Run `cargo build`, `cargo clippy`, and the test suite; fix all
+      warnings introduced by this feature. `cargo build` and
+      `cargo clippy --all-targets` are both clean, and the full suite is
+      1902 passing / 0 failing.
+- [x] Update `README.md` (feature bullet, the dashboard keybindings
       table, and a `### Learning Mode` section written for a first-time
       reader: what it is for, that it never edits files, the two ask
       keys, starter questions, and the newcomer/familiar levels),
@@ -1129,27 +1244,84 @@ picked up in parallel with whatever is left of Epics 5 and 6.
       `src/db/learning.rs` under the `## Architecture` sections, plus a
       Learning Mode section describing the explain/change split and the
       level/threading model), and `CHANGELOG.md`.
-      **`CHANGELOG.md` is done** — an `Added` block under `[Unreleased]`
+      **`CHANGELOG.md`** — an `Added` block (since shipped in `v0.36.0`)
       covering `K`, the two ask keys, starter questions, the levels, the
       non-blocking queue, per-project history, harness choice, and the
       five keys that act on an answer: `F` (follow-ups), `D` (deep dive),
       `i` (re-file), `a` (keep as a to-do), and `S` (hand to a live
-      session). It now covers every built behaviour and claims nothing
-      that isn't. `README.md` and `CLAUDE.md` are still open.
-- [ ] File follow-up items for the deferred work: anchor-drift
-      resolution (commit SHA + snippet or fuzzy match, modeled on
-      `App::reanchor_line_comments`), the alternative actionable
-      mechanisms (composer seeded and scoped to file/range, inline
-      suggested patch like Final Review suggestions), and turning
-      "Where to look next" file references into navigable jumps within
-      the overlay. Plus one found by building the escalation and **not
-      specific to Learning Mode**: `AppMode::Compose` draws and returns
+      session), plus a `Fixed` block for the error-handling pass: the
+      incomplete-file-list warning, the file errors that now say what to do
+      next, failures being recorded in the debug log, and a reopened history
+      keeping its follow-ups with the question they continue. It covers every
+      built behaviour and claims nothing that isn't. This docs pass adds a
+      `Documentation` block under `[Unreleased]`, following the existing
+      precedent for README-only changes, ending on "nothing about AMF's
+      behavior changes" — because nothing does.
+      **`README.md`** — a bullet under *What AMF does*, `K` in the dashboard
+      keybindings table, and *Understand a codebase you didn't write* as the
+      **first** user workflow, since it is the one that needs no prior AMF
+      knowledge. Written for someone who has not used the mode: what it is,
+      that nothing in it changes their files and `S` is the single exception,
+      that they do not have to know what to ask (Start here, `t`), the two ask
+      keys and the five answer keys as small tables, the newcomer/familiar
+      split, and why `D` exists — a no-tools answer can name files that do not
+      exist, which is the mode's sharpest edge and is stated rather than
+      buried.
+      **`CLAUDE.md`** — `learning.rs` added to the `app/`, `ui/dialogs/`, and
+      `handlers/` lists, `K` added to the `handle_normal_key` summary, and a
+      `### Learning Mode` section after Feature TODOs. It documents the parts
+      that are not re-derivable from reading one file: the read-only
+      invariant and its one exception; that intent and level shape prompt
+      wording only; that run mode comes off `effective_for` so the label and
+      the dispatched command agree; and, at most length, that `parent_qa_id`
+      and `deep_dive_of_qa_id` are two different relationships — the trap that
+      cost a review finding once already.
+      One drift fix came out of writing it, in three places: the plan named
+      the learning tables `MIGRATION_017`/`018`, but editor tracking landed
+      first and took those numbers, so they are really `019`/`020` (plus
+      `021`). The Epic 1 verification note inherited the same numbering — it
+      cited the migration test as `migration_017_upgrades_a_v016_database`
+      (the real name is `migration_019_upgrades_a_pre_learning_database`) and
+      recorded the manual replay as v16 → 17. Both are corrected, and the
+      replay was re-run at the real numbers rather than renumbered on paper.
+      A plan that cites the wrong schema version is worse than one that cites
+      none.
+- [x] File follow-up items for the deferred work. The three Learning
+      Mode deferrals went to
+      [`learning-mode-followups-plan.md`](learning-mode-followups-plan.md)
+      as one doc with a section each, rather than three thin docs —
+      they are extensions to one shipped feature, not features of their
+      own, and `bug-backlog-plan.md` is the precedent for a shared doc
+      with one section per item. Each section is self-contained and
+      carries its own `Progress` checklist and open questions:
+      **anchor-drift resolution** (content match against the stored
+      `selection_text` first, modeled on `App::reanchor_line_comments`,
+      with commit SHA + snippet as the costlier second option — and the
+      requirement that "re-anchored" and "lost" are distinguishable in
+      the UI, since a silent re-anchor is a smaller version of the same
+      honesty problem); **the alternative actionable mechanisms**
+      (composer seeded and scoped to file/range, inline suggested patch
+      — with the note that the patch option would be Learning Mode's
+      *second* read-only exception and has to be decided as one, and
+      that the cheaper fix to the known-poor seeded title should be
+      tried before replacing the whole mechanism); and **navigable
+      "Where to look next" references** (resolved eagerly, so a
+      fabricated path is marked before it is trusted — the mitigation
+      matters more here than the navigation).
+      The fourth, **not specific to Learning Mode**, went to
+      `bug-backlog-plan.md` as *"Toasts raised while landing in the
+      composer are never drawn"*: `AppMode::Compose` draws and returns
       before `ui::dashboard`'s shared `draw_toasts` pass, so *any* toast
       raised while landing in the composer is silently swallowed —
       including `open_compose_seeded`'s own "Prompt loaded — review and
-      send", which the prompt library has presumably never shown either.
-      The fix is not simply adding the call: toasts stack from the
-      bottom-right, exactly where the compose box is drawn.
+      send" (`src/app/compose.rs:445`), which the prompt library has
+      presumably never shown either. Both halves re-verified against the
+      code while filing. The entry records that the fix is not simply
+      adding the call (toasts stack from the bottom-right, exactly where
+      the compose box is drawn), lists the four routes, and notes that
+      the one Learning Mode took — moving the statement into the seed's
+      last line — does not generalize to callers with nothing to append
+      to.
 
 ### Epic 7 — Browsing a real repository (collapsible file tree)
 
@@ -1171,45 +1343,101 @@ non-selectable collapsible header (`StartHereHeader`), and
 `learning_toggle_start_here` already preserves the cursor across a
 collapse. This is a second, general case of that, not a new mechanism.
 
-- [ ] Add directory nodes to `LearningListEntry` (path, depth,
-      expanded, child count) and build the repo-tree entries as a
-      flattened tree rather than a sorted path list, directories before
-      files at each level. Keep the **Start here** group pinned above
-      it, unchanged. Branch-changes scope keeps its flat list — a
-      handful of changed files needs no tree — unless the change count
-      makes one worth it, which is a judgment call to make with real
-      numbers, not now.
-- [ ] Render the tree: indent by depth, show an expand/collapse marker,
-      and label each row with the **leaf name only** rather than the
-      full path, so a 32-column pane shows `ai-review.md` instead of
-      `…ude/commands/amf/ai-review.m`. The header or content pane still
-      has to state the selected file's full path, since the name alone
-      no longer identifies it.
-- [ ] Decide and implement the opening state. Everything collapsed is
-      the honest structural view but hides `src/` behind a keypress;
-      everything expanded is today's wall of rows with indentation.
-      Proposal: collapsed to the first level, plus auto-expanding the
-      path to the **Start here** candidates so `src/main.rs` is visible
-      on open. Verify against this repo and one much larger.
-- [ ] Keys: expand/collapse the node under the cursor, expand/collapse
-      all, and jump to the parent directory. `Enter` on a directory
-      toggles it; `Enter` on a file keeps loading it. Add them to the
-      footer and the `?` overlay in the same spelled-out style, and
-      check the footer still fits — this has already truncated `q close`
-      and `Esc back to browsing` off the end twice.
-- [ ] Revisit the 20,000-entry cap (`MAX_REPO_ENTRIES`). A tree only
-      pays for what is expanded, so the cap can move from the listing to
-      per-directory expansion, and the "showing the first 20,000"
-      warning can become a per-directory one. This is the item that
-      makes repo-tree scope usable on a monorepo rather than merely
-      capped.
-- [ ] Tests: flattening is a pure function over a path list, so cover
-      ordering, depth, and collapse/expand round-trips there; plus
-      cursor preservation across a collapse (the existing
-      `collapsing_the_orientation_group_keeps_the_cursor_on_its_file`
-      is the model), a render test asserting a deep file shows its leaf
-      name rather than a truncated path, and that selecting a directory
-      does not change the question anchor.
+- [x] Add directory nodes to `LearningListEntry` (`Dir { path, depth,
+      expanded, file_count, truncated }`; `File` gained `depth`) and build the
+      repo-tree entries as a flattened tree, directories before files at each
+      level. `flatten_tree` is a pure function over the path list; **Start
+      here** stays pinned above it and stays flat, because it is a reading list
+      of shortcuts rather than part of the tree. Branch-changes keeps its flat
+      list (`branch_changes_stay_flat`).
+      Two things fell out of building it:
+      - **Expansion state can't live in the rows.** `entries` is derived, so a
+        collapse rebuilds it and any state held there is lost. It lives in
+        `LearningViewState::expanded_dirs`, and every tree operation is
+        "change that set, then rebuild" — which is also why the cursor has to
+        be restored by *identity* rather than index
+        (`learning_rebuild_keeping_cursor`, `LearningListEntry::row_key`).
+      - **Rebuilding must not re-read the repository.** The first cut called
+        `learning_reload_entries`, so expanding a folder re-ran `git ls-files`
+        — on a large repo that would have made the tree slower than the flat
+        list it replaced. The listing is cached (`repo_files`, `start_here`)
+        and `learning_rebuild_tree` works from memory. Guarded by
+        `toggling_a_folder_does_not_re_read_the_repository`, which deletes a
+        file behind the overlay's back and asserts the row survives.
+- [x] Render the tree: indent by depth (clamped at `MAX_INDENT_LEVELS` so a
+      deep path can't push the name off a 32-column pane), `▾`/`▸` markers,
+      and **leaf names only**. A closed folder shows its recursive file count,
+      so skipping one is an informed choice. Tree rows truncate from the
+      *right* — the existing left-truncation would have eaten the indent that
+      says where a row sits — while the flat branch-changes rows keep theirs.
+      The content pane already titled itself with the full path, which is what
+      makes leaf names safe. Tests:
+      `a_deep_file_shows_its_name_not_a_truncated_path`,
+      `a_closed_folder_says_what_is_inside_it`.
+- [x] Opening state: **collapsed to the first level, plus the path down to
+      each `Start here` candidate** (`default_expanded_dirs`), so `src/` is
+      open at `src/main.rs` without the rest of the repo being. Seeded once
+      per overlay (`expanded_seeded`) and never re-applied — a reload that
+      re-opened a folder the user had closed would be the overlay arguing with
+      them. Tests: `the_tree_opens_at_the_start_here_files`,
+      `the_opening_state_opens_the_whole_path_down`.
+- [x] Keys: `l`/`Right` opens the folder or steps into an open one, `h`/`Left`
+      closes it or steps out, `Z` opens every folder or folds them all, and
+      `Enter` toggles a folder while still loading a file. `h` at the top level
+      says there is nowhere to go rather than doing nothing
+      (`stepping_out_of_a_top_level_row_says_there_is_nowhere_to_go`).
+      **The footer had no room**, exactly as the plan warned. Line two was at
+      135 of 140 columns with an answer present, so the tree hint had to come
+      out of the existing budget rather than be added to it. It came from `x
+      this change`, which **needs a diff and could only ever refuse in
+      repo-tree scope** — advertising it there was already the thing this mode
+      says it doesn't do, so dropping it is a fix rather than a trade. `h/l
+      folders` takes that slot in repo-tree scope and `x` keeps it in
+      branch-changes. `Enter`'s own label switches to *open/close folder* when
+      the cursor is on one, which costs nothing and is the discovery path for
+      anyone who never finds `h`/`l`. `Z` is `?`-overlay only; the help gained
+      a **Finding your way around** section carrying all four keys plus the
+      statement that resting on a folder changes nothing about the question you
+      have lined up. Guarded by
+      `the_tree_hint_fits_the_footer_beside_everything_else` (asserts `q close`
+      survives at 140 with an answer *and* a tree) and
+      `the_enter_hint_says_it_opens_a_folder_when_the_cursor_is_on_one`.
+- [x] Revisit the entry cap. The 20,000 cap was the *browsing* limit back when
+      every path was a row, so capping the listing and capping what you could
+      reach were one decision; a tree only emits rows for what is expanded, so
+      they came apart. `MAX_REPO_ENTRIES` is now a 200,000 safety valve against
+      reading a pathological repo into memory, and the limit that actually
+      bites is `MAX_DIR_CHILDREN` (2,000 per directory) — where the user can
+      see it, since an over-cap folder reports its own overflow on its own row
+      (`a_directory_over_the_cap_says_what_it_is_not_showing`). The root has no
+      row to be truthful on, so `flatten_tree` returns its overflow for the
+      banner (`root_level_overflow_is_reported_to_the_caller`). This is what
+      makes repo-tree scope usable on a monorepo rather than merely capped.
+- [x] Tests. Pure flattening: `flattening_puts_directories_before_files_at_each_level`,
+      `expanding_a_directory_reveals_one_level`, `collapse_and_expand_round_trips`,
+      `a_closed_directory_counts_everything_beneath_it`,
+      `every_directory_is_reachable_by_expand_all`. Overlay level:
+      `a_folder_is_navigation_not_a_question_anchor` (the plan's "selecting a
+      directory does not change the question anchor"),
+      `collapsing_a_folder_keeps_the_cursor_on_it`,
+      `closing_the_folder_you_are_inside_moves_the_cursor_to_it`,
+      `expand_all_opens_every_folder_and_folds_them_again`. Handler level:
+      `the_tree_keys_open_and_close_folders`. Plus the render and footer tests
+      above. Suite: 1926 passing / 0 failing, `cargo clippy --all-targets`
+      clean, no `println!`/`eprintln!` introduced.
+      One thing the first run of these tests taught, now written into a
+      helper: `src/main.rs` appears **twice** — pinned in `Start here` and in
+      its real place in the tree — so a test asserting a collapse hid it must
+      say which copy it means (`is_tree_file`). Two assertions were wrong
+      about this before the code was.
+      **Captured** as nine frames driven against a clone of AMF's own
+      repository (484 files), the case Epic 7 was written about, via
+      `scripts/dev/screenshot/scenarios/learning-mode-file-tree.txt`. No
+      question is asked, so the scenario needs no harness and costs nothing to
+      re-run. The opening frame is the whole argument for the epic: where the
+      flat list gave three truncated `…ude/commands/amf/…` stubs, the pane now
+      shows every top-level folder with its file count, `src/` open at its
+      subfolders, and readable leaf names — the repo's layout, on one screen.
 
 ## Open questions
 
@@ -1282,12 +1510,14 @@ collapse. This is a second, general case of that, not a new mechanism.
 - **TODO-list noise.** Learning Mode writes into the same one-per-project
   list as the TODOs overlay. Whether learning-originated items need
   visual distinction or a separate list is undecided.
-- **Anchor staleness is a known, accepted v1 defect.** Q&A entries
-  reference `path:line-range` with no drift protection, so cleaning up
-  a file will silently misalign earlier entries — and explanatory notes
-  are exactly the entries meant to be long-lived, so this bites the
-  primary use case first. It is also the failure a newcomer is least
-  equipped to recognise: a stale anchor looks like a wrong answer.
+- ~~**Anchor staleness is a known, accepted v1 defect.**~~ **Closed** by
+  the anchor-drift section of
+  [`learning-mode-followups-plan.md`](learning-mode-followups-plan.md).
+  A reopened history now checks each stored `path:line-range` against the
+  file as it is now and marks the entry *moved* or *anchor lost*; the
+  stored range and the answer are left alone. What is *not* closed: the
+  answer's prose is not re-checked, so an entry marked "moved" can still
+  describe an older version of the code — see that doc's open questions.
 - **Entry key `K` is proposed but not user-validated.** Verified
   unbound in `handle_normal_key`, and `L` is confirmed taken by the
   prompt library, but the mnemonic is a judgment call. Being in
@@ -1298,22 +1528,27 @@ collapse. This is a second, general case of that, not a new mechanism.
   deleted. Todos solve the analogous problem with a host-feature
   reassign prompt (`AppMode::TodosHostReassign`) — whether Learning
   Mode needs the same is undecided.
-- **Repo-tree scope on large repositories.** `git ls-files` output and
-  content loading cost are unbounded; the specific entry-count,
-  file-size, and binary-detection limits are unset. The non-git
-  fallback walk is a further unknown, since it has no ignore rules at
-  all — and an unfamiliar user browsing a monorepo is the worst case
-  for both. Epic 7 addresses the listing half of this; content loading
-  cost is untouched by it.
-- **Whether a directory can be a question anchor.** Epic 7 introduces
-  directory rows, and "what is everything in `src/app/` for?" is an
-  obvious question for exactly the newcomer this mode serves — arguably
-  more useful than the whole-project tour. But a directory anchor has
-  no selection text, so it would need a different prompt shape (a file
+- **Repo-tree scope on large repositories — half closed.** Epic 7 closed
+  the listing half: the cap moved off the whole listing and onto
+  per-directory expansion (`MAX_DIR_CHILDREN`), where an over-cap folder
+  says what it is hiding, and rows are only built for what is expanded.
+  What remains open is **content loading cost** — `MAX_FILE_BYTES` and the
+  binary sniff are still guesses, unchanged by the tree — and the non-git
+  fallback walk, which has no ignore rules at all beyond a short skip
+  list. An unfamiliar user browsing a monorepo remains the worst case for
+  both.
+- **Whether a directory can be a question anchor — still open, and now
+  more tempting.** Epic 7 shipped directory rows as **navigation only**
+  (asserted by `a_folder_is_navigation_not_a_question_anchor`, and stated
+  in the `?` overlay so the absence doesn't read as a bug). But "what is
+  everything in `src/app/` for?" is an obvious question for exactly the
+  newcomer this mode serves — arguably more useful than the whole-project
+  tour, and now that the folder is a row the user is sitting on, the
+  missing key is easier to notice. A directory anchor still has no
+  selection text, so it would need a different prompt shape (a file
   listing, or a read-only run that goes and looks), and it sits between
   the existing `Project` and `File` anchors rather than beside them.
-  Epic 7 assumes directories are navigation only; promoting them to an
-  anchor is a separate decision.
+  Promoting them is a separate decision, not a follow-on.
 - **Hunk selection only exists in branch-changes scope.** Repo-tree
   browsing has no diff, so "hunk" has no meaning there. This asymmetry
   is an inference from the two scopes, not a stated decision, and the

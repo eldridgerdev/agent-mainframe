@@ -12,6 +12,7 @@ const THINKING_START_SH: &str = include_str!("../../scripts/thinking-start.sh");
 const THINKING_STOP_SH: &str = include_str!("../../scripts/thinking-stop.sh");
 const TOOL_START_SH: &str = include_str!("../../scripts/tool-start.sh");
 const TOOL_STOP_SH: &str = include_str!("../../scripts/tool-stop.sh");
+const ATTENTION_SH: &str = include_str!("../../scripts/attention.sh");
 const CODEX_NOTIFY_SH: &str = include_str!("../../scripts/codex-notify.sh");
 const CODEX_DIFF_REVIEW_SH: &str = include_str!("../../scripts/codex-diff-review.sh");
 const SET_SESSION_STATUS_SH: &str = include_str!("../../scripts/set-session-status.sh");
@@ -50,7 +51,7 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":scope-diff-review-hooks-v6");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":jqless-hooks-v9");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -59,6 +60,7 @@ const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "thinking-stop.sh",
     "tool-start.sh",
     "tool-stop.sh",
+    "attention.sh",
 ];
 
 #[derive(Default)]
@@ -178,6 +180,17 @@ pub(crate) fn claude_exec_hook(path: &Path) -> serde_json::Value {
         "type": "command",
         "command": path.to_string_lossy(),
         "args": []
+    })
+}
+
+/// `claude_exec_hook` with arguments — used by `attention.sh`, which takes the
+/// event kind (`question` / `completed`) as argv[1] so one script serves every
+/// lifecycle event that means "this session stopped".
+pub(crate) fn claude_exec_hook_with_args(path: &Path, args: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "type": "command",
+        "command": path.to_string_lossy(),
+        "args": args
     })
 }
 
@@ -592,6 +605,7 @@ pub fn ensure_notify_scripts() {
     write_executable_if_changed(&claude_hooks_dir.join("thinking-stop.sh"), THINKING_STOP_SH);
     write_executable_if_changed(&claude_hooks_dir.join("tool-start.sh"), TOOL_START_SH);
     write_executable_if_changed(&claude_hooks_dir.join("tool-stop.sh"), TOOL_STOP_SH);
+    write_executable_if_changed(&claude_hooks_dir.join("attention.sh"), ATTENTION_SH);
     write_executable_if_changed(
         &config_dir.join("codex-diff-review.sh"),
         CODEX_DIFF_REVIEW_SH,
@@ -1115,6 +1129,7 @@ pub fn ensure_notification_hooks(
     let thinking_stop_path = hooks_dir.join("thinking-stop.sh");
     let tool_start_path = hooks_dir.join("tool-start.sh");
     let tool_stop_path = hooks_dir.join("tool-stop.sh");
+    let attention_path = hooks_dir.join("attention.sh");
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
     let diff_review_cmd = if wants_diff_review {
@@ -1126,7 +1141,8 @@ pub fn ensure_notification_hooks(
     let mut settings = read_json_object(&settings_path);
     remove_amf_claude_hooks(&mut settings, &managed_commands);
 
-    // Stop: clear active thinking + write stop notification.
+    // Stop: clear active thinking + write stop notification. The turn ending
+    // is what "completed, awaiting review" means for Claude.
     push_claude_hook_entry(
         &mut settings,
         "Stop",
@@ -1134,7 +1150,27 @@ pub fn ensure_notification_hooks(
             "matcher": "",
             "hooks": [
                 claude_exec_hook(&thinking_stop_path),
-                claude_exec_hook(&notify_path)
+                claude_exec_hook(&notify_path),
+                claude_exec_hook_with_args(&attention_path, &["completed"])
+            ]
+        }),
+    );
+
+    // Notification: Claude raises this for anything it wants to tell the user,
+    // only some of which blocks the turn — a permission prompt does, while an
+    // idle nudge, an auth success, or a completed elicitation does not. The
+    // matcher cannot separate them, so `attention.sh notification` classifies
+    // the payload and reports a question only for the blocking ones; the rest
+    // report nothing rather than upgrading a standing completion.
+    // Attention-only: this deliberately does not run notify.sh, so wiring a
+    // previously-unused Claude event cannot change the pending-input flow.
+    push_claude_hook_entry(
+        &mut settings,
+        "Notification",
+        serde_json::json!({
+            "matcher": "",
+            "hooks": [
+                claude_exec_hook_with_args(&attention_path, &["notification"])
             ]
         }),
     );

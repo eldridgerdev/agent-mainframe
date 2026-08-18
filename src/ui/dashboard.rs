@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
 };
 
+use crate::app::attention::AttentionState;
 use crate::app::util::{ClaudeTaskState, read_claude_task_state};
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::{
@@ -147,10 +148,21 @@ fn build_agent_sidebar_data(
                     && input.feature_name.as_deref() == Some(feature.name.as_str()))
         })
         .count();
-    let status_line = match waiting_count {
-        0 => "Ready".to_string(),
-        1 => "Waiting for 1 input".to_string(),
-        n => format!("Waiting for {n} inputs"),
+    // When the harness said why it stopped, say that instead of counting
+    // inputs. The sidebar's status is the one place inside a session that
+    // reports the session's own state, and "Waiting for 1 input" is exactly
+    // the ambiguity the attention layer exists to remove.
+    let status_line = match app.feature_attention(&feature.tmux_session) {
+        Some(AttentionState::Question) => "Waiting on your answer".to_string(),
+        Some(AttentionState::CompletedAwaitingReview) => {
+            "Completed \u{2014} awaiting review".to_string()
+        }
+        Some(AttentionState::Waiting) => "Waiting for input".to_string(),
+        None => match waiting_count {
+            0 => "Ready".to_string(),
+            1 => "Waiting for 1 input".to_string(),
+            n => format!("Waiting for {n} inputs"),
+        },
     };
 
     match sidebar_kind {
@@ -856,7 +868,7 @@ fn draw_view_pane(
         &app.pane_lines,
         sidebar_data.as_ref(),
         leader_active,
-        app.pending_inputs.len(),
+        app.attention_rows().len(),
         tmux_cursor,
         compose_intercept,
         next_prev_feature,
@@ -1194,7 +1206,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::NotificationPicker(selected, Some(view)) = &app.mode {
         draw_view_pane(frame, app, view, false, false);
-        super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected, &app.theme);
+        super::picker::draw_notification_picker(
+            frame,
+            &app.attention_rows(),
+            &app.pending_inputs,
+            *selected,
+            app.config.nerd_font,
+            &app.theme,
+        );
         draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
@@ -1389,6 +1408,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ])
         .split(frame.area());
 
+    let (attention_counts, unexplained_pending) = app.attention_badge_counts();
     super::header::draw(
         frame,
         chunks[0],
@@ -1396,7 +1416,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
         env!("CARGO_PKG_VERSION"),
-        app.pending_inputs.len(),
+        unexplained_pending,
+        attention_counts,
         &app.theme,
     );
     super::list::draw(frame, app, chunks[1]);
@@ -1512,7 +1533,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::NotificationPicker(selected, None) = &app.mode {
-        super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected, &app.theme);
+        super::picker::draw_notification_picker(
+            frame,
+            &app.attention_rows(),
+            &app.pending_inputs,
+            *selected,
+            app.config.nerd_font,
+            &app.theme,
+        );
     }
 
     if let AppMode::CommandPicker(state) = &app.mode {

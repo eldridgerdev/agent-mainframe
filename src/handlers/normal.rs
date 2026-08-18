@@ -235,10 +235,10 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.start_search();
         }
         KeyCode::Char('i') => {
-            if !app.pending_inputs.is_empty() {
-                app.mode = AppMode::NotificationPicker(0, None);
+            if app.attention_rows().is_empty() {
+                app.push_toast_warning("Nothing needs attention");
             } else {
-                app.push_toast_warning("No pending input requests");
+                app.mode = AppMode::NotificationPicker(0, None);
             }
         }
         KeyCode::Char('r') => match &app.selection {
@@ -352,10 +352,10 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
     match key.code {
         KeyCode::Char('i') => {
-            if !app.pending_inputs.is_empty() {
-                app.mode = AppMode::NotificationPicker(0, None);
+            if app.attention_rows().is_empty() {
+                app.push_toast_warning("Nothing needs attention");
             } else {
-                app.push_toast_warning("No pending input requests");
+                app.mode = AppMode::NotificationPicker(0, None);
             }
         }
         KeyCode::Char('?') => {

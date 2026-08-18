@@ -51,7 +51,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("y", "Toggle mark feature as ready"),
         ("Z", "Generate session summary"),
         ("z", "Dormant features (idle + unattended)"),
-        ("i", "Input requests picker"),
+        ("i", "Needs attention: questions and finished work"),
         ("/", "Search and jump to item"),
         ("Ctrl+Space c", "Config wizard"),
         ("?", "Toggle this help"),

@@ -470,53 +470,66 @@ pub fn handle_notification_picker_key(app: &mut App, key: KeyCode) -> Result<()>
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if let AppMode::NotificationPicker(ref mut idx, _) = app.mode {
-                let len = app.pending_inputs.len();
-                if len > 0 {
-                    *idx = (*idx + 1) % len;
-                }
+            let len = app.attention_rows().len();
+            if let AppMode::NotificationPicker(ref mut idx, _) = app.mode
+                && len > 0
+            {
+                *idx = (*idx + 1) % len;
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if let AppMode::NotificationPicker(ref mut idx, _) = app.mode {
-                let len = app.pending_inputs.len();
-                if len > 0 {
-                    *idx = if *idx == 0 { len - 1 } else { *idx - 1 };
-                }
+            let len = app.attention_rows().len();
+            if let AppMode::NotificationPicker(ref mut idx, _) = app.mode
+                && len > 0
+            {
+                *idx = if *idx == 0 { len - 1 } else { *idx - 1 };
             }
         }
         KeyCode::Enter => {
             app.handle_notification_select()?;
         }
         KeyCode::Char('x') | KeyCode::Delete => {
-            let deleted = if let AppMode::NotificationPicker(ref mut idx, _) = app.mode {
-                let i = *idx;
-                if i < app.pending_inputs.len() {
-                    let input = app.pending_inputs.remove(i);
-                    let _ = std::fs::remove_file(&input.file_path);
-                    if *idx >= app.pending_inputs.len() && !app.pending_inputs.is_empty() {
-                        *idx = app.pending_inputs.len() - 1;
-                    }
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
+            // Dismissing drops both halves of the row: the pending input it
+            // dispatches through, if any, and the attention record that
+            // explained it. Clearing only one would leave the row on the list
+            // wearing the other half's label.
+            let idx = match app.mode {
+                AppMode::NotificationPicker(idx, _) => idx,
+                _ => return Ok(()),
             };
-            if deleted {
-                app.push_toast_success("Input request deleted");
-                if app.pending_inputs.is_empty() {
-                    let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
-                        AppMode::NotificationPicker(_, v) => v,
-                        other => {
-                            app.mode = other;
-                            return Ok(());
-                        }
-                    };
-                    if let Some(view) = from_view {
-                        app.mode = AppMode::Viewing(view);
+            let Some(row) = app.attention_rows().into_iter().nth(idx) else {
+                return Ok(());
+            };
+
+            if let Some(pending) = row.pending_index()
+                && pending < app.pending_inputs.len()
+            {
+                let input = app.pending_inputs.remove(pending);
+                let _ = std::fs::remove_file(&input.file_path);
+            }
+            if let crate::app::attention::AttentionRow::Attention { ref entry, .. } = row {
+                app.clear_attention(&entry.tmux_session);
+            }
+
+            let remaining = app.attention_rows().len();
+            if let AppMode::NotificationPicker(ref mut idx, _) = app.mode
+                && *idx >= remaining
+                && remaining > 0
+            {
+                *idx = remaining - 1;
+            }
+
+            app.push_toast_success("Dismissed");
+            if remaining == 0 {
+                let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                    AppMode::NotificationPicker(_, v) => v,
+                    other => {
+                        app.mode = other;
+                        return Ok(());
                     }
+                };
+                if let Some(view) = from_view {
+                    app.mode = AppMode::Viewing(view);
                 }
             }
         }

@@ -103,6 +103,15 @@ doc always says exactly what remains.
   suggested patch), and turning an answer's "Where to look next" references
   into navigable jumps — which also surfaces the fabricated paths a no-tools
   answer is known to invent.
+- [Needs Attention](needs-attention-plan.md) — _In progress._ The
+  dashboard says *why* an agent stopped instead of one flat "waiting for
+  input": Question, Completed, or an unexplained Waiting, read from the
+  harnesses' lifecycle hooks and layered in memory over the persisted
+  status. Rows, header count, the `i` list, and the session sidebar all
+  read from one ordered query, questions first. Built and shipping; what
+  remains is the live four-harness walkthrough and two fidelity gaps —
+  Pi reports no signal at all, and Codex cannot separate a question from
+  a completion.
 - [Bug backlog](bug-backlog-plan.md) — _Backlog._ Running list of known
   bugs not yet scheduled for a fix, one section per bug. Currently
   tracks recently fixed dashboard, sidebar, and composer-pane regressions.

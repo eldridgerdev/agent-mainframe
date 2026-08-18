@@ -7,8 +7,9 @@ AMF is a terminal dashboard for managing
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
 [Codex](https://github.com/openai/codex),
 [OpenCode](https://opencode.ai), and Pi sessions. It organizes work by project
-and feature, creates isolated git worktrees when needed, and shows when an
-agent is waiting for input.
+and feature, creates isolated git worktrees when needed, and shows which
+agents are asking a question and which have finished work waiting to be
+reviewed.
 
 <img width="1896" height="1030" alt="AMF dashboard showing several agent sessions" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
@@ -17,7 +18,8 @@ agent is waiting for input.
 - Runs several coding-agent sessions side by side from one dashboard.
 - Keeps concurrent features isolated with git branches and worktrees.
 - Embeds agent terminals, shells, Neovim, VS Code, and custom sessions.
-- Surfaces input requests, session status, token usage, and estimated cost.
+- Surfaces which agents need attention, session status, token usage, and
+  estimated cost.
 - Supports guided planning, supervised edits, final diff review, and GitHub PR
   review workflows.
 - Explains code you didn't write: browse a repository read-only and ask an
@@ -169,7 +171,7 @@ on an existing feature to run the interview again.
 | `c` / `x` | Start / stop the selected feature or session |
 | `r` / `d` | Rename / delete the selected item |
 | `/` | Search and jump |
-| `i` | Show agents waiting for input |
+| `i` | Show agents needing attention: questions first, then finished work |
 | `z` | Show dormant features: idle and unattended |
 | `G` | Open GitHub PR triage |
 | `W` | Run AMF's AI review of a PR diff |
@@ -189,7 +191,7 @@ Most keys go directly to the active session. These controls belong to AMF:
 | `Ctrl+Q` | Return to the dashboard |
 | `Ctrl+Space` | Open the leader-command menu |
 | `Ctrl+Space`, then `w` | Switch sessions |
-| `Ctrl+Space`, then `i` | Jump to an agent waiting for input |
+| `Ctrl+Space`, then `i` | Jump to an agent needing attention |
 | `Ctrl+Space`, then `f` | Start final diff review |
 | `Ctrl+Space`, then `p` | Open the prompt library |
 | `Ctrl+Space`, then `N` | Add a project TODO |
@@ -316,6 +318,31 @@ Add a `TODOs` session with `s` to maintain a project-wide checklist. From any
 session, press `Ctrl+Space`, then `N` to capture a TODO without leaving your
 current work.
 
+### See which agents need you
+
+A stopped agent has stopped for a reason, and "waiting for input" does not say
+which. AMF reads its harnesses' lifecycle hooks and marks each stopped session
+as one of:
+
+| State | Meaning |
+| --- | --- |
+| **Question** | The agent asked something, or wants permission, and cannot continue without an answer. |
+| **Completed** | The agent finished its turn; the work is waiting to be looked at. |
+| **Waiting** | The session stopped, but its harness could not say why. |
+
+The state shows on the feature's dashboard row and in the header count. Press
+`i` for the full list, questions first and oldest first within each group;
+`Enter` opens the session, `x` dismisses the row.
+
+AMF does not capture the agent's message — open the session to read the
+question or the summary.
+
+Fidelity depends on the harness. Claude Code and OpenCode report all three
+states. Codex fires one hook when a turn ends and cannot say whether it
+finished or is asking, so its sessions show as **Waiting** either way. Pi has
+no hook mechanism, so its sessions carry no state at all. States are not saved: after an AMF restart, sessions
+show as ordinary active until their next event.
+
 ### Keep the machine from filling up
 
 Agents and the editors they sit alongside are the bulk of what AMF puts on your
@@ -385,6 +412,20 @@ Claude harness settles near 380 MiB and Codex near 220 MiB, while a single
 language server runs to roughly 1.8 GiB — which is why editors are reclaimed
 when a feature stops but never counted as agents. A feature is dormant only
 when both of its thresholds are past.
+
+This setting governs how long a needs-attention state stays on the dashboard:
+
+```json
+{
+  "waiting_stale_minutes": 30
+}
+```
+
+A question nobody has answered for this long stops being news, so AMF drops it
+back to plain idle and the session leaves the `i` list. `0` keeps states up
+until the agent produces output again. Ageing out does not stop or change the
+session, and a waiting session still counts toward `max_concurrent_agents` and
+still qualifies as dormant.
 
 ### Built-in customization skills
 

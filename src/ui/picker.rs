@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
+use crate::app::attention::AttentionRow;
 use crate::app::{
     BookmarkPickerState, ClaudeSessionPickerState, CodexSessionPickerState, CommandAction,
     CommandPickerState, MarkdownFilePickerState, OpencodeSessionPickerState, PendingInput,
@@ -18,16 +19,25 @@ use crate::theme::Theme;
 
 use super::dashboard::centered_rect;
 
+/// The needs-attention overlay (`i`).
+///
+/// Rows come pre-ordered from `App::attention_rows`: questions first, then
+/// completions, then generic waits, then whatever pending inputs the attention
+/// layer could not explain. Each row is labelled with its state rather than
+/// with the agent's message — AMF deliberately does not capture the question
+/// text, so the label is all there is to say without opening the session.
 pub fn draw_notification_picker(
     frame: &mut Frame,
+    rows: &[AttentionRow],
     pending: &[PendingInput],
     selected: usize,
+    nerd_font: bool,
     theme: &Theme,
 ) {
     let area = centered_rect(60, 50, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
-    let title = format!(" Input Requests ({}) ", pending.len());
+    let title = format!(" Needs Attention ({}) ", rows.len());
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -37,9 +47,9 @@ pub fn draw_notification_picker(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if pending.is_empty() {
+    if rows.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
-            "  No pending input requests.",
+            "  Nothing needs attention.",
             Style::default().fg(theme.text_muted.to_color()),
         )));
         frame.render_widget(empty, inner);
@@ -51,21 +61,54 @@ pub fn draw_notification_picker(
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
 
-    let items: Vec<ListItem> = pending
+    let items: Vec<ListItem> = rows
         .iter()
         .enumerate()
-        .map(|(i, input)| {
+        .map(|(i, row)| {
             let is_selected = i == selected;
+            let input = row.pending_index().and_then(|index| pending.get(index));
 
-            let proj = input.project_name.as_deref().unwrap_or("unknown");
-            let feat = input.feature_name.as_deref().unwrap_or("unknown");
+            // An attention row knows its own feature; a bare pending input
+            // carries the names it was filed under.
+            let (proj, feat) = match row {
+                AttentionRow::Attention { entry, .. } => {
+                    (entry.project_name.as_str(), entry.feature_name.as_str())
+                }
+                AttentionRow::Pending(_) => (
+                    input
+                        .and_then(|i| i.project_name.as_deref())
+                        .unwrap_or("unknown"),
+                    input
+                        .and_then(|i| i.feature_name.as_deref())
+                        .unwrap_or("unknown"),
+                ),
+            };
 
-            let msg_preview = if input.message.len() > 50 {
-                format!("{}...", &input.message[..47])
-            } else if input.message.is_empty() {
-                input.notification_type.clone()
-            } else {
-                input.message.clone()
+            // What the row is asking for. An explained stop shows its state;
+            // an unexplained one falls back to the pending input's own
+            // description, which is what the overlay always showed.
+            let (detail, detail_style) = match row.state() {
+                Some(state) => (
+                    format!("{} {}", state.glyph(nerd_font), state.label()),
+                    Style::default()
+                        .fg(state.color(theme))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                None => {
+                    let input_detail = input.map(|input| {
+                        if input.message.len() > 50 {
+                            format!("{}...", &input.message[..47])
+                        } else if input.message.is_empty() {
+                            input.notification_type.clone()
+                        } else {
+                            input.message.clone()
+                        }
+                    });
+                    (
+                        input_detail.unwrap_or_else(|| "pending".to_string()),
+                        Style::default().fg(theme.text_muted.to_color()),
+                    )
+                }
             };
 
             let line = Line::from(vec![
@@ -79,10 +122,8 @@ pub fn draw_notification_picker(
                     format!("/ {} ", feat),
                     Style::default().fg(theme.feature_title.to_color()),
                 ),
-                Span::styled(
-                    format!("- {}", msg_preview),
-                    Style::default().fg(theme.text_muted.to_color()),
-                ),
+                Span::styled("- ", Style::default().fg(theme.text_muted.to_color())),
+                Span::styled(detail, detail_style),
             ]);
 
             if is_selected {
@@ -112,7 +153,7 @@ pub fn draw_notification_picker(
         ),
         Span::styled("x", Style::default().fg(theme.warning.to_color())),
         Span::styled(
-            " delete  ",
+            " dismiss  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),

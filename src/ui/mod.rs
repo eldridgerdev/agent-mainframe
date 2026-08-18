@@ -1,8 +1,8 @@
 mod dashboard;
 mod dialogs;
-mod header;
+pub mod header;
 mod list;
-mod pane;
+pub mod pane;
 mod picker;
 mod status;
 mod toast;

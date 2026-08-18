@@ -32,17 +32,26 @@ if [[ -n "$EXPECTED_WORKDIR" ]]; then
 fi
 
 HOOK_INPUT=$(cat)
-TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty')
-SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // "unknown"')
+
+# `amf hook-field` reads the hook JSON so this script needs no JSON parser of
+# its own. It prints nothing and exits 0 for an absent field, which is the same
+# shape as the `jq -r '... // empty'` it replaces.
+AMF_CMD="${AMF_BIN:-amf}"
+hook_field() {
+    printf '%s' "$HOOK_INPUT" | "$AMF_CMD" hook-field "$@" 2>/dev/null || true
+}
+
+TOOL_NAME=$(hook_field tool_name)
+SESSION_ID=$(hook_field session_id)
+SESSION_ID="${SESSION_ID:-unknown}"
 AMF_SESSION_ID="${AMF_SESSION:-}"
 
 if [[ "$TOOL_NAME" != "Edit" && "$TOOL_NAME" != "Write" ]]; then
     exit 0
 fi
 
-CWD=$(echo "$HOOK_INPUT" | jq -r '.cwd // empty')
-TOOL_INPUT=$(echo "$HOOK_INPUT" | jq -r '.tool_input // empty')
-FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
+CWD=$(hook_field cwd)
+FILE_PATH=$(hook_field tool_input.file_path)
 
 if [[ -z "$FILE_PATH" ]]; then
     exit 0
@@ -98,12 +107,12 @@ capture_original_file() {
 
 create_proposed_file() {
     if [[ "$TOOL_NAME" == "Write" ]]; then
-        echo "$TOOL_INPUT" | jq -r '.content // empty' > "$PROPOSED_FILE"
+        hook_field tool_input.content > "$PROPOSED_FILE"
     else
         local old_string_file="$TEMP_DIR/old_string"
         local new_string_file="$TEMP_DIR/new_string"
-        echo "$TOOL_INPUT" | jq -r '.old_string // empty' > "$old_string_file"
-        echo "$TOOL_INPUT" | jq -r '.new_string // empty' > "$new_string_file"
+        hook_field tool_input.old_string > "$old_string_file"
+        hook_field tool_input.new_string > "$new_string_file"
         OLD_FILE="$old_string_file" NEW_FILE="$new_string_file" perl -0777 -pe '
             BEGIN {
                 open(F, "<", $ENV{OLD_FILE}) or die; local $/; $old = <F>; close F;
@@ -124,67 +133,66 @@ old_snippet() {
     if [[ "$TOOL_NAME" == "Write" ]]; then
         printf ""
     else
-        echo "$TOOL_INPUT" | jq -r '.old_string // empty'
+        hook_field tool_input.old_string
     fi
 }
 
 new_snippet() {
     if [[ "$TOOL_NAME" == "Write" ]]; then
-        echo "$TOOL_INPUT" | jq -r '.content // empty'
+        hook_field tool_input.content
     else
-        echo "$TOOL_INPUT" | jq -r '.new_string // empty'
+        hook_field tool_input.new_string
     fi
 }
 
 build_payload() {
     local payload_file="$TEMP_DIR/payload.json"
-    jq -n \
-        --arg sid "$SESSION_ID" \
-        --arg amf_session "$AMF_SESSION_ID" \
-        --arg cwd "$CWD" \
-        --arg msg "Review: $DISPLAY_PATH" \
-        --arg fp "$FILE_PATH" \
-        --arg rel "$DISPLAY_PATH" \
-        --arg tool "$(echo "$TOOL_NAME" | tr '[:upper:]' '[:lower:]')" \
-        --arg change_id "$INVOCATION_ID" \
-        --arg old "$(old_snippet)" \
-        --arg new "$(new_snippet)" \
-        --arg original_file "$ORIGINAL_FILE" \
-        --arg proposed_file "$PROPOSED_FILE" \
-        --arg response_file "$RESPONSE_FILE" \
-        --arg proceed_signal "$PROCEED_SIGNAL" \
-        --argjson is_new_file "$IS_NEW_FILE" \
-        '{
-            type: "diff-review",
-            session_id: $sid,
-            amf_session: $amf_session,
-            cwd: $cwd,
-            message: $msg,
-            file_path: $fp,
-            relative_path: $rel,
-            tool: $tool,
-            change_id: $change_id,
-            old_snippet: $old,
-            new_snippet: $new,
-            original_file: $original_file,
-            proposed_file: $proposed_file,
-            is_new_file: $is_new_file,
-            response_file: $response_file,
-            proceed_signal: $proceed_signal
-        }' > "$payload_file"
+
+    # Snippets go via files, not argv: an edit's old/new strings are whole
+    # regions of a source file and would risk ARG_MAX on the command line.
+    # `mkdir` here rather than relying on `capture_original_file` having run —
+    # writing the payload should not depend on another step's side effect.
+    mkdir -p "$TEMP_DIR"
+    local old_file="$TEMP_DIR/old_snippet" new_file="$TEMP_DIR/new_snippet"
+    old_snippet > "$old_file"
+    new_snippet > "$new_file"
+
+    # `session_id` is deliberately the *provider's* id with the AMF session
+    # carried alongside in `amf_session`; the dashboard matches this
+    # notification on both. An explicit --field outranks the environment, so
+    # `amf hook-payload` will not substitute the tmux session here.
+    "$AMF_CMD" hook-payload \
+        --type diff-review \
+        --field "session_id=$SESSION_ID" \
+        --field "amf_session=$AMF_SESSION_ID" \
+        --field "cwd=$CWD" \
+        --field "message=Review: $DISPLAY_PATH" \
+        --field "file_path=$FILE_PATH" \
+        --field "relative_path=$DISPLAY_PATH" \
+        --field "tool=$(printf '%s' "$TOOL_NAME" | tr '[:upper:]' '[:lower:]')" \
+        --field "change_id=$INVOCATION_ID" \
+        --field "original_file=$ORIGINAL_FILE" \
+        --field "proposed_file=$PROPOSED_FILE" \
+        --field "response_file=$RESPONSE_FILE" \
+        --field "proceed_signal=$PROCEED_SIGNAL" \
+        --field-from-file "old_snippet=$old_file" \
+        --field-from-file "new_snippet=$new_file" \
+        --bool-field "is_new_file=$IS_NEW_FILE" \
+        < /dev/null > "$payload_file"
+
     printf "%s" "$payload_file"
 }
 
 send_notification_wait() {
     local payload_file="$1"
-    if ! command -v amf >/dev/null 2>&1; then
+    if ! command -v "$AMF_CMD" >/dev/null 2>&1; then
         log_fallback "amf command not found"
         return 1
     fi
 
     local response
     local error_file="$TEMP_DIR/notify-wait.err"
-    if ! response=$(cat "$payload_file" | amf notify-wait --timeout-ms 120000 2>"$error_file"); then
+    if ! response=$(cat "$payload_file" | "$AMF_CMD" notify-wait --timeout-ms 120000 2>"$error_file"); then
         local error
         error=$(tr '\n' ' ' < "$error_file" | sed 's/[[:space:]]\+/ /g' | cut -c1-240)
         log_fallback "${error:-notify-wait failed}"
@@ -211,13 +219,16 @@ wait_for_response_file() {
 
 handle_response() {
     local response="$1"
-    local decision
-    decision=$(echo "$response" | jq -r '.decision // empty' 2>/dev/null || true)
+    local decision reject skip reason
+
+    # AMF replies flat — `{type, decision, reason, skip, reject}` — with
+    # `decision` the current field and the booleans sent alongside it. Both are
+    # read because either alone is a complete answer.
+    decision=$(printf '%s' "$response" | "$AMF_CMD" hook-field decision 2>/dev/null || true)
 
     if [[ -z "$decision" ]]; then
-        local reject skip
-        reject=$(echo "$response" | jq -r '.reject // false' 2>/dev/null || echo "false")
-        skip=$(echo "$response" | jq -r '.skip // false' 2>/dev/null || echo "false")
+        reject=$(printf '%s' "$response" | "$AMF_CMD" hook-field reject 2>/dev/null || true)
+        skip=$(printf '%s' "$response" | "$AMF_CMD" hook-field skip 2>/dev/null || true)
         if [[ "$reject" == "true" ]]; then
             decision="reject"
         elif [[ "$skip" == "true" ]]; then
@@ -232,8 +243,7 @@ handle_response() {
             exit 0
             ;;
         reject)
-            local reason
-            reason=$(echo "$response" | jq -r '.reason // empty' 2>/dev/null || true)
+            reason=$(printf '%s' "$response" | "$AMF_CMD" hook-field reason 2>/dev/null || true)
             if [[ -n "$reason" ]]; then
                 echo "User rejected this change with feedback: $reason" >&2
             else

@@ -1048,7 +1048,31 @@ impl App {
                 return;
             }
 
-            let state = AttentionState::from_event_kind(kind);
+            // "notification" means "work out what this is from the payload":
+            // Claude's Notification hook fires for far more than a blocked
+            // agent, and only the blocking cases are a question. Anything else
+            // is reported not at all rather than becoming a generic Waiting,
+            // which would claim the session stopped when it has not.
+            let state = if kind == Some("notification") {
+                match crate::app::attention::classify_notification(
+                    msg.notification_type.as_deref(),
+                    msg.message.as_deref(),
+                ) {
+                    Some(state) => state,
+                    None => {
+                        self.log_debug(
+                            "attention",
+                            format!(
+                                "{feature_name}: notification is not blocking (type={:?}), reporting nothing",
+                                msg.notification_type.as_deref().unwrap_or_default()
+                            ),
+                        );
+                        return;
+                    }
+                }
+            } else {
+                AttentionState::from_event_kind(kind)
+            };
             self.record_attention(
                 &tmux_session,
                 &agent,

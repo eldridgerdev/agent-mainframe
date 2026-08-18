@@ -90,6 +90,42 @@ impl AttentionState {
     }
 }
 
+/// Classify a Claude `Notification` event into an attention state, or into
+/// nothing at all.
+///
+/// `Notification` fires for far more than a blocked agent: a tool-permission
+/// prompt blocks the turn, but a 60-second idle nudge, a successful login, and
+/// the completion half of an elicitation do not. Only the blocking ones become
+/// a `Question`; everything else returns `None` and is reported not at all,
+/// because `Question` outranks every other state and a wrong one would mask
+/// what the session actually said.
+///
+/// Newer Claude builds name the notification and older ones only carry the
+/// message, so both are consulted. Anything unrecognised is dropped rather than
+/// guessed at.
+pub fn classify_notification(
+    notification_type: Option<&str>,
+    message: Option<&str>,
+) -> Option<AttentionState> {
+    let notification_type = notification_type.unwrap_or_default().to_ascii_lowercase();
+
+    if !notification_type.is_empty() {
+        // Blocked on the user: a permission prompt, or an elicitation.
+        let blocks = notification_type.contains("permission")
+            || notification_type.contains("approval")
+            || notification_type.ends_with("_request");
+        return blocks.then_some(AttentionState::Question);
+    }
+
+    // Untyped: the message is all there is to go on.
+    let message = message.unwrap_or_default().to_ascii_lowercase();
+    const BLOCKING_PHRASES: &[&str] = &["permission", "approve", "approval", "needs your input"];
+    BLOCKING_PHRASES
+        .iter()
+        .any(|phrase| message.contains(phrase))
+        .then_some(AttentionState::Question)
+}
+
 /// What a harness is able to tell AMF about a stopped session.
 ///
 /// This is the containment mechanism for the fact that hook fidelity differs
@@ -541,6 +577,82 @@ mod tests {
         for agent in [AgentKind::Claude, AgentKind::Codex, AgentKind::Opencode] {
             assert!(!HarnessCapabilities::for_agent(&agent).clears_on_open());
         }
+    }
+
+    #[test]
+    fn typed_notifications_that_block_the_turn_are_questions() {
+        for typed in [
+            "tool_permission_request",
+            "permission_request",
+            "Permission",
+            "elicitation_request",
+            "permission_approval",
+        ] {
+            assert_eq!(
+                classify_notification(Some(typed), None),
+                Some(AttentionState::Question),
+                "{typed} blocks the turn and should be a question"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_notifications_that_do_not_block_report_nothing() {
+        // Reporting a state here would claim the session stopped when it has
+        // not, and `Question` outranks whatever it actually said.
+        for typed in [
+            "idle_timeout",
+            "auth_success",
+            "elicitation_complete",
+            "task_finished",
+            "some_new_thing_we_have_never_seen",
+        ] {
+            assert_eq!(
+                classify_notification(Some(typed), None),
+                None,
+                "{typed} does not block the turn"
+            );
+        }
+    }
+
+    #[test]
+    fn untyped_notifications_fall_back_to_the_message() {
+        // Older Claude builds send no notification_type at all.
+        for message in [
+            "Claude needs your permission to use Bash",
+            "Claude needs your input",
+            "Approve this action?",
+            "Waiting for APPROVAL",
+        ] {
+            assert_eq!(
+                classify_notification(None, Some(message)),
+                Some(AttentionState::Question),
+                "{message:?} should read as blocking"
+            );
+        }
+
+        for message in ["Task finished", "Logged in successfully", ""] {
+            assert_eq!(
+                classify_notification(None, Some(message)),
+                None,
+                "{message:?} should not read as blocking"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recognised_type_wins_over_a_misleading_message() {
+        // The type is the more reliable signal, so a non-blocking type is not
+        // second-guessed by prose that happens to contain "permission".
+        assert_eq!(
+            classify_notification(Some("idle_timeout"), Some("permission")),
+            None
+        );
+    }
+
+    #[test]
+    fn nothing_at_all_reports_nothing() {
+        assert_eq!(classify_notification(None, None), None);
     }
 
     #[test]

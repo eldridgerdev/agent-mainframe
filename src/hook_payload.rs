@@ -501,7 +501,13 @@ mod tests {
 
         assert!(build(r#"{"session_id":"u1","cwd":"/repo"}"#, &options).is_none());
         assert!(build(r#"{"session_id":"u1","cwd":"/repo","prompt":""}"#, &options).is_none());
-        assert!(build(r#"{"session_id":"u1","cwd":"/repo","prompt":"hi"}"#, &options).is_some());
+        assert!(
+            build(
+                r#"{"session_id":"u1","cwd":"/repo","prompt":"hi"}"#,
+                &options
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -667,8 +673,7 @@ mod tests {
             amf_tmux_window: None,
             ..HookEnv::default()
         };
-        let payload =
-            build_payload(r#"{"session_id":"u1"}"#, &env, &opts("clear")).unwrap();
+        let payload = build_payload(r#"{"session_id":"u1"}"#, &env, &opts("clear")).unwrap();
 
         // An exported-but-empty AMF_TMUX_WINDOW must not become `""`.
         assert!(payload.get("amf_tmux_window").is_none());

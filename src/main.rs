@@ -472,7 +472,11 @@ fn main() -> Result<()> {
             serde_json::to_string(&built)?
         };
 
-        let reply = ipc::send_wait(&ipc::socket_path(), &payload, Duration::from_millis(timeout_ms))?;
+        let reply = ipc::send_wait(
+            &ipc::socket_path(),
+            &payload,
+            Duration::from_millis(timeout_ms),
+        )?;
 
         if let Some(code) = reject_exit_code
             && hook_payload::reply_is_reject(&reply)

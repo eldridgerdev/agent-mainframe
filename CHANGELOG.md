@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.37.0] - 2026-08-18
+
 ### Added
 
 - **The dashboard says why an agent stopped.** A stopped session used to be a
@@ -81,6 +85,11 @@ are tagged.
   AMF-generated hook scripts live under `~/.config/amf/hooks/` and are
   rewritten on the next startup after upgrading; nothing you wrote yourself is
   touched.
+- **AMF's hooks no longer need `jq`.** Every notification hook used to shell
+  out to `jq`, and failed quietly without it: nothing errored, the dashboard
+  simply never showed an agent working, finishing, or asking — which looks
+  exactly like an agent with nothing to say. There is nothing to install now,
+  and the hooks work the same on a machine that never had it.
 
 ### Fixed
 
@@ -133,6 +142,11 @@ are tagged.
 - **PR review summaries render cleanly in the Detail pane.** Opening a review
   summary no longer leaves garbled fragments from diff or source lines mixed
   into the review text, and scrolling stays aligned when content wraps.
+- **Rejecting a Codex change now actually reverts it.** In vibeless mode,
+  turning down a proposed edit left the file on disk exactly as the agent had
+  written it: the rejection was recorded and then ignored, so approving and
+  rejecting came to the same thing. Rejecting now restores the file, and
+  cancelling still leaves it untouched.
 
 ### Documentation
 

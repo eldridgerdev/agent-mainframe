@@ -10,13 +10,21 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Plan interviews can pause while you inspect the codebase.** Press
+  `Ctrl+Q` to park the interview on the dashboard without losing the answer
+  you are editing. AMF marks the relevant project or feature row so `Enter`
+  can resume it directly; if you open a session to investigate first,
+  leaving that session returns to the interview automatically. A plan
+  operation already using agent tokens must finish before the interview can
+  be parked, so its result is not discarded.
 ### Fixed
 
 - **Features with a damaged worktree can be deleted again.** If a worktree's
   `.git` file is already missing, Git refuses to remove it even with force and
   AMF used to leave the feature permanently stuck in the dashboard. AMF now
   recognizes that stale-worktree failure and finishes removing the feature.
-
 ### Migration
 
 No migration is required.

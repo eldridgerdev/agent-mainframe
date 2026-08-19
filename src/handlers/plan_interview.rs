@@ -7,6 +7,11 @@ use crate::app::{App, AppMode, PlanInterviewAdvanceError, PlanInterviewPhase};
 use crate::plan_interview::PlanQuestionKind;
 
 pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        app.pause_plan_interview();
+        return Ok(());
+    }
+
     let confirming_abort =
         matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation);
     // Only a feature-creation interview has a launch to cancel; for an

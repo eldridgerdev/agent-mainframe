@@ -87,6 +87,7 @@ impl App {
             self.selection = self.todos_session_selection(pi, fi);
         }
         self.mode = AppMode::Normal;
+        self.resume_paused_plan_interview();
     }
 
     /// Resolve a `Selection` for the TODOs session under `(pi, fi)`, falling

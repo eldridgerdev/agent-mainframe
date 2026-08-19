@@ -137,6 +137,13 @@ impl App {
     }
 
     pub fn start_create_feature(&mut self) {
+        if self.paused_plan_interview.is_some() {
+            self.message = Some(
+                "Resume or finish the parked plan interview before creating another feature".into(),
+            );
+            return;
+        }
+
         let (project_name, project_repo, preferred_agent, is_first, used_workdirs) = match &self
             .selection
         {
@@ -1222,6 +1229,27 @@ impl App {
             AppMode::DeletingFeature(pn, fn_) => (pn.clone(), fn_.clone()),
             _ => return Ok(()),
         };
+
+        let feature_id = self
+            .store
+            .find_project(&project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == feature_name)
+            })
+            .map(|feature| feature.id.clone());
+        if feature_id
+            .as_deref()
+            .is_some_and(|id| self.paused_plan_interview_belongs_to_feature(id))
+        {
+            self.mode = AppMode::Normal;
+            self.message = Some(
+                "Resume or finish the parked plan interview before deleting its feature".into(),
+            );
+            return Ok(());
+        }
 
         let (tmux_session, is_worktree, repo, workdir, agent, audit_details) = if let Some(project) =
             self.store.find_project(&project_name)

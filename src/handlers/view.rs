@@ -435,7 +435,10 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             app.open_markdown_viewer_from_view()?;
         }
         KeyCode::Char('A') => {
-            app.exit_view();
+            // Harness setup is an intermediate destination, not the end of
+            // the inspection trip. Keep the interview parked so replacing the
+            // view mode cannot consume and then discard it.
+            app.exit_view_without_resuming_plan_interview();
             app.open_harness_setup(false);
         }
         KeyCode::Char('c') => {
@@ -568,6 +571,33 @@ mod tests {
         // Null is not handled in the match
         let k = key(KeyCode::Null);
         assert!(crossterm_key_to_tmux(&k).is_none());
+    }
+
+    #[test]
+    fn leader_harness_setup_keeps_a_plan_interview_parked() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_viewing_repo(repo.path());
+        let view = match &app.mode {
+            AppMode::Viewing(view) => view.clone(),
+            _ => panic!("expected viewing mode"),
+        };
+
+        app.selection = crate::app::Selection::Feature(0, 0);
+        app.start_plan_interview_for_selected_feature();
+        if let AppMode::PlanInterview(state) = &mut app.mode {
+            state.editor = crate::editor::TextEditor::new("Preserve this answer".into());
+        }
+        app.pause_plan_interview();
+        app.mode = AppMode::Viewing(view);
+        app.activate_leader();
+
+        handle_view_key(&mut app, key(KeyCode::Char('A')), 20).unwrap();
+
+        assert!(matches!(app.mode, AppMode::HarnessSetup(_)));
+        assert_eq!(
+            app.paused_plan_interview.as_ref().unwrap().editor.text(),
+            "Preserve this answer"
+        );
     }
 
     #[test]

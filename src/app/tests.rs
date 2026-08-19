@@ -3054,6 +3054,98 @@ fn plan_interview_can_pause_to_its_dashboard_row_and_resume_with_enter() {
 }
 
 #[test]
+fn dashboard_quit_reopens_the_parked_interview_abort_confirmation() {
+    for key in [KeyCode::Char('q'), KeyCode::Esc] {
+        let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+        if let AppMode::PlanInterview(state) = &mut app.mode {
+            state.editor = crate::editor::TextEditor::new("Uncommitted answer".into());
+        }
+        app.pause_plan_interview();
+
+        crate::handlers::handle_normal_key(&mut app, ke(key)).unwrap();
+
+        assert!(!app.should_quit);
+        assert!(app.paused_plan_interview.is_none());
+        match &app.mode {
+            AppMode::PlanInterview(state) => {
+                assert!(state.abort_confirmation);
+                assert_eq!(state.editor.text(), "Uncommitted answer");
+            }
+            _ => panic!("dashboard quit must return to the interview abort gate"),
+        }
+    }
+}
+
+#[test]
+fn parked_plan_interview_blocks_another_feature_and_owning_project_deletion() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.pause_plan_interview();
+
+    app.start_create_feature();
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.paused_plan_interview.is_some());
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("before creating another feature")
+    );
+
+    crate::handlers::handle_normal_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.paused_plan_interview.is_some());
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("before deleting its project")
+    );
+}
+
+#[test]
+fn parked_plan_interview_blocks_owning_feature_deletion() {
+    let (mut app, _store_file, _repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+    app.pause_plan_interview();
+
+    crate::handlers::handle_normal_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.paused_plan_interview.is_some());
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("before deleting its feature")
+    );
+}
+
+#[test]
+fn pause_plan_interview_never_overwrites_an_existing_parked_interview() {
+    let (mut app, _store_file, _repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("First interview".into());
+    }
+    app.pause_plan_interview();
+
+    let mut second =
+        crate::app::PlanInterviewState::new("second".into(), "second-id".into(), Vec::new(), None);
+    second.editor = crate::editor::TextEditor::new("Second interview".into());
+    app.mode = AppMode::PlanInterview(second);
+    app.pause_plan_interview();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.editor.text() == "Second interview"
+    ));
+    assert_eq!(
+        app.paused_plan_interview.as_ref().unwrap().editor.text(),
+        "First interview"
+    );
+}
+
+#[test]
 fn leaving_a_session_returns_to_the_paused_plan_interview() {
     let (mut app, _store_file, _repo) = app_on_selected_feature();
     app.start_plan_interview_for_selected_feature();
@@ -17301,6 +17393,37 @@ fn closing_todos_overlay_returns_to_session_selection() {
 
     assert!(matches!(app.mode, AppMode::Normal));
     assert!(matches!(app.selection, Selection::Session(0, 0, s) if s == si));
+}
+
+#[test]
+fn closing_todos_overlay_returns_to_the_paused_plan_interview() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.start_plan_interview_for_selected_feature();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Inspect the TODO list".into());
+    }
+    app.pause_plan_interview();
+
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+    let si = app.store.projects[0].features[0]
+        .sessions
+        .iter()
+        .position(|session| session.kind == SessionKind::Todos)
+        .unwrap();
+    app.selection = Selection::Session(0, 0, si);
+    app.enter_view().unwrap();
+    app.close_todos_view();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.editor.text() == "Inspect the TODO list"
+    ));
+    assert!(app.paused_plan_interview.is_none());
 }
 
 #[test]

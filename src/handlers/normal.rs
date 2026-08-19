@@ -52,7 +52,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let key = remapped_key;
     match key {
         KeyCode::Char('q') | KeyCode::Esc => {
-            app.should_quit = true;
+            app.request_dashboard_quit();
         }
         KeyCode::Char('N') => {
             app.start_create_project();
@@ -106,7 +106,14 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             Selection::Project(pi) => {
                 if let Some(project) = app.store.projects.get(*pi) {
                     let name = project.name.clone();
-                    app.mode = AppMode::DeletingProject(name);
+                    if app.paused_plan_interview_belongs_to_project(&name) {
+                        app.message = Some(
+                            "Resume or finish the parked plan interview before deleting its project"
+                                .into(),
+                        );
+                    } else {
+                        app.mode = AppMode::DeletingProject(name);
+                    }
                 }
             }
             Selection::Feature(pi, fi) => {
@@ -115,7 +122,15 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 {
                     let pn = project.name.clone();
                     let fn_ = feature.name.clone();
-                    app.mode = AppMode::DeletingFeature(pn, fn_);
+                    let feature_id = feature.id.clone();
+                    if app.paused_plan_interview_belongs_to_feature(&feature_id) {
+                        app.message = Some(
+                            "Resume or finish the parked plan interview before deleting its feature"
+                                .into(),
+                        );
+                    } else {
+                        app.mode = AppMode::DeletingFeature(pn, fn_);
+                    }
                 }
             }
             Selection::Session(_, _, _) => {

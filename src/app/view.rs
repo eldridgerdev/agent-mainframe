@@ -221,13 +221,16 @@ impl App {
         Ok(())
     }
 
-    pub fn exit_view(&mut self) {
+    pub(crate) fn exit_view_without_resuming_plan_interview(&mut self) {
         self.pane_content.clear();
         self.tmux_cursor = None;
-        if !self.resume_paused_plan_interview() {
-            self.mode = AppMode::Normal;
-            self.message = Some("Returned to dashboard".into());
-        }
+        self.mode = AppMode::Normal;
+        self.message = Some("Returned to dashboard".into());
+    }
+
+    pub fn exit_view(&mut self) {
+        self.exit_view_without_resuming_plan_interview();
+        self.resume_paused_plan_interview();
     }
 
     pub fn open_latest_prompt_from_view(&mut self) {

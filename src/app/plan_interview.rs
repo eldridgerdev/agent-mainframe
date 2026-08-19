@@ -48,6 +48,17 @@ impl App {
             return;
         }
 
+        // There is intentionally only one parked interview. All user-facing
+        // entry points prevent starting another one while it is parked, but
+        // keep this guard at the ownership boundary as well so a future entry
+        // point cannot silently replace the preserved editor state.
+        if self.paused_plan_interview.is_some() {
+            self.message = Some(
+                "Resume or finish the parked plan interview before pausing another one".into(),
+            );
+            return;
+        }
+
         let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::PlanInterview(mut state) => {
                 state.abort_confirmation = false;
@@ -91,6 +102,56 @@ impl App {
         self.mode = AppMode::PlanInterview(state);
         self.message = None;
         true
+    }
+
+    /// A dashboard quit must not bypass the interview's explicit abort gate.
+    /// Reopen the parked interview with its full in-memory editor state and
+    /// ask the same question Esc would have asked before it was parked.
+    pub(crate) fn request_dashboard_quit(&mut self) {
+        if !self.resume_paused_plan_interview() {
+            self.should_quit = true;
+            return;
+        }
+
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            // The kickoff handoff appears only after the plan was accepted and
+            // persisted, so it has nothing left to abort. Reopening that prompt
+            // is sufficient; every earlier phase needs explicit confirmation.
+            if state.phase != PlanInterviewPhase::KickoffHandoff {
+                state.abort_confirmation = true;
+            }
+        }
+        self.message = None;
+    }
+
+    pub(crate) fn paused_plan_interview_belongs_to_project(&self, project_name: &str) -> bool {
+        let Some(interview) = self.paused_plan_interview.as_ref() else {
+            return false;
+        };
+        if interview
+            .pending_launch
+            .as_ref()
+            .is_some_and(|pending| pending.project_name == project_name)
+        {
+            return true;
+        }
+
+        self.store
+            .find_project(project_name)
+            .is_some_and(|project| {
+                project
+                    .features
+                    .iter()
+                    .any(|feature| feature.id == interview.interview_key)
+            })
+    }
+
+    pub(crate) fn paused_plan_interview_belongs_to_feature(&self, feature_id: &str) -> bool {
+        self.paused_plan_interview
+            .as_ref()
+            .is_some_and(|interview| {
+                interview.pending_launch.is_none() && interview.interview_key == feature_id
+            })
     }
 
     /// Whether Enter on the current dashboard row should reopen the parked
@@ -163,6 +224,10 @@ impl App {
     /// interview is keyed by the feature's id, so a saved draft or an earlier
     /// accepted transcript for this feature is picked up on entry.
     pub(crate) fn start_plan_interview_for_selected_feature(&mut self) {
+        if self.resume_paused_plan_interview() {
+            return;
+        }
+
         let Some((project, feature)) = self.selected_feature() else {
             self.message = Some("Select a feature to plan".into());
             return;

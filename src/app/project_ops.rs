@@ -276,6 +276,14 @@ impl App {
             _ => return Ok(()),
         };
 
+        if self.paused_plan_interview_belongs_to_project(&project_name) {
+            self.mode = AppMode::Normal;
+            self.message = Some(
+                "Resume or finish the parked plan interview before deleting its project".into(),
+            );
+            return Ok(());
+        }
+
         let mut project_id: Option<String> = None;
         if let Some(project) = self.store.find_project(&project_name) {
             project_id = Some(project.id.clone());

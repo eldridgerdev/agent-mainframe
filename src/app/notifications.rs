@@ -1385,16 +1385,114 @@ impl App {
         let feature_is_codex = indices
             .map(|(pi, fi)| self.store.projects[pi].features[fi].agent == AgentKind::Codex)
             .unwrap_or(false);
-        if (pending_input.notification_type == "input-request"
-            || (is_structured_diff_review && !feature_is_codex))
-            && !self
-                .pending_inputs
-                .iter()
-                .any(|input| input == &pending_input)
-        {
+        let wants_toast = pending_input.notification_type == "input-request"
+            || (is_structured_diff_review && !feature_is_codex);
+        let already_queued = self
+            .pending_inputs
+            .iter()
+            .any(|input| input == &pending_input);
+        // A re-report of a stop already listed is not news, so it is queued
+        // (replacing the older copy) without a second toast.
+        let is_new = self.queue_pending_input(pending_input.clone());
+        if wants_toast && is_new && !already_queued {
             self.push_toast_warning(input_request_toast_message(&pending_input));
         }
-        self.pending_inputs.push(pending_input);
+    }
+
+    /// Queue `input`, replacing the entry it supersedes rather than appending
+    /// beside it.
+    ///
+    /// A session-wait notification ([`PendingInput::is_session_wait`]) is a
+    /// standing fact about a session, not an item of work, and harnesses
+    /// re-report it freely — a session left waiting overnight can send
+    /// hundreds. Appending each one filled the needs-attention overlay with
+    /// identical rows for one feature, so at most one is ever pending per
+    /// session and the newest report wins: it carries the current message and
+    /// whatever reply plumbing is still live.
+    ///
+    /// Everything else — diff reviews, change reasons, review-ready prompts —
+    /// is discrete work and still queues one row per request.
+    ///
+    /// Returns `true` when this is a new request rather than a re-report of one
+    /// already pending, which is what decides whether it is worth announcing.
+    pub(crate) fn queue_pending_input(&mut self, input: PendingInput) -> bool {
+        let Some(existing) = self
+            .pending_inputs
+            .iter_mut()
+            .find(|existing| existing.is_same_session_wait(&input))
+        else {
+            self.pending_inputs.push(input);
+            return true;
+        };
+
+        let new_file_path = input.file_path.clone();
+        let superseded = std::mem::replace(existing, input);
+        // The superseded report may have arrived as the file-based fallback;
+        // leaving its file behind would reload it as a fresh duplicate on the
+        // next scan.
+        if !superseded.file_path.as_os_str().is_empty() && superseded.file_path != new_file_path {
+            let _ = std::fs::remove_file(&superseded.file_path);
+        }
+        false
+    }
+
+    /// How recent a report of a session's stop is, as an explicit sort key for
+    /// [`Self::collapse_session_waits`].
+    ///
+    /// Scan order is *not* a recency signal: `read_dir` makes no ordering
+    /// promise, and the feature-local directory is always walked before the
+    /// global one, so keeping whichever copy was seen first can keep the older
+    /// report and delete the newer file.
+    ///
+    /// A file-backed report is dated by its notification file's mtime. A file
+    /// whose mtime cannot be read still outranks an IPC-origin report (empty
+    /// `file_path`), which sorts oldest: it survived the preservation loop
+    /// above only because no file matched it, and the file-based fallback is
+    /// written precisely when the live wait has timed out — by then the socket
+    /// the IPC copy names is gone.
+    pub(crate) fn session_wait_report_time(
+        input: &PendingInput,
+    ) -> (bool, Option<std::time::SystemTime>) {
+        if input.file_path.as_os_str().is_empty() {
+            return (false, None);
+        }
+        let modified = std::fs::metadata(&input.file_path)
+            .and_then(|meta| meta.modified())
+            .ok();
+        (true, modified)
+    }
+
+    /// Collapse re-reports of the same session's stop down to a single entry,
+    /// keeping the most recent report ([`Self::session_wait_report_time`]) and
+    /// deleting the notification file each dropped copy came from. Used by the
+    /// file scan, where the same stop can be on disk in both the feature's
+    /// `.claude/notifications` and the global directory.
+    ///
+    /// The winner keeps the loser's slot, so collapsing never reorders the
+    /// queue — only the payload of a row changes, to the newer message and
+    /// whatever reply plumbing came with it.
+    pub(crate) fn collapse_session_waits(inputs: &mut Vec<PendingInput>) {
+        let mut collapsed: Vec<PendingInput> = Vec::with_capacity(inputs.len());
+        for input in inputs.drain(..) {
+            let Some(kept) = collapsed
+                .iter_mut()
+                .find(|kept| kept.is_same_session_wait(&input))
+            else {
+                collapsed.push(input);
+                continue;
+            };
+
+            let loser =
+                if Self::session_wait_report_time(&input) > Self::session_wait_report_time(kept) {
+                    std::mem::replace(kept, input)
+                } else {
+                    input
+                };
+            if !loser.file_path.as_os_str().is_empty() && loser.file_path != kept.file_path {
+                let _ = std::fs::remove_file(&loser.file_path);
+            }
+        }
+        *inputs = collapsed;
     }
 
     /// Best-effort human-readable location for a reply-draft-ready toast: the
@@ -1685,6 +1783,11 @@ impl App {
             }
         }
 
+        // One row per waiting session, however many times it was reported:
+        // the same stop can be on disk twice (feature directory and global)
+        // and still be live over IPC.
+        Self::collapse_session_waits(&mut inputs);
+
         self.pending_inputs = inputs;
         self.last_file_notification_fingerprint = Some(fingerprint);
         let file_count = self
@@ -1722,7 +1825,13 @@ impl App {
                     }
                     _ => false,
                 };
-                wants_toast && !old_pending_inputs.iter().any(|existing| existing == *input)
+                // A session wait is one standing fact, so a re-report that
+                // only refreshed the message (or the reply plumbing) is not
+                // equal to what it replaced and must still stay silent.
+                let already_announced = old_pending_inputs
+                    .iter()
+                    .any(|existing| existing == *input || existing.is_same_session_wait(input));
+                wants_toast && !already_announced
             })
             .collect();
         if let Some(first) = new_input_requests.first() {

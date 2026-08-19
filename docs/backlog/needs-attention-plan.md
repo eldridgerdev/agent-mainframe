@@ -81,10 +81,25 @@ still qualifies as dormant.
 - [x] Feature rows (`src/ui/list.rs`): per-state glyph and colour, with
       ASCII fallbacks when `nerd_font` is off.
 - [x] Header count broken out by kind (`src/ui/header.rs`), with
-      `badge_text()` shared with mouse hit-testing.
+      `badge_text()` shared with mouse hit-testing and a visible `<leader i>`
+      hint for opening the needs-attention list.
 - [x] The `i` overlay rebuilt as one needs-attention list; a feature's
-      generic `input-request` folds into its attention row, while diff
-      reviews / change reasons / review-ready keep rows of their own.
+      generic wait folds into its attention row, while diff reviews /
+      change reasons / review-ready keep rows of their own. "Generic
+      wait" is `PendingInput::is_session_wait()` — `input-request` *and*
+      the bare `stop` that Claude's Stop hook leaves when it forwards
+      its own payload, which had been folding, clearing, and ageing
+      differently from its own synonym.
+- [x] **One pending wait per session** (`App::queue_pending_input`). A
+      stop is a standing fact about a session, not an item of work, and
+      every harness re-reports it — Claude's Stop hook at every turn
+      boundary. Each report used to append a row, so one waiting session
+      could put hundreds of identical entries in `i` and the header
+      count. A re-report now replaces the entry (newest message wins)
+      and does not toast again; the file scan collapses the same way, so
+      a stop on disk in both the feature and global directories is one
+      row. Discrete work is untouched: two diff reviews are two
+      requests.
 - [x] Embedded session view: sidebar status line reports the state, and
       leader `i` opens the same list.
 - [x] Help overlay and leader-menu wording.

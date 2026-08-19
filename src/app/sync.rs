@@ -849,7 +849,7 @@ impl App {
                 }
                 let before = self.pending_inputs.len();
                 self.pending_inputs.retain(|p| {
-                    !(p.notification_type == "input-request"
+                    !(p.is_session_wait()
                         && p.project_name.as_deref() == Some(&project_name)
                         && p.feature_name.as_deref() == Some(&feature_name))
                 });
@@ -902,7 +902,7 @@ impl App {
                     });
                     if !any_pending_for_feature {
                         pending_inputs_changed = true;
-                        self.pending_inputs.push(PendingInput {
+                        self.queue_pending_input(PendingInput {
                             session_id: sid.clone(),
                             cwd,
                             message: "Fixes ready — re-review?".to_string(),
@@ -944,7 +944,7 @@ impl App {
                 });
                 if !any_pending_for_feature {
                     pending_inputs_changed = true;
-                    self.pending_inputs.push(PendingInput {
+                    self.queue_pending_input(PendingInput {
                         session_id: sid.clone(),
                         cwd,
                         message: "Agent finished and is waiting for input".to_string(),
@@ -1072,7 +1072,7 @@ impl App {
             self.ipc_thinking_feature_sessions
                 .insert(feature_session_id);
             self.pending_inputs.retain(|p| {
-                !(p.notification_type == "input-request"
+                !(p.is_session_wait()
                     && p.project_name.as_deref() == Some(&project_name)
                     && p.feature_name.as_deref() == Some(&feature_name))
             });

@@ -48,6 +48,12 @@ are tagged.
   creates it, saying that its contents are generated and safe to delete, and
   pointing at `amf.json` for real settings. Your own edits to that README are
   left alone.
+- **The dashboard's needs-attention badge now shows `<leader i>`.** Questions,
+  completed work, waiting sessions, and other input requests now advertise the
+  shortcut that opens the list, so the action is discoverable without first
+  opening help. On a narrow terminal the working directory is shortened before
+  the badge is, so the shortcut stays readable. No configuration change is
+  required.
 - **Plan mode now keeps its approved plan in `AMF_PLAN.md` at the feature root.**
   The plan is no longer hidden under the Claude-specific `.claude/` directory,
   and the AMF-specific name avoids overwriting a repository's conventional
@@ -57,6 +63,15 @@ are tagged.
   readable as fallbacks.
 
 ### Fixed
+
+- **A waiting session is one entry in the needs-attention list, not hundreds.**
+  Harnesses re-report a stop freely — Claude's Stop hook fires at every turn
+  boundary — and each report was queued as its own input request, so a session
+  left waiting could fill `i` (and the header count) with identical rows for
+  the same feature. Only one wait is now pending per session, showing what the
+  session last said; a re-report replaces it silently instead of toasting
+  again. Diff reviews and change reasons are unaffected — each one is its own
+  request about its own edit and still gets its own row.
 
 - **Features with a damaged worktree can be deleted again.** If a worktree's
   `.git` file is already missing, Git refuses to remove it even with force and

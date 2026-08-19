@@ -1385,16 +1385,76 @@ impl App {
         let feature_is_codex = indices
             .map(|(pi, fi)| self.store.projects[pi].features[fi].agent == AgentKind::Codex)
             .unwrap_or(false);
-        if (pending_input.notification_type == "input-request"
-            || (is_structured_diff_review && !feature_is_codex))
-            && !self
-                .pending_inputs
-                .iter()
-                .any(|input| input == &pending_input)
-        {
+        let wants_toast = pending_input.notification_type == "input-request"
+            || (is_structured_diff_review && !feature_is_codex);
+        let already_queued = self
+            .pending_inputs
+            .iter()
+            .any(|input| input == &pending_input);
+        // A re-report of a stop already listed is not news, so it is queued
+        // (replacing the older copy) without a second toast.
+        let is_new = self.queue_pending_input(pending_input.clone());
+        if wants_toast && is_new && !already_queued {
             self.push_toast_warning(input_request_toast_message(&pending_input));
         }
-        self.pending_inputs.push(pending_input);
+    }
+
+    /// Queue `input`, replacing the entry it supersedes rather than appending
+    /// beside it.
+    ///
+    /// A session-wait notification ([`PendingInput::is_session_wait`]) is a
+    /// standing fact about a session, not an item of work, and harnesses
+    /// re-report it freely — a session left waiting overnight can send
+    /// hundreds. Appending each one filled the needs-attention overlay with
+    /// identical rows for one feature, so at most one is ever pending per
+    /// session and the newest report wins: it carries the current message and
+    /// whatever reply plumbing is still live.
+    ///
+    /// Everything else — diff reviews, change reasons, review-ready prompts —
+    /// is discrete work and still queues one row per request.
+    ///
+    /// Returns `true` when this is a new request rather than a re-report of one
+    /// already pending, which is what decides whether it is worth announcing.
+    pub(crate) fn queue_pending_input(&mut self, input: PendingInput) -> bool {
+        let Some(existing) = self
+            .pending_inputs
+            .iter_mut()
+            .find(|existing| existing.is_same_session_wait(&input))
+        else {
+            self.pending_inputs.push(input);
+            return true;
+        };
+
+        let new_file_path = input.file_path.clone();
+        let superseded = std::mem::replace(existing, input);
+        // The superseded report may have arrived as the file-based fallback;
+        // leaving its file behind would reload it as a fresh duplicate on the
+        // next scan.
+        if !superseded.file_path.as_os_str().is_empty() && superseded.file_path != new_file_path {
+            let _ = std::fs::remove_file(&superseded.file_path);
+        }
+        false
+    }
+
+    /// Collapse re-reports of the same session's stop down to a single entry,
+    /// keeping the first and deleting the notification file each dropped copy
+    /// came from. Used by the file scan, where the same stop can be on disk in
+    /// both the feature's `.claude/notifications` and the global directory.
+    fn collapse_session_waits(inputs: &mut Vec<PendingInput>) {
+        let mut collapsed: Vec<PendingInput> = Vec::with_capacity(inputs.len());
+        for input in inputs.drain(..) {
+            let superseded_by = collapsed
+                .iter()
+                .find(|kept| kept.is_same_session_wait(&input));
+            if let Some(kept) = superseded_by {
+                if !input.file_path.as_os_str().is_empty() && input.file_path != kept.file_path {
+                    let _ = std::fs::remove_file(&input.file_path);
+                }
+                continue;
+            }
+            collapsed.push(input);
+        }
+        *inputs = collapsed;
     }
 
     /// Best-effort human-readable location for a reply-draft-ready toast: the
@@ -1684,6 +1744,11 @@ impl App {
                 inputs.push(existing);
             }
         }
+
+        // One row per waiting session, however many times it was reported:
+        // the same stop can be on disk twice (feature directory and global)
+        // and still be live over IPC.
+        Self::collapse_session_waits(&mut inputs);
 
         self.pending_inputs = inputs;
         self.last_file_notification_fingerprint = Some(fingerprint);

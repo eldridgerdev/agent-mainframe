@@ -173,6 +173,43 @@ pub struct PendingInput {
     pub reply_socket: Option<String>,
 }
 
+impl PendingInput {
+    /// Whether this notification describes the *session* as having stopped and
+    /// being blocked on the user, rather than a discrete piece of work to act
+    /// on.
+    ///
+    /// The distinction is what makes deduplication safe. A session can only be
+    /// stopped once, so every report of it is the same standing fact restated:
+    /// Claude's Stop hook fires at every turn boundary, Codex's notify hook on
+    /// every prompt, and `sync.rs` infers the same stop again whenever a
+    /// thinking marker drops. A diff review or a change reason is the
+    /// opposite — each one is its own request about its own edit, and they
+    /// must keep queueing one row apiece.
+    pub fn is_session_wait(&self) -> bool {
+        matches!(self.notification_type.as_str(), "input-request" | "stop")
+    }
+
+    /// Whether `other` is a re-report of the same session's stop, and so
+    /// replaces this entry instead of queueing beside it.
+    ///
+    /// Identity is the feature, which is the granularity everything else in
+    /// AMF already uses for this: a feature owns one tmux session, the
+    /// attention layer is keyed by it, and `sync.rs` clears pending inputs by
+    /// it. `session_id` is only the fallback for a notification that could not
+    /// be resolved to a feature — it holds the AMF tmux session when the hook
+    /// environment supplied one and the harness's own session id otherwise, so
+    /// two reports of one stop can disagree about it.
+    pub fn is_same_session_wait(&self, other: &PendingInput) -> bool {
+        if !self.is_session_wait() || !other.is_session_wait() {
+            return false;
+        }
+        match (self.feature_name.as_deref(), other.feature_name.as_deref()) {
+            (Some(mine), Some(theirs)) => self.project_name == other.project_name && mine == theirs,
+            _ => !self.session_id.is_empty() && self.session_id == other.session_id,
+        }
+    }
+}
+
 /// A feature whose dispatched review-fix prompt is being watched via the
 /// thinking-status sync so a "fixes ready — re-review?" notification can be
 /// raised once the agent goes idle again. Keyed by `feature.tmux_session` in

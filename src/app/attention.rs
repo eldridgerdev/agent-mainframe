@@ -356,12 +356,12 @@ impl App {
     /// Age out records older than `waiting_stale_minutes`, which have stopped
     /// being news. Returns whether anything was dropped.
     ///
-    /// The session's generic `input-request` goes with the record. The two are
-    /// the same stop seen through the old signal and the new one — dropping
-    /// only the record would leave the request behind as a standalone row, and
-    /// the session would never actually leave the `i` list. Pending inputs that
-    /// mean something else (diff reviews, change reasons, review-ready) are
-    /// separate work and are left alone.
+    /// The session's generic wait ([`crate::app::PendingInput::is_session_wait`]) goes with
+    /// the record. The two are the same stop seen through the old signal and
+    /// the new one — dropping only the record would leave the request behind as
+    /// a standalone row, and the session would never actually leave the `i`
+    /// list. Pending inputs that mean something else (diff reviews, change
+    /// reasons, review-ready) are separate work and are left alone.
     ///
     /// `0` disables ageing entirely, in which case this is a no-op.
     pub fn age_out_attention(&mut self) -> bool {
@@ -400,7 +400,7 @@ impl App {
             self.attention.remove(session);
         }
         self.pending_inputs.retain(|input| {
-            input.notification_type != "input-request"
+            !input.is_session_wait()
                 || !stale_features.iter().any(|(project, feature)| {
                     input.project_name.as_deref() == Some(project.as_str())
                         && input.feature_name.as_deref() == Some(feature.as_str())
@@ -461,11 +461,11 @@ impl App {
     /// layer did not account for.
     ///
     /// A pending input is folded into an attention row when it is the same
-    /// feature's generic `input-request` — the two are the same stop seen
-    /// through the old signal and the new one. Everything else (diff reviews,
-    /// change reasons, review-ready) stays a row of its own, because those are
-    /// separate pieces of work rather than a description of why a session
-    /// stopped.
+    /// feature's generic wait ([`crate::app::PendingInput::is_session_wait`]) — the two are
+    /// the same stop seen through the old signal and the new one. Everything
+    /// else (diff reviews, change reasons, review-ready) stays a row of its
+    /// own, because those are separate pieces of work rather than a description
+    /// of why a session stopped.
     pub fn attention_rows(&self) -> Vec<AttentionRow> {
         let mut claimed = vec![false; self.pending_inputs.len()];
         let mut rows: Vec<AttentionRow> = Vec::new();
@@ -477,7 +477,7 @@ impl App {
                 .enumerate()
                 .find(|(index, input)| {
                     !claimed[*index]
-                        && input.notification_type == "input-request"
+                        && input.is_session_wait()
                         && input.project_name.as_deref() == Some(entry.project_name.as_str())
                         && input.feature_name.as_deref() == Some(entry.feature_name.as_str())
                 })

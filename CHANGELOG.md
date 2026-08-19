@@ -10,7 +10,16 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **A waiting session is one entry in the needs-attention list, not hundreds.**
+  Harnesses re-report a stop freely — Claude's Stop hook fires at every turn
+  boundary — and each report was queued as its own input request, so a session
+  left waiting could fill `i` (and the header count) with identical rows for
+  the same feature. Only one wait is now pending per session, showing what the
+  session last said; a re-report replaces it silently instead of toasting
+  again. Diff reviews and change reasons are unaffected — each one is its own
+  request about its own edit and still gets its own row.
 
 ## [v0.37.0] - 2026-08-18
 

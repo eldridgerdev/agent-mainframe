@@ -777,6 +777,10 @@ pub struct App {
     pub theme: crate::theme::Theme,
     pub selection: Selection,
     pub mode: AppMode,
+    /// A plan interview temporarily parked while the user inspects the
+    /// dashboard or one of its sessions. Unlike a persisted draft this keeps
+    /// the live editor cursor and uncommitted answer text intact.
+    pub paused_plan_interview: Option<PlanInterviewState>,
     pub message: Option<String>,
     pub toasts: Vec<Toast>,
     pub should_quit: bool,
@@ -2246,6 +2250,7 @@ impl App {
             theme,
             selection: Selection::Project(0),
             mode: AppMode::Normal,
+            paused_plan_interview: None,
             message: None,
             toasts: Vec::new(),
             should_quit: false,
@@ -2476,6 +2481,7 @@ impl App {
             theme: crate::theme::Theme::default(),
             selection: Selection::Project(0),
             mode: AppMode::Normal,
+            paused_plan_interview: None,
             message: None,
             toasts: Vec::new(),
             should_quit: false,
@@ -2681,9 +2687,13 @@ impl App {
 
         let dedicated_opencode_session = match &self.mode {
             AppMode::PrReview(state) if state.workdir == feature.workdir => {
-                pr_review::pr_triage_session_index(feature, pr_review::FixTarget::DedicatedReview)
-                    .map(|si| &feature.sessions[si])
-                    .filter(|session| session.kind == SessionKind::Opencode)
+                pr_review::pr_triage_session_index_named(
+                    feature,
+                    state.fix_target,
+                    &state.dedicated_session_label,
+                )
+                .map(|si| &feature.sessions[si])
+                .filter(|session| session.kind == SessionKind::Opencode)
             }
             _ => None,
         };

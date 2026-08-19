@@ -16,19 +16,190 @@ use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
 use crate::plan_interview::{self, PlanQuestion};
 
-const PLAN_FILE_NAME: &str = "plan.md";
+const PLAN_FILE_NAME: &str = "AMF_PLAN.md";
 
 /// Composer seed offered after an accepted interview. Deliberately short and
 /// editable: the plan itself carries the detail, and the instruction block
 /// already told the agent to treat its decisions as settled.
 const PLAN_KICKOFF_PROMPT: &str = "\
-Read `.claude/plan.md`. It is the plan I approved for this feature — its \
+Read `AMF_PLAN.md`. It is the plan I approved for this feature — its \
 decisions are settled unless I say otherwise.
 
 Start with the first unchecked task, and keep the task checkboxes current as \
 you go.";
 
 impl App {
+    /// Park the live interview so the dashboard and its sessions can be used
+    /// for repository research without flattening the interview into a saved
+    /// draft. Headless phases remain on screen: their pollers deliberately
+    /// discard results after navigating away, so parking one mid-call would
+    /// throw away paid work.
+    pub(crate) fn pause_plan_interview(&mut self) {
+        let background_running = self.plan_interview_ai_bg.is_some()
+            || self.plan_interview_synthesis_bg.is_some()
+            || self.plan_interview_critique_bg.is_some()
+            || self.plan_interview_directed_feedback_bg.is_some()
+            || self.plan_interview_investigation_bg.is_some();
+        if background_running {
+            self.message = Some(
+                "Wait for the current plan operation to finish before returning to the dashboard"
+                    .into(),
+            );
+            return;
+        }
+
+        // There is intentionally only one parked interview. All user-facing
+        // entry points prevent starting another one while it is parked, but
+        // keep this guard at the ownership boundary as well so a future entry
+        // point cannot silently replace the preserved editor state.
+        if self.paused_plan_interview.is_some() {
+            self.message = Some(
+                "Resume or finish the parked plan interview before pausing another one".into(),
+            );
+            return;
+        }
+
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::PlanInterview(mut state) => {
+                state.abort_confirmation = false;
+                state
+            }
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        let feature_name = state.feature_name.clone();
+        if let Some(prepared) = state.pending_launch.as_ref() {
+            if let Some(pi) = self
+                .store
+                .projects
+                .iter()
+                .position(|project| project.name == prepared.project_name)
+            {
+                self.selection = Selection::Project(pi);
+            }
+        } else if let Some((pi, fi)) = self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+            p.features
+                .iter()
+                .position(|feature| feature.id == state.interview_key)
+                .map(|fi| (pi, fi))
+        }) {
+            self.selection = Selection::Feature(pi, fi);
+        }
+
+        self.paused_plan_interview = Some(state);
+        self.message = Some(format!(
+            "Plan interview paused for '{feature_name}'; open a session to inspect the codebase"
+        ));
+    }
+
+    pub(crate) fn resume_paused_plan_interview(&mut self) -> bool {
+        let Some(state) = self.paused_plan_interview.take() else {
+            return false;
+        };
+        self.mode = AppMode::PlanInterview(state);
+        self.message = None;
+        true
+    }
+
+    /// A dashboard quit must not bypass the interview's explicit abort gate.
+    /// Reopen the parked interview with its full in-memory editor state and
+    /// ask the same question Esc would have asked before it was parked.
+    pub(crate) fn request_dashboard_quit(&mut self) {
+        if !self.resume_paused_plan_interview() {
+            self.should_quit = true;
+            return;
+        }
+
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            // The kickoff handoff appears only after the plan was accepted and
+            // persisted, so it has nothing left to abort. Reopening that prompt
+            // is sufficient; every earlier phase needs explicit confirmation.
+            if state.phase != PlanInterviewPhase::KickoffHandoff {
+                state.abort_confirmation = true;
+            }
+        }
+        self.message = None;
+    }
+
+    pub(crate) fn paused_plan_interview_belongs_to_project(&self, project_name: &str) -> bool {
+        let Some(interview) = self.paused_plan_interview.as_ref() else {
+            return false;
+        };
+        if interview
+            .pending_launch
+            .as_ref()
+            .is_some_and(|pending| pending.project_name == project_name)
+        {
+            return true;
+        }
+
+        self.store
+            .find_project(project_name)
+            .is_some_and(|project| {
+                project
+                    .features
+                    .iter()
+                    .any(|feature| feature.id == interview.interview_key)
+            })
+    }
+
+    pub(crate) fn paused_plan_interview_belongs_to_feature(&self, feature_id: &str) -> bool {
+        self.paused_plan_interview
+            .as_ref()
+            .is_some_and(|interview| {
+                interview.pending_launch.is_none() && interview.interview_key == feature_id
+            })
+    }
+
+    /// Whether Enter on the current dashboard row should reopen the parked
+    /// interview. A pending feature belongs to its project row because the
+    /// feature itself is not created until the plan is accepted; an on-demand
+    /// interview belongs to the existing feature row. Session rows remain free
+    /// to open for code inspection.
+    pub(crate) fn paused_plan_interview_matches_selection(&self) -> bool {
+        let Some(interview) = self.paused_plan_interview.as_ref() else {
+            return false;
+        };
+        match self.selection {
+            Selection::Project(pi) => interview.pending_launch.as_ref().is_some_and(|pending| {
+                self.store
+                    .projects
+                    .get(pi)
+                    .is_some_and(|project| project.name == pending.project_name)
+            }),
+            Selection::Feature(pi, fi) => {
+                interview.pending_launch.is_none()
+                    && self
+                        .store
+                        .projects
+                        .get(pi)
+                        .and_then(|project| project.features.get(fi))
+                        .is_some_and(|feature| feature.id == interview.interview_key)
+            }
+            Selection::Session(..) => false,
+        }
+    }
+
+    pub(crate) fn paused_plan_interview_for_project(&self, project_name: &str) -> Option<&str> {
+        let interview = self.paused_plan_interview.as_ref()?;
+        interview
+            .pending_launch
+            .as_ref()
+            .filter(|pending| pending.project_name == project_name)
+            .map(|_| interview.feature_name.as_str())
+    }
+
+    pub(crate) fn paused_plan_interview_for_feature(&self, feature_id: &str) -> bool {
+        self.paused_plan_interview
+            .as_ref()
+            .is_some_and(|interview| {
+                interview.pending_launch.is_none() && interview.interview_key == feature_id
+            })
+    }
+
     pub(crate) fn start_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
         let questions = self
             .store
@@ -53,6 +224,10 @@ impl App {
     /// interview is keyed by the feature's id, so a saved draft or an earlier
     /// accepted transcript for this feature is picked up on entry.
     pub(crate) fn start_plan_interview_for_selected_feature(&mut self) {
+        if self.resume_paused_plan_interview() {
+            return;
+        }
+
         let Some((project, feature)) = self.selected_feature() else {
             self.message = Some("Select a feature to plan".into());
             return;
@@ -1340,7 +1515,7 @@ impl App {
             _ => return Ok(()),
         };
 
-        if let Some(prepared) = pending {
+        if let Some(mut prepared) = pending {
             self.mode = AppMode::Normal;
             let project_name = prepared.project_name.clone();
             let branch = prepared.branch.clone();
@@ -1348,9 +1523,9 @@ impl App {
             // harness's instruction file (via `ensure_feature_running`), so the
             // agent already knows the plan is user-approved before it reads the
             // kickoff prompt.
+            prepared.startup_prompt = Some(PLAN_KICKOFF_PROMPT.to_string());
             self.finish_feature_launch_without_interview(prepared)?;
             self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
-            self.seed_plan_kickoff_prompt(&project_name, &branch);
             Ok(())
         } else {
             // On-demand: the feature already exists and is possibly already
@@ -1360,7 +1535,7 @@ impl App {
             self.apply_on_demand_plan(&interview_key, &workdir);
             self.finalize_plan_interview_transcript(&interview_key, "", "", &plan);
 
-            let plan_path = workdir.join(".claude").join(PLAN_FILE_NAME);
+            let plan_path = workdir.join(PLAN_FILE_NAME);
             // A running agent has no reason to re-read its instruction file, so
             // a plan written underneath it goes unnoticed until something says
             // so. Offer the handoff rather than sending it: the session may be
@@ -1560,7 +1735,7 @@ impl App {
 
     /// Make an on-demand plan effective for the feature it was written for.
     ///
-    /// Writing `.claude/plan.md` is not enough on its own: unless the harness's
+    /// Writing `AMF_PLAN.md` is not enough on its own: unless the harness's
     /// instruction file points at it, the agent is never told the plan exists.
     /// Running the interview is also taken as turning plan mode on, so a later
     /// restart keeps injecting the block instead of silently dropping it.
@@ -1642,57 +1817,6 @@ impl App {
                 "plan_interview",
                 format!("failed to save the accepted plan interview transcript: {e}"),
             ),
-        }
-    }
-
-    /// Open the freshly launched agent session with its composer seeded with a
-    /// kickoff prompt pointing at the accepted plan.
-    ///
-    /// Best-effort by design: this runs *after* the feature is created and
-    /// started, so nothing here is allowed to fail the accept. If the launch
-    /// took the user somewhere else (the startup steering prompt) or the
-    /// feature has no tmux-backed agent session, the plan file and instruction
-    /// block are already in place and the seed is simply skipped.
-    fn seed_plan_kickoff_prompt(&mut self, project_name: &str, branch: &str) {
-        if !matches!(self.mode, AppMode::Normal) {
-            return;
-        }
-
-        let Some((pi, fi, si)) = self
-            .store
-            .projects
-            .iter()
-            .position(|project| project.name == project_name)
-            .and_then(|pi| {
-                let fi = self.store.projects[pi]
-                    .features
-                    .iter()
-                    .position(|feature| feature.name == branch)?;
-                let si = self.store.projects[pi].features[fi]
-                    .sessions
-                    .iter()
-                    .position(|session| {
-                        session.kind.is_agent_harness() && session.kind.is_tmux_backed()
-                    })?;
-                Some((pi, fi, si))
-            })
-        else {
-            return;
-        };
-
-        self.selection = Selection::Session(pi, fi, si);
-        if let Err(e) = self.enter_view_without_auto_compose() {
-            self.log_warn(
-                "plan_interview",
-                format!("failed to open the new session for the plan kickoff prompt: {e}"),
-            );
-            return;
-        }
-        if let Err(e) = self.open_compose_seeded(PLAN_KICKOFF_PROMPT.to_string()) {
-            self.log_warn(
-                "plan_interview",
-                format!("failed to seed the plan kickoff prompt: {e}"),
-            );
         }
     }
 
@@ -1858,13 +1982,11 @@ fn render_static_plan(
 }
 
 fn write_plan_file(workdir: &Path, contents: &str) -> Result<()> {
-    let claude_dir = workdir.join(".claude");
-    fs::create_dir_all(&claude_dir)
-        .with_context(|| format!("failed to create plan directory {}", claude_dir.display()))?;
+    fs::create_dir_all(workdir)
+        .with_context(|| format!("failed to create plan directory {}", workdir.display()))?;
+    ensure_gitignore_entry(&workdir.join(".gitignore"), PLAN_FILE_NAME)?;
 
-    ensure_gitignore_entry(&claude_dir.join(".gitignore"), PLAN_FILE_NAME)?;
-
-    let plan_path = claude_dir.join(PLAN_FILE_NAME);
+    let plan_path = workdir.join(PLAN_FILE_NAME);
     fs::write(&plan_path, contents)
         .with_context(|| format!("failed to write plan file {}", plan_path.display()))
 }
@@ -1968,28 +2090,32 @@ mod tests {
     }
 
     #[test]
-    fn writing_plan_creates_claude_dir_and_idempotent_ignore_entry() {
+    fn writing_plan_creates_namespaced_root_file_and_preserves_repository_plan() {
         let workdir = TempDir::new().unwrap();
-        fs::create_dir(workdir.path().join(".claude")).unwrap();
-        fs::write(workdir.path().join(".claude/.gitignore"), "notifications/").unwrap();
+        fs::write(workdir.path().join(".gitignore"), "target/\n").unwrap();
+        fs::write(workdir.path().join("PLAN.md"), "# Repository plan\n").unwrap();
 
         write_plan_file(workdir.path(), "# First plan\n").unwrap();
         write_plan_file(workdir.path(), "# Updated plan\n").unwrap();
 
         assert_eq!(
-            fs::read_to_string(workdir.path().join(".claude/plan.md")).unwrap(),
+            fs::read_to_string(workdir.path().join("AMF_PLAN.md")).unwrap(),
             "# Updated plan\n"
         );
         assert_eq!(
-            fs::read_to_string(workdir.path().join(".claude/.gitignore")).unwrap(),
-            "notifications/\nplan.md\n"
+            fs::read_to_string(workdir.path().join("PLAN.md")).unwrap(),
+            "# Repository plan\n"
+        );
+        assert_eq!(
+            fs::read_to_string(workdir.path().join(".gitignore")).unwrap(),
+            "target/\nAMF_PLAN.md\n"
         );
     }
 
     #[test]
     fn non_worktree_plan_write_is_the_plan_sidebar_reads() {
         let repo = TempDir::new().unwrap();
-        let expected_plan = repo.path().join(".claude/plan.md");
+        let expected_plan = repo.path().join("AMF_PLAN.md");
 
         write_plan_file(
             repo.path(),
@@ -2006,6 +2132,7 @@ mod tests {
             Some("Plan: first feature\nFeature brief\nShip it.")
         );
         assert!(expected_plan.is_file());
+        assert!(!repo.path().join(".claude/plan.md").exists());
         assert!(!repo.path().join("PLAN.md").exists());
         assert!(!repo.path().join("plan.md").exists());
     }

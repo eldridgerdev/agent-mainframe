@@ -1252,7 +1252,7 @@ pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled:
     const BLOCK: &str = concat!(
         "<!-- AMF:plan-instructions:begin -->\n\n",
         "## Plan Mode\n\n",
-        "This feature has a user-authored plan at `.claude/plan.md`.\n\n",
+        "This feature has a user-authored plan at `AMF_PLAN.md`.\n\n",
         "Before doing implementation work, read the plan. Treat its decisions ",
         "as settled unless the user says otherwise, and keep its task ",
         "checkboxes and notes current as work progresses.\n\n",
@@ -1288,15 +1288,22 @@ pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled:
     }
 
     if enabled {
-        if has_block {
-            return; // already injected
-        }
-        let content = if current.is_empty() {
+        // Replace older AMF-managed content as well as injecting a missing
+        // block, so upgrades can migrate plan paths and future guidance
+        // without leaving restarted agents pointed at stale instructions.
+        let unmanaged = if has_block {
+            strip_between_markers(&current, BEGIN, END)
+        } else {
+            current.clone()
+        };
+        let content = if unmanaged.trim().is_empty() {
             BLOCK.to_string()
         } else {
-            format!("{}\n{}", current.trim_end(), BLOCK)
+            format!("{}\n{}", unmanaged.trim_end(), BLOCK)
         };
-        let _ = std::fs::write(&md_path, content);
+        if content != current {
+            let _ = std::fs::write(&md_path, content);
+        }
     } else {
         if has_block {
             let stripped = strip_between_markers(&current, BEGIN, END);

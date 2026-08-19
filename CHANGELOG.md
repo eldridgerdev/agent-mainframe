@@ -10,6 +10,32 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **PR Triage can run multiple named dedicated sessions at once.** After
+  choosing a dedicated harness from the first `f` or `B` fix-target prompt,
+  enter a session name to create or reuse that exact triage session. Leave the
+  name blank to keep reusing the original `PR Triage` session. The chosen name
+  follows fix injection, session switching, activity, and usage reporting.
+
+- **Plan interviews can pause while you inspect the codebase.** Press
+  `Ctrl+Q` to park the interview on the dashboard without losing the answer
+  you are editing. AMF marks the relevant project or feature row so `Enter`
+  can resume it directly; if you open a session to investigate first,
+  leaving that session returns to the interview automatically. A plan
+  operation already using agent tokens must finish before the interview can
+  be parked, so its result is not discarded.
+
+### Changed
+
+- **Plan mode now keeps its approved plan in `AMF_PLAN.md` at the feature root.**
+  The plan is no longer hidden under the Claude-specific `.claude/` directory,
+  and the AMF-specific name avoids overwriting a repository's conventional
+  `PLAN.md`. Codex also receives the same editable, unsubmitted kickoff prompt
+  as Claude when a newly approved plan starts work, including when startup
+  steering was enabled. Existing `PLAN.md` and `.claude/plan.md` files remain
+  readable as fallbacks.
+
 ### Fixed
 
 - **A waiting session is one entry in the needs-attention list, not hundreds.**
@@ -20,6 +46,19 @@ are tagged.
   session last said; a re-report replaces it silently instead of toasting
   again. Diff reviews and change reasons are unaffected — each one is its own
   request about its own edit and still gets its own row.
+
+- **Features with a damaged worktree can be deleted again.** If a worktree's
+  `.git` file is already missing, Git refuses to remove it even with force and
+  AMF used to leave the feature permanently stuck in the dashboard. AMF now
+  recognizes that stale-worktree failure and finishes removing the feature.
+
+### Migration
+
+- No migration is required. The next plan you accept is written to
+  `AMF_PLAN.md`; older `.claude/plan.md` files may be removed when no longer
+  needed.
+- Existing `PR Triage` and legacy `PR Review`
+  sessions continue to be recognized when the default name is used.
 
 ## [v0.37.0] - 2026-08-18
 

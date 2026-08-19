@@ -5,7 +5,7 @@
 //! input. This module layers the *why* on top: is the agent asking a question,
 //! has it finished work that wants review, or is it merely parked?
 //!
-//! Design constraints (see `.claude/plan.md`):
+//! Design constraints (see `PLAN.md`):
 //! - Nothing here is persisted. The map lives on `App`, is rebuilt from hook
 //!   events, and is empty after a restart. No `amf.db` migration.
 //! - `ProjectStatus` is untouched; the dashboard composes the persisted status

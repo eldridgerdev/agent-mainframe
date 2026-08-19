@@ -288,6 +288,8 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
             Span::raw(" skip  "),
             hint("Ctrl+F", theme),
             Span::raw(" draft plan now (uses tokens)  "),
+            hint("Ctrl+Q", theme),
+            Span::raw(" inspect dashboard  "),
             hint("Esc", theme),
             Span::raw(" cancel"),
         ])
@@ -812,7 +814,7 @@ fn draw_plan_review(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(area);
-    let source_path = state.workdir.join(".claude/plan.md");
+    let source_path = state.workdir.join("AMF_PLAN.md");
     let content = state.synthesized_plan.as_deref().unwrap_or_default();
     super::markdown::draw_markdown_document(
         frame,
@@ -864,6 +866,8 @@ fn draw_plan_review(
         Span::raw(" regenerate  "),
         hint("Enter", theme),
         Span::raw(" accept  "),
+        hint("Ctrl+Q", theme),
+        Span::raw(" inspect dashboard  "),
         hint("Esc", theme),
         Span::raw(" abort"),
     ]);

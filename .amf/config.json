@@ -41,6 +41,66 @@
       "placeholders": [],
       "tags": [],
       "updated_at": "2026-06-20T18:24:02.704863091Z"
+    },
+    {
+      "body": "Perform a {{ semver type:patch|minor|major }} version release using the release skill",
+      "created_at": "2026-06-22T14:22:34.837445373Z",
+      "description": null,
+      "id": "2d06fef4-64cf-47e1-91d6-d335abc7de1e",
+      "name": "Release",
+      "placeholders": [],
+      "tags": [],
+      "updated_at": "2026-06-24T12:19:24.431594288Z"
+    },
+    {
+      "body": "Look at the {{ plan_name }} plan and start implementing the next actionable item. Make sure the code and plan doc are updated from main before starting",
+      "created_at": "2026-06-24T14:54:55.476035207Z",
+      "description": null,
+      "id": "25a990ff-2562-4768-a73d-dd136f5fddb8",
+      "name": "next plan item",
+      "placeholders": [],
+      "tags": [
+        "plan"
+      ],
+      "updated_at": "2026-07-01T11:42:16.552494281Z"
+    },
+    {
+      "body": "update the changelog and backlog doc (if applicable), start a pr, give me back the PR numbber. If we generated a screenshot artifact include that in the PR description. Give me back a link to the PR. Make sure the link is formatted correctly (often there is a trailing \")\")",
+      "created_at": "2026-07-09T14:49:19.123210237Z",
+      "description": null,
+      "id": "a96284d6-29da-453d-83fd-4ca5c1f0f3f7",
+      "name": "Start PR",
+      "placeholders": [],
+      "tags": [
+        "PR"
+      ],
+      "updated_at": "2026-07-25T14:29:42.634715401Z"
+    },
+    {
+      "body": "if we haven't already for this feature, use the \"/amf-screenshot\" skill to show me what was changed for this feature",
+      "created_at": "2026-07-20T14:05:07.851703942Z",
+      "description": null,
+      "id": "b7beb167-d120-430a-a378-f8a10f68d232",
+      "name": "screenshots",
+      "placeholders": [],
+      "tags": [
+        "qa",
+        "test",
+        "screenshot"
+      ],
+      "updated_at": "2026-07-26T18:07:18.157941863Z"
+    },
+    {
+      "body": "check the {{ doc name }} backlog doc and a new unchecked item if it doesnt exist already:\n\n{{ doc item }}",
+      "created_at": "2026-08-05T13:50:19.565328322Z",
+      "description": null,
+      "id": "886989fd-056c-4b3a-bf4c-57fd16d1e433",
+      "name": "update backlog doc",
+      "placeholders": [],
+      "tags": [
+        "doc"
+      ],
+      "updated_at": "2026-08-05T13:50:19.565328322Z"
     }
   ]
 }

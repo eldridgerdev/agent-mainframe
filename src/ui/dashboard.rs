@@ -2392,6 +2392,7 @@ mod tests {
             fix_target_picked: false,
             usage_baselines: HashMap::new(),
             review_harness: None,
+            dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
             harness_pick: None,
             new_feature_setup: None,
             integrate: None,

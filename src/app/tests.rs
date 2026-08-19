@@ -799,7 +799,7 @@ fn plan_mode_instructions_use_claude_local_and_per_workdir_plan() {
 
     let instructions = std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap();
     assert!(instructions.starts_with("# Existing\n"));
-    assert!(instructions.contains("`.claude/plan.md`"));
+    assert!(instructions.contains("`AMF_PLAN.md`"));
     assert_eq!(
         instructions
             .matches("<!-- AMF:plan-instructions:begin -->")
@@ -813,12 +813,41 @@ fn plan_mode_instructions_use_claude_local_and_per_workdir_plan() {
             .lines()
             .any(|line| line == "CLAUDE.local.md")
     );
-    assert!(!workdir.path().join("PLAN.md").exists());
+    assert!(!workdir.path().join("AMF_PLAN.md").exists());
 
     ensure_plan_mode_instructions(workdir.path(), &AgentKind::Claude, false);
     assert_eq!(
         std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap(),
         "# Existing\n"
+    );
+}
+
+#[test]
+fn plan_mode_instructions_refresh_legacy_managed_block() {
+    let workdir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        workdir.path().join("CLAUDE.local.md"),
+        "# Existing\n\n\
+         <!-- AMF:plan-instructions:begin -->\n\n\
+         ## Plan Mode\n\n\
+         Read `.claude/plan.md` before implementation.\n\n\
+         <!-- AMF:plan-instructions:end -->\n",
+    )
+    .unwrap();
+
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Claude, true);
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Claude, true);
+
+    let instructions = std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap();
+    assert!(instructions.starts_with("# Existing\n"));
+    assert!(!instructions.contains("`.claude/plan.md`"));
+    assert!(instructions.contains("`AMF_PLAN.md`"));
+    assert_eq!(
+        instructions
+            .matches("<!-- AMF:plan-instructions:begin -->")
+            .count(),
+        1,
+        "managed instruction replacement should be idempotent"
     );
 }
 
@@ -863,7 +892,7 @@ fn plan_mode_instructions_use_agents_for_non_claude_harnesses() {
         ensure_plan_mode_instructions(workdir.path(), &agent, true);
 
         let instructions = std::fs::read_to_string(workdir.path().join("AGENTS.md")).unwrap();
-        assert!(instructions.contains("`.claude/plan.md`"));
+        assert!(instructions.contains("`AMF_PLAN.md`"));
         assert!(!workdir.path().join("CLAUDE.local.md").exists());
         let ignore = std::fs::read_to_string(workdir.path().join(".gitignore")).unwrap();
         assert!(ignore.lines().any(|line| line == "AGENTS.md"));
@@ -3022,8 +3051,174 @@ fn on_demand_plan_interview_plans_the_selected_feature_without_a_launch() {
 }
 
 #[test]
+fn plan_interview_can_pause_to_its_dashboard_row_and_resume_with_enter() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Uncommitted research question".into());
+    }
+
+    crate::handlers::handle_plan_interview_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(matches!(app.selection, Selection::Project(0)));
+    assert!(app.paused_plan_interview_matches_selection());
+    assert_eq!(
+        app.paused_plan_interview.as_ref().unwrap().editor.text(),
+        "Uncommitted research question"
+    );
+
+    crate::handlers::handle_normal_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.editor.text(), "Uncommitted research question");
+        }
+        _ => panic!("Enter on the marked project must resume its interview"),
+    }
+    assert!(app.paused_plan_interview.is_none());
+}
+
+#[test]
+fn dashboard_quit_reopens_the_parked_interview_abort_confirmation() {
+    for key in [KeyCode::Char('q'), KeyCode::Esc] {
+        let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+        if let AppMode::PlanInterview(state) = &mut app.mode {
+            state.editor = crate::editor::TextEditor::new("Uncommitted answer".into());
+        }
+        app.pause_plan_interview();
+
+        crate::handlers::handle_normal_key(&mut app, ke(key)).unwrap();
+
+        assert!(!app.should_quit);
+        assert!(app.paused_plan_interview.is_none());
+        match &app.mode {
+            AppMode::PlanInterview(state) => {
+                assert!(state.abort_confirmation);
+                assert_eq!(state.editor.text(), "Uncommitted answer");
+            }
+            _ => panic!("dashboard quit must return to the interview abort gate"),
+        }
+    }
+}
+
+#[test]
+fn parked_plan_interview_blocks_another_feature_and_owning_project_deletion() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.pause_plan_interview();
+
+    app.start_create_feature();
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.paused_plan_interview.is_some());
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("before creating another feature")
+    );
+
+    crate::handlers::handle_normal_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.paused_plan_interview.is_some());
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("before deleting its project")
+    );
+}
+
+#[test]
+fn parked_plan_interview_blocks_owning_feature_deletion() {
+    let (mut app, _store_file, _repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+    app.pause_plan_interview();
+
+    crate::handlers::handle_normal_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.paused_plan_interview.is_some());
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("before deleting its feature")
+    );
+}
+
+#[test]
+fn pause_plan_interview_never_overwrites_an_existing_parked_interview() {
+    let (mut app, _store_file, _repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("First interview".into());
+    }
+    app.pause_plan_interview();
+
+    let mut second =
+        crate::app::PlanInterviewState::new("second".into(), "second-id".into(), Vec::new(), None);
+    second.editor = crate::editor::TextEditor::new("Second interview".into());
+    app.mode = AppMode::PlanInterview(second);
+    app.pause_plan_interview();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.editor.text() == "Second interview"
+    ));
+    assert_eq!(
+        app.paused_plan_interview.as_ref().unwrap().editor.text(),
+        "First interview"
+    );
+}
+
+#[test]
+fn leaving_a_session_returns_to_the_paused_plan_interview() {
+    let (mut app, _store_file, _repo) = app_on_selected_feature();
+    app.start_plan_interview_for_selected_feature();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Look up the router first".into());
+    }
+    app.pause_plan_interview();
+
+    // `exit_view` is the common destination of Ctrl+Q from every embedded
+    // session. The parked interview takes precedence over the usual dashboard
+    // return and retains even text that has not yet been committed as an answer.
+    app.exit_view();
+
+    match &app.mode {
+        AppMode::PlanInterview(state) => {
+            assert_eq!(state.editor.text(), "Look up the router first")
+        }
+        _ => panic!("leaving the inspection session must restore the interview"),
+    }
+    assert!(app.paused_plan_interview.is_none());
+}
+
+#[test]
+fn plan_interview_does_not_pause_while_a_paid_operation_is_running() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_synthesis_bg = Some(rx);
+
+    app.pause_plan_interview();
+
+    assert!(matches!(app.mode, AppMode::PlanInterview(_)));
+    assert!(app.paused_plan_interview.is_none());
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("operation to finish")
+    );
+}
+
+#[test]
 fn accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir() {
     let (mut app, _store_file, repo) = app_on_selected_feature();
+    std::fs::write(repo.path().join("PLAN.md"), "# Repository roadmap\n").unwrap();
     app.start_plan_interview_for_selected_feature();
     force_plan_interview_raw_fallback(&mut app);
 
@@ -3038,14 +3233,18 @@ fn accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir() {
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert!(matches!(app.mode, AppMode::Normal));
-    let plan = std::fs::read_to_string(repo.path().join(".claude/plan.md")).unwrap();
+    let plan = std::fs::read_to_string(repo.path().join("AMF_PLAN.md")).unwrap();
     assert!(plan.contains("Tighten the sidebar"));
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("PLAN.md")).unwrap(),
+        "# Repository roadmap\n"
+    );
     // Writing the file is not enough on its own: without the instruction block
     // the agent is never told the plan exists, and without the flag a restart
     // would stop injecting it.
     assert!(app.store.projects[0].features[0].plan_mode);
     let instructions = std::fs::read_to_string(repo.path().join("CLAUDE.local.md")).unwrap();
-    assert!(instructions.contains(".claude/plan.md"));
+    assert!(instructions.contains("AMF_PLAN.md"));
 }
 
 /// `app_on_selected_feature`, but the feature's agent session is live — the
@@ -3103,14 +3302,14 @@ fn accepting_an_on_demand_plan_offers_the_kickoff_to_a_running_session() {
             let target = state.kickoff_handoff.as_ref().unwrap();
             assert_eq!(target.session_label, "Claude 1");
             assert_eq!(target.session_id, "session-Claude 1");
-            assert_eq!(target.plan_path, repo.path().join(".claude/plan.md"));
+            assert_eq!(target.plan_path, repo.path().join("AMF_PLAN.md"));
         }
         _ => panic!("expected the handoff prompt"),
     }
     // The offer comes after the accept has fully landed, so declining it can
     // never cost the plan.
     assert!(
-        std::fs::read_to_string(repo.path().join(".claude/plan.md"))
+        std::fs::read_to_string(repo.path().join("AMF_PLAN.md"))
             .unwrap()
             .contains("Tighten the sidebar")
     );
@@ -3129,7 +3328,7 @@ fn declining_the_kickoff_handoff_leaves_the_running_session_alone() {
         app.message
             .as_deref()
             .unwrap()
-            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+            .contains(&repo.path().join("AMF_PLAN.md").display().to_string())
     );
 }
 
@@ -3145,7 +3344,7 @@ fn accepting_the_kickoff_handoff_seeds_the_running_sessions_composer() {
     match &app.mode {
         AppMode::Compose(state) => {
             let seed = state.editor.text();
-            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("AMF_PLAN.md"));
             assert!(seed.contains("decisions are settled"));
             assert_eq!(state.view.feature_name, "my-feat");
         }
@@ -3171,7 +3370,7 @@ fn a_feature_marked_active_without_a_tmux_session_gets_no_handoff_offer() {
         app.message
             .as_deref()
             .unwrap()
-            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+            .contains(&repo.path().join("AMF_PLAN.md").display().to_string())
     );
 }
 
@@ -3193,7 +3392,7 @@ fn a_feature_whose_agent_window_exited_gets_no_handoff_offer() {
         app.message
             .as_deref()
             .unwrap()
-            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+            .contains(&repo.path().join("AMF_PLAN.md").display().to_string())
     );
 }
 
@@ -3243,7 +3442,7 @@ fn a_harness_that_exits_while_the_offer_is_up_is_not_reopened() {
 
     assert!(matches!(app.mode, AppMode::Normal));
     let message = app.message.as_deref().unwrap();
-    assert!(message.contains(&repo.path().join(".claude/plan.md").display().to_string()));
+    assert!(message.contains(&repo.path().join("AMF_PLAN.md").display().to_string()));
     assert!(message.contains("no longer running"));
 }
 
@@ -3263,7 +3462,7 @@ fn aborting_an_on_demand_interview_has_no_feature_to_cancel() {
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
     assert!(matches!(app.mode, AppMode::Normal));
     // Leaving is non-destructive: the feature keeps whatever plan it had.
-    assert!(!repo.path().join(".claude/plan.md").exists());
+    assert!(!repo.path().join("AMF_PLAN.md").exists());
     assert!(!app.store.projects[0].features[0].plan_mode);
     assert_eq!(app.store.projects[0].features.len(), 1);
 }
@@ -3304,6 +3503,18 @@ fn app_with_deferred_plan_interview_and_db() -> (App, tempfile::NamedTempFile, T
 fn plan_interview_app(
     db_path: Option<&std::path::Path>,
 ) -> (App, tempfile::NamedTempFile, TempDir) {
+    plan_interview_app_for_agent(db_path, AgentKind::Claude)
+}
+
+fn plan_interview_app_for_agent(
+    db_path: Option<&std::path::Path>,
+    agent: AgentKind,
+) -> (App, tempfile::NamedTempFile, TempDir) {
+    let mode = if agent == AgentKind::Codex {
+        VibeMode::Vibe
+    } else {
+        VibeMode::default()
+    };
     let repo = TempDir::new().unwrap();
     let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
     // Permissive rather than strict-sequence expectations: these tests care
@@ -3315,8 +3526,16 @@ fn plan_interview_app(
         .returning(|_, _, _| Ok(()));
     tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
     tmux.expect_create_window().returning(|_, _, _| Ok(()));
-    tmux.expect_launch_claude()
-        .returning(|_, _, _, _, _| Ok(()));
+    match agent {
+        AgentKind::Claude => {
+            tmux.expect_launch_claude()
+                .returning(|_, _, _, _, _| Ok(()));
+        }
+        AgentKind::Codex => {
+            tmux.expect_launch_codex().returning(|_, _, _, _, _| Ok(()));
+        }
+        _ => unreachable!("this helper only covers plan kickoff harnesses"),
+    }
     tmux.expect_select_window().returning(|_, _| Ok(()));
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     let store_file = NamedTempFile::new().unwrap();
@@ -3329,12 +3548,12 @@ fn plan_interview_app(
         branch: "planned-feature".into(),
         workdir: repo.path().join(".worktrees/planned-feature"),
         is_worktree: true,
-        mode: VibeMode::default(),
+        mode,
         review: false,
         plan_mode: true,
-        agent: AgentKind::Claude,
+        session_name: format!("{} 1", agent.display_name()),
+        agent,
         create_terminal: false,
-        session_name: "Claude 1".into(),
         enable_chrome: false,
         remote_control: false,
         steering_enabled: false,
@@ -3346,6 +3565,51 @@ fn plan_interview_app(
     // caller; `repo` is returned too so the workdir it created stays alive
     // rather than being deleted the instant this function returns.
     (app, store_file, repo)
+}
+
+#[test]
+fn accepting_a_codex_plan_seeds_the_approved_plan_kickoff_prompt() {
+    let (mut app, _store_file, _repo) = plan_interview_app_for_agent(None, AgentKind::Codex);
+    app.config.max_concurrent_agents = 0;
+    force_plan_interview_raw_fallback(&mut app);
+
+    let workdir = match &mut app.mode {
+        AppMode::PlanInterview(state) => {
+            // The approved plan is itself the startup direction, so its
+            // kickoff must win over the wizard's optional blank steering box.
+            state.pending_launch.as_mut().unwrap().steering_enabled = true;
+            state.brief = "Implement this with Codex".into();
+            state.synthesis_requested = true;
+            state.phase = PlanInterviewPhase::Done;
+            state.workdir.clone()
+        }
+        _ => panic!("expected plan interview mode"),
+    };
+    app.continue_plan_interview_after_done().unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert!(
+        matches!(app.mode, AppMode::Compose(_)),
+        "expected composer after Codex launch; message: {:?}",
+        app.message
+    );
+    assert!(workdir.join("AMF_PLAN.md").is_file());
+    assert_eq!(app.store.projects[0].features[1].agent, AgentKind::Codex);
+    assert!(app.store.projects[0].features[1].plan_mode);
+    assert_eq!(app.store.projects[0].features[1].workdir, workdir);
+    assert!(
+        std::fs::read_to_string(workdir.join("AGENTS.md"))
+            .unwrap()
+            .contains("`AMF_PLAN.md`")
+    );
+    match &app.mode {
+        AppMode::Compose(state) => {
+            assert_eq!(state.view.session_kind, SessionKind::Codex);
+            assert!(state.editor.text().contains("Read `AMF_PLAN.md`"));
+            assert!(state.editor.text().contains("decisions are settled"));
+        }
+        _ => panic!("expected Codex's composer to contain the kickoff prompt"),
+    }
 }
 
 /// Keep completion-path tests deterministic and offline. `Some(None)` means
@@ -3996,7 +4260,7 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
                 && state.synthesized_plan.as_deref()
                     == Some(synthesized_plan_response().as_str())
     ));
-    assert!(!workdir.join(".claude/plan.md").exists());
+    assert!(!workdir.join("AMF_PLAN.md").exists());
     assert!(
         !app.store.projects[0]
             .features
@@ -4007,7 +4271,7 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert_eq!(
-        std::fs::read_to_string(workdir.join(".claude/plan.md")).unwrap(),
+        std::fs::read_to_string(workdir.join("AMF_PLAN.md")).unwrap(),
         synthesized_plan_response()
     );
     assert!(
@@ -4021,7 +4285,7 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
     match &app.mode {
         AppMode::Compose(state) => {
             let seed = state.editor.text();
-            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("AMF_PLAN.md"));
             assert!(seed.contains("decisions are settled"));
             assert_eq!(state.view.feature_name, "planned-feature");
         }
@@ -4063,7 +4327,7 @@ fn poll_plan_interview_synthesis_bg_uses_raw_fallback_for_incomplete_markdown() 
     assert!(plan.contains("## Q&A"));
     assert!(plan.contains(&format!("### {first_question}\n\nAnswered this one")));
     assert!(!plan.contains("_Skipped._"));
-    assert!(!workdir.join(".claude/plan.md").exists());
+    assert!(!workdir.join("AMF_PLAN.md").exists());
     assert!(
         app.debug_log
             .entries()
@@ -12186,6 +12450,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,
@@ -12290,6 +12555,34 @@ fn pr_review_toggle_to_session_jumps_and_stashes_state() {
 }
 
 #[test]
+fn pr_review_toggle_to_session_uses_the_selected_custom_name() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Codex, "PR 321 security".to_string());
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.dedicated_session_label = "PR 321 security".to_string();
+        state.fix_target_picked = true;
+    }
+
+    app.pr_review_toggle_to_session().unwrap();
+
+    match &app.mode {
+        AppMode::Viewing(view) => {
+            assert_eq!(view.session_label, "PR 321 security");
+            assert_eq!(view.session_kind, SessionKind::Codex);
+        }
+        other => panic!("expected Viewing, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
 fn pr_review_return_to_pane_restores_stashed_state() {
     let mut store = store_with_feature(ProjectStatus::Active);
     store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
@@ -12380,6 +12673,10 @@ fn pr_review_inject_fix_also_stashes_return_state() {
     enter_pr_review_for_feature(&mut app, 2);
     if let AppMode::PrReview(state) = &mut app.mode {
         state.selected = 1;
+        // This regression exercises the post-target confirm/inject path; the
+        // target picker (including its new optional name step) is covered
+        // separately.
+        state.fix_target_picked = true;
     }
     // Go through the real confirm-dialog path (`f` opens it, then the user
     // confirms) rather than the no-dialog fallback — a prior version of this
@@ -12452,6 +12749,42 @@ fn pr_review_inject_fix_also_stashes_return_state() {
 }
 
 #[test]
+fn pr_review_inject_fix_rejects_a_named_session_with_the_wrong_harness() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "PR 321 security".to_string());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).returning(|_| true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        // Simulate a selection that became stale after the picker closed. The
+        // injection boundary must still refuse to route Codex work into the
+        // same-named Claude session.
+        state.fix_target_picked = true;
+        state.review_harness = Some(AgentKind::Codex);
+        state.dedicated_session_label = "PR 321 security".to_string();
+    }
+    app.pr_review_open_fix_confirm();
+
+    app.pr_review_inject_fix().unwrap();
+
+    assert!(
+        matches!(&app.mode, AppMode::PrReview(state)
+            if state.review.comments[0].triage
+                == crate::app::pr_review::TriageState::Untriaged),
+        "a rejected target must leave the comment and pane untouched"
+    );
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|toast| toast.message.contains("already runs Claude")),
+        "expected an actionable harness-conflict toast, got {:?}",
+        app.toasts.last().map(|toast| &toast.message)
+    );
+}
+
+#[test]
 fn pr_review_inject_fix_targets_dialogs_original_comment_after_selection_moves() {
     // Regression: a PR Triage refresh (e.g. the automatic one after posting
     // an AI review) can drop the comment a still-open fix-confirm dialog was
@@ -12469,6 +12802,9 @@ fn pr_review_inject_fix_targets_dialogs_original_comment_after_selection_moves()
     enter_pr_review_for_feature(&mut app, 2);
     if let AppMode::PrReview(state) = &mut app.mode {
         state.selected = 1; // comment id 2
+        // Keep this regression focused on the stale-dialog target rather than
+        // the first-fix target/name picker.
+        state.fix_target_picked = true;
     }
     app.pr_review_open_fix_confirm();
     let request_id = match &app.mode {
@@ -12550,6 +12886,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,
@@ -14048,6 +14385,36 @@ fn pr_review_dedicated_session_status_is_absent_before_creation() {
 }
 
 #[test]
+fn pr_review_dedicated_session_status_is_absent_for_existing_live_target() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Working session".to_string());
+    let session_id = session.id.clone();
+    let tmux_session = store.projects[0].features[0].tmux_session.clone();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.fix_target = crate::app::pr_review::FixTarget::ExistingLive;
+        state.fix_target_picked = true;
+    }
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-start",
+        "session_id": tmux_session,
+        "amf_feature_session_id": session_id,
+    }));
+
+    assert_eq!(
+        app.pr_review_dedicated_session_working(),
+        None,
+        "existing-live activity must not be rendered as dedicated activity"
+    );
+}
+
+#[test]
 fn pr_review_triage_session_usage_reports_only_growth_since_baseline() {
     let mut store = store_with_feature(ProjectStatus::Active);
     let session = store.projects[0].features[0].add_session_named(
@@ -14415,12 +14782,20 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
 
-    // Choosing the harness remembers it and continues into the fix confirm.
+    // Choosing the harness advances to the optional session-name step. A
+    // second confirmation accepts the backwards-compatible default name and
+    // continues into the fix confirm.
+    app.pr_review_harness_pick_confirm();
+    assert!(app.pr_review_harness_pick_naming());
     app.pr_review_harness_pick_confirm();
     match &app.mode {
         AppMode::PrReview(state) => {
             assert!(state.harness_pick.is_none());
             assert_eq!(state.review_harness, Some(AgentKind::default()));
+            assert_eq!(
+                state.dedicated_session_label,
+                crate::app::pr_review::TRIAGE_SESSION_LABEL
+            );
             assert!(
                 state.fix_confirm.is_some(),
                 "fix confirm should now be open"
@@ -14428,6 +14803,80 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
+}
+
+#[test]
+fn pr_review_dedicated_target_accepts_a_custom_session_name() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 2);
+
+    app.pr_review_open_fix_confirm();
+    app.pr_review_harness_pick_confirm();
+    assert!(app.pr_review_harness_pick_naming());
+    for c in "PR 321 security".chars() {
+        app.pr_review_harness_pick_name_push(c);
+    }
+    app.pr_review_harness_pick_confirm();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.dedicated_session_label, "PR 321 security");
+            assert_eq!(state.review_harness, Some(AgentKind::default()));
+            assert!(state.harness_pick.is_none());
+            assert!(state.fix_confirm.is_some());
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn pr_review_dedicated_target_rejects_a_name_owned_by_another_harness() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "PR 321 security".to_string());
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 1);
+
+    app.pr_review_open_fix_confirm();
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let pick = state.harness_pick.as_mut().unwrap();
+        pick.selected = pick
+            .rows
+            .iter()
+            .position(|row| {
+                *row == crate::app::pr_review::FixTargetPickRow::Dedicated(AgentKind::Codex)
+            })
+            .unwrap();
+    }
+    app.pr_review_harness_pick_confirm();
+    for c in "PR 321 security".chars() {
+        app.pr_review_harness_pick_name_push(c);
+    }
+    app.pr_review_harness_pick_confirm();
+
+    assert!(
+        matches!(&app.mode, AppMode::PrReview(state)
+            if state.harness_pick.is_some()
+                && state.review_harness.is_none()
+                && state.fix_confirm.is_none()),
+        "the naming step should stay open after a harness collision"
+    );
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|toast| toast.message.contains("already runs Claude")),
+        "expected an actionable harness-conflict toast, got {:?}",
+        app.toasts.last().map(|toast| &toast.message)
+    );
 }
 
 #[test]
@@ -14638,7 +15087,10 @@ fn pr_review_batch_routes_through_harness_pick_then_opens_combined() {
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
 
-    // Choosing the harness opens the *combined* dialog and clears the flag.
+    // Choosing the harness, then accepting the default session name, opens
+    // the *combined* dialog and clears the flag.
+    app.pr_review_harness_pick_confirm();
+    assert!(app.pr_review_harness_pick_naming());
     app.pr_review_harness_pick_confirm();
     match &app.mode {
         AppMode::PrReview(state) => {
@@ -14746,6 +15198,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,
@@ -14820,6 +15273,7 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,
@@ -15363,6 +15817,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,
@@ -17495,6 +17950,37 @@ fn closing_todos_overlay_returns_to_session_selection() {
 
     assert!(matches!(app.mode, AppMode::Normal));
     assert!(matches!(app.selection, Selection::Session(0, 0, s) if s == si));
+}
+
+#[test]
+fn closing_todos_overlay_returns_to_the_paused_plan_interview() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.start_plan_interview_for_selected_feature();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.editor = crate::editor::TextEditor::new("Inspect the TODO list".into());
+    }
+    app.pause_plan_interview();
+
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+    let si = app.store.projects[0].features[0]
+        .sessions
+        .iter()
+        .position(|session| session.kind == SessionKind::Todos)
+        .unwrap();
+    app.selection = Selection::Session(0, 0, si);
+    app.enter_view().unwrap();
+    app.close_todos_view();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.editor.text() == "Inspect the TODO list"
+    ));
+    assert!(app.paused_plan_interview.is_none());
 }
 
 #[test]

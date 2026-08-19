@@ -86,9 +86,12 @@ impl App {
 
     fn delete_failure_is_recoverable(stage: DeleteStage, output: &str) -> bool {
         matches!(stage, DeleteStage::RemovingWorktree)
-            && output
-                .lines()
-                .any(|line| line.contains("not a working tree"))
+            && output.lines().any(|line| {
+                line.contains("not a working tree")
+                    || (line.contains("validation failed, cannot remove working tree")
+                        && line.contains(".git")
+                        && line.contains("does not exist"))
+            })
     }
 
     fn background_command_error(stage: DeleteStage, code: Option<i32>, output: &str) -> String {
@@ -137,6 +140,13 @@ impl App {
     }
 
     pub fn start_create_feature(&mut self) {
+        if self.paused_plan_interview.is_some() {
+            self.message = Some(
+                "Resume or finish the parked plan interview before creating another feature".into(),
+            );
+            return;
+        }
+
         let (project_name, project_repo, preferred_agent, is_first, used_workdirs) = match &self
             .selection
         {
@@ -1223,6 +1233,27 @@ impl App {
             _ => return Ok(()),
         };
 
+        let feature_id = self
+            .store
+            .find_project(&project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == feature_name)
+            })
+            .map(|feature| feature.id.clone());
+        if feature_id
+            .as_deref()
+            .is_some_and(|id| self.paused_plan_interview_belongs_to_feature(id))
+        {
+            self.mode = AppMode::Normal;
+            self.message = Some(
+                "Resume or finish the parked plan interview before deleting its feature".into(),
+            );
+            return Ok(());
+        }
+
         let (tmux_session, is_worktree, repo, workdir, agent, audit_details) = if let Some(project) =
             self.store.find_project(&project_name)
             && let Some(feature) = project.features.iter().find(|f| f.name == feature_name)
@@ -1855,6 +1886,14 @@ mod tests {
         assert!(App::delete_failure_is_recoverable(
             DeleteStage::RemovingWorktree,
             "fatal: '/tmp/missing-worktree' is not a working tree",
+        ));
+    }
+
+    #[test]
+    fn reconciles_worktree_with_missing_git_file() {
+        assert!(App::delete_failure_is_recoverable(
+            DeleteStage::RemovingWorktree,
+            "fatal: validation failed, cannot remove working tree: /tmp/repo/.worktrees/broken/.git does not exist",
         ));
     }
 

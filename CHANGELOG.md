@@ -38,6 +38,15 @@ are tagged.
 
 ### Fixed
 
+- **A waiting session is one entry in the needs-attention list, not hundreds.**
+  Harnesses re-report a stop freely — Claude's Stop hook fires at every turn
+  boundary — and each report was queued as its own input request, so a session
+  left waiting could fill `i` (and the header count) with identical rows for
+  the same feature. Only one wait is now pending per session, showing what the
+  session last said; a re-report replaces it silently instead of toasting
+  again. Diff reviews and change reasons are unaffected — each one is its own
+  request about its own edit and still gets its own row.
+
 - **Features with a damaged worktree can be deleted again.** If a worktree's
   `.git` file is already missing, Git refuses to remove it even with force and
   AMF used to leave the feature permanently stuck in the dashboard. AMF now

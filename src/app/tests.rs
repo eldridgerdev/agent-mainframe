@@ -9950,6 +9950,273 @@ fn ipc_input_request_updates_codex_live_work_state() {
     );
 }
 
+/// Stamp `path` with an explicit modification time. Filesystem timestamp
+/// granularity can be coarse enough that two consecutive writes land on the
+/// same instant, which would make a recency assertion meaningless.
+fn set_mtime(path: &std::path::Path, modified: std::time::SystemTime) {
+    let file = std::fs::File::options().write(true).open(path).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+}
+
+/// A file-backed session wait, as the notification scan builds them.
+fn file_session_wait(file_path: &std::path::Path, message: &str) -> PendingInput {
+    PendingInput {
+        session_id: "amf-my-feat".to_string(),
+        cwd: String::new(),
+        message: message.to_string(),
+        notification_type: "input-request".to_string(),
+        file_path: file_path.to_path_buf(),
+        target_file_path: None,
+        relative_path: None,
+        change_id: None,
+        tool: None,
+        old_snippet: None,
+        new_snippet: None,
+        original_file: None,
+        proposed_file: None,
+        is_new_file: None,
+        reason: None,
+        response_file: None,
+        project_name: Some("my-project".to_string()),
+        feature_name: Some("my-feat".to_string()),
+        proceed_signal: None,
+        request_id: None,
+        reply_socket: None,
+    }
+}
+
+#[test]
+fn collapsing_session_waits_keeps_the_newest_report_not_the_first_scanned() {
+    let dir = TempDir::new().unwrap();
+    let older = dir.path().join("feature-local.json");
+    let newer = dir.path().join("global.json");
+    std::fs::write(&older, "{}").unwrap();
+    // Distinct mtimes: filesystem timestamp granularity can be coarse, so
+    // stamp the older file explicitly rather than relying on write order.
+    let now = std::time::SystemTime::now();
+    set_mtime(&older, now - std::time::Duration::from_secs(60));
+    std::fs::write(&newer, "{}").unwrap();
+    set_mtime(&newer, now);
+
+    // `read_dir` promises no ordering and the feature-local directory is
+    // always scanned before the global one, so the older copy routinely
+    // arrives first. Keeping whichever came first would strand the stale
+    // message and delete the live file.
+    let mut inputs = vec![
+        file_session_wait(&older, "Stale first report"),
+        file_session_wait(&newer, "Current report"),
+    ];
+    App::collapse_session_waits(&mut inputs);
+
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].message, "Current report");
+    assert_eq!(inputs[0].file_path, newer);
+    assert!(
+        !older.exists(),
+        "the superseded report's file must be deleted"
+    );
+    assert!(newer.exists(), "the surviving report keeps its file");
+}
+
+#[test]
+fn collapsing_session_waits_prefers_a_file_report_over_a_stale_ipc_one() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("stop.json");
+    std::fs::write(&file, "{}").unwrap();
+
+    // An IPC entry only survives the preservation loop when no file matched
+    // it, and the file fallback is written when the live wait times out — by
+    // then the socket the IPC copy names is gone.
+    let mut ipc = file_session_wait(std::path::Path::new(""), "Reported over IPC");
+    ipc.request_id = Some("req-1".to_string());
+    ipc.reply_socket = Some("/tmp/amf-ipc-reply/req-1.sock".to_string());
+    let mut inputs = vec![ipc, file_session_wait(&file, "Rewritten as a file")];
+    App::collapse_session_waits(&mut inputs);
+
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].message, "Rewritten as a file");
+    assert!(
+        file.exists(),
+        "the winning report's file must not be removed"
+    );
+}
+
+#[test]
+fn a_rewritten_session_wait_file_does_not_toast_again() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+
+    let notify_dir = workdir.path().join(".claude").join("notifications");
+    std::fs::create_dir_all(&notify_dir).unwrap();
+    let write_wait = |message: &str| {
+        std::fs::write(
+            notify_dir.join("input-request.json"),
+            serde_json::to_string(&serde_json::json!({
+                "session_id": "amf-my-feat",
+                "cwd": workdir.path().display().to_string(),
+                "message": message,
+                "type": "input-request",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    };
+
+    write_wait("Need input before continuing.");
+    app.scan_notifications_forced();
+    assert_eq!(app.toasts.len(), 1);
+
+    // The harness re-reports the same standing wait with a fresher message.
+    // The row is replaced silently; a toast per repeat is what buried the
+    // dashboard, and full-struct equality no longer recognises the repeat.
+    write_wait("Still waiting, now on the second question.");
+    app.scan_notifications_forced();
+
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(
+        app.pending_inputs[0].message,
+        "Still waiting, now on the second question."
+    );
+    assert_eq!(app.toasts.len(), 1, "a re-report must not toast again");
+}
+
+#[test]
+fn repeated_stop_reports_leave_one_pending_input_per_session() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // Claude's Stop hook fires at every turn boundary, so one waiting session
+    // reports the same stop over and over. It is a standing fact about the
+    // session, not a queue of requests: the overlay must list it once, showing
+    // what the session last said.
+    for message in ["First stop", "Second stop", "Third stop"] {
+        app.handle_ipc_message_value(serde_json::json!({
+            "session_id": "amf-my-feat",
+            "cwd": workdir.path().display().to_string(),
+            "message": message
+        }));
+    }
+
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.pending_inputs[0].message, "Third stop");
+    assert_eq!(
+        app.pending_inputs[0].feature_name.as_deref(),
+        Some("my-feat")
+    );
+}
+
+#[test]
+fn a_re_reported_input_request_is_not_toasted_again() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    let mut request = |message: &str| {
+        app.handle_ipc_message_value(serde_json::json!({
+            "type": "input-request",
+            "session_id": "amf-my-feat",
+            "cwd": workdir.path().display().to_string(),
+            "message": message
+        }));
+    };
+    request("Waiting on you");
+    request("Still waiting on you");
+
+    // The first report is news; the second is the same session saying so
+    // again, and a toast per repeat is what buried the dashboard.
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.toasts.len(), 1);
+}
+
+#[test]
+fn deduping_stops_is_per_session_not_global() {
+    let workdir = TempDir::new().unwrap();
+    let other = TempDir::new().unwrap();
+    let mut store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Active);
+    let mut second = store.projects[0].features[0].clone();
+    second.id = "feat-2".to_string();
+    second.name = "other-feat".to_string();
+    second.workdir = other.path().to_path_buf();
+    second.tmux_session = "amf-other-feat".to_string();
+    store.projects[0].features.push(second);
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    for _ in 0..3 {
+        app.handle_ipc_message_value(serde_json::json!({
+            "session_id": "amf-my-feat",
+            "cwd": workdir.path().display().to_string(),
+            "message": "waiting"
+        }));
+        app.handle_ipc_message_value(serde_json::json!({
+            "session_id": "amf-other-feat",
+            "cwd": other.path().display().to_string(),
+            "message": "waiting"
+        }));
+    }
+
+    // Collapsing by session must not collapse two sessions into one: both
+    // features are still waiting and both have to be reachable from `i`.
+    let waiting: Vec<&str> = app
+        .pending_inputs
+        .iter()
+        .filter_map(|input| input.feature_name.as_deref())
+        .collect();
+    assert_eq!(waiting, vec!["my-feat", "other-feat"]);
+}
+
+#[test]
+fn queued_diff_reviews_are_not_collapsed_into_one() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    for path in ["src/main.rs", "src/app/mod.rs"] {
+        app.handle_ipc_message_value(serde_json::json!({
+            "type": "change-reason",
+            "session_id": "amf-my-feat",
+            "cwd": workdir.path().display().to_string(),
+            "message": "Review this",
+            "relative_path": path,
+            "change_id": path
+        }));
+    }
+
+    // Each review is its own request about its own edit — unlike a stop, two
+    // of them are two pieces of work and both must survive.
+    assert_eq!(app.pending_inputs.len(), 2);
+    assert!(
+        app.pending_inputs
+            .iter()
+            .all(|input| input.notification_type == "change-reason")
+    );
+}
+
 #[test]
 fn ipc_turn_end_archives_superseded_review_notes_for_review_features() {
     let workdir = TempDir::new().unwrap();
@@ -21635,6 +21902,31 @@ fn attention_rows_fold_the_input_request_the_same_feature_raised() {
     let rows = app.attention_rows();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].state(), Some(AttentionState::Question));
+    assert_eq!(rows[0].pending_index(), Some(0));
+}
+
+#[test]
+fn attention_rows_fold_a_bare_stop_the_same_way_as_an_input_request() {
+    let mut app = app_with_agents(&[AgentKind::Claude]);
+    app.record_attention(
+        "amf-feat-0",
+        &AgentKind::Claude,
+        AttentionState::CompletedAwaitingReview,
+        AttentionSource::Hook,
+    );
+    // Claude's Stop hook forwards its own payload, so the pending input it
+    // leaves is typed `stop` rather than `input-request`. It describes the
+    // same stop the attention record does and must not be listed twice.
+    let mut stop = input_request_for("feat-0");
+    stop.notification_type = "stop".to_string();
+    app.pending_inputs.push(stop);
+
+    let rows = app.attention_rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].state(),
+        Some(AttentionState::CompletedAwaitingReview)
+    );
     assert_eq!(rows[0].pending_index(), Some(0));
 }
 

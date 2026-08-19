@@ -814,7 +814,7 @@ fn draw_plan_review(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(area);
-    let source_path = state.workdir.join(".claude/plan.md");
+    let source_path = state.workdir.join("AMF_PLAN.md");
     let content = state.synthesized_plan.as_deref().unwrap_or_default();
     super::markdown::draw_markdown_document(
         frame,

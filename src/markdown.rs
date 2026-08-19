@@ -13,14 +13,15 @@ use crate::{
 };
 
 const MARKDOWN_VIEW_CANDIDATES: &[&str] = &[
+    "AMF_PLAN.md",
+    "PLAN.md",
     ".claude/plan.md",
     ".claude/context.md",
     ".claude/review-notes.md",
     ".claude/notes.md",
-    "PLAN.md",
     "plan.md",
 ];
-const SIDEBAR_PLAN_CANDIDATES: &[&str] = &[".claude/plan.md", "PLAN.md", "plan.md"];
+const SIDEBAR_PLAN_CANDIDATES: &[&str] = &["AMF_PLAN.md", "PLAN.md", ".claude/plan.md", "plan.md"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkdownViewScope {
@@ -1601,10 +1602,12 @@ mod tests {
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
         std::fs::write(claude_dir.join("context.md"), "# Context").unwrap();
-        std::fs::write(claude_dir.join("plan.md"), "# Plan").unwrap();
+        std::fs::write(claude_dir.join("plan.md"), "# Legacy plan").unwrap();
+        std::fs::write(dir.path().join("PLAN.md"), "# Repository plan").unwrap();
+        std::fs::write(dir.path().join("AMF_PLAN.md"), "# Plan").unwrap();
 
         let found = collect_markdown_view_paths(dir.path(), None);
-        assert_eq!(found.first(), Some(&claude_dir.join("plan.md")));
+        assert_eq!(found.first(), Some(&dir.path().join("AMF_PLAN.md")));
     }
 
     #[test]
@@ -1726,6 +1729,25 @@ mod tests {
         assert_eq!(
             preferred_plan_markdown_path(&worktree, Some(repo.path())),
             Some(worktree_plan)
+        );
+    }
+
+    #[test]
+    fn preferred_plan_markdown_path_prefers_amf_plan_over_legacy_candidates() {
+        let worktree = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(worktree.path().join(".claude")).unwrap();
+        let amf_plan = worktree.path().join("AMF_PLAN.md");
+        std::fs::write(&amf_plan, "# Current plan").unwrap();
+        std::fs::write(worktree.path().join("PLAN.md"), "# Repository plan").unwrap();
+        std::fs::write(
+            worktree.path().join(".claude").join("plan.md"),
+            "# Legacy plan",
+        )
+        .unwrap();
+
+        assert_eq!(
+            preferred_plan_markdown_path(worktree.path(), None),
+            Some(amf_plan)
         );
     }
 

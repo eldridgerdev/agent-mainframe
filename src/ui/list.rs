@@ -155,6 +155,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         ));
                     }
 
+                    if let Some(feature_name) = app.paused_plan_interview_for_project(&project.name)
+                    {
+                        spans.push(Span::styled(
+                            format!("  [plan paused: {feature_name} · Enter to resume]"),
+                            Style::default()
+                                .fg(theme.warning.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+
                     Line::from(spans)
                 }
                 VisibleItem::Feature(pi, fi) => {
@@ -394,6 +404,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         line_spans.push(Span::styled(
                             " [plan]",
                             Style::default().fg(theme.info.to_color()),
+                        ));
+                    }
+                    if app.paused_plan_interview_for_feature(&feature.id) {
+                        line_spans.push(Span::styled(
+                            " [plan paused · Enter to resume]",
+                            Style::default()
+                                .fg(theme.warning.to_color())
+                                .add_modifier(Modifier::BOLD),
                         ));
                     }
                     if feature.remote_control {
@@ -895,6 +913,49 @@ mod tests {
         );
 
         assert!(rendered.contains("[PR #321 · 4 open]"));
+    }
+
+    #[test]
+    fn feature_row_marks_a_paused_on_demand_plan_interview() {
+        let rendered = render_feature_row_configured(vec![], None, |app| {
+            app.paused_plan_interview = Some(crate::app::PlanInterviewState::for_feature(
+                "usage-feat".into(),
+                "feat-1".into(),
+                Vec::new(),
+                PathBuf::from("/tmp/usage-feat"),
+                AgentKind::Claude,
+            ));
+        });
+
+        assert!(rendered.contains("[plan paused · Enter to resume]"));
+    }
+
+    #[test]
+    fn project_row_marks_a_paused_pending_feature_interview() {
+        let rendered = render_feature_row_configured(vec![], None, |app| {
+            app.paused_plan_interview = Some(crate::app::PlanInterviewState::for_feature_creation(
+                crate::app::PreparedFeatureLaunch {
+                    project_name: "usage-project".into(),
+                    branch: "planned-feature".into(),
+                    workdir: PathBuf::from("/tmp/planned-feature"),
+                    is_worktree: true,
+                    mode: VibeMode::default(),
+                    review: false,
+                    plan_mode: true,
+                    agent: AgentKind::Claude,
+                    create_terminal: false,
+                    session_name: "Claude 1".into(),
+                    enable_chrome: false,
+                    remote_control: false,
+                    steering_enabled: false,
+                    hook_succeeded: None,
+                    startup_prompt: None,
+                },
+                Vec::new(),
+            ));
+        });
+
+        assert!(rendered.contains("[plan paused: planned-feature · Enter to resume]"));
     }
 
     fn pr_status() -> crate::app::ActivePrStatus {

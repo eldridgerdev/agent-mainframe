@@ -2292,10 +2292,10 @@ pub struct PrReviewState {
     /// `harness_pick`, before the first `f`/`B` of a pane visit.
     pub fix_target: crate::app::pr_review::FixTarget,
     /// Whether `fix_target` (and, for the dedicated case, `review_harness`)
-    /// has already been explicitly resolved for this pane visit — either by
-    /// the user confirming `harness_pick`, or because a dedicated session
-    /// already existed on entry so there was nothing to ask. Prevents
-    /// re-opening the picker on every subsequent `f`/`B`.
+    /// has already been explicitly resolved for this pane visit by the user
+    /// confirming `harness_pick`. Prevents re-opening the picker on every
+    /// subsequent `f`/`B` while still allowing each new visit to name another
+    /// dedicated session.
     pub fix_target_picked: bool,
     /// Token totals already present when each fix-target session joined this
     /// visit to the PR pane. Current totals minus these snapshots are the live
@@ -2303,11 +2303,16 @@ pub struct PrReviewState {
     /// baseline, so all of its usage belongs to the visit.
     pub usage_baselines: HashMap<TokenUsageSource, SessionTokenUsage>,
     /// Harness chosen for the dedicated triage session, picked once before the
-    /// first fix is injected and reused for the rest of the PR. `None` until the
-    /// user picks (or when the dedicated session already exists / isn't the
-    /// target). Lets PR triage run on a different harness than the feature's
-    /// working session.
+    /// first fix is injected and reused for the rest of the pane visit. `None`
+    /// until the user picks (or when a dedicated session isn't the target).
+    /// Lets PR triage run on a different harness than the feature's working
+    /// session.
     pub review_harness: Option<AgentKind>,
+    /// Label (and lookup identity) of the dedicated triage session selected for
+    /// this pane visit. Defaults to `PR Triage` for backwards compatibility,
+    /// but can be named before the first `f`/`B` hand-off so several triage
+    /// agents can run alongside one another in the same feature.
+    pub dedicated_session_label: String,
     /// When `Some`, the fix-target picker is open over the pane: the user is
     /// choosing whether fixes go to the feature's existing live session or a
     /// dedicated triage session (and, for the latter, which harness) before
@@ -2423,6 +2428,10 @@ pub struct HarnessPickState {
     pub rows: Vec<crate::app::pr_review::FixTargetPickRow>,
     /// Index into `rows` of the highlighted choice.
     pub selected: usize,
+    /// `Some` after a dedicated harness row is chosen, while the picker is on
+    /// its second step accepting an optional session name. An empty name means
+    /// the backwards-compatible `PR Triage` label.
+    pub session_name: Option<String>,
 }
 
 /// One editable row of the compact triage-feature setup overlay
@@ -4781,7 +4790,7 @@ pub struct PreparedFeatureLaunch {
     pub remote_control: bool,
     pub steering_enabled: bool,
     pub hook_succeeded: Option<bool>,
-    #[allow(dead_code)] // populated but not read yet
+    /// Optional composer seed to show immediately after the agent starts.
     pub startup_prompt: Option<String>,
 }
 
@@ -4883,7 +4892,7 @@ pub struct PlanInterviewState {
     pub answers: Vec<Option<String>>,
     pub editor: TextEditor,
     pub selected_option: usize,
-    /// Where the accepted plan is written (`<workdir>/.claude/plan.md`). Held
+    /// Where the accepted plan is written (`<workdir>/AMF_PLAN.md`). Held
     /// separately from `pending_launch` because an on-demand interview has an
     /// existing feature's workdir and no launch at all.
     pub workdir: PathBuf,

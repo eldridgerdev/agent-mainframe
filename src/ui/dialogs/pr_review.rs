@@ -700,10 +700,23 @@ pub fn draw_pr_review(
         ),
     ];
     if let Some(working) = dedicated_session_working {
-        let (label, color) = if working {
-            ("  [dedicated ● working]", theme.warning.to_color())
+        let session_name = if state.fix_target == crate::app::pr_review::FixTarget::DedicatedReview
+            && state.dedicated_session_label != crate::app::pr_review::TRIAGE_SESSION_LABEL
+        {
+            state.dedicated_session_label.as_str()
         } else {
-            ("  [dedicated idle]", theme.status_detail.to_color())
+            "dedicated"
+        };
+        let (label, color) = if working {
+            (
+                format!("  [{session_name} ● working]"),
+                theme.warning.to_color(),
+            )
+        } else {
+            (
+                format!("  [{session_name} idle]"),
+                theme.status_detail.to_color(),
+            )
         };
         header_spans.push(Span::styled(label, Style::default().fg(color)));
     }
@@ -885,6 +898,7 @@ pub fn draw_pr_review(
             frame,
             confirm,
             fix_target,
+            &state.dedicated_session_label,
             triage_feature_summary,
             mismatch.as_deref(),
             theme,
@@ -1082,6 +1096,7 @@ fn draw_fix_confirm(
     frame: &mut Frame,
     confirm: &mut crate::app::FixConfirmState,
     target: crate::app::pr_review::FixTarget,
+    dedicated_session_label: &str,
     triage_feature_summary: Option<&str>,
     branch_mismatch: Option<&str>,
     theme: &Theme,
@@ -1128,6 +1143,9 @@ fn draw_fix_confirm(
     // this lands.
     let target_text = match triage_feature_summary {
         Some(summary) => summary.to_string(),
+        None if target == crate::app::pr_review::FixTarget::DedicatedReview => {
+            format!("dedicated session '{dedicated_session_label}'")
+        }
         None => target.label().to_string(),
     };
     frame.render_widget(
@@ -1235,11 +1253,16 @@ fn draw_fix_confirm(
 /// first fix of a PR. The chosen harness is remembered for the rest of the PR
 /// (the session is created once and reused).
 fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, theme: &Theme) {
-    let area = super::super::dashboard::centered_rect(50, 40, frame.area());
+    let area = super::super::dashboard::centered_rect(60, 40, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
+    let naming = pick.session_name.as_ref();
     let block = Block::default()
-        .title(" Fix target ")
+        .title(if naming.is_some() {
+            " Dedicated session name "
+        } else {
+            " Fix target "
+        })
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -1254,6 +1277,43 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
             Constraint::Length(1), // key hints
         ])
         .split(inner);
+
+    if let Some(name) = naming {
+        let harness = pick
+            .rows
+            .get(pick.selected)
+            .map(crate::app::pr_review::FixTargetPickRow::label)
+            .unwrap_or_else(|| "Dedicated triage session".to_string());
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    format!("  {harness}"),
+                    Style::default().fg(theme.text_muted.to_color()),
+                )),
+                Line::from(vec![
+                    Span::styled("  > ", Style::default().fg(theme.warning.to_color())),
+                    if name.is_empty() {
+                        Span::styled(
+                            "PR Triage (default)",
+                            Style::default().fg(theme.text_muted.to_color()),
+                        )
+                    } else {
+                        Span::styled(name.clone(), Style::default().fg(theme.text.to_color()))
+                    },
+                ]),
+            ])
+            .wrap(Wrap { trim: false }),
+            chunks[0].union(chunks[1]),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "[⏎] use name   [Ctrl+U] clear   [esc] back   [Ctrl+Q] cancel",
+                Style::default().fg(theme.primary.to_color()),
+            ))),
+            chunks[2],
+        );
+        return;
+    }
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -2394,6 +2454,7 @@ mod tests {
                     frame,
                     &mut confirm,
                     crate::app::pr_review::FixTarget::NewFeature,
+                    crate::app::pr_review::TRIAGE_SESSION_LABEL,
                     triage_feature_summary,
                     branch_mismatch,
                     &theme,
@@ -2555,6 +2616,7 @@ mod tests {
                     frame,
                     &mut confirm,
                     crate::app::pr_review::FixTarget::default(),
+                    crate::app::pr_review::TRIAGE_SESSION_LABEL,
                     None,
                     branch_mismatch,
                     &theme,
@@ -2809,6 +2871,7 @@ mod tests {
                 ),
             ],
             selected: 0,
+            session_name: None,
         };
         let theme = Theme::default();
         let backend = TestBackend::new(100, 30);
@@ -2890,6 +2953,7 @@ mod tests {
             fix_target_picked: false,
             usage_baselines: std::collections::HashMap::new(),
             review_harness: None,
+            dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
             harness_pick: None,
             new_feature_setup: None,
             integrate: None,

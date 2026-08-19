@@ -45,6 +45,13 @@ are tagged.
   creates it, saying that its contents are generated and safe to delete, and
   pointing at `amf.json` for real settings. Your own edits to that README are
   left alone.
+- **Plan mode now keeps its approved plan in `AMF_PLAN.md` at the feature root.**
+  The plan is no longer hidden under the Claude-specific `.claude/` directory,
+  and the AMF-specific name avoids overwriting a repository's conventional
+  `PLAN.md`. Codex also receives the same editable, unsubmitted kickoff prompt
+  as Claude when a newly approved plan starts work, including when startup
+  steering was enabled. Existing `PLAN.md` and `.claude/plan.md` files remain
+  readable as fallbacks.
 
 ### Fixed
 
@@ -62,9 +69,11 @@ are tagged.
   where config lives. To migrate by hand, `git mv .amf/config.json amf.json`.
   Drop the force-tracked `.amf/config.json` exception from your `.gitignore`
   once you have.
-- Named PR Triage sessions need no migration: existing `PR Triage` and
-  legacy `PR Review` sessions continue to be recognized when the default
-  name is used.
+- No migration is required for plan mode. The next plan you accept is written
+  to `AMF_PLAN.md`; older `.claude/plan.md` files may be removed when no longer
+  needed.
+- Existing `PR Triage` and legacy `PR Review` sessions continue to be
+  recognized when the default name is used.
 
 ## [v0.37.0] - 2026-08-18
 

@@ -1,0 +1,50 @@
+# Proves that an accepted plan is written to the feature root and that a
+# running Codex session receives the same unsent kickoff prompt as Claude.
+#
+# Requires --seed with a create-project payload for a throwaway repository.
+# CODEX_SHOT_SEED_FEATURE must point to a create-feature payload for that
+# project using the Codex harness, feature name `codex-plan-handoff`, branch
+# `codex-plan-handoff`, and one session named `Codex 1`.
+#
+# The draft seed reopens the interview at its review gate, avoiding a real
+# headless synthesis call. The scenario enables Codex in the isolated AMF
+# registry before it creates the feature.
+
+shot:dashboard-seeded
+
+key:A
+wait:400
+key:j
+key:j
+key:Enter
+wait:1000
+shot:codex-harness-enabled
+key:c
+wait:600
+
+run:$AMF_BIN automation create-feature --file "$CODEX_SHOT_SEED_FEATURE"
+wait:1400
+shot:dashboard-codex-feature
+
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db"
+wait:500
+key:j
+wait:500
+key:P
+wait:900
+key:r
+wait:900
+shot:approved-plan-review
+
+key:Enter
+wait:1400
+shot:root-plan-handoff
+
+# Open the running Codex session. AMF seeds its composer but does not submit
+# the kickoff prompt. Clear the underlying terminal so the evidence focuses
+# on the prompt rather than the harness startup transcript.
+key:y
+wait:2200
+run:tmux send-keys -t amf-plan-location-demo-codex-plan-handoff:0 C-l
+wait:800
+shot:codex-kickoff-seeded

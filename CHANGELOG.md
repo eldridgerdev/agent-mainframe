@@ -10,7 +10,16 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **Features with a damaged worktree can be deleted again.** If a worktree's
+  `.git` file is already missing, Git refuses to remove it even with force and
+  AMF used to leave the feature permanently stuck in the dashboard. AMF now
+  recognizes that stale-worktree failure and finishes removing the feature.
+
+### Migration
+
+No migration is required.
 
 ## [v0.37.0] - 2026-08-18
 

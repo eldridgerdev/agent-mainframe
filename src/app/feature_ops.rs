@@ -86,9 +86,12 @@ impl App {
 
     fn delete_failure_is_recoverable(stage: DeleteStage, output: &str) -> bool {
         matches!(stage, DeleteStage::RemovingWorktree)
-            && output
-                .lines()
-                .any(|line| line.contains("not a working tree"))
+            && output.lines().any(|line| {
+                line.contains("not a working tree")
+                    || (line.contains("validation failed, cannot remove working tree")
+                        && line.contains(".git")
+                        && line.contains("does not exist"))
+            })
     }
 
     fn background_command_error(stage: DeleteStage, code: Option<i32>, output: &str) -> String {
@@ -1883,6 +1886,14 @@ mod tests {
         assert!(App::delete_failure_is_recoverable(
             DeleteStage::RemovingWorktree,
             "fatal: '/tmp/missing-worktree' is not a working tree",
+        ));
+    }
+
+    #[test]
+    fn reconciles_worktree_with_missing_git_file() {
+        assert!(App::delete_failure_is_recoverable(
+            DeleteStage::RemovingWorktree,
+            "fatal: validation failed, cannot remove working tree: /tmp/repo/.worktrees/broken/.git does not exist",
         ));
     }
 

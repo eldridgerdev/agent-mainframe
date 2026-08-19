@@ -19,7 +19,12 @@ are tagged.
   leaving that session returns to the interview automatically. A plan
   operation already using agent tokens must finish before the interview can
   be parked, so its result is not discarded.
+### Fixed
 
+- **Features with a damaged worktree can be deleted again.** If a worktree's
+  `.git` file is already missing, Git refuses to remove it even with force and
+  AMF used to leave the feature permanently stuck in the dashboard. AMF now
+  recognizes that stale-worktree failure and finishes removing the feature.
 ### Migration
 
 No migration is required.

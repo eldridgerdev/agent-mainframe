@@ -4781,7 +4781,7 @@ pub struct PreparedFeatureLaunch {
     pub remote_control: bool,
     pub steering_enabled: bool,
     pub hook_succeeded: Option<bool>,
-    #[allow(dead_code)] // populated but not read yet
+    /// Optional composer seed to show immediately after the agent starts.
     pub startup_prompt: Option<String>,
 }
 
@@ -4883,7 +4883,7 @@ pub struct PlanInterviewState {
     pub answers: Vec<Option<String>>,
     pub editor: TextEditor,
     pub selected_option: usize,
-    /// Where the accepted plan is written (`<workdir>/.claude/plan.md`). Held
+    /// Where the accepted plan is written (`<workdir>/PLAN.md`). Held
     /// separately from `pending_launch` because an on-demand interview has an
     /// existing feature's workdir and no launch at all.
     pub workdir: PathBuf,

@@ -1252,7 +1252,7 @@ pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled:
     const BLOCK: &str = concat!(
         "<!-- AMF:plan-instructions:begin -->\n\n",
         "## Plan Mode\n\n",
-        "This feature has a user-authored plan at `.claude/plan.md`.\n\n",
+        "This feature has a user-authored plan at `PLAN.md`.\n\n",
         "Before doing implementation work, read the plan. Treat its decisions ",
         "as settled unless the user says otherwise, and keep its task ",
         "checkboxes and notes current as work progresses.\n\n",

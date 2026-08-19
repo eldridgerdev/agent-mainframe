@@ -799,7 +799,7 @@ fn plan_mode_instructions_use_claude_local_and_per_workdir_plan() {
 
     let instructions = std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap();
     assert!(instructions.starts_with("# Existing\n"));
-    assert!(instructions.contains("`.claude/plan.md`"));
+    assert!(instructions.contains("`PLAN.md`"));
     assert_eq!(
         instructions
             .matches("<!-- AMF:plan-instructions:begin -->")
@@ -863,7 +863,7 @@ fn plan_mode_instructions_use_agents_for_non_claude_harnesses() {
         ensure_plan_mode_instructions(workdir.path(), &agent, true);
 
         let instructions = std::fs::read_to_string(workdir.path().join("AGENTS.md")).unwrap();
-        assert!(instructions.contains("`.claude/plan.md`"));
+        assert!(instructions.contains("`PLAN.md`"));
         assert!(!workdir.path().join("CLAUDE.local.md").exists());
         let ignore = std::fs::read_to_string(workdir.path().join(".gitignore")).unwrap();
         assert!(ignore.lines().any(|line| line == "AGENTS.md"));
@@ -3038,14 +3038,14 @@ fn accepting_an_on_demand_plan_writes_it_into_the_features_own_workdir() {
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert!(matches!(app.mode, AppMode::Normal));
-    let plan = std::fs::read_to_string(repo.path().join(".claude/plan.md")).unwrap();
+    let plan = std::fs::read_to_string(repo.path().join("PLAN.md")).unwrap();
     assert!(plan.contains("Tighten the sidebar"));
     // Writing the file is not enough on its own: without the instruction block
     // the agent is never told the plan exists, and without the flag a restart
     // would stop injecting it.
     assert!(app.store.projects[0].features[0].plan_mode);
     let instructions = std::fs::read_to_string(repo.path().join("CLAUDE.local.md")).unwrap();
-    assert!(instructions.contains(".claude/plan.md"));
+    assert!(instructions.contains("PLAN.md"));
 }
 
 /// `app_on_selected_feature`, but the feature's agent session is live — the
@@ -3103,14 +3103,14 @@ fn accepting_an_on_demand_plan_offers_the_kickoff_to_a_running_session() {
             let target = state.kickoff_handoff.as_ref().unwrap();
             assert_eq!(target.session_label, "Claude 1");
             assert_eq!(target.session_id, "session-Claude 1");
-            assert_eq!(target.plan_path, repo.path().join(".claude/plan.md"));
+            assert_eq!(target.plan_path, repo.path().join("PLAN.md"));
         }
         _ => panic!("expected the handoff prompt"),
     }
     // The offer comes after the accept has fully landed, so declining it can
     // never cost the plan.
     assert!(
-        std::fs::read_to_string(repo.path().join(".claude/plan.md"))
+        std::fs::read_to_string(repo.path().join("PLAN.md"))
             .unwrap()
             .contains("Tighten the sidebar")
     );
@@ -3129,7 +3129,7 @@ fn declining_the_kickoff_handoff_leaves_the_running_session_alone() {
         app.message
             .as_deref()
             .unwrap()
-            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+            .contains(&repo.path().join("PLAN.md").display().to_string())
     );
 }
 
@@ -3145,7 +3145,7 @@ fn accepting_the_kickoff_handoff_seeds_the_running_sessions_composer() {
     match &app.mode {
         AppMode::Compose(state) => {
             let seed = state.editor.text();
-            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("PLAN.md"));
             assert!(seed.contains("decisions are settled"));
             assert_eq!(state.view.feature_name, "my-feat");
         }
@@ -3171,7 +3171,7 @@ fn a_feature_marked_active_without_a_tmux_session_gets_no_handoff_offer() {
         app.message
             .as_deref()
             .unwrap()
-            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+            .contains(&repo.path().join("PLAN.md").display().to_string())
     );
 }
 
@@ -3193,7 +3193,7 @@ fn a_feature_whose_agent_window_exited_gets_no_handoff_offer() {
         app.message
             .as_deref()
             .unwrap()
-            .contains(&repo.path().join(".claude/plan.md").display().to_string())
+            .contains(&repo.path().join("PLAN.md").display().to_string())
     );
 }
 
@@ -3243,7 +3243,7 @@ fn a_harness_that_exits_while_the_offer_is_up_is_not_reopened() {
 
     assert!(matches!(app.mode, AppMode::Normal));
     let message = app.message.as_deref().unwrap();
-    assert!(message.contains(&repo.path().join(".claude/plan.md").display().to_string()));
+    assert!(message.contains(&repo.path().join("PLAN.md").display().to_string()));
     assert!(message.contains("no longer running"));
 }
 
@@ -3263,7 +3263,7 @@ fn aborting_an_on_demand_interview_has_no_feature_to_cancel() {
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
     assert!(matches!(app.mode, AppMode::Normal));
     // Leaving is non-destructive: the feature keeps whatever plan it had.
-    assert!(!repo.path().join(".claude/plan.md").exists());
+    assert!(!repo.path().join("PLAN.md").exists());
     assert!(!app.store.projects[0].features[0].plan_mode);
     assert_eq!(app.store.projects[0].features.len(), 1);
 }
@@ -3304,6 +3304,18 @@ fn app_with_deferred_plan_interview_and_db() -> (App, tempfile::NamedTempFile, T
 fn plan_interview_app(
     db_path: Option<&std::path::Path>,
 ) -> (App, tempfile::NamedTempFile, TempDir) {
+    plan_interview_app_for_agent(db_path, AgentKind::Claude)
+}
+
+fn plan_interview_app_for_agent(
+    db_path: Option<&std::path::Path>,
+    agent: AgentKind,
+) -> (App, tempfile::NamedTempFile, TempDir) {
+    let mode = if agent == AgentKind::Codex {
+        VibeMode::Vibe
+    } else {
+        VibeMode::default()
+    };
     let repo = TempDir::new().unwrap();
     let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
     // Permissive rather than strict-sequence expectations: these tests care
@@ -3315,8 +3327,16 @@ fn plan_interview_app(
         .returning(|_, _, _| Ok(()));
     tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
     tmux.expect_create_window().returning(|_, _, _| Ok(()));
-    tmux.expect_launch_claude()
-        .returning(|_, _, _, _, _| Ok(()));
+    match agent {
+        AgentKind::Claude => {
+            tmux.expect_launch_claude()
+                .returning(|_, _, _, _, _| Ok(()));
+        }
+        AgentKind::Codex => {
+            tmux.expect_launch_codex().returning(|_, _, _, _, _| Ok(()));
+        }
+        _ => unreachable!("this helper only covers plan kickoff harnesses"),
+    }
     tmux.expect_select_window().returning(|_, _| Ok(()));
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     let store_file = NamedTempFile::new().unwrap();
@@ -3329,12 +3349,12 @@ fn plan_interview_app(
         branch: "planned-feature".into(),
         workdir: repo.path().join(".worktrees/planned-feature"),
         is_worktree: true,
-        mode: VibeMode::default(),
+        mode,
         review: false,
         plan_mode: true,
-        agent: AgentKind::Claude,
+        session_name: format!("{} 1", agent.display_name()),
+        agent,
         create_terminal: false,
-        session_name: "Claude 1".into(),
         enable_chrome: false,
         remote_control: false,
         steering_enabled: false,
@@ -3346,6 +3366,51 @@ fn plan_interview_app(
     // caller; `repo` is returned too so the workdir it created stays alive
     // rather than being deleted the instant this function returns.
     (app, store_file, repo)
+}
+
+#[test]
+fn accepting_a_codex_plan_seeds_the_approved_plan_kickoff_prompt() {
+    let (mut app, _store_file, _repo) = plan_interview_app_for_agent(None, AgentKind::Codex);
+    app.config.max_concurrent_agents = 0;
+    force_plan_interview_raw_fallback(&mut app);
+
+    let workdir = match &mut app.mode {
+        AppMode::PlanInterview(state) => {
+            // The approved plan is itself the startup direction, so its
+            // kickoff must win over the wizard's optional blank steering box.
+            state.pending_launch.as_mut().unwrap().steering_enabled = true;
+            state.brief = "Implement this with Codex".into();
+            state.synthesis_requested = true;
+            state.phase = PlanInterviewPhase::Done;
+            state.workdir.clone()
+        }
+        _ => panic!("expected plan interview mode"),
+    };
+    app.continue_plan_interview_after_done().unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert!(
+        matches!(app.mode, AppMode::Compose(_)),
+        "expected composer after Codex launch; message: {:?}",
+        app.message
+    );
+    assert!(workdir.join("PLAN.md").is_file());
+    assert_eq!(app.store.projects[0].features[1].agent, AgentKind::Codex);
+    assert!(app.store.projects[0].features[1].plan_mode);
+    assert_eq!(app.store.projects[0].features[1].workdir, workdir);
+    assert!(
+        std::fs::read_to_string(workdir.join("AGENTS.md"))
+            .unwrap()
+            .contains("`PLAN.md`")
+    );
+    match &app.mode {
+        AppMode::Compose(state) => {
+            assert_eq!(state.view.session_kind, SessionKind::Codex);
+            assert!(state.editor.text().contains("Read `PLAN.md`"));
+            assert!(state.editor.text().contains("decisions are settled"));
+        }
+        _ => panic!("expected Codex's composer to contain the kickoff prompt"),
+    }
 }
 
 /// Keep completion-path tests deterministic and offline. `Some(None)` means
@@ -3996,7 +4061,7 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
                 && state.synthesized_plan.as_deref()
                     == Some(synthesized_plan_response().as_str())
     ));
-    assert!(!workdir.join(".claude/plan.md").exists());
+    assert!(!workdir.join("PLAN.md").exists());
     assert!(
         !app.store.projects[0]
             .features
@@ -4007,7 +4072,7 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert_eq!(
-        std::fs::read_to_string(workdir.join(".claude/plan.md")).unwrap(),
+        std::fs::read_to_string(workdir.join("PLAN.md")).unwrap(),
         synthesized_plan_response()
     );
     assert!(
@@ -4021,7 +4086,7 @@ fn poll_plan_interview_synthesis_bg_pauses_for_review_then_accepts() {
     match &app.mode {
         AppMode::Compose(state) => {
             let seed = state.editor.text();
-            assert!(seed.contains(".claude/plan.md"));
+            assert!(seed.contains("PLAN.md"));
             assert!(seed.contains("decisions are settled"));
             assert_eq!(state.view.feature_name, "planned-feature");
         }
@@ -4063,7 +4128,7 @@ fn poll_plan_interview_synthesis_bg_uses_raw_fallback_for_incomplete_markdown() 
     assert!(plan.contains("## Q&A"));
     assert!(plan.contains(&format!("### {first_question}\n\nAnswered this one")));
     assert!(!plan.contains("_Skipped._"));
-    assert!(!workdir.join(".claude/plan.md").exists());
+    assert!(!workdir.join("PLAN.md").exists());
     assert!(
         app.debug_log
             .entries()

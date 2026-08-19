@@ -44,8 +44,8 @@ Settled with the project owner (2026-07-13):
 4. **Output is an AI-synthesized plan doc behind a review gate**: the
    user reviews/edits the generated plan in AMF before the agent
    session launches. The on-disk home is the workdir's
-   `.claude/plan.md` (revised from "PLAN.md stays" after the
-   2026-07-13 audit below).
+   root-level `PLAN.md` (superseded on 2026-08-19 from the
+   `.claude/plan.md` location chosen in the 2026-07-13 audit below).
 
 ## Existing plan mode: audit verdict (2026-07-13)
 
@@ -98,6 +98,22 @@ than keeping it for old features — existing repo-root `PLAN.md`
 files simply stop being written to and remain gitignored artifacts
 the user can delete.
 
+## Plan location follow-up (2026-08-19)
+
+The July audit correctly rejected one `PLAN.md` shared from the project
+repository by every worktree, but its replacement remained unnecessarily
+Claude-specific. A feature worktree's own root is already isolated from every
+other feature, so its `PLAN.md` is per-feature without living under
+`.claude/`. The first non-worktree feature also remains safe because AMF allows
+only one non-worktree feature per project.
+
+The accepted plan therefore now lives at `<workdir>/PLAN.md`, with a matching
+root `.gitignore` entry. The sidebar and markdown viewer prefer that file while
+retaining `.claude/plan.md` as a legacy fallback. The approved-plan kickoff is
+also carried through the common launch payload, so Codex receives the same
+editable, unsubmitted composer seed as Claude even when startup steering is
+enabled. Existing legacy files are not deleted automatically.
+
 ## Proposed design
 
 ### UX flow
@@ -125,7 +141,7 @@ On-demand command on a feature ─┴─> PlanInterview mode
              Tasks / Risks); loading overlay
     Phase 4  Review gate: plan opens in the markdown viewer with
              edit (TextEditor), accept, regenerate, and abort actions
-    Accept ─> write .claude/plan.md, persist transcript,
+    Accept ─> write PLAN.md, persist transcript,
               launch/seed session
 ```
 
@@ -268,10 +284,10 @@ The synthesis prompt produces markdown with a fixed skeleton:
 
 On **accept**:
 
-1. Write the doc to the workdir's `.claude/plan.md` (per-feature —
-   see the audit verdict; the sidebar preview and markdown viewer
-   already prefer this path), ensure it's gitignored within
-   `.claude/`, and inject the plan-instructions block into the file
+1. Write the doc to the workdir's root-level `PLAN.md` (per-feature —
+   see the 2026-08-19 follow-up; the sidebar preview and markdown viewer
+   prefer this path), ensure it's gitignored in the workdir root, and
+   inject the plan-instructions block into the file
    the feature's harness actually reads — today's code only writes
    `CLAUDE.local.md`, which codex/opencode/pi never read, so plan
    mode is silently claude-only on the instruction side. Replace
@@ -293,7 +309,7 @@ On **accept**:
    can show prior answers and offer "keep / change" per question.
 3. Feature-creation trigger: continue the normal launch
    (`start_feature`), then seed the agent's composer with a short
-   kickoff prompt pointing at `.claude/plan.md` (editable, not
+   kickoff prompt pointing at `PLAN.md` (editable, not
    auto-submitted — same pattern as TODO spawn's
    `open_compose_seeded`).
    On-demand trigger: just rewrite the plan file and notify; if the
@@ -350,7 +366,7 @@ demoable. Check items off as they merge.
 ### Epic 1 — Interview engine + native UI (static questions only)
 
 Demo: plan-mode feature creation walks through the built-in bank and
-writes answers verbatim into the workdir's `.claude/plan.md` under a
+writes answers verbatim into the workdir's `PLAN.md` under a
 `## Q&A` heading (no AI yet), then launches; the sidebar preview
 picks the plan up with no display-layer changes.
 
@@ -364,8 +380,8 @@ picks the plan up with no display-layer changes.
       "draft plan now" once Epic 4 lands)
 - [x] Feature-creation integration: defer `PreparedFeatureLaunch`
       until interview completes; abort path (launch-anyway vs cancel)
-- [x] Write brief + answers into the workdir's `.claude/plan.md`
-      (gitignored within `.claude/`)
+- [x] Write brief + answers into the workdir's `PLAN.md`
+      (gitignored in the workdir root)
 - [x] Replace `ensure_plan_mode_claude_md` with
       `ensure_plan_mode_instructions(workdir, agent, enabled)`:
       marker block into the harness's instruction file
@@ -373,11 +389,11 @@ picks the plan up with no display-layer changes.
       codex/opencode/pi), pointing at the per-workdir plan file —
       fixes existing plan mode being instruction-visible to claude
       only
-- [x] Delete the shared repo-root `PLAN.md` skeleton/gitignore
-      behavior (per audit verdict; old PLAN.md files are inert
-      leftovers, not migrated)
+- [x] Delete the shared project-repo `PLAN.md` skeleton behavior
+      (per audit verdict); the accepted plan is instead written to the
+      feature workdir's own root after the interview
 - [x] Unit test: non-worktree first feature (workdir == repo root)
-      reads/writes the same `.claude/plan.md` the sidebar fallback
+      reads/writes the same `PLAN.md` the sidebar
       finds — no duplicate plan files
 - [x] Help overlay + keybinding docs for the new mode
 
@@ -430,7 +446,7 @@ with no headless-capable harness silently proceeds without them.
 ### Epic 4 — Synthesis + review gate
 
 Demo: interview ends in a generated structured plan the user can
-edit, regenerate, accept (writes `.claude/plan.md`, launches session
+edit, regenerate, accept (writes `PLAN.md`, launches session
 with
 seeded kickoff composer), or abort.
 
@@ -451,16 +467,17 @@ seeded kickoff composer), or abort.
       dropped whenever the plan changes. `Esc` during the review returns
       to the plan rather than opening the interview's abort confirmation,
       so a generated plan can't be lost to a stray keypress
-- [x] Accept path: write `.claude/plan.md`, augment the instruction
+- [x] Accept path: write `PLAN.md`, augment the instruction
       block ("plan is user-approved"), run deferred launch, seed
       composer kickoff prompt via `open_compose_seeded` — the launch's
       `ensure_feature_running` already injects the approved-plan block,
       so accept adds the seeding step and lands the user in the new
       session's composer with an editable, unsubmitted kickoff prompt.
       Best-effort by design: it runs after the feature is created and
-      started, so a startup-steering prompt or a feature with no
-      tmux-backed agent session skips the seed rather than failing the
-      accept
+      started, so a feature with no tmux-backed agent session skips the
+      seed rather than failing the accept. The kickoff uses the common
+      startup-prompt payload and takes precedence over a blank startup
+      steering prompt, which keeps Codex and Claude behavior aligned
 - [x] Replace Epic 1's raw-Q&A plan-file write with synthesized doc
       (raw Q&A kept as fallback when synthesis fails)
 - [x] Omit skipped and unanswered questions from both synthesis input
@@ -476,7 +493,7 @@ seeded kickoff composer), or abort.
 
 Demo: press the keybinding on an existing feature, re-run the
 interview with prior answers pre-filled, get an updated
-`.claude/plan.md`.
+`PLAN.md`.
 
 - [x] Migration + `src/db/plan_interviews.rs`: interview store keyed
       by feature id (questions, answers, source, plan, timestamps,
@@ -538,7 +555,7 @@ interview with prior answers pre-filled, get an updated
       which previously fell back to the process cwd), so accept writes the
       plan into the feature's own workdir rather than bailing out. Accept
       also calls `ensure_plan_mode_instructions` and sets
-      `feature.plan_mode`: writing `.claude/plan.md` alone leaves the agent
+      `feature.plan_mode`: writing `PLAN.md` alone leaves the agent
       never told the plan exists, and a restart would stop injecting the
       block. Abort is non-destructive — there is no launch to cancel, so
       the confirm offers only "leave the plan unchanged" and `n` is inert.

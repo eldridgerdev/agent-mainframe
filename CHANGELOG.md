@@ -10,6 +10,15 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- **Plan mode now keeps its approved plan in `PLAN.md` at the feature root.**
+  The plan is no longer hidden under the Claude-specific `.claude/` directory,
+  so its location makes sense for Claude, Codex, OpenCode, and Pi alike. Codex
+  also receives the same editable, unsubmitted kickoff prompt as Claude when a
+  newly approved plan starts work, including when startup steering was enabled.
+  Existing `.claude/plan.md` files remain readable as a legacy fallback.
+
 ### Fixed
 
 - **Features with a damaged worktree can be deleted again.** If a worktree's
@@ -19,7 +28,8 @@ are tagged.
 
 ### Migration
 
-No migration is required.
+No migration is required. The next plan you accept is written to `PLAN.md`;
+older `.claude/plan.md` files may be removed when no longer needed.
 
 ## [v0.37.0] - 2026-08-18
 

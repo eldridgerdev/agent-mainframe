@@ -486,9 +486,28 @@ impl App {
                 self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
             }
             self.save()?;
-            if started && prepared.steering_enabled {
-                self.open_startup_steering_prompt(pi, fi)?;
-                return Ok(());
+            if started {
+                if let Some(prompt) = prepared.startup_prompt {
+                    self.selection = Selection::Feature(pi, fi);
+                    match self.enter_view_without_auto_compose() {
+                        Ok(()) => match self.open_compose_seeded(prompt) {
+                            Ok(()) => return Ok(()),
+                            Err(error) => self.log_warn(
+                                "feature_create",
+                                format!("failed to seed the startup prompt: {error}"),
+                            ),
+                        },
+                        Err(error) => self.log_warn(
+                            "feature_create",
+                            format!(
+                                "failed to open the new session for its startup prompt: {error}"
+                            ),
+                        ),
+                    }
+                } else if prepared.steering_enabled {
+                    self.open_startup_steering_prompt(pi, fi)?;
+                    return Ok(());
+                }
             }
         }
 

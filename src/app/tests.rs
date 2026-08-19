@@ -21270,7 +21270,7 @@ fn badge_counts_keep_pending_work_the_attention_layer_cannot_explain() {
     assert_eq!(app.attention_badge_counts(), ((1, 0, 0), 1));
     assert_eq!(
         crate::ui::header::badge_text((1, 0, 0), 1).as_deref(),
-        Some("  [1 question, 1 input request]")
+        Some("  [1 question, 1 input request | <leader i>]")
     );
 }
 

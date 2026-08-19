@@ -75,7 +75,7 @@ pub fn badge_text(attention: AttentionCounts, pending_count: usize) -> Option<St
         return None;
     }
     let body: Vec<String> = segments.into_iter().map(|(text, _)| text).collect();
-    Some(format!("  [{}]", body.join(", ")))
+    Some(format!("  [{} | <leader i>]", body.join(", ")))
 }
 
 /// The badge breakdown, as coloured spans.
@@ -105,6 +105,13 @@ fn badge_spans(counts: AttentionCounts, pending_count: usize, theme: &Theme) -> 
         };
         spans.push(Span::styled(text, style));
     }
+    spans.push(Span::styled(" | ", muted));
+    spans.push(Span::styled(
+        "<leader i>",
+        Style::default()
+            .fg(theme.warning.to_color())
+            .add_modifier(Modifier::BOLD),
+    ));
     spans.push(Span::styled("]", muted));
     spans
 }

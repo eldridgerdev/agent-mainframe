@@ -81,7 +81,8 @@ still qualifies as dormant.
 - [x] Feature rows (`src/ui/list.rs`): per-state glyph and colour, with
       ASCII fallbacks when `nerd_font` is off.
 - [x] Header count broken out by kind (`src/ui/header.rs`), with
-      `badge_text()` shared with mouse hit-testing.
+      `badge_text()` shared with mouse hit-testing and a visible `<leader i>`
+      hint for opening the needs-attention list.
 - [x] The `i` overlay rebuilt as one needs-attention list; a feature's
       generic `input-request` folds into its attention row, while diff
       reviews / change reasons / review-ready keep rows of their own.

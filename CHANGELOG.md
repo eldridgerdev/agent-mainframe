@@ -10,7 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **The dashboard's needs-attention badge now shows `<leader i>`.** Questions,
+  completed work, waiting sessions, and other input requests now advertise the
+  shortcut that opens the list, so the action is discoverable without first
+  opening help. No configuration change is required.
 
 ## [v0.37.0] - 2026-08-18
 

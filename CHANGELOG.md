@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **PR Triage can run multiple named dedicated sessions at once.** After
+  choosing a dedicated harness from the first `f` or `B` fix-target prompt,
+  enter a session name to create or reuse that exact triage session. Leave the
+  name blank to keep reusing the original `PR Triage` session. The chosen name
+  follows fix injection, session switching, activity, and usage reporting.
+
 - **Plan interviews can pause while you inspect the codebase.** Press
   `Ctrl+Q` to park the interview on the dashboard without losing the answer
   you are editing. AMF marks the relevant project or feature row so `Enter`
@@ -25,9 +31,11 @@ are tagged.
   `.git` file is already missing, Git refuses to remove it even with force and
   AMF used to leave the feature permanently stuck in the dashboard. AMF now
   recognizes that stale-worktree failure and finishes removing the feature.
+
 ### Migration
 
-No migration is required.
+- No migration is required. Existing `PR Triage` and legacy `PR Review`
+  sessions continue to be recognized when the default name is used.
 
 ## [v0.37.0] - 2026-08-18
 

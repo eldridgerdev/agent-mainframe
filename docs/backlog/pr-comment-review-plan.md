@@ -2002,6 +2002,22 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       picker. → `src/app/pr_review.rs`, `src/app/tests.rs`,
       `src/ui/dialogs/pr_review.rs`.
 
+- [x] **Name dedicated sessions so multiple PR triage efforts can run at the
+      same time.** Choosing a dedicated harness from the shared first-`f`/`B`
+      target picker now advances to an optional session-name field. A blank
+      name preserves the existing `PR Triage` lookup and legacy `PR Review`
+      compatibility; a nonblank name is an exact session identity, so separate
+      triage agents can coexist in the same feature without fixes, `P`
+      navigation, activity, or usage resolving to the wrong window. Each new
+      pane visit asks once even if the default session already exists, while
+      later fixes in that visit keep the chosen target. The fix confirmation
+      and working badge display custom names. Covered by target-selection,
+      batch-continuation, exact named-session routing, rendering, and full-suite
+      tests. Verified visually at 120×40 through the isolated screenshot
+      harness. → `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `docs/screenshots/pr-triage-named-sessions/`, `CHANGELOG.md`.
+
 - [x] **AI review result persistence (UX — visibility).** When running an AI
       review (`A`), the user could escape back to the pane, navigate away, or
       close AMF entirely; returning to the PR later showed no indication of

@@ -2687,9 +2687,13 @@ impl App {
 
         let dedicated_opencode_session = match &self.mode {
             AppMode::PrReview(state) if state.workdir == feature.workdir => {
-                pr_review::pr_triage_session_index(feature, pr_review::FixTarget::DedicatedReview)
-                    .map(|si| &feature.sessions[si])
-                    .filter(|session| session.kind == SessionKind::Opencode)
+                pr_review::pr_triage_session_index_named(
+                    feature,
+                    state.fix_target,
+                    &state.dedicated_session_label,
+                )
+                .map(|si| &feature.sessions[si])
+                .filter(|session| session.kind == SessionKind::Opencode)
             }
             _ => None,
         };

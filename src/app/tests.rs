@@ -12084,6 +12084,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,
@@ -12188,6 +12189,34 @@ fn pr_review_toggle_to_session_jumps_and_stashes_state() {
 }
 
 #[test]
+fn pr_review_toggle_to_session_uses_the_selected_custom_name() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Codex, "PR 321 security".to_string());
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.dedicated_session_label = "PR 321 security".to_string();
+        state.fix_target_picked = true;
+    }
+
+    app.pr_review_toggle_to_session().unwrap();
+
+    match &app.mode {
+        AppMode::Viewing(view) => {
+            assert_eq!(view.session_label, "PR 321 security");
+            assert_eq!(view.session_kind, SessionKind::Codex);
+        }
+        other => panic!("expected Viewing, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
 fn pr_review_return_to_pane_restores_stashed_state() {
     let mut store = store_with_feature(ProjectStatus::Active);
     store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
@@ -12278,6 +12307,10 @@ fn pr_review_inject_fix_also_stashes_return_state() {
     enter_pr_review_for_feature(&mut app, 2);
     if let AppMode::PrReview(state) = &mut app.mode {
         state.selected = 1;
+        // This regression exercises the post-target confirm/inject path; the
+        // target picker (including its new optional name step) is covered
+        // separately.
+        state.fix_target_picked = true;
     }
     // Go through the real confirm-dialog path (`f` opens it, then the user
     // confirms) rather than the no-dialog fallback — a prior version of this
@@ -12350,6 +12383,42 @@ fn pr_review_inject_fix_also_stashes_return_state() {
 }
 
 #[test]
+fn pr_review_inject_fix_rejects_a_named_session_with_the_wrong_harness() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "PR 321 security".to_string());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).returning(|_| true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        // Simulate a selection that became stale after the picker closed. The
+        // injection boundary must still refuse to route Codex work into the
+        // same-named Claude session.
+        state.fix_target_picked = true;
+        state.review_harness = Some(AgentKind::Codex);
+        state.dedicated_session_label = "PR 321 security".to_string();
+    }
+    app.pr_review_open_fix_confirm();
+
+    app.pr_review_inject_fix().unwrap();
+
+    assert!(
+        matches!(&app.mode, AppMode::PrReview(state)
+            if state.review.comments[0].triage
+                == crate::app::pr_review::TriageState::Untriaged),
+        "a rejected target must leave the comment and pane untouched"
+    );
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|toast| toast.message.contains("already runs Claude")),
+        "expected an actionable harness-conflict toast, got {:?}",
+        app.toasts.last().map(|toast| &toast.message)
+    );
+}
+
+#[test]
 fn pr_review_inject_fix_targets_dialogs_original_comment_after_selection_moves() {
     // Regression: a PR Triage refresh (e.g. the automatic one after posting
     // an AI review) can drop the comment a still-open fix-confirm dialog was
@@ -12367,6 +12436,9 @@ fn pr_review_inject_fix_targets_dialogs_original_comment_after_selection_moves()
     enter_pr_review_for_feature(&mut app, 2);
     if let AppMode::PrReview(state) = &mut app.mode {
         state.selected = 1; // comment id 2
+        // Keep this regression focused on the stale-dialog target rather than
+        // the first-fix target/name picker.
+        state.fix_target_picked = true;
     }
     app.pr_review_open_fix_confirm();
     let request_id = match &app.mode {
@@ -12448,6 +12520,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,
@@ -13946,6 +14019,36 @@ fn pr_review_dedicated_session_status_is_absent_before_creation() {
 }
 
 #[test]
+fn pr_review_dedicated_session_status_is_absent_for_existing_live_target() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Working session".to_string());
+    let session_id = session.id.clone();
+    let tmux_session = store.projects[0].features[0].tmux_session.clone();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.fix_target = crate::app::pr_review::FixTarget::ExistingLive;
+        state.fix_target_picked = true;
+    }
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-start",
+        "session_id": tmux_session,
+        "amf_feature_session_id": session_id,
+    }));
+
+    assert_eq!(
+        app.pr_review_dedicated_session_working(),
+        None,
+        "existing-live activity must not be rendered as dedicated activity"
+    );
+}
+
+#[test]
 fn pr_review_triage_session_usage_reports_only_growth_since_baseline() {
     let mut store = store_with_feature(ProjectStatus::Active);
     let session = store.projects[0].features[0].add_session_named(
@@ -14313,12 +14416,20 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
 
-    // Choosing the harness remembers it and continues into the fix confirm.
+    // Choosing the harness advances to the optional session-name step. A
+    // second confirmation accepts the backwards-compatible default name and
+    // continues into the fix confirm.
+    app.pr_review_harness_pick_confirm();
+    assert!(app.pr_review_harness_pick_naming());
     app.pr_review_harness_pick_confirm();
     match &app.mode {
         AppMode::PrReview(state) => {
             assert!(state.harness_pick.is_none());
             assert_eq!(state.review_harness, Some(AgentKind::default()));
+            assert_eq!(
+                state.dedicated_session_label,
+                crate::app::pr_review::TRIAGE_SESSION_LABEL
+            );
             assert!(
                 state.fix_confirm.is_some(),
                 "fix confirm should now be open"
@@ -14326,6 +14437,80 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
+}
+
+#[test]
+fn pr_review_dedicated_target_accepts_a_custom_session_name() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 2);
+
+    app.pr_review_open_fix_confirm();
+    app.pr_review_harness_pick_confirm();
+    assert!(app.pr_review_harness_pick_naming());
+    for c in "PR 321 security".chars() {
+        app.pr_review_harness_pick_name_push(c);
+    }
+    app.pr_review_harness_pick_confirm();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.dedicated_session_label, "PR 321 security");
+            assert_eq!(state.review_harness, Some(AgentKind::default()));
+            assert!(state.harness_pick.is_none());
+            assert!(state.fix_confirm.is_some());
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn pr_review_dedicated_target_rejects_a_name_owned_by_another_harness() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "PR 321 security".to_string());
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 1);
+
+    app.pr_review_open_fix_confirm();
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let pick = state.harness_pick.as_mut().unwrap();
+        pick.selected = pick
+            .rows
+            .iter()
+            .position(|row| {
+                *row == crate::app::pr_review::FixTargetPickRow::Dedicated(AgentKind::Codex)
+            })
+            .unwrap();
+    }
+    app.pr_review_harness_pick_confirm();
+    for c in "PR 321 security".chars() {
+        app.pr_review_harness_pick_name_push(c);
+    }
+    app.pr_review_harness_pick_confirm();
+
+    assert!(
+        matches!(&app.mode, AppMode::PrReview(state)
+            if state.harness_pick.is_some()
+                && state.review_harness.is_none()
+                && state.fix_confirm.is_none()),
+        "the naming step should stay open after a harness collision"
+    );
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|toast| toast.message.contains("already runs Claude")),
+        "expected an actionable harness-conflict toast, got {:?}",
+        app.toasts.last().map(|toast| &toast.message)
+    );
 }
 
 #[test]
@@ -14536,7 +14721,10 @@ fn pr_review_batch_routes_through_harness_pick_then_opens_combined() {
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
 
-    // Choosing the harness opens the *combined* dialog and clears the flag.
+    // Choosing the harness, then accepting the default session name, opens
+    // the *combined* dialog and clears the flag.
+    app.pr_review_harness_pick_confirm();
+    assert!(app.pr_review_harness_pick_naming());
     app.pr_review_harness_pick_confirm();
     match &app.mode {
         AppMode::PrReview(state) => {
@@ -14644,6 +14832,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,
@@ -14718,6 +14907,7 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,
@@ -15261,6 +15451,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         fix_target_picked: false,
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        dedicated_session_label: crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
         harness_pick: None,
         new_feature_setup: None,
         integrate: None,

@@ -324,9 +324,23 @@ fn handle_memory_add_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<
 
 /// Key handling while the dedicated-review harness picker is open.
 ///
-/// `j/k` (or arrows) move the highlight, `⏎` picks the harness and continues to
-/// the fix confirm dialog, `esc`/`q` cancels (aborts this fix).
+/// `j/k` (or arrows) move the highlight. Choosing a dedicated row advances to
+/// an optional-name field; `Enter` accepts it, `Esc` goes back, and `Ctrl+Q`
+/// aborts the fix. Other targets continue directly to their next step.
 fn handle_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if app.pr_review_harness_pick_naming() {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => app.pr_review_harness_pick_name_back(),
+            KeyCode::Char('q') if ctrl => app.pr_review_harness_pick_cancel(),
+            KeyCode::Char('u') if ctrl => app.pr_review_harness_pick_name_clear(),
+            KeyCode::Backspace => app.pr_review_harness_pick_name_backspace(),
+            KeyCode::Enter => app.pr_review_harness_pick_confirm(),
+            KeyCode::Char(c) if !ctrl => app.pr_review_harness_pick_name_push(c),
+            _ => {}
+        }
+        return Ok(());
+    }
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_harness_pick_cancel(),
         KeyCode::Down | KeyCode::Char('j') => app.pr_review_harness_pick_move(1),

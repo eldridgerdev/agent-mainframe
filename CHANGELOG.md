@@ -28,13 +28,32 @@ are tagged.
 
 ### Changed
 
+- **Project config moved to `amf.json` at the repo root.** AMF's per-project
+  settings — custom sessions, feature presets, lifecycle hooks, keybindings,
+  plan questions, and prompt templates — now live in a tracked `amf.json`
+  beside `Cargo.toml`, instead of `.amf/config.json`. Committing config no
+  longer needs `git add -f`: `.amf/` is ignored dir-wide because everything
+  still inside it is generated, and the config file is no longer an exception
+  hidden in an ignored directory. Existing `.amf/config.json` files keep being
+  read until the next config write moves them, and that move either completes
+  or leaves the old file untouched — an interrupted migration never leaves you
+  with a half-written config.
+- **`amf doctor` reports projects still on the legacy config path.** The new
+  `config-path` finding names each `.amf/config.json` it can still see, and
+  distinguishes the two cases: a file that is simply not migrated yet (still
+  read, and moved on the next config write) from one sitting next to an
+  `amf.json` that has already superseded it, where edits to the old file do
+  nothing.
+- **`.amf/` explains itself.** The directory now gets a `README.md` when AMF
+  creates it, saying that its contents are generated and safe to delete, and
+  pointing at `amf.json` for real settings. Your own edits to that README are
+  left alone.
 - **The dashboard's needs-attention badge now shows `<leader i>`.** Questions,
   completed work, waiting sessions, and other input requests now advertise the
   shortcut that opens the list, so the action is discoverable without first
   opening help. On a narrow terminal the working directory is shortened before
   the badge is, so the shortcut stays readable. No configuration change is
   required.
-
 - **Plan mode now keeps its approved plan in `AMF_PLAN.md` at the feature root.**
   The plan is no longer hidden under the Claude-specific `.claude/` directory,
   and the AMF-specific name avoids overwriting a repository's conventional
@@ -61,11 +80,18 @@ are tagged.
 
 ### Migration
 
-- No migration is required. The next plan you accept is written to
-  `AMF_PLAN.md`; older `.claude/plan.md` files may be removed when no longer
+- **Project config migrates itself.** `.amf/config.json` is still read, so
+  existing checkouts keep working untouched. The next time AMF writes config
+  — saving the config wizard, exporting a prompt template — it writes
+  `amf.json` and removes the old file, so there is only ever one answer to
+  where config lives. To migrate by hand, `git mv .amf/config.json amf.json`.
+  Drop the force-tracked `.amf/config.json` exception from your `.gitignore`
+  once you have.
+- No migration is required for plan mode. The next plan you accept is written
+  to `AMF_PLAN.md`; older `.claude/plan.md` files may be removed when no longer
   needed.
-- Existing `PR Triage` and legacy `PR Review`
-  sessions continue to be recognized when the default name is used.
+- Existing `PR Triage` and legacy `PR Review` sessions continue to be
+  recognized when the default name is used.
 
 ## [v0.37.0] - 2026-08-18
 

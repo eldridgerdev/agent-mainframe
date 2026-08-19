@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::app::AppConfig;
 use crate::db::editors::LaunchedEditor;
+use crate::extension::{legacy_project_config_path, project_config_path};
 use crate::project::{ProjectStatus, ProjectStore};
 use crate::resources::limits::{ActiveHarness, LiveHarnesses, active_harness_sessions};
 use crate::resources::mem::MemorySnapshot;
@@ -148,6 +149,7 @@ pub fn diagnose(inputs: &Inputs<'_>) -> Report {
     findings.push(check_orphan_sessions(inputs));
     findings.push(check_orphan_worktrees(inputs));
     findings.push(check_stale_editors(inputs));
+    findings.push(check_legacy_project_config(inputs));
     Report { findings }
 }
 
@@ -442,6 +444,72 @@ fn check_stale_editors(inputs: &Inputs<'_>) -> Finding {
 
 /// Whether this is WSL. The kernel release carries the marker on both WSL1 and
 /// WSL2, and `/proc/sys/kernel/osrelease` is readable without spawning anything.
+/// Report project directories still keeping config at the pre-`amf.json`
+/// path, so the migration is visible before someone trips over it.
+///
+/// Two distinct states, because the advice differs. A repo with only
+/// `.amf/config.json` is still fully working — AMF reads it, and the next
+/// config write migrates it. A repo with **both** is the one worth
+/// knowing about: the legacy file is no longer read, so edits to it do
+/// nothing while it sits there looking like config.
+fn check_legacy_project_config(inputs: &Inputs<'_>) -> Finding {
+    // Project repos only, not feature workdirs. A worktree's
+    // `.amf/config.json` is the *tracked* file as its branch has it, so it
+    // cannot be migrated on its own — it arrives when the branch merges.
+    // Listing every worktree would bury the one actionable line under a
+    // page of copies of it.
+    let mut seen: HashSet<&Path> = HashSet::new();
+    let dirs: Vec<&Path> = inputs
+        .store
+        .projects
+        .iter()
+        .map(|project| project.repo.as_path())
+        .filter(|repo| seen.insert(repo))
+        .collect();
+
+    let mut unmigrated: Vec<String> = Vec::new();
+    let mut shadowed: Vec<String> = Vec::new();
+    for dir in dirs {
+        let legacy = legacy_project_config_path(dir);
+        if !legacy.exists() {
+            continue;
+        }
+        if project_config_path(dir).exists() {
+            shadowed.push(format!(
+                "{} (shadowed by amf.json — no longer read)",
+                legacy.display()
+            ));
+        } else {
+            unmigrated.push(legacy.display().to_string());
+        }
+    }
+
+    let total = unmigrated.len() + shadowed.len();
+    if total == 0 {
+        return Finding::new(
+            "config-path",
+            Severity::Ok,
+            "no project config left at the legacy .amf/config.json path",
+        );
+    }
+
+    let advice = if unmigrated.is_empty() {
+        "the legacy file is dead weight: delete it, or keep it only as a backup"
+    } else {
+        "still read, and migrated on the next config write — or move it now: git mv .amf/config.json amf.json"
+    };
+
+    let mut detail = unmigrated;
+    detail.extend(shadowed);
+    Finding::new(
+        "config-path",
+        Severity::Notice,
+        format!("{total} project config file(s) at the legacy .amf/config.json path"),
+    )
+    .with_detail(detail)
+    .with_advice(advice)
+}
+
 pub fn detect_wsl() -> bool {
     std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .map(|release| {
@@ -605,6 +673,77 @@ mod tests {
             proc_started_at: String::new(),
             started_at: Utc::now(),
         }
+    }
+
+    /// Build a fixture whose project repo and single feature workdir are
+    /// real directories, so the config-path check has something to stat.
+    fn fixture_rooted_at(repo: &Path, workdir: &Path) -> Fixture {
+        let mut fixture = Fixture::new();
+        let mut feat = feature("alpha", ProjectStatus::Active);
+        feat.workdir = workdir.to_path_buf();
+        fixture.store = store(vec![feat]);
+        fixture.store.projects[0].repo = repo.to_path_buf();
+        fixture
+    }
+
+    fn write_legacy_config(dir: &Path) {
+        let legacy = legacy_project_config_path(dir);
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(legacy, "{}").unwrap();
+    }
+
+    #[test]
+    fn a_migrated_repo_reports_nothing_to_do() {
+        let repo = tempfile::TempDir::new().unwrap();
+        std::fs::write(project_config_path(repo.path()), "{}").unwrap();
+        let fixture = fixture_rooted_at(repo.path(), repo.path());
+
+        let report = fixture.run(&|_| false);
+        assert_eq!(finding(&report, "config-path").severity, Severity::Ok);
+    }
+
+    #[test]
+    fn flags_a_repo_still_on_the_legacy_config_path() {
+        let repo = tempfile::TempDir::new().unwrap();
+        write_legacy_config(repo.path());
+        let fixture = fixture_rooted_at(repo.path(), repo.path());
+
+        let report = fixture.run(&|_| false);
+        let found = finding(&report, "config-path");
+        assert_eq!(found.severity, Severity::Notice);
+        assert_eq!(found.detail.len(), 1, "repo dir reported once, not twice");
+        assert!(found.detail[0].ends_with(".amf/config.json"));
+        // Nothing is broken yet, so the advice says so rather than alarming.
+        assert!(found.advice.as_ref().unwrap().contains("git mv"));
+    }
+
+    #[test]
+    fn a_legacy_file_shadowed_by_amf_json_gets_different_advice() {
+        let repo = tempfile::TempDir::new().unwrap();
+        write_legacy_config(repo.path());
+        std::fs::write(project_config_path(repo.path()), "{}").unwrap();
+        let fixture = fixture_rooted_at(repo.path(), repo.path());
+
+        let report = fixture.run(&|_| false);
+        let found = finding(&report, "config-path");
+        assert_eq!(found.severity, Severity::Notice);
+        assert!(found.detail[0].contains("no longer read"));
+        assert!(found.advice.as_ref().unwrap().contains("dead weight"));
+    }
+
+    #[test]
+    fn a_worktrees_own_copy_is_not_reported_as_needing_migration() {
+        // The worktree's file is whatever its branch has checked out; it
+        // migrates when that branch does, so naming it here would be
+        // advice the user cannot act on — once per worktree.
+        let repo = tempfile::TempDir::new().unwrap();
+        let worktree = tempfile::TempDir::new().unwrap();
+        write_legacy_config(worktree.path());
+        std::fs::write(project_config_path(repo.path()), "{}").unwrap();
+        let fixture = fixture_rooted_at(repo.path(), worktree.path());
+
+        let report = fixture.run(&|_| false);
+        assert_eq!(finding(&report, "config-path").severity, Severity::Ok);
     }
 
     #[test]

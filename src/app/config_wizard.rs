@@ -455,10 +455,9 @@ fn build_config_confirm_diff(
 }
 
 fn load_project_extension_scope(repo: &Path) -> Result<ExtensionConfig> {
-    let path = repo.join(".amf").join("config.json");
-    if !path.exists() {
+    let Some(path) = crate::extension::resolve_project_config_path(repo) else {
         return Ok(ExtensionConfig::default());
-    }
+    };
 
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read project config {}", path.display()))?;

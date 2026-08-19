@@ -35,6 +35,12 @@ are tagged.
   longer needs `git add -f`: `.amf/` is ignored dir-wide because everything
   still inside it is generated, and the config file is no longer an exception
   hidden in an ignored directory.
+- **`amf doctor` reports projects still on the legacy config path.** The new
+  `config-path` finding names each `.amf/config.json` it can still see, and
+  distinguishes the two cases: a file that is simply not migrated yet (still
+  read, and moved on the next config write) from one sitting next to an
+  `amf.json` that has already superseded it, where edits to the old file do
+  nothing.
 - **`.amf/` explains itself.** The directory now gets a `README.md` when AMF
   creates it, saying that its contents are generated and safe to delete, and
   pointing at `amf.json` for real settings. Your own edits to that README are

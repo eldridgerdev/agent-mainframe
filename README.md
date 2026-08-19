@@ -459,7 +459,8 @@ examples, dry runs, and response formats.
 - Run `amf doctor` for a read-only report on what AMF is putting on the
   machine: agents against your limit, editor windows open alongside them,
   memory and swap, `amf-*` tmux sessions and worktrees with no matching
-  feature, and editors still running for features you stopped. `--json` emits
+  feature, editors still running for features you stopped, and any project
+  still keeping config at the legacy `.amf/config.json` path. `--json` emits
   the same findings for scripting. It changes nothing and always exits `0`.
 - Press `D` on the dashboard to view AMF's debug log. The same log is available
   at `~/.local/state/amf/debug.log`.

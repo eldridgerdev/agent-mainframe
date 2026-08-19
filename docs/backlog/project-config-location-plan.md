@@ -110,11 +110,14 @@ opens the directory wondering what it is gets the answer in place.
 - [x] Tests: fallback read, migrating write, no-legacy case, README
       injection
 - [x] CHANGELOG entry + CLAUDE.md / docs references
+- [x] `amf doctor` `config-path` finding for repos still on the legacy path
 
 ## Open questions
 
-- Should `amf doctor` report a repo still on the legacy path, so the
-  migration is visible before someone hits it?
+- ~~Should `amf doctor` report a repo still on the legacy path, so the
+  migration is visible before someone hits it?~~ **Yes — shipped** as the
+  `config-path` finding, which also separates "not migrated yet" from
+  "shadowed by an `amf.json` that already won".
 - Worktree-scoped `amf.json` is untracked in practice (worktrees are
   ignored). Worth a distinct name, or is same-name-different-scope
   clearer?

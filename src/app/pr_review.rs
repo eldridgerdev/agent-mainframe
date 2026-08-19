@@ -30,9 +30,10 @@ use crate::headless::HeadlessRunner;
 /// Snippet length (chars) shown in the comment list.
 const SNIPPET_LEN: usize = 80;
 
-/// Label (and de-facto identity) of the dedicated PR-triage agent session. The
-/// session is found-or-created by this label so the same window is reused for
-/// every fix in a PR (plan token principle #4 — pay per-session overhead once).
+/// Default label (and de-facto identity) of a dedicated PR-triage agent
+/// session. Users can choose another label before the first fix so multiple
+/// triage sessions can coexist; keeping this default preserves the original
+/// found-or-created behavior for an unnamed session.
 pub(crate) const TRIAGE_SESSION_LABEL: &str = "PR Triage";
 
 /// Label used before the feature was renamed to PR Triage. Keep recognizing it
@@ -575,8 +576,19 @@ pub(crate) fn fix_session_index(
 /// retaining compatibility with sessions created under the old "PR Review"
 /// label. Existing-live targeting is unchanged.
 pub(crate) fn pr_triage_session_index(feature: &Feature, target: FixTarget) -> Option<usize> {
-    fix_session_index(feature, target, TRIAGE_SESSION_LABEL).or_else(|| {
-        (target == FixTarget::DedicatedReview)
+    pr_triage_session_index_named(feature, target, TRIAGE_SESSION_LABEL)
+}
+
+/// Resolve the PR-triage session selected for this pane visit. Legacy
+/// `PR Review` compatibility only applies to the default name: a custom name
+/// is an exact identity and must never silently resolve to a different window.
+pub(crate) fn pr_triage_session_index_named(
+    feature: &Feature,
+    target: FixTarget,
+    dedicated_label: &str,
+) -> Option<usize> {
+    fix_session_index(feature, target, dedicated_label).or_else(|| {
+        (target == FixTarget::DedicatedReview && dedicated_label == TRIAGE_SESSION_LABEL)
             .then(|| fix_session_index(feature, target, LEGACY_REVIEW_SESSION_LABEL))
             .flatten()
     })
@@ -1759,6 +1771,7 @@ impl App {
                 fix_target_picked: false,
                 usage_baselines,
                 review_harness: None,
+                dedicated_session_label: TRIAGE_SESSION_LABEL.to_string(),
                 harness_pick: None,
                 new_feature_setup: None,
                 integrate: None,
@@ -2473,6 +2486,7 @@ impl App {
                             fix_target_picked: false,
                             usage_baselines,
                             review_harness: None,
+                            dedicated_session_label: TRIAGE_SESSION_LABEL.to_string(),
                             harness_pick: None,
                             new_feature_setup: None,
                             integrate: None,
@@ -2755,26 +2769,16 @@ impl App {
     }
 
     /// Whether the first `f`/`B` of this pane visit should pick a fix target
-    /// before injecting: skipped once the target's already been picked (or a
-    /// dedicated session already exists — a cache re-open inherits the
-    /// running session's harness, so don't ask again).
+    /// before injecting. Every new pane visit asks once even when the default
+    /// dedicated session already exists, because the user may choose a
+    /// different name to run another triage session alongside it.
     fn pr_review_needs_harness_pick(&self) -> bool {
         let AppMode::PrReview(state) = &self.mode else {
             return false;
         };
-        if state.fix_target_picked || state.review_harness.is_some() {
-            return false;
-        }
-        // Both short-circuits above are why anything that abandons a resolved
-        // target has to go through `pr_review_clear_fix_target`.
-        match self.feature_indices_for_workdir(&state.workdir) {
-            Some((pi, fi)) => {
-                let feature = &self.store.projects[pi].features[fi];
-                pr_triage_session_index(feature, FixTarget::DedicatedReview).is_none()
-            }
-            // No feature resolved yet — let the inject path surface the error.
-            None => false,
-        }
+        !state.fix_target_picked
+            && state.review_harness.is_none()
+            && self.feature_indices_for_workdir(&state.workdir).is_some()
     }
 
     /// Un-resolve the pane's fix target so the next `f`/`B` re-opens the
@@ -2786,6 +2790,7 @@ impl App {
             state.fix_target = FixTarget::default();
             state.fix_target_picked = false;
             state.review_harness = None;
+            state.dedicated_session_label = TRIAGE_SESSION_LABEL.to_string();
         }
     }
 
@@ -2827,7 +2832,11 @@ impl App {
         // +1: rows[0] is the ExistingLive row, so the dedicated default shifts by one.
         let selected = dedicated_default + 1;
         if let AppMode::PrReview(state) = &mut self.mode {
-            state.harness_pick = Some(HarnessPickState { rows, selected });
+            state.harness_pick = Some(HarnessPickState {
+                rows,
+                selected,
+                session_name: None,
+            });
         }
     }
 
@@ -2879,11 +2888,12 @@ impl App {
     /// dedicated row, the harness) for the rest of this pane visit, and
     /// continue into the fix confirm dialog.
     pub fn pr_review_harness_pick_confirm(&mut self) {
-        let chosen = match &self.mode {
+        let (chosen, session_name) = match &self.mode {
             AppMode::PrReview(state) => state
                 .harness_pick
                 .as_ref()
-                .and_then(|p| p.rows.get(p.selected).cloned()),
+                .map(|p| (p.rows.get(p.selected).cloned(), p.session_name.clone()))
+                .unwrap_or((None, None)),
             _ => return,
         };
         let Some(row) = chosen else {
@@ -2902,14 +2912,30 @@ impl App {
                 self.push_toast_success("Fixes target the existing live session".to_string());
             }
             FixTargetPickRow::Dedicated(agent) => {
-                self.pr_review_set_fix_target(FixTarget::DedicatedReview);
+                // Choosing a harness advances to the optional-name step. A
+                // second Enter accepts the default; typing first creates (or
+                // reuses) the exact named session instead.
+                let Some(name) = session_name else {
+                    if let AppMode::PrReview(state) = &mut self.mode
+                        && let Some(pick) = &mut state.harness_pick
+                    {
+                        pick.session_name = Some(String::new());
+                    }
+                    return;
+                };
+                let label = match name.trim() {
+                    "" => TRIAGE_SESSION_LABEL.to_string(),
+                    custom => custom.to_string(),
+                };
                 if let AppMode::PrReview(state) = &mut self.mode {
-                    state.harness_pick = None;
                     state.review_harness = Some(agent.clone());
+                    state.dedicated_session_label = label.clone();
+                    state.harness_pick = None;
                 }
+                self.pr_review_set_fix_target(FixTarget::DedicatedReview);
                 self.push_toast_success(format!(
-                    "Triage session will run {}",
-                    agent.display_name()
+                    "Triage session '{label}' will run {}",
+                    agent.display_name(),
                 ));
             }
             FixTargetPickRow::NewFeature => {
@@ -2937,6 +2963,60 @@ impl App {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.harness_pick = None;
             state.pending_batch = false;
+        }
+    }
+
+    /// Whether the fix-target picker is accepting the dedicated session name.
+    pub fn pr_review_harness_pick_naming(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::PrReview(state)
+                if state
+                    .harness_pick
+                    .as_ref()
+                    .is_some_and(|pick| pick.session_name.is_some())
+        )
+    }
+
+    /// Return from the optional-name step to the fix-target list.
+    pub fn pr_review_harness_pick_name_back(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.harness_pick
+        {
+            pick.session_name = None;
+        }
+    }
+
+    pub fn pr_review_harness_pick_name_push(&mut self, c: char) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(name) = state
+                .harness_pick
+                .as_mut()
+                .and_then(|pick| pick.session_name.as_mut())
+        {
+            name.push(c);
+        }
+    }
+
+    pub fn pr_review_harness_pick_name_backspace(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(name) = state
+                .harness_pick
+                .as_mut()
+                .and_then(|pick| pick.session_name.as_mut())
+        {
+            name.pop();
+        }
+    }
+
+    pub fn pr_review_harness_pick_name_clear(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(name) = state
+                .harness_pick
+                .as_mut()
+                .and_then(|pick| pick.session_name.as_mut())
+        {
+            name.clear();
         }
     }
 
@@ -3218,7 +3298,11 @@ impl App {
             return Ok(());
         };
         let feature = &self.store.projects[pi].features[fi];
-        let Some(si) = pr_triage_session_index(feature, state.fix_target) else {
+        let Some(si) = pr_triage_session_index_named(
+            feature,
+            state.fix_target,
+            &state.dedicated_session_label,
+        ) else {
             self.mode = AppMode::PrReview(state);
             self.push_toast_warning("No triage session yet — press f to start one");
             return Ok(());
@@ -3815,8 +3899,12 @@ impl App {
     /// window that fix prompts target. Returns `(project, feature, session)`
     /// indices. Ensures the feature's tmux session is running first.
     fn resolve_fix_session(&mut self) -> Result<(usize, usize, usize)> {
-        let (target, harness) = match &self.mode {
-            AppMode::PrReview(state) => (state.fix_target, state.review_harness.clone()),
+        let (target, harness, dedicated_label) = match &self.mode {
+            AppMode::PrReview(state) => (
+                state.fix_target,
+                state.review_harness.clone(),
+                state.dedicated_session_label.clone(),
+            ),
             _ => anyhow::bail!("not reviewing a PR"),
         };
         let (pi, fi) = match self.pr_review_target_feature() {
@@ -3843,7 +3931,7 @@ impl App {
         )?;
 
         let feature = &self.store.projects[pi].features[fi];
-        if let Some(si) = pr_triage_session_index(feature, target) {
+        if let Some(si) = pr_triage_session_index_named(feature, target, &dedicated_label) {
             return Ok((pi, fi, si));
         }
 
@@ -3855,7 +3943,7 @@ impl App {
                 let si = self.create_dedicated_review_session(
                     pi,
                     fi,
-                    TRIAGE_SESSION_LABEL,
+                    &dedicated_label,
                     harness,
                     StartIntent::Warn("the PR triage agent"),
                 )?;
@@ -3961,7 +4049,11 @@ impl App {
         // than the source feature's unrelated session.
         let (pi, fi) = self.pr_review_feature_for_target(state)?;
         let feature = &self.store.projects[pi].features[fi];
-        let si = pr_triage_session_index(feature, state.fix_target)?;
+        let si = pr_triage_session_index_named(
+            feature,
+            state.fix_target,
+            &state.dedicated_session_label,
+        )?;
         feature.sessions[si].token_usage.clone()
     }
 
@@ -3974,8 +4066,13 @@ impl App {
             return None;
         };
         let (pi, fi) = self.pr_review_feature_for_target(state)?;
-        let workdir = self.store.projects[pi].features[fi].workdir.clone();
-        self.dedicated_review_session_working_for_workdir(&workdir)
+        let feature = &self.store.projects[pi].features[fi];
+        let si = pr_triage_session_index_named(
+            feature,
+            state.fix_target,
+            &state.dedicated_session_label,
+        )?;
+        self.review_session_working(feature, si)
     }
 
     /// Same as [`Self::pr_review_dedicated_session_working`] but for an
@@ -3989,6 +4086,10 @@ impl App {
         let (pi, fi) = self.feature_indices_for_workdir(workdir)?;
         let feature = &self.store.projects[pi].features[fi];
         let si = pr_triage_session_index(feature, FixTarget::DedicatedReview)?;
+        self.review_session_working(feature, si)
+    }
+
+    fn review_session_working(&self, feature: &Feature, si: usize) -> Option<bool> {
         let session = &feature.sessions[si];
         Some(match session.kind {
             SessionKind::Opencode => self
@@ -5650,6 +5751,39 @@ mod tests {
         assert_eq!(
             pr_triage_session_index(&feature, FixTarget::ExistingLive),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn named_triage_sessions_resolve_independently() {
+        use crate::project::{AgentKind, Feature, SessionKind, VibeMode};
+        let mut feature = Feature::new(
+            "feature".into(),
+            "feature".into(),
+            std::path::PathBuf::from("/tmp/feature"),
+            false,
+            VibeMode::default(),
+            false,
+            false,
+            AgentKind::default(),
+            false,
+            false,
+        );
+        feature.add_session_named(SessionKind::Claude, TRIAGE_SESSION_LABEL.into());
+        feature.add_session_named(SessionKind::Codex, "PR 321 security".into());
+        feature.add_session_named(SessionKind::Claude, "PR 654 docs".into());
+
+        assert_eq!(
+            pr_triage_session_index_named(&feature, FixTarget::DedicatedReview, "PR 321 security"),
+            Some(1)
+        );
+        assert_eq!(
+            pr_triage_session_index_named(&feature, FixTarget::DedicatedReview, "PR 654 docs"),
+            Some(2)
+        );
+        assert_eq!(
+            pr_triage_session_index_named(&feature, FixTarget::DedicatedReview, "missing"),
+            None
         );
     }
 

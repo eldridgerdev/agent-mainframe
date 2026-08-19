@@ -316,7 +316,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("f", "Inject scoped fix into agent session"),
         ("", "(e edit · Tab inject · Ctrl+T vim)"),
         ("", "(first fix/batch picks the fix target: existing"),
-        ("", "live session, a dedicated session + harness, or"),
+        ("", "live session, a named dedicated session + harness, or"),
         ("", "New feature… — an isolated worktree with its own"),
         ("", "harness + vibe mode, set up in one compact form)"),
         ("Space", "Mark comment for batch fix"),

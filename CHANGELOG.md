@@ -10,7 +10,18 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **PR Triage can run multiple named dedicated sessions at once.** After
+  choosing a dedicated harness from the first `f` or `B` fix-target prompt,
+  enter a session name to create or reuse that exact triage session. Leave the
+  name blank to keep reusing the original `PR Triage` session. The chosen name
+  follows fix injection, session switching, activity, and usage reporting.
+
+### Migration
+
+- No migration is required. Existing `PR Triage` and legacy `PR Review`
+  sessions continue to be recognized when the default name is used.
 
 ## [v0.37.0] - 2026-08-18
 

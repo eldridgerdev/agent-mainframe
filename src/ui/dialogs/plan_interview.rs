@@ -288,6 +288,8 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
             Span::raw(" skip  "),
             hint("Ctrl+F", theme),
             Span::raw(" draft plan now (uses tokens)  "),
+            hint("Ctrl+Q", theme),
+            Span::raw(" inspect dashboard  "),
             hint("Esc", theme),
             Span::raw(" cancel"),
         ])
@@ -864,6 +866,8 @@ fn draw_plan_review(
         Span::raw(" regenerate  "),
         hint("Enter", theme),
         Span::raw(" accept  "),
+        hint("Ctrl+Q", theme),
+        Span::raw(" inspect dashboard  "),
         hint("Esc", theme),
         Span::raw(" abort"),
     ]);

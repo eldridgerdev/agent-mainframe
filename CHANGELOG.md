@@ -10,6 +10,22 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **PR Triage can run multiple named dedicated sessions at once.** After
+  choosing a dedicated harness from the first `f` or `B` fix-target prompt,
+  enter a session name to create or reuse that exact triage session. Leave the
+  name blank to keep reusing the original `PR Triage` session. The chosen name
+  follows fix injection, session switching, activity, and usage reporting.
+
+- **Plan interviews can pause while you inspect the codebase.** Press
+  `Ctrl+Q` to park the interview on the dashboard without losing the answer
+  you are editing. AMF marks the relevant project or feature row so `Enter`
+  can resume it directly; if you open a session to investigate first,
+  leaving that session returns to the interview automatically. A plan
+  operation already using agent tokens must finish before the interview can
+  be parked, so its result is not discarded.
+
 ### Changed
 
 - **Plan mode now keeps its approved plan in `AMF_PLAN.md` at the feature root.**
@@ -29,8 +45,11 @@ are tagged.
 
 ### Migration
 
-No migration is required. The next plan you accept is written to `AMF_PLAN.md`;
-older `.claude/plan.md` files may be removed when no longer needed.
+- No migration is required. The next plan you accept is written to
+  `AMF_PLAN.md`; older `.claude/plan.md` files may be removed when no longer
+  needed.
+- Existing `PR Triage` and legacy `PR Review`
+  sessions continue to be recognized when the default name is used.
 
 ## [v0.37.0] - 2026-08-18
 

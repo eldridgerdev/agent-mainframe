@@ -717,6 +717,13 @@ interview with prior answers pre-filled, get an updated
       `scripts/dev/screenshot/scenarios/plan-review-mouse-scroll.txt` — which
       is also the first scenario to drive mouse input, injecting SGR wheel
       bytes through the grammar's `run:` escape hatch
+- [x] Let an in-progress interview park on the dashboard for codebase research.
+      `Ctrl+Q` preserves the full live interview, including uncommitted editor
+      text, and marks its project or feature row with an `Enter`-to-resume
+      badge. Session rows remain available for inspection; leaving a session
+      restores the parked interview automatically. Headless operations that
+      are already spending agent tokens stay on screen until they finish so a
+      completed result cannot be discarded while the interview is parked.
 
 ## Open questions
 

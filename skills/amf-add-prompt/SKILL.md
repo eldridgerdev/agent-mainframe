@@ -7,13 +7,13 @@ description: >
   the prompt library picker (leader+P in a session, or L on the
   dashboard) so they can inject it into an agent instead of retyping
   it.
-allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *)
+allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *) Bash(rm .amf/config.json)
 argument-hint: "[prompt name]"
 ---
 
 ## Current config
 
-!`cat amf.json 2>/dev/null || echo "{}"`
+!`cat amf.json 2>/dev/null || cat .amf/config.json 2>/dev/null || echo "{}"`
 
 ## Task
 
@@ -84,6 +84,25 @@ injected. Two ways to author them:
 { "key": "ticket", "label": "Ticket ID", "kind": "text", "required": true }
 ```
 
+## Config path (read the legacy file too)
+
+Project config lives at `amf.json` in the repo root. Older checkouts
+keep it at `.amf/config.json`, and the block above falls back to that
+file when `amf.json` is absent — so what you see is the config that is
+actually in effect, not an empty `{}`.
+
+Always **write** to `amf.json`. If the config you read came from the
+legacy path, carry every existing key over into `amf.json` and then
+delete the legacy file:
+
+```bash
+test -f amf.json && rm .amf/config.json
+```
+
+AMF prefers `amf.json` whenever it exists, so leaving both behind would
+let a stale `.amf/config.json` sit there looking authoritative while
+changing nothing.
+
 ## Scope
 
 - **Project** (this repo only): `amf.json` — `prompt_templates`
@@ -97,11 +116,13 @@ wins). If the user hasn't specified scope, default to project scope.
 
 ## Steps
 
-1. Read `amf.json` (shown above).
+1. Read the current config (shown above — it may have come
+   from the legacy `.amf/config.json`).
 2. Add the new template to `prompt_templates` (or create the array).
    Keep `body` newlines as `\n` in the JSON string.
-3. Write the updated JSON back — preserve existing templates and any
-   other config (presets, sessions, hooks).
+3. Write the updated JSON back to `amf.json` — preserve existing
+   templates and any other config (presets, sessions, hooks) — then
+   delete `.amf/config.json` if the config came from there.
 4. Tell the user it will appear in the prompt library picker
    (`leader+P` inside a session, or `L` on the dashboard) as a
    read-only `Project`/`Global` entry they can inject or duplicate

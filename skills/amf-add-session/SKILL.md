@@ -6,13 +6,13 @@ description: >
   test runner, or any other persistent background process that
   should appear in the AMF session picker alongside the agent
   and terminal sessions.
-allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *)
+allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *) Bash(rm .amf/config.json)
 argument-hint: "[session name and command]"
 ---
 
 ## Current config
 
-!`cat amf.json 2>/dev/null || echo "{}"`
+!`cat amf.json 2>/dev/null || cat .amf/config.json 2>/dev/null || echo "{}"`
 
 ## Task
 
@@ -49,6 +49,25 @@ Add or update an entry in the `custom_sessions` array in
 | `autolaunch` | no | Start automatically when the feature starts |
 | `pre_check` | no | Skip launch silently if this command exits non-zero |
 
+## Config path (read the legacy file too)
+
+Project config lives at `amf.json` in the repo root. Older checkouts
+keep it at `.amf/config.json`, and the block above falls back to that
+file when `amf.json` is absent — so what you see is the config that is
+actually in effect, not an empty `{}`.
+
+Always **write** to `amf.json`. If the config you read came from the
+legacy path, carry every existing key over into `amf.json` and then
+delete the legacy file:
+
+```bash
+test -f amf.json && rm .amf/config.json
+```
+
+AMF prefers `amf.json` whenever it exists, so leaving both behind would
+let a stale `.amf/config.json` sit there looking authoritative while
+changing nothing.
+
 ## Scope
 
 - **Project** (this repo only): `amf.json` — edit this file
@@ -60,9 +79,12 @@ If the user hasn't specified scope, default to project scope.
 
 ## Steps
 
-1. Read `amf.json` (shown above)
+1. Read the current config (shown above — it may have come
+   from the legacy `.amf/config.json`)
 2. Add the new session to `custom_sessions` (or create the array)
-3. Write the updated JSON back — preserve any existing entries
+3. Write the updated JSON back to `amf.json` — preserve any
+   existing entries — then delete `.amf/config.json` if the config
+   came from there
 4. Tell the user the session will appear in the AMF picker after
    pressing `s` on the feature, or automatically on next start
    if `autolaunch` is true

@@ -431,21 +431,47 @@ pub fn resolve_project_config_path(dir: &Path) -> Option<PathBuf> {
 /// Write `json` to `{dir}/amf.json`, migrating off the legacy path when
 /// one is present.
 ///
-/// The legacy file is removed **only after** the new write succeeds, so a
-/// failure part-way leaves the old config intact rather than losing it.
-/// Leaving both behind would be worse than either: reads prefer the new
-/// path, so a stale `.amf/config.json` would sit there looking
-/// authoritative while changing nothing.
+/// The new config is written to a sibling temp file and renamed into
+/// place, so `amf.json` either does not exist or holds a complete config
+/// — never a truncated one. That matters because reads prefer `amf.json`
+/// whenever it exists: a half-written file would shadow an intact
+/// `.amf/config.json` instead of falling back to it.
+///
+/// The legacy file is removed **only after** the rename succeeds, so a
+/// failure part-way leaves the old config intact rather than losing it,
+/// and a failure to remove it is returned rather than swallowed — leaving
+/// both behind would be worse than either, since the stale
+/// `.amf/config.json` sits there looking authoritative while changing
+/// nothing.
 pub fn write_project_config(dir: &Path, json: &str) -> anyhow::Result<PathBuf> {
     let path = project_config_path(dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, json)?;
+
+    // Same directory as the target, so the rename is within one filesystem.
+    let tmp = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
+    if let Err(err) = std::fs::write(&tmp, json) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow::Error::new(err).context(format!("failed to write {}", tmp.display())));
+    }
+    if let Err(err) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(
+            anyhow::Error::new(err).context(format!("failed to replace {}", path.display()))
+        );
+    }
 
     let legacy = legacy_project_config_path(dir);
     if legacy.exists() {
-        let _ = std::fs::remove_file(&legacy);
+        std::fs::remove_file(&legacy).map_err(|err| {
+            anyhow::Error::new(err).context(format!(
+                "config was saved to {}, but the legacy {} could not be removed; \
+                 delete it by hand so the two cannot diverge",
+                path.display(),
+                legacy.display()
+            ))
+        })?;
     }
     Ok(path)
 }
@@ -608,6 +634,61 @@ mod tests {
         assert!(written.exists());
         // The old file is removed rather than left to look authoritative.
         assert!(!legacy.exists());
+    }
+
+    #[test]
+    fn write_project_config_leaves_no_temp_files_behind() {
+        let tmp = TempDir::new().unwrap();
+        write_project_config(tmp.path(), "{}").unwrap();
+
+        let strays: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|name| name != "amf.json")
+            .collect();
+        assert!(strays.is_empty(), "unexpected leftovers: {strays:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_project_config_surfaces_a_failed_legacy_removal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Root ignores the directory permissions this test relies on.
+        if nix_is_root() {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let legacy = legacy_project_config_path(tmp.path());
+        let legacy_dir = legacy.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(&legacy, r#"{"allowed_agents":["claude"]}"#).unwrap();
+
+        // Read-only parent: the file can still be read, but not unlinked.
+        let original = std::fs::metadata(&legacy_dir).unwrap().permissions();
+        let mut locked = original.clone();
+        locked.set_mode(0o500);
+        std::fs::set_permissions(&legacy_dir, locked).unwrap();
+
+        let result = write_project_config(tmp.path(), "{}");
+
+        std::fs::set_permissions(&legacy_dir, original).unwrap();
+
+        let err = result.expect_err("a stale legacy config must not be reported as migrated");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("config.json"),
+            "the error should name the file left behind: {msg}"
+        );
+        // The new config is still on disk; only the cleanup failed.
+        assert!(project_config_path(tmp.path()).exists());
+    }
+
+    #[cfg(unix)]
+    fn nix_is_root() -> bool {
+        // Safe: getuid() takes no arguments and cannot fail.
+        unsafe { libc::getuid() == 0 }
     }
 
     #[test]

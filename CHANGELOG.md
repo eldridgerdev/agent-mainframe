@@ -34,7 +34,10 @@ are tagged.
   beside `Cargo.toml`, instead of `.amf/config.json`. Committing config no
   longer needs `git add -f`: `.amf/` is ignored dir-wide because everything
   still inside it is generated, and the config file is no longer an exception
-  hidden in an ignored directory.
+  hidden in an ignored directory. Existing `.amf/config.json` files keep being
+  read until the next config write moves them, and that move either completes
+  or leaves the old file untouched — an interrupted migration never leaves you
+  with a half-written config.
 - **`amf doctor` reports projects still on the legacy config path.** The new
   `config-path` finding names each `.amf/config.json` it can still see, and
   distinguishes the two cases: a file that is simply not migrated yet (still

@@ -6,13 +6,13 @@ description: >
   branch prefix, plan mode, review, and Chrome settings for new
   features — so they can create a feature with a single selection
   instead of filling out every field each time.
-allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *)
+allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *) Bash(rm .amf/config.json)
 argument-hint: "[preset name]"
 ---
 
 ## Current config
 
-!`cat amf.json 2>/dev/null || echo "{}"`
+!`cat amf.json 2>/dev/null || cat .amf/config.json 2>/dev/null || echo "{}"`
 
 ## Task
 
@@ -43,6 +43,25 @@ Add or update an entry in the `feature_presets` array in
 | `plan_mode` | no | `true`, `false` | Start with a shared PLAN.md task list |
 | `enable_chrome` | no | `true`, `false` | Allow agent to control a browser |
 
+## Config path (read the legacy file too)
+
+Project config lives at `amf.json` in the repo root. Older checkouts
+keep it at `.amf/config.json`, and the block above falls back to that
+file when `amf.json` is absent — so what you see is the config that is
+actually in effect, not an empty `{}`.
+
+Always **write** to `amf.json`. If the config you read came from the
+legacy path, carry every existing key over into `amf.json` and then
+delete the legacy file:
+
+```bash
+test -f amf.json && rm .amf/config.json
+```
+
+AMF prefers `amf.json` whenever it exists, so leaving both behind would
+let a stale `.amf/config.json` sit there looking authoritative while
+changing nothing.
+
 ## Scope
 
 - **Project** (this repo only): `amf.json` — edit this file
@@ -61,9 +80,11 @@ allowed, or omit `allowed_agents` to allow all.
 
 ## Steps
 
-1. Read `amf.json` (shown above)
+1. Read the current config (shown above — it may have come
+   from the legacy `.amf/config.json`)
 2. Add the new preset to `feature_presets` (or create the array)
-3. Write the updated JSON back — preserve existing presets and
-   other config
+3. Write the updated JSON back to `amf.json` — preserve existing
+   presets and other config — then delete `.amf/config.json` if the
+   config came from there
 4. Tell the user the preset will appear when creating a new
    feature in AMF (press `N` on the project)

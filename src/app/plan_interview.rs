@@ -29,6 +29,116 @@ Start with the first unchecked task, and keep the task checkboxes current as \
 you go.";
 
 impl App {
+    /// Park the live interview so the dashboard and its sessions can be used
+    /// for repository research without flattening the interview into a saved
+    /// draft. Headless phases remain on screen: their pollers deliberately
+    /// discard results after navigating away, so parking one mid-call would
+    /// throw away paid work.
+    pub(crate) fn pause_plan_interview(&mut self) {
+        let background_running = self.plan_interview_ai_bg.is_some()
+            || self.plan_interview_synthesis_bg.is_some()
+            || self.plan_interview_critique_bg.is_some()
+            || self.plan_interview_directed_feedback_bg.is_some()
+            || self.plan_interview_investigation_bg.is_some();
+        if background_running {
+            self.message = Some(
+                "Wait for the current plan operation to finish before returning to the dashboard"
+                    .into(),
+            );
+            return;
+        }
+
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::PlanInterview(mut state) => {
+                state.abort_confirmation = false;
+                state
+            }
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        let feature_name = state.feature_name.clone();
+        if let Some(prepared) = state.pending_launch.as_ref() {
+            if let Some(pi) = self
+                .store
+                .projects
+                .iter()
+                .position(|project| project.name == prepared.project_name)
+            {
+                self.selection = Selection::Project(pi);
+            }
+        } else if let Some((pi, fi)) = self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+            p.features
+                .iter()
+                .position(|feature| feature.id == state.interview_key)
+                .map(|fi| (pi, fi))
+        }) {
+            self.selection = Selection::Feature(pi, fi);
+        }
+
+        self.paused_plan_interview = Some(state);
+        self.message = Some(format!(
+            "Plan interview paused for '{feature_name}'; open a session to inspect the codebase"
+        ));
+    }
+
+    pub(crate) fn resume_paused_plan_interview(&mut self) -> bool {
+        let Some(state) = self.paused_plan_interview.take() else {
+            return false;
+        };
+        self.mode = AppMode::PlanInterview(state);
+        self.message = None;
+        true
+    }
+
+    /// Whether Enter on the current dashboard row should reopen the parked
+    /// interview. A pending feature belongs to its project row because the
+    /// feature itself is not created until the plan is accepted; an on-demand
+    /// interview belongs to the existing feature row. Session rows remain free
+    /// to open for code inspection.
+    pub(crate) fn paused_plan_interview_matches_selection(&self) -> bool {
+        let Some(interview) = self.paused_plan_interview.as_ref() else {
+            return false;
+        };
+        match self.selection {
+            Selection::Project(pi) => interview.pending_launch.as_ref().is_some_and(|pending| {
+                self.store
+                    .projects
+                    .get(pi)
+                    .is_some_and(|project| project.name == pending.project_name)
+            }),
+            Selection::Feature(pi, fi) => {
+                interview.pending_launch.is_none()
+                    && self
+                        .store
+                        .projects
+                        .get(pi)
+                        .and_then(|project| project.features.get(fi))
+                        .is_some_and(|feature| feature.id == interview.interview_key)
+            }
+            Selection::Session(..) => false,
+        }
+    }
+
+    pub(crate) fn paused_plan_interview_for_project(&self, project_name: &str) -> Option<&str> {
+        let interview = self.paused_plan_interview.as_ref()?;
+        interview
+            .pending_launch
+            .as_ref()
+            .filter(|pending| pending.project_name == project_name)
+            .map(|_| interview.feature_name.as_str())
+    }
+
+    pub(crate) fn paused_plan_interview_for_feature(&self, feature_id: &str) -> bool {
+        self.paused_plan_interview
+            .as_ref()
+            .is_some_and(|interview| {
+                interview.pending_launch.is_none() && interview.interview_key == feature_id
+            })
+    }
+
     pub(crate) fn start_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
         let questions = self
             .store

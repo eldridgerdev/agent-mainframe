@@ -222,10 +222,12 @@ impl App {
     }
 
     pub fn exit_view(&mut self) {
-        self.mode = AppMode::Normal;
         self.pane_content.clear();
         self.tmux_cursor = None;
-        self.message = Some("Returned to dashboard".into());
+        if !self.resume_paused_plan_interview() {
+            self.mode = AppMode::Normal;
+            self.message = Some("Returned to dashboard".into());
+        }
     }
 
     pub fn open_latest_prompt_from_view(&mut self) {

@@ -10,7 +10,19 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Plan interviews can pause while you inspect the codebase.** Press
+  `Ctrl+Q` to park the interview on the dashboard without losing the answer
+  you are editing. AMF marks the relevant project or feature row so `Enter`
+  can resume it directly; if you open a session to investigate first,
+  leaving that session returns to the interview automatically. A plan
+  operation already using agent tokens must finish before the interview can
+  be parked, so its result is not discarded.
+
+### Migration
+
+No migration is required.
 
 ## [v0.37.0] - 2026-08-18
 

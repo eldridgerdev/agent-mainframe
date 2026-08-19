@@ -71,6 +71,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.start_create_feature();
             }
         }
+        KeyCode::Enter if app.paused_plan_interview_matches_selection() => {
+            app.resume_paused_plan_interview();
+        }
         KeyCode::Enter => match &app.selection {
             Selection::Project(_) => {
                 app.toggle_collapse();
@@ -293,7 +296,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.open_learning_mode_for_selection()?;
         }
         KeyCode::Char('P') => {
-            app.start_plan_interview_for_selected_feature();
+            if !app.resume_paused_plan_interview() {
+                app.start_plan_interview_for_selected_feature();
+            }
         }
         KeyCode::Char('f') if crate::app::DASHBOARD_SESSION_FILTER_ENABLED => {
             app.session_filter = app.session_filter.next();

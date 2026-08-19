@@ -4883,7 +4883,7 @@ pub struct PlanInterviewState {
     pub answers: Vec<Option<String>>,
     pub editor: TextEditor,
     pub selected_option: usize,
-    /// Where the accepted plan is written (`<workdir>/PLAN.md`). Held
+    /// Where the accepted plan is written (`<workdir>/AMF_PLAN.md`). Held
     /// separately from `pending_launch` because an on-demand interview has an
     /// existing feature's workdir and no launch at all.
     pub workdir: PathBuf,

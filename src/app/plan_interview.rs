@@ -16,13 +16,13 @@ use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
 use crate::plan_interview::{self, PlanQuestion};
 
-const PLAN_FILE_NAME: &str = "PLAN.md";
+const PLAN_FILE_NAME: &str = "AMF_PLAN.md";
 
 /// Composer seed offered after an accepted interview. Deliberately short and
 /// editable: the plan itself carries the detail, and the instruction block
 /// already told the agent to treat its decisions as settled.
 const PLAN_KICKOFF_PROMPT: &str = "\
-Read `PLAN.md`. It is the plan I approved for this feature — its \
+Read `AMF_PLAN.md`. It is the plan I approved for this feature — its \
 decisions are settled unless I say otherwise.
 
 Start with the first unchecked task, and keep the task checkboxes current as \
@@ -1560,7 +1560,7 @@ impl App {
 
     /// Make an on-demand plan effective for the feature it was written for.
     ///
-    /// Writing `PLAN.md` is not enough on its own: unless the harness's
+    /// Writing `AMF_PLAN.md` is not enough on its own: unless the harness's
     /// instruction file points at it, the agent is never told the plan exists.
     /// Running the interview is also taken as turning plan mode on, so a later
     /// restart keeps injecting the block instead of silently dropping it.
@@ -1915,27 +1915,32 @@ mod tests {
     }
 
     #[test]
-    fn writing_plan_creates_root_file_and_idempotent_ignore_entry() {
+    fn writing_plan_creates_namespaced_root_file_and_preserves_repository_plan() {
         let workdir = TempDir::new().unwrap();
         fs::write(workdir.path().join(".gitignore"), "target/\n").unwrap();
+        fs::write(workdir.path().join("PLAN.md"), "# Repository plan\n").unwrap();
 
         write_plan_file(workdir.path(), "# First plan\n").unwrap();
         write_plan_file(workdir.path(), "# Updated plan\n").unwrap();
 
         assert_eq!(
-            fs::read_to_string(workdir.path().join("PLAN.md")).unwrap(),
+            fs::read_to_string(workdir.path().join("AMF_PLAN.md")).unwrap(),
             "# Updated plan\n"
         );
         assert_eq!(
+            fs::read_to_string(workdir.path().join("PLAN.md")).unwrap(),
+            "# Repository plan\n"
+        );
+        assert_eq!(
             fs::read_to_string(workdir.path().join(".gitignore")).unwrap(),
-            "target/\nPLAN.md\n"
+            "target/\nAMF_PLAN.md\n"
         );
     }
 
     #[test]
     fn non_worktree_plan_write_is_the_plan_sidebar_reads() {
         let repo = TempDir::new().unwrap();
-        let expected_plan = repo.path().join("PLAN.md");
+        let expected_plan = repo.path().join("AMF_PLAN.md");
 
         write_plan_file(
             repo.path(),
@@ -1953,6 +1958,7 @@ mod tests {
         );
         assert!(expected_plan.is_file());
         assert!(!repo.path().join(".claude/plan.md").exists());
+        assert!(!repo.path().join("PLAN.md").exists());
         assert!(!repo.path().join("plan.md").exists());
     }
 }

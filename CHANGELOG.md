@@ -12,12 +12,13 @@ are tagged.
 
 ### Changed
 
-- **Plan mode now keeps its approved plan in `PLAN.md` at the feature root.**
+- **Plan mode now keeps its approved plan in `AMF_PLAN.md` at the feature root.**
   The plan is no longer hidden under the Claude-specific `.claude/` directory,
-  so its location makes sense for Claude, Codex, OpenCode, and Pi alike. Codex
-  also receives the same editable, unsubmitted kickoff prompt as Claude when a
-  newly approved plan starts work, including when startup steering was enabled.
-  Existing `.claude/plan.md` files remain readable as a legacy fallback.
+  and the AMF-specific name avoids overwriting a repository's conventional
+  `PLAN.md`. Codex also receives the same editable, unsubmitted kickoff prompt
+  as Claude when a newly approved plan starts work, including when startup
+  steering was enabled. Existing `PLAN.md` and `.claude/plan.md` files remain
+  readable as fallbacks.
 
 ### Fixed
 
@@ -28,7 +29,7 @@ are tagged.
 
 ### Migration
 
-No migration is required. The next plan you accept is written to `PLAN.md`;
+No migration is required. The next plan you accept is written to `AMF_PLAN.md`;
 older `.claude/plan.md` files may be removed when no longer needed.
 
 ## [v0.37.0] - 2026-08-18

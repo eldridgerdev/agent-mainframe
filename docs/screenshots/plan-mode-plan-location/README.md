@@ -10,6 +10,11 @@ The capture output directory was
 `docs/screenshots/plan-mode-plan-location/`; ANSI frames were rendered at
 120x40 and their text twins were checked before selecting these frames.
 
+These captures predate the review follow-up that names the root file
+`AMF_PLAN.md` to avoid colliding with repository-owned `PLAN.md`; they retain
+the earlier filename while documenting the otherwise unchanged review and
+handoff flow.
+
 ## 1. Review points at the feature-root plan
 
 The accepted plan review identifies `PLAN.md` in the feature workdir rather

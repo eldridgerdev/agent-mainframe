@@ -13,6 +13,7 @@ use crate::{
 };
 
 const MARKDOWN_VIEW_CANDIDATES: &[&str] = &[
+    "AMF_PLAN.md",
     "PLAN.md",
     ".claude/plan.md",
     ".claude/context.md",
@@ -20,7 +21,7 @@ const MARKDOWN_VIEW_CANDIDATES: &[&str] = &[
     ".claude/notes.md",
     "plan.md",
 ];
-const SIDEBAR_PLAN_CANDIDATES: &[&str] = &["PLAN.md", ".claude/plan.md", "plan.md"];
+const SIDEBAR_PLAN_CANDIDATES: &[&str] = &["AMF_PLAN.md", "PLAN.md", ".claude/plan.md", "plan.md"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkdownViewScope {
@@ -1602,10 +1603,11 @@ mod tests {
         std::fs::create_dir_all(&claude_dir).unwrap();
         std::fs::write(claude_dir.join("context.md"), "# Context").unwrap();
         std::fs::write(claude_dir.join("plan.md"), "# Legacy plan").unwrap();
-        std::fs::write(dir.path().join("PLAN.md"), "# Plan").unwrap();
+        std::fs::write(dir.path().join("PLAN.md"), "# Repository plan").unwrap();
+        std::fs::write(dir.path().join("AMF_PLAN.md"), "# Plan").unwrap();
 
         let found = collect_markdown_view_paths(dir.path(), None);
-        assert_eq!(found.first(), Some(&dir.path().join("PLAN.md")));
+        assert_eq!(found.first(), Some(&dir.path().join("AMF_PLAN.md")));
     }
 
     #[test]
@@ -1731,11 +1733,12 @@ mod tests {
     }
 
     #[test]
-    fn preferred_plan_markdown_path_prefers_root_plan_over_legacy_claude_plan() {
+    fn preferred_plan_markdown_path_prefers_amf_plan_over_legacy_candidates() {
         let worktree = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(worktree.path().join(".claude")).unwrap();
-        let root_plan = worktree.path().join("PLAN.md");
-        std::fs::write(&root_plan, "# Current plan").unwrap();
+        let amf_plan = worktree.path().join("AMF_PLAN.md");
+        std::fs::write(&amf_plan, "# Current plan").unwrap();
+        std::fs::write(worktree.path().join("PLAN.md"), "# Repository plan").unwrap();
         std::fs::write(
             worktree.path().join(".claude").join("plan.md"),
             "# Legacy plan",
@@ -1744,7 +1747,7 @@ mod tests {
 
         assert_eq!(
             preferred_plan_markdown_path(worktree.path(), None),
-            Some(root_plan)
+            Some(amf_plan)
         );
     }
 

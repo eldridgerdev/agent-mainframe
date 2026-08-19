@@ -44,7 +44,7 @@ Settled with the project owner (2026-07-13):
 4. **Output is an AI-synthesized plan doc behind a review gate**: the
    user reviews/edits the generated plan in AMF before the agent
    session launches. The on-disk home is the workdir's
-   root-level `PLAN.md` (superseded on 2026-08-19 from the
+   root-level `AMF_PLAN.md` (superseded on 2026-08-19 from the
    `.claude/plan.md` location chosen in the 2026-07-13 audit below).
 
 ## Existing plan mode: audit verdict (2026-07-13)
@@ -103,16 +103,18 @@ the user can delete.
 The July audit correctly rejected one `PLAN.md` shared from the project
 repository by every worktree, but its replacement remained unnecessarily
 Claude-specific. A feature worktree's own root is already isolated from every
-other feature, so its `PLAN.md` is per-feature without living under
+other feature, so its plan is per-feature without living under
 `.claude/`. The first non-worktree feature also remains safe because AMF allows
 only one non-worktree feature per project.
 
-The accepted plan therefore now lives at `<workdir>/PLAN.md`, with a matching
-root `.gitignore` entry. The sidebar and markdown viewer prefer that file while
-retaining `.claude/plan.md` as a legacy fallback. The approved-plan kickoff is
-also carried through the common launch payload, so Codex receives the same
-editable, unsubmitted composer seed as Claude even when startup steering is
-enabled. Existing legacy files are not deleted automatically.
+The accepted plan therefore now lives at `<workdir>/AMF_PLAN.md`, with a
+matching root `.gitignore` entry. The AMF-specific name avoids overwriting a
+repository's conventional `PLAN.md`. The sidebar and markdown viewer prefer
+the namespaced file while retaining `PLAN.md` and `.claude/plan.md` as
+fallbacks. The approved-plan kickoff is also carried through the common launch
+payload, so Codex receives the same editable, unsubmitted composer seed as
+Claude even when startup steering is enabled. Existing files are not deleted
+automatically.
 
 ## Proposed design
 
@@ -141,7 +143,7 @@ On-demand command on a feature ─┴─> PlanInterview mode
              Tasks / Risks); loading overlay
     Phase 4  Review gate: plan opens in the markdown viewer with
              edit (TextEditor), accept, regenerate, and abort actions
-    Accept ─> write PLAN.md, persist transcript,
+    Accept ─> write AMF_PLAN.md, persist transcript,
               launch/seed session
 ```
 
@@ -284,7 +286,7 @@ The synthesis prompt produces markdown with a fixed skeleton:
 
 On **accept**:
 
-1. Write the doc to the workdir's root-level `PLAN.md` (per-feature —
+1. Write the doc to the workdir's root-level `AMF_PLAN.md` (per-feature —
    see the 2026-08-19 follow-up; the sidebar preview and markdown viewer
    prefer this path), ensure it's gitignored in the workdir root, and
    inject the plan-instructions block into the file
@@ -309,7 +311,7 @@ On **accept**:
    can show prior answers and offer "keep / change" per question.
 3. Feature-creation trigger: continue the normal launch
    (`start_feature`), then seed the agent's composer with a short
-   kickoff prompt pointing at `PLAN.md` (editable, not
+   kickoff prompt pointing at `AMF_PLAN.md` (editable, not
    auto-submitted — same pattern as TODO spawn's
    `open_compose_seeded`).
    On-demand trigger: just rewrite the plan file and notify; if the
@@ -366,7 +368,7 @@ demoable. Check items off as they merge.
 ### Epic 1 — Interview engine + native UI (static questions only)
 
 Demo: plan-mode feature creation walks through the built-in bank and
-writes answers verbatim into the workdir's `PLAN.md` under a
+writes answers verbatim into the workdir's `AMF_PLAN.md` under a
 `## Q&A` heading (no AI yet), then launches; the sidebar preview
 picks the plan up with no display-layer changes.
 
@@ -380,7 +382,7 @@ picks the plan up with no display-layer changes.
       "draft plan now" once Epic 4 lands)
 - [x] Feature-creation integration: defer `PreparedFeatureLaunch`
       until interview completes; abort path (launch-anyway vs cancel)
-- [x] Write brief + answers into the workdir's `PLAN.md`
+- [x] Write brief + answers into the workdir's `AMF_PLAN.md`
       (gitignored in the workdir root)
 - [x] Replace `ensure_plan_mode_claude_md` with
       `ensure_plan_mode_instructions(workdir, agent, enabled)`:
@@ -393,7 +395,7 @@ picks the plan up with no display-layer changes.
       (per audit verdict); the accepted plan is instead written to the
       feature workdir's own root after the interview
 - [x] Unit test: non-worktree first feature (workdir == repo root)
-      reads/writes the same `PLAN.md` the sidebar
+      reads/writes the same `AMF_PLAN.md` the sidebar
       finds — no duplicate plan files
 - [x] Help overlay + keybinding docs for the new mode
 
@@ -446,7 +448,7 @@ with no headless-capable harness silently proceeds without them.
 ### Epic 4 — Synthesis + review gate
 
 Demo: interview ends in a generated structured plan the user can
-edit, regenerate, accept (writes `PLAN.md`, launches session
+edit, regenerate, accept (writes `AMF_PLAN.md`, launches session
 with
 seeded kickoff composer), or abort.
 
@@ -467,7 +469,7 @@ seeded kickoff composer), or abort.
       dropped whenever the plan changes. `Esc` during the review returns
       to the plan rather than opening the interview's abort confirmation,
       so a generated plan can't be lost to a stray keypress
-- [x] Accept path: write `PLAN.md`, augment the instruction
+- [x] Accept path: write `AMF_PLAN.md`, augment the instruction
       block ("plan is user-approved"), run deferred launch, seed
       composer kickoff prompt via `open_compose_seeded` — the launch's
       `ensure_feature_running` already injects the approved-plan block,
@@ -493,7 +495,7 @@ seeded kickoff composer), or abort.
 
 Demo: press the keybinding on an existing feature, re-run the
 interview with prior answers pre-filled, get an updated
-`PLAN.md`.
+`AMF_PLAN.md`.
 
 - [x] Migration + `src/db/plan_interviews.rs`: interview store keyed
       by feature id (questions, answers, source, plan, timestamps,
@@ -555,7 +557,7 @@ interview with prior answers pre-filled, get an updated
       which previously fell back to the process cwd), so accept writes the
       plan into the feature's own workdir rather than bailing out. Accept
       also calls `ensure_plan_mode_instructions` and sets
-      `feature.plan_mode`: writing `PLAN.md` alone leaves the agent
+      `feature.plan_mode`: writing `AMF_PLAN.md` alone leaves the agent
       never told the plan exists, and a restart would stop injecting the
       block. Abort is non-destructive — there is no launch to cancel, so
       the confirm offers only "leave the plan unchanged" and `n` is inert.

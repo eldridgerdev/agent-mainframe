@@ -28,6 +28,13 @@ are tagged.
 
 ### Changed
 
+- **The dashboard's needs-attention badge now shows `<leader i>`.** Questions,
+  completed work, waiting sessions, and other input requests now advertise the
+  shortcut that opens the list, so the action is discoverable without first
+  opening help. On a narrow terminal the working directory is shortened before
+  the badge is, so the shortcut stays readable. No configuration change is
+  required.
+
 - **Plan mode now keeps its approved plan in `AMF_PLAN.md` at the feature root.**
   The plan is no longer hidden under the Claude-specific `.claude/` directory,
   and the AMF-specific name avoids overwriting a repository's conventional

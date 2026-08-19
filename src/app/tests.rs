@@ -22048,8 +22048,71 @@ fn badge_counts_keep_pending_work_the_attention_layer_cannot_explain() {
     assert_eq!(app.attention_badge_counts(), ((1, 0, 0), 1));
     assert_eq!(
         crate::ui::header::badge_text((1, 0, 0), 1).as_deref(),
-        Some("  [1 question, 1 input request]")
+        Some("  [1 question, 1 input request | <leader i>]")
     );
+}
+
+#[test]
+fn badge_hit_columns_follow_the_rendered_title_not_a_hand_counted_constant() {
+    use ratatui::layout::Rect;
+
+    let badge = crate::ui::header::badge_text((1, 0, 0), 0).expect("badge");
+    let cwd = "/home/dev/code/agent-mainframe";
+    // Wide enough that the help hint clamps nothing.
+    let area = Rect::new(0, 0, 200, 3);
+
+    let columns = crate::ui::header::badge_hit_columns(area, cwd, "0.37.0", (1, 0, 0), 0)
+        .expect("badge is clickable");
+
+    // The prefix is the border, then the spans `draw` renders ahead of the
+    // badge: " Agent Mainframe ", "v0.37.0 ", "| ", cwd. Spelled out here so a
+    // version string of a different length cannot silently shift the hit box
+    // out from under the badge.
+    let expected_start =
+        1 + (" Agent Mainframe ".len() + "v0.37.0 ".len() + "| ".len() + cwd.len());
+    assert_eq!(columns.start, expected_start as u16);
+    assert_eq!(columns.end, columns.start + badge.len() as u16);
+}
+
+#[test]
+fn a_narrow_header_shortens_the_cwd_rather_than_the_needs_attention_badge() {
+    use ratatui::layout::Rect;
+
+    let badge = crate::ui::header::badge_text((1, 0, 0), 0).expect("badge");
+    let cwd = "/home/dev/code/agent-mainframe/.worktrees/some-long-branch";
+    let full_width = |width: u16| {
+        crate::ui::header::badge_hit_columns(Rect::new(0, 0, width, 3), cwd, "0.37.0", (1, 0, 0), 0)
+    };
+
+    let wide = full_width(200).expect("badge is clickable");
+    assert_eq!(wide.end - wide.start, badge.len() as u16);
+
+    // Squeeze the row well past where the untruncated title would have run
+    // into the help hint. The badge names work waiting on the user and the key
+    // that reaches it, so it keeps its columns and the path gives them up.
+    let squeezed = full_width(70).expect("badge survives a narrow header");
+    assert!(
+        squeezed.start < wide.start,
+        "expected the badge to move left as the cwd shortened, got {squeezed:?} vs {wide:?}"
+    );
+    assert_eq!(
+        squeezed.end - squeezed.start,
+        badge.len() as u16,
+        "the badge should be whole, not clipped by the help hint"
+    );
+
+    // Below the width that fits a shortened path plus the badge, the badge is
+    // partly drawn at most — and never reported clickable beyond what is drawn.
+    for width in 10..70u16 {
+        if let Some(columns) = full_width(width) {
+            let (_, hint) = (0, 7u16);
+            let title_end = width.saturating_sub(1).saturating_sub(hint);
+            assert!(
+                columns.end <= title_end.max(1),
+                "width {width}: hit box {columns:?} reaches under the help hint"
+            );
+        }
+    }
 }
 
 #[test]

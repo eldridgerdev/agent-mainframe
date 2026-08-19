@@ -63,6 +63,13 @@ doc always says exactly what remains.
 
 ## Index
 
+- [Project config location](project-config-location-plan.md) — _Shipped._
+  Moved hand-authored project config out of the generated
+  `.amf/` directory to `amf.json` at the repo root, so `.amf/` is purely
+  generated and gitignorable with no force-tracked exception. Legacy
+  `.amf/config.json` is still read and migrates on first write; the
+  directory gains an injected README explaining what it is.
+
 - [Plan Mode: guided feature discovery](plan-mode-interview-plan.md) —
   _All epics shipped._ Plan mode now runs a native TUI interview: feature
   brief, built-in + per-project question

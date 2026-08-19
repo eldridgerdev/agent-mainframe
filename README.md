@@ -373,7 +373,7 @@ close-editor, delete, and open.
 ## Configuration
 
 AMF creates its global configuration at `~/.config/amf/config.json`. A project
-can add `.amf/config.json` at its repository root; project settings override
+can add `amf.json` at its repository root; project settings override
 matching global settings.
 
 From an embedded session, press `Ctrl+Space`, then `c` to open the configuration

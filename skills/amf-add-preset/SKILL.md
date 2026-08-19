@@ -6,18 +6,18 @@ description: >
   branch prefix, plan mode, review, and Chrome settings for new
   features — so they can create a feature with a single selection
   instead of filling out every field each time.
-allowed-tools: Bash(cat *) Bash(mkdir *) Edit(.amf/config.json) Bash(test *)
+allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *)
 argument-hint: "[preset name]"
 ---
 
 ## Current config
 
-!`cat .amf/config.json 2>/dev/null || echo "{}"`
+!`cat amf.json 2>/dev/null || echo "{}"`
 
 ## Task
 
 Add or update an entry in the `feature_presets` array in
-`.amf/config.json`. Create the file if it doesn't exist.
+`amf.json`. Create the file if it doesn't exist.
 
 ## FeaturePreset schema
 
@@ -45,7 +45,7 @@ Add or update an entry in the `feature_presets` array in
 
 ## Scope
 
-- **Project** (this repo only): `.amf/config.json` — edit this file
+- **Project** (this repo only): `amf.json` — edit this file
 - **Global** (all projects): `~/.config/amf/config.json` under
   the `"extension"` key
 
@@ -61,7 +61,7 @@ allowed, or omit `allowed_agents` to allow all.
 
 ## Steps
 
-1. Read `.amf/config.json` (shown above)
+1. Read `amf.json` (shown above)
 2. Add the new preset to `feature_presets` (or create the array)
 3. Write the updated JSON back — preserve existing presets and
    other config

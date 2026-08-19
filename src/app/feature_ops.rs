@@ -956,8 +956,8 @@ impl App {
                             continue;
                         }
                     }
-                    let status_dir = feature.workdir.join(".amf").join("session-status");
-                    let _ = std::fs::create_dir_all(&status_dir);
+                    let status_dir =
+                        crate::extension::generated_amf_subdir(&feature.workdir, "session-status");
                     let session_id = session.id.clone();
                     let status_dir_str = status_dir.to_string_lossy().into_owned();
                     let env_prefix = TmuxManager::shell_env_prefix(&[

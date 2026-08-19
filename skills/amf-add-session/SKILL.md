@@ -6,18 +6,18 @@ description: >
   test runner, or any other persistent background process that
   should appear in the AMF session picker alongside the agent
   and terminal sessions.
-allowed-tools: Bash(cat *) Bash(mkdir *) Edit(.amf/config.json) Bash(test *)
+allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *)
 argument-hint: "[session name and command]"
 ---
 
 ## Current config
 
-!`cat .amf/config.json 2>/dev/null || echo "{}"`
+!`cat amf.json 2>/dev/null || echo "{}"`
 
 ## Task
 
 Add or update an entry in the `custom_sessions` array in
-`.amf/config.json`. Create the file if it doesn't exist.
+`amf.json`. Create the file if it doesn't exist.
 
 ## CustomSessionConfig schema
 
@@ -51,7 +51,7 @@ Add or update an entry in the `custom_sessions` array in
 
 ## Scope
 
-- **Project** (this repo only): `.amf/config.json` — edit this file
+- **Project** (this repo only): `amf.json` — edit this file
 - **Global** (all projects): `~/.config/amf/config.json` under
   the `"extension"` key
 
@@ -60,7 +60,7 @@ If the user hasn't specified scope, default to project scope.
 
 ## Steps
 
-1. Read `.amf/config.json` (shown above)
+1. Read `amf.json` (shown above)
 2. Add the new session to `custom_sessions` (or create the array)
 3. Write the updated JSON back — preserve any existing entries
 4. Tell the user the session will appear in the AMF picker after

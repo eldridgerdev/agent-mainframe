@@ -25,6 +25,21 @@ are tagged.
   leaving that session returns to the interview automatically. A plan
   operation already using agent tokens must finish before the interview can
   be parked, so its result is not discarded.
+
+### Changed
+
+- **Project config moved to `amf.json` at the repo root.** AMF's per-project
+  settings — custom sessions, feature presets, lifecycle hooks, keybindings,
+  plan questions, and prompt templates — now live in a tracked `amf.json`
+  beside `Cargo.toml`, instead of `.amf/config.json`. Committing config no
+  longer needs `git add -f`: `.amf/` is ignored dir-wide because everything
+  still inside it is generated, and the config file is no longer an exception
+  hidden in an ignored directory.
+- **`.amf/` explains itself.** The directory now gets a `README.md` when AMF
+  creates it, saying that its contents are generated and safe to delete, and
+  pointing at `amf.json` for real settings. Your own edits to that README are
+  left alone.
+
 ### Fixed
 
 - **Features with a damaged worktree can be deleted again.** If a worktree's
@@ -34,8 +49,16 @@ are tagged.
 
 ### Migration
 
-- No migration is required. Existing `PR Triage` and legacy `PR Review`
-  sessions continue to be recognized when the default name is used.
+- **Project config migrates itself.** `.amf/config.json` is still read, so
+  existing checkouts keep working untouched. The next time AMF writes config
+  — saving the config wizard, exporting a prompt template — it writes
+  `amf.json` and removes the old file, so there is only ever one answer to
+  where config lives. To migrate by hand, `git mv .amf/config.json amf.json`.
+  Drop the force-tracked `.amf/config.json` exception from your `.gitignore`
+  once you have.
+- Named PR Triage sessions need no migration: existing `PR Triage` and
+  legacy `PR Review` sessions continue to be recognized when the default
+  name is used.
 
 ## [v0.37.0] - 2026-08-18
 

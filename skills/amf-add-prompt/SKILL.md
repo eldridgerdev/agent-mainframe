@@ -7,18 +7,18 @@ description: >
   the prompt library picker (leader+P in a session, or L on the
   dashboard) so they can inject it into an agent instead of retyping
   it.
-allowed-tools: Bash(cat *) Bash(mkdir *) Edit(.amf/config.json) Bash(test *)
+allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *)
 argument-hint: "[prompt name]"
 ---
 
 ## Current config
 
-!`cat .amf/config.json 2>/dev/null || echo "{}"`
+!`cat amf.json 2>/dev/null || echo "{}"`
 
 ## Task
 
 Add or update an entry in the `prompt_templates` array in
-`.amf/config.json`. Create the file (and the array) if it doesn't
+`amf.json`. Create the file (and the array) if it doesn't
 exist. These declarative templates are read-only in the picker (the
 user duplicates one with `y` to get an editable copy), and they're
 merged in alongside the user's SQLite-backed `User` templates.
@@ -86,7 +86,7 @@ injected. Two ways to author them:
 
 ## Scope
 
-- **Project** (this repo only): `.amf/config.json` — `prompt_templates`
+- **Project** (this repo only): `amf.json` — `prompt_templates`
   at the top level. Edit this file.
 - **Global** (all projects): `~/.config/amf/config.json` —
   `prompt_templates` under the `"extension"` key.
@@ -97,7 +97,7 @@ wins). If the user hasn't specified scope, default to project scope.
 
 ## Steps
 
-1. Read `.amf/config.json` (shown above).
+1. Read `amf.json` (shown above).
 2. Add the new template to `prompt_templates` (or create the array).
    Keep `body` newlines as `\n` in the JSON string.
 3. Write the updated JSON back — preserve existing templates and any

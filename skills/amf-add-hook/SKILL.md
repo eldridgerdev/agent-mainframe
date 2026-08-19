@@ -7,17 +7,17 @@ description: >
   created for this project (on_worktree_created). Hooks can
   optionally prompt the user to choose from a list of options
   before the script runs.
-allowed-tools: Bash(cat *) Bash(mkdir *) Edit(.amf/config.json) Bash(test *)
+allowed-tools: Bash(cat *) Bash(mkdir *) Edit(amf.json) Bash(test *)
 argument-hint: "[on_start | on_stop | on_worktree_created] [script path]"
 ---
 
 ## Current config
 
-!`cat .amf/config.json 2>/dev/null || echo "{}"`
+!`cat amf.json 2>/dev/null || echo "{}"`
 
 ## Task
 
-Add or update a hook in `lifecycle_hooks` in `.amf/config.json`.
+Add or update a hook in `lifecycle_hooks` in `amf.json`.
 Create the file if it doesn't exist.
 
 ## Hook events
@@ -65,7 +65,7 @@ the prompt in the AMF UI before running; `on_start` and
 
 ## Scope
 
-- **Project** (this repo only): `.amf/config.json` — edit this file
+- **Project** (this repo only): `amf.json` — edit this file
 - **Global** (all projects): `~/.config/amf/config.json` under
   the `"extension"` key
 
@@ -74,7 +74,7 @@ If the user hasn't specified scope, default to project scope.
 
 ## Steps
 
-1. Read `.amf/config.json` (shown above)
+1. Read `amf.json` (shown above)
 2. Add or replace the relevant hook event in `lifecycle_hooks`
 3. Write the updated JSON back — preserve other hooks and sessions
 4. Tell the user which event will trigger the script and how to

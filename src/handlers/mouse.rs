@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use std::time::Instant;
 
 use crate::app::{App, AppMode, CreateFeatureStep, Selection, VisibleItem};
@@ -261,18 +262,21 @@ fn handle_click(
     }
 
     let (attention_counts, unexplained_pending) = app.attention_badge_counts();
-    if row == 1
-        && let Some(badge_text) =
-            crate::ui::header::badge_text(attention_counts, unexplained_pending)
-    {
+    if row == 1 {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let prefix_len = 19 + cwd.len() as u16;
-        let badge_start = prefix_len;
-        // The badge is ASCII-only, so byte length is its rendered width.
-        let badge_end = badge_start + badge_text.len() as u16;
-        if col >= badge_start && col < badge_end {
+        // The header owns the top three rows at full width; ask it where the
+        // badge landed rather than re-deriving the title's layout here.
+        let header_area = Rect::new(0, 0, app.viewport_cols, 3);
+        if let Some(badge) = crate::ui::header::badge_hit_columns(
+            header_area,
+            &cwd,
+            env!("CARGO_PKG_VERSION"),
+            attention_counts,
+            unexplained_pending,
+        ) && badge.contains(&col)
+        {
             app.mode = AppMode::NotificationPicker(0, None);
             return Ok(());
         }

@@ -492,13 +492,51 @@ mod tests {
         assert!(args_for_pid(me).is_some());
     }
 
-    /// Stand-in for the editor: a copy of `sh` named `code`, launched with a
+    /// Poll `check` until it yields a value, or `timeout` expires.
+    ///
+    /// The tests below spawn real processes and then look for them in `ps`. A
+    /// fixed sleep in between assumes the kernel and `ps` have caught up within
+    /// some guessed interval; that was not the cause of this module's flakiness
+    /// (see `spawn_fake_vscode_window`), but it is a second, quieter way for a
+    /// loaded machine to fail a correct test. Polling is deterministic and, on
+    /// an idle machine, faster than the sleep it replaces.
+    fn wait_for<T>(
+        timeout: Duration,
+        poll: Duration,
+        mut check: impl FnMut() -> Option<T>,
+    ) -> Option<T> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(value) = check() {
+                return Some(value);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(poll);
+        }
+    }
+
+    /// How long the process-spawning tests wait for `ps` to reflect reality.
+    const PS_SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
+    const PS_SETTLE_POLL: Duration = Duration::from_millis(25);
+
+    /// Stand-in for the editor: `sh` under the name `code`, launched with a
     /// VS Code-shaped argv, that stays alive like a real window would. Real
     /// VS Code cannot be driven from a test, but the ownership resolution this
     /// exercises is the part that has to be right.
+    ///
+    /// A **symlink**, not a copy. `fs::copy` opens the destination for writing,
+    /// and these tests run in parallel with others that spawn processes: a fork
+    /// in another thread inherits that still-open write descriptor, so the exec
+    /// here fails with `ETXTBSY` ("Text file busy") even though this thread had
+    /// already closed its own handle. No amount of waiting fixes that — the
+    /// file has to never be writable. A symlink is resolved at exec time to
+    /// `/bin/sh`, which nothing is writing, while `argv[0]` stays this path so
+    /// the process still reads as `code` to `is_vscode_for_workdir`.
     fn spawn_fake_vscode_window(dir: &Path, workdir: &Path) -> std::process::Child {
         let fake = dir.join("code");
-        std::fs::copy("/bin/sh", &fake).expect("copy sh");
+        std::os::unix::fs::symlink("/bin/sh", &fake).expect("link sh as a fake editor");
         std::process::Command::new(&fake)
             .args([
                 "-c".as_ref(),
@@ -546,13 +584,18 @@ mod tests {
         std::fs::create_dir_all(&workdir).unwrap();
 
         let mut child = spawn_fake_vscode_window(tmp.path(), &workdir);
-        // Let it appear in `ps` before the snapshot.
-        std::thread::sleep(Duration::from_millis(200));
-        let before = existing_vscode_windows(&workdir);
-        assert!(
-            before.contains(&(child.id() as i64)),
-            "the pre-existing window should be in the snapshot"
-        );
+        // Wait for it to appear in `ps` rather than assuming a fixed delay
+        // suffices; the point of the test is what happens *after* it counts as
+        // pre-existing.
+        let before = wait_for(PS_SETTLE_TIMEOUT, PS_SETTLE_POLL, || {
+            let snapshot = existing_vscode_windows(&workdir);
+            snapshot.contains(&(child.id() as i64)).then_some(snapshot)
+        });
+        let Some(before) = before else {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the spawned window never appeared in ps");
+        };
 
         let found = find_new_vscode_window(
             &workdir,
@@ -583,13 +626,18 @@ mod tests {
             .spawn()
             .expect("sh should be available");
         let root = parent.id() as i64;
-        // Give the shell a moment to fork its children.
-        std::thread::sleep(Duration::from_millis(300));
-        let children = process_tree(&list_processes(), root);
-        assert!(
-            children.len() > 1,
-            "expected child processes, got {children:?}"
-        );
+        // Wait for the fork rather than guessing at it: `sh` has to be
+        // scheduled, fork, and have both processes reach `ps` before there is a
+        // tree to walk.
+        let children = wait_for(PS_SETTLE_TIMEOUT, PS_SETTLE_POLL, || {
+            let tree = process_tree(&list_processes(), root);
+            (tree.len() > 1).then_some(tree)
+        });
+        let Some(children) = children else {
+            let _ = parent.kill();
+            let _ = parent.wait();
+            panic!("the shell never forked a child");
+        };
 
         terminate_tree(root, Duration::from_secs(2));
         let _ = parent.wait();

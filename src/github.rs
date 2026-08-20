@@ -1259,9 +1259,7 @@ mod tests {
             r#"{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}"#
         ));
         assert!(is_rate_limited("API rate limit exceeded for user ID 1."));
-        assert!(is_rate_limited(
-            "You have exceeded a secondary rate limit."
-        ));
+        assert!(is_rate_limited("You have exceeded a secondary rate limit."));
         assert!(is_rate_limited("HTTP 403: rate limit exceeded"));
     }
 

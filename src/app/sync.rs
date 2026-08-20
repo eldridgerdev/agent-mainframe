@@ -1,6 +1,6 @@
+use super::GH_GRAPHQL_BACKOFF;
 use super::*;
 use crate::github::{GhCli, GhGraphqlError};
-use super::GH_GRAPHQL_BACKOFF;
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
 use crate::tmux::TmuxManager;
@@ -418,7 +418,9 @@ impl App {
     /// (or never started).
     pub(crate) fn gh_graphql_backoff_remaining(&self) -> Option<Duration> {
         let since = self.gh_graphql_limited_at?.elapsed();
-        GH_GRAPHQL_BACKOFF.checked_sub(since).filter(|d| !d.is_zero())
+        GH_GRAPHQL_BACKOFF
+            .checked_sub(since)
+            .filter(|d| !d.is_zero())
     }
 
     /// Refresh dashboard PR badges without ever blocking rendering or input.

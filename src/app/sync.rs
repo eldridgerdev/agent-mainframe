@@ -1,5 +1,6 @@
 use super::*;
-use crate::github::{GhCli, PrResolution};
+use crate::github::{GhCli, GhGraphqlError, PrResolution, is_rate_limit_message};
+use super::GH_GRAPHQL_BACKOFF;
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
 use crate::tmux::TmuxManager;
@@ -24,6 +25,19 @@ pub(crate) enum ActivePrLookup {
     Found(ActivePrStatus),
     NoPr,
     Failed(String),
+    /// Not looked up, because the GraphQL budget ran out earlier in the sweep.
+    /// Distinct from `Failed` so the badge keeps its previous value instead of
+    /// reporting an error the feature had nothing to do with.
+    Skipped,
+}
+
+/// One completed pass of the dashboard PR refresh.
+#[derive(Debug)]
+pub(crate) struct ActivePrSweep {
+    pub updates: Vec<ActivePrUpdate>,
+    /// Set when any job hit GitHub's GraphQL point budget, so the main loop can
+    /// stop scheduling sweeps until the budget resets.
+    pub rate_limited: bool,
 }
 
 #[derive(Debug)]
@@ -370,12 +384,48 @@ pub(super) fn opencode_sidebar_thinking_state(
 }
 
 impl App {
+    /// Record that GitHub's GraphQL budget is exhausted, and say so once.
+    ///
+    /// Announced rather than silent: until this, a depleted budget showed up
+    /// only as PR badges quietly going blank, and the first *visible* symptom
+    /// was PR Triage failing — which is the one path that did not cause it.
+    pub(crate) fn note_gh_graphql_rate_limited(&mut self) {
+        let already_backing_off = self.gh_graphql_backoff_remaining().is_some();
+        self.gh_graphql_limited_at = Some(Instant::now());
+        if already_backing_off {
+            return;
+        }
+        self.log_warn(
+            "sync",
+            format!(
+                "GitHub GraphQL rate limit exhausted; pausing PR badge refresh for {} minutes",
+                GH_GRAPHQL_BACKOFF.as_secs() / 60
+            ),
+        );
+        self.push_toast_warning(format!(
+            "GitHub's hourly API budget is used up — PR badges paused for {} min",
+            GH_GRAPHQL_BACKOFF.as_secs() / 60
+        ));
+    }
+
+    /// How much of the GraphQL backoff is left, or `None` when it has expired
+    /// (or never started).
+    pub(crate) fn gh_graphql_backoff_remaining(&self) -> Option<Duration> {
+        let since = self.gh_graphql_limited_at?.elapsed();
+        GH_GRAPHQL_BACKOFF.checked_sub(since).filter(|d| !d.is_zero())
+    }
+
     /// Refresh dashboard PR badges without ever blocking rendering or input.
     /// The main loop starts this on the existing feature-status cadence and
     /// refuses to overlap jobs, so a slow `gh` invocation cannot build up a
     /// queue of redundant work.
     pub fn sync_active_prs_background(&mut self) {
         if self.active_pr_bg.is_some() {
+            return;
+        }
+        // A depleted budget stays depleted for the rest of the hour, so a
+        // sweep launched now would spend nothing but failures.
+        if self.gh_graphql_backoff_remaining().is_some() {
             return;
         }
 
@@ -399,17 +449,40 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.active_pr_bg = Some(rx);
         std::thread::spawn(move || {
+            let mut rate_limited = false;
             let updates = jobs
                 .into_iter()
                 .map(|job| {
+                    // One depleted budget means every remaining job in this
+                    // pass would fail the same way, so the first one to see it
+                    // stops the rest rather than spending 30 more calls
+                    // discovering it again.
+                    if rate_limited {
+                        return ActivePrUpdate {
+                            feature_id: job.feature_id,
+                            branch: job.branch,
+                            lookup: ActivePrLookup::Skipped,
+                        };
+                    }
                     let lookup = match GhCli::resolve_pr(&job.workdir) {
                         Ok(PrResolution::Found(pr)) => {
-                            let unresolved_threads =
-                                GhCli::review_threads(&job.workdir, &pr.owner, &pr.repo, pr.number)
-                                    .ok()
-                                    .map(|threads| {
-                                        threads.iter().filter(|thread| !thread.is_resolved).count()
-                                    });
+                            // The badge needs a count, not the threads: the
+                            // count-only query scores ~1 GraphQL point where
+                            // `review_threads` scores ~100. See
+                            // `GhCli::unresolved_thread_count`.
+                            let unresolved_threads = match GhCli::unresolved_thread_count(
+                                &job.workdir,
+                                &pr.owner,
+                                &pr.repo,
+                                pr.number,
+                            ) {
+                                Ok(count) => Some(count),
+                                Err(GhGraphqlError::RateLimited) => {
+                                    rate_limited = true;
+                                    None
+                                }
+                                Err(GhGraphqlError::Failed(_)) => None,
+                            };
                             ActivePrLookup::Found(ActivePrStatus {
                                 branch: job.branch.clone(),
                                 head_sha: pr.head_sha,
@@ -418,7 +491,16 @@ impl App {
                             })
                         }
                         Ok(PrResolution::NoPrForBranch) => ActivePrLookup::NoPr,
-                        Err(error) => ActivePrLookup::Failed(error.to_string()),
+                        Err(error) => {
+                            // `gh pr view` is GraphQL too, so it depletes the
+                            // same budget and reports the same way.
+                            if is_rate_limit_message(&error.to_string()) {
+                                rate_limited = true;
+                                ActivePrLookup::Skipped
+                            } else {
+                                ActivePrLookup::Failed(error.to_string())
+                            }
+                        }
                     };
                     ActivePrUpdate {
                         feature_id: job.feature_id,
@@ -427,7 +509,10 @@ impl App {
                     }
                 })
                 .collect();
-            let _ = tx.send(updates);
+            let _ = tx.send(ActivePrSweep {
+                updates,
+                rate_limited,
+            });
         });
     }
 
@@ -438,9 +523,12 @@ impl App {
             return false;
         };
         match rx.try_recv() {
-            Ok(updates) => {
+            Ok(sweep) => {
                 self.active_pr_bg = None;
-                self.apply_active_pr_updates(updates)
+                if sweep.rate_limited {
+                    self.note_gh_graphql_rate_limited();
+                }
+                self.apply_active_pr_updates(sweep.updates)
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -491,6 +579,9 @@ impl App {
                 ActivePrLookup::NoPr => {
                     changed |= self.active_prs.remove(&update.feature_id).is_some();
                 }
+                // Nothing was looked up, so nothing is known: leave the
+                // previous badge in place rather than blanking or erroring it.
+                ActivePrLookup::Skipped => {}
                 ActivePrLookup::Failed(error) => {
                     self.log_debug(
                         "github",

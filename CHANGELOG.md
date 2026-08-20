@@ -10,6 +10,25 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- **AMF no longer exhausts your GitHub API budget refreshing PR badges.** The
+  dashboard's pull-request badge was refreshed every 30 seconds, and each sweep
+  made a GitHub API call for *every* feature you have — not just the ones with
+  open pull requests. On a workspace with ~34 features that is around 8,500
+  points an hour against GitHub's 5,000-point hourly GraphQL budget, so simply
+  leaving AMF open drained the whole allowance in about 35 minutes. The first
+  visible symptom was usually PR Triage failing with a rate-limit error — the
+  one workflow that had not caused it.
+
+  Badges now refresh every 5 minutes instead of every 30 seconds, which is the
+  fix; a PR badge does not change on a 30-second timescale. When GitHub does
+  report an exhausted budget, AMF now says so and pauses badge refresh for 15
+  minutes rather than retrying into an empty allowance, and features it did not
+  get to keep their existing badge instead of blanking. The badge also now asks
+  only for the thread-resolution count it displays rather than every thread's
+  comments.
+
 ### Added
 
 - **PR Triage can run multiple named dedicated sessions at once.** After

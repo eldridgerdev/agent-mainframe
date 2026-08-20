@@ -454,6 +454,76 @@ impl GhCli {
         )
     }
 
+    /// Count a PR's unresolved review threads, for the dashboard badge.
+    ///
+    /// Deliberately *not* [`Self::review_threads`]: the badge renders a count,
+    /// so fetching every thread's comment ids and discarding them is work
+    /// nothing reads.
+    ///
+    /// The saving is in returned nodes, not in the point score. GitHub charges
+    /// GraphQL by the nodes a query *actually* returns, with a floor of 1, so
+    /// on ordinary PRs both queries measure 1 point — this is not where the
+    /// budget goes (that is call volume; see `ACTIVE_PR_SYNC_INTERVAL`). Cost
+    /// rises with real node counts, so this query can only ever be cheaper than
+    /// the other one, but do not expect a large number here.
+    ///
+    /// Returns [`GhGraphqlError::RateLimited`] rather than a generic failure so
+    /// the caller can stop asking instead of spending the next hour retrying
+    /// into an empty budget.
+    pub fn unresolved_thread_count(
+        workdir: &Path,
+        owner: &str,
+        repo: &str,
+        number: u32,
+    ) -> Result<usize, GhGraphqlError> {
+        const QUERY: &str = "query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){\
+            repository(owner:$owner,name:$repo){pullRequest(number:$pr){\
+            reviewThreads(first:100,after:$cursor){\
+            pageInfo{hasNextPage endCursor}\
+            nodes{isResolved}}}}}";
+
+        let mut unresolved = 0usize;
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut cmd = Command::new("gh");
+            cmd.args(["api", "graphql", "-f", &format!("query={QUERY}")])
+                .args(["-F", &format!("owner={owner}")])
+                .args(["-F", &format!("repo={repo}")])
+                .args(["-F", &format!("pr={number}")])
+                .current_dir(workdir);
+            if let Some(c) = &cursor {
+                cmd.args(["-F", &format!("cursor={c}")]);
+            }
+            let output = cmd
+                .output()
+                .map_err(|e| GhGraphqlError::Failed(format!("failed to run `gh api graphql`: {e}")))?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // A depleted budget is reported on stdout as a GraphQL error with a
+            // 200, and on stderr for the REST-shaped secondary limit, so both
+            // are checked before the exit status is trusted.
+            if is_rate_limited(&stdout) || is_rate_limited(&stderr) {
+                return Err(GhGraphqlError::RateLimited);
+            }
+            if !output.status.success() {
+                return Err(GhGraphqlError::Failed(format!(
+                    "`gh api graphql` (unresolved threads) failed: {}",
+                    stderr.trim()
+                )));
+            }
+
+            let (page_unresolved, next) = parse_unresolved_count_page(&output.stdout)
+                .map_err(|e| GhGraphqlError::Failed(e.to_string()))?;
+            unresolved += page_unresolved;
+            match next {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        Ok(unresolved)
+    }
+
     /// Review-thread resolution state via GraphQL. REST can't report whether a
     /// thread is resolved, so this maps each member comment id to its thread.
     pub fn review_threads(
@@ -755,6 +825,77 @@ fn fetch_paginated<T: DeserializeOwned>(workdir: &Path, endpoint: &str) -> Resul
 
 /// Parse one page of the review-threads GraphQL response into
 /// `(threads, next_cursor)`.
+/// Why a GraphQL call failed, distinguishing the one cause worth reacting to.
+///
+/// A depleted point budget is not a transient error: every subsequent call in
+/// the same window fails the same way, so a caller on a timer has to stop
+/// rather than retry. Everything else stays an opaque string, since the
+/// callers only report it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GhGraphqlError {
+    /// GitHub's hourly GraphQL point budget is exhausted.
+    RateLimited,
+    Failed(String),
+}
+
+impl std::fmt::Display for GhGraphqlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GhGraphqlError::RateLimited => {
+                write!(f, "GitHub's hourly GraphQL rate limit is exhausted")
+            }
+            GhGraphqlError::Failed(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
+/// Whether an error message from any `gh` invocation reports an exhausted rate
+/// limit. `gh pr view --json` is a GraphQL call too, so it depletes the same
+/// budget and has to be recognised the same way.
+pub fn is_rate_limit_message(text: &str) -> bool {
+    is_rate_limited(text)
+}
+
+/// Whether a `gh` response reports an exhausted rate limit.
+///
+/// GraphQL returns this as an `errors[].type` of `RATE_LIMITED` with HTTP 200,
+/// so the exit status alone does not catch it; the REST-shaped message is
+/// matched too because secondary limits surface that way on stderr.
+fn is_rate_limited(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("rate_limited")
+        || lowered.contains("api rate limit exceeded")
+        || lowered.contains("secondary rate limit")
+        || (lowered.contains("rate limit") && lowered.contains("exceeded"))
+}
+
+/// Sum the unresolved threads on one page of the count-only query, plus the
+/// cursor for the next page.
+fn parse_unresolved_count_page(stdout: &[u8]) -> Result<(usize, Option<String>)> {
+    let v: serde_json::Value = serde_json::from_slice(stdout)
+        .context("Failed to parse unresolved-threads GraphQL JSON.")?;
+    let rt = &v["data"]["repository"]["pullRequest"]["reviewThreads"];
+
+    let unresolved = rt["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                // A node missing `isResolved` counts as unresolved, matching
+                // `parse_review_threads_page`'s `unwrap_or(false)`.
+                .filter(|n| !n["isResolved"].as_bool().unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0);
+
+    let next = if rt["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false) {
+        rt["pageInfo"]["endCursor"].as_str().map(|s| s.to_string())
+    } else {
+        None
+    };
+    Ok((unresolved, next))
+}
+
 fn parse_review_threads_page(stdout: &[u8]) -> Result<(Vec<ReviewThread>, Option<String>)> {
     let v: serde_json::Value =
         serde_json::from_slice(stdout).context("Failed to parse review-threads GraphQL JSON.")?;
@@ -923,6 +1064,81 @@ fn parse_owner_repo(url: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    /// The badge query must not ask for comments. That nesting is what makes
+    /// `review_threads` cost ~100 GraphQL points instead of 1, and the badge
+    /// only ever renders a count.
+    #[test]
+    fn the_unresolved_count_page_parser_ignores_everything_but_resolution() {
+        let json = br#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
+            "pageInfo":{"hasNextPage":false,"endCursor":null},
+            "nodes":[{"isResolved":false},{"isResolved":true},{"isResolved":false}]}}}}}"#;
+        let (unresolved, next) = parse_unresolved_count_page(json).unwrap();
+        assert_eq!(unresolved, 2);
+        assert_eq!(next, None);
+    }
+
+    /// A node with no `isResolved` counts as unresolved, matching
+    /// `parse_review_threads_page`'s `unwrap_or(false)`. Under-reporting work
+    /// still to do is the worse failure.
+    #[test]
+    fn a_thread_missing_its_resolution_counts_as_unresolved() {
+        let json = br#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
+            "pageInfo":{"hasNextPage":false},
+            "nodes":[{},{"isResolved":true}]}}}}}"#;
+        let (unresolved, _) = parse_unresolved_count_page(json).unwrap();
+        assert_eq!(unresolved, 1);
+    }
+
+    /// Pagination carries the cursor, so a PR with more than 100 threads is
+    /// counted in full rather than truncated at the first page.
+    #[test]
+    fn the_unresolved_count_parser_reports_the_next_cursor() {
+        let json = br#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
+            "pageInfo":{"hasNextPage":true,"endCursor":"Y3Vyc29yOjEwMA=="},
+            "nodes":[{"isResolved":false}]}}}}}"#;
+        let (unresolved, next) = parse_unresolved_count_page(json).unwrap();
+        assert_eq!(unresolved, 1);
+        assert_eq!(next.as_deref(), Some("Y3Vyc29yOjEwMA=="));
+    }
+
+    /// An empty or shape-drifted response is zero threads, not an error: the
+    /// badge degrades to "no unresolved threads" rather than taking the sweep
+    /// down.
+    #[test]
+    fn an_unexpected_shape_counts_as_no_threads() {
+        let (unresolved, next) = parse_unresolved_count_page(b"{}").unwrap();
+        assert_eq!(unresolved, 0);
+        assert_eq!(next, None);
+    }
+
+    /// GraphQL reports a depleted budget with HTTP 200 and an `errors[].type`,
+    /// so the exit status alone never catches it. REST's phrasing and the
+    /// secondary limit have to match too, because `gh pr view` spends the same
+    /// budget and fails its own way.
+    #[test]
+    fn rate_limit_detection_covers_how_gh_actually_reports_it() {
+        assert!(is_rate_limited(
+            r#"{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}"#
+        ));
+        assert!(is_rate_limited("API rate limit exceeded for user ID 1."));
+        assert!(is_rate_limited(
+            "You have exceeded a secondary rate limit."
+        ));
+        assert!(is_rate_limited("HTTP 403: rate limit exceeded"));
+    }
+
+    /// An ordinary failure must not be mistaken for a rate limit: that would
+    /// pause PR badges for fifteen minutes over a typo'd repo name.
+    #[test]
+    fn ordinary_failures_are_not_read_as_rate_limits() {
+        assert!(!is_rate_limited("Could not resolve to a Repository."));
+        assert!(!is_rate_limited("no pull requests found for branch"));
+        assert!(!is_rate_limited(""));
+        // "rate limit" alone, without exhaustion, is documentation not failure.
+        assert!(!is_rate_limited(
+            "See the rate limit documentation for details."
+        ));
+    }
     use super::*;
 
     #[test]

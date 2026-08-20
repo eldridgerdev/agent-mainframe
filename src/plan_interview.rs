@@ -932,6 +932,23 @@ pub fn pending_interview_key(project_name: &str, branch: &str) -> String {
     format!("pending:{project_name}/{branch}")
 }
 
+/// The key a TODO-originated interview is filed under when it plans work into
+/// the TODO's **host feature**, which already exists.
+///
+/// It cannot be the host feature's id: that is where the feature's own `P`
+/// interview keeps its draft and accepted transcript, and a TODO planned
+/// against the same feature would silently overwrite them (and be pre-filled
+/// from them). The TODO is the thing being planned here, so the TODO is the
+/// identity. The `todo:` prefix cannot collide with a bare feature id or with
+/// [`pending_interview_key`] — uuids contain no colon, and the prefixes differ.
+///
+/// The new-feature destination does *not* use this: it goes through the
+/// ordinary feature-creation flow and keeps [`pending_interview_key`], so its
+/// transcript is re-filed under the real feature id on accept.
+pub fn todo_interview_key(todo_id: &str) -> String {
+    format!("todo:{todo_id}")
+}
+
 /// Return the curated questions asked after the required feature brief.
 ///
 /// The order is part of the interview UX: it moves from product scope toward
@@ -970,6 +987,25 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    /// The three interview keys name three different things and must never
+    /// land on the same row: a TODO planned against its host feature would
+    /// otherwise overwrite that feature's own accepted plan.
+    #[test]
+    fn interview_keys_cannot_collide_across_their_three_sources() {
+        let feature_id = "0d0f6b5a-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+        let todo_key = todo_interview_key(feature_id);
+        let pending_key = pending_interview_key("amf", "todo-plan");
+
+        // A TODO whose id happens to equal a feature id still keys apart from
+        // the on-demand interview for that feature, which keys on the bare id.
+        assert_ne!(todo_key, feature_id);
+        assert_ne!(todo_key, pending_key);
+        assert!(todo_key.starts_with("todo:"));
+        assert!(!pending_key.starts_with("todo:"));
+        // Distinct TODOs stay distinct.
+        assert_ne!(todo_interview_key("a"), todo_interview_key("b"));
+    }
 
     #[test]
     fn builtin_bank_has_stable_order_and_unique_ids() {

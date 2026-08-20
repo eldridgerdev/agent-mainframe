@@ -41,6 +41,26 @@ are tagged.
 
 ### Added
 
+- **A TODO can start a plan interview, in place or in a new worktree.** `g`
+  (or `Enter`) on a TODO now asks whether to start an agent on it — the
+  previous behavior — or to plan it first. Choosing to plan asks where the
+  plan should land: the feature the list lives in, or a new feature and
+  worktree created for it. The feature brief arrives pre-filled from the
+  TODO's title, notes, and the list scratchpad, and is editable before the
+  first question. Picking a new feature opens the ordinary create-feature
+  wizard pre-filled from the TODO, so the branch, agent, and permission mode
+  are still yours to change. Either way the accepted plan is saved and an
+  agent is started on it.
+
+  A plan that lands in a feature that already exists is written to
+  `AMF_PLAN.todo-<name>.md`, beside that feature's own `AMF_PLAN.md` rather
+  than over it, and the agent is told which file is its own. A TODO planned
+  into a new feature stays open on the list, is marked as linked, and `g`
+  afterwards jumps to that feature instead of asking again; if that feature is
+  deleted the TODO survives, the link is dropped, and the choice is offered
+  again. An interrupted interview is kept as a draft and offered back the next
+  time you press `g` on that TODO.
+
 - **PR Triage can run multiple named dedicated sessions at once.** After
   choosing a dedicated harness from the first `f` or `B` fix-target prompt,
   enter a session name to create or reuse that exact triage session. Leave the

@@ -1,8 +1,8 @@
 //! Key dispatch for the native TODOs overlay (`AppMode::Todos`).
 //!
-//! Three input layers, checked in order: a pending delete confirmation, an
-//! active inline edit (add / title / notes / carry-over), and the normal
-//! navigation + action keys.
+//! Four input layers, checked in order: a pending delete confirmation, the
+//! launch chooser / destination step, an active inline edit (add / title /
+//! notes / carry-over), and the normal navigation + action keys.
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -20,12 +20,17 @@ pub fn handle_todos_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
-    // Layer 2: active inline edit.
+    // Layer 2: the launch chooser / destination step.
+    if matches!(&app.mode, AppMode::Todos(state) if state.launch.is_some()) {
+        return handle_launch_step_key(app, key.code);
+    }
+
+    // Layer 3: active inline edit.
     if matches!(&app.mode, AppMode::Todos(state) if state.editor.is_some()) {
         return handle_edit_key(app, key);
     }
 
-    // Layer 3: navigation + actions.
+    // Layer 4: navigation + actions.
     // Ctrl+Q exits, matching the embedded-view exit chord.
     if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.close_todos_view();
@@ -45,7 +50,7 @@ pub fn handle_todos_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('J') => app.todos_reorder(1)?,
         KeyCode::Char('K') => app.todos_reorder(-1)?,
         KeyCode::Char('d') => app.todos_request_delete(),
-        KeyCode::Char('g') | KeyCode::Enter => app.todos_spawn_agent()?,
+        KeyCode::Char('g') | KeyCode::Enter => app.todos_launch_selected()?,
         _ => {}
     }
     Ok(())
@@ -80,6 +85,23 @@ pub fn handle_todos_host_reassign_key(app: &mut App, key: KeyCode) -> Result<()>
         KeyCode::Enter => app.confirm_todos_host_reassign()?,
         // Esc keeps the list by re-homing onto the first surviving feature.
         KeyCode::Esc => app.cancel_todos_host_reassign()?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key dispatch for the launch step layered over the list: the chooser shown
+/// by `g`/`Enter` on an unlinked TODO, and the destination step after it.
+///
+/// `Esc` unwinds one step at a time — destination back to chooser, chooser back
+/// to the list — so reaching the interview by mistake is always one keypress
+/// from where the user was.
+fn handle_launch_step_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => app.todo_launch_step_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.todo_launch_step_move(-1),
+        KeyCode::Enter => app.confirm_todo_launch_step()?,
+        KeyCode::Esc | KeyCode::Char('q') => app.cancel_todo_launch_step(),
         _ => {}
     }
     Ok(())

@@ -2660,6 +2660,7 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
         false,
         false,
         None,
+        None,
     );
 
     assert!(matches!(app.mode, AppMode::RunningHook(_)));
@@ -2723,6 +2724,7 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
         false,
         false,
         false,
+        None,
         None,
     );
 
@@ -2847,6 +2849,7 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
     app.mode = AppMode::RunningHook(RunningHookState {
         script: "true".to_string(),
         workdir: workdir_path,
+        todo_origin: None,
         project_name: "my-project".to_string(),
         branch: "new-feature".to_string(),
         mode: VibeMode::default(),
@@ -2896,6 +2899,7 @@ fn app_in_creating_feature_mode(
     let state = CreateFeatureState {
         project_name: project_name.to_string(),
         project_repo,
+        todo_origin: None,
         branch: branch.to_string(),
         branch_error: None,
         allowed_agents: AgentKind::ALL.to_vec(),
@@ -3080,6 +3084,7 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
         steering_enabled: false,
         hook_succeeded: None,
         startup_prompt: None,
+        todo_origin: None,
     })
     .unwrap();
 
@@ -3646,6 +3651,7 @@ fn plan_interview_app_for_agent(
         steering_enabled: false,
         hook_succeeded: None,
         startup_prompt: None,
+        todo_origin: None,
     })
     .unwrap();
     // The NamedTempFile return value keeps the store file alive for the
@@ -4941,6 +4947,7 @@ fn re_entering_an_abandoned_plan_interview_offers_to_resume_it() {
         steering_enabled: false,
         hook_succeeded: None,
         startup_prompt: None,
+        todo_origin: None,
     })
     .unwrap();
 
@@ -5815,6 +5822,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
     app.mode = AppMode::CreatingFeature(CreateFeatureState {
         project_name: "my-project".to_string(),
         project_repo: repo.path().to_path_buf(),
+        todo_origin: None,
         branch: "coached".to_string(),
         branch_error: None,
         allowed_agents: AgentKind::ALL.to_vec(),
@@ -5862,6 +5870,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         steering_enabled: true,
         hook_succeeded: None,
         startup_prompt: None,
+        todo_origin: None,
     })
     .unwrap();
 
@@ -6112,6 +6121,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         steering_enabled: false,
         hook_succeeded: None,
         startup_prompt: None,
+        todo_origin: None,
     })
     .unwrap();
 
@@ -6176,6 +6186,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
         steering_enabled: false,
         hook_succeeded: None,
         startup_prompt: None,
+        todo_origin: None,
     })
     .unwrap();
 
@@ -7109,6 +7120,7 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
     app.mode = AppMode::CreatingFeature(CreateFeatureState {
         project_name: "automation-project".to_string(),
         project_repo: repo.path().to_path_buf(),
+        todo_origin: None,
         branch: "feature-1".to_string(),
         branch_error: None,
         allowed_agents: AgentKind::ALL.to_vec(),
@@ -17981,6 +17993,7 @@ fn sample_todo(title: &str, done: bool) -> crate::db::todos::Todo {
         done,
         sort_order: 0,
         spawned_session_id: None,
+        linked_feature_id: None,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -18130,6 +18143,7 @@ fn empty_todo_view() -> TodoViewState {
         scroll_offset: 0,
         editor: None,
         pending_delete: false,
+        launch: None,
     }
 }
 
@@ -18157,6 +18171,205 @@ fn todo_titles(app: &App) -> Vec<String> {
     match &app.mode {
         AppMode::Todos(state) => state.todos.iter().map(|t| t.title.clone()).collect(),
         _ => panic!("expected Todos overlay"),
+    }
+}
+
+// ----- TODO launch chooser -------------------------------------------------
+
+/// Push one TODO into the open overlay and select it.
+fn seed_selected_todo(app: &mut App, title: &str) -> String {
+    let todo = sample_todo(title, false);
+    let id = todo.id.clone();
+    match &mut app.mode {
+        AppMode::Todos(state) => {
+            state.todos.push(todo);
+            state.selected = state.todos.len() - 1;
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+    id
+}
+
+fn launch_step(app: &App) -> Option<&crate::app::TodoLaunchStep> {
+    match &app.mode {
+        AppMode::Todos(state) => state.launch.as_ref(),
+        _ => None,
+    }
+}
+
+/// `g` on a TODO with nothing linked has to ask rather than pick for the user:
+/// spawning and planning are different amounts of work to commit to.
+#[test]
+fn g_on_an_unlinked_todo_opens_the_chooser_instead_of_spawning() {
+    let mut app = todos_app();
+    seed_selected_todo(&mut app, "wire up the chooser");
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+
+    assert!(
+        matches!(
+            launch_step(&app),
+            Some(crate::app::TodoLaunchStep::Choice { .. })
+        ),
+        "expected the chooser, got {:?}",
+        launch_step(&app).is_some()
+    );
+    // The list is still underneath: the chooser is a layer, not a new mode.
+    assert_eq!(todo_titles(&app), vec!["wire up the chooser"]);
+}
+
+/// Esc unwinds one step at a time, so reaching the destination step by mistake
+/// costs one keypress rather than dropping the user back to the dashboard.
+#[test]
+fn esc_walks_back_from_destination_to_chooser_to_the_list() {
+    let mut app = todos_app();
+    seed_selected_todo(&mut app, "plan me");
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    // Move to "Plan this TODO first" and take it.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    assert!(matches!(
+        launch_step(&app),
+        Some(crate::app::TodoLaunchStep::Destination { .. })
+    ));
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(
+        matches!(
+            launch_step(&app),
+            Some(crate::app::TodoLaunchStep::Choice { selected: 1, .. })
+        ),
+        "Esc returns to the chooser with the cursor on the option that got here"
+    );
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(
+        launch_step(&app).is_none(),
+        "a second Esc returns to the list"
+    );
+    assert!(
+        matches!(app.mode, AppMode::Todos(_)),
+        "and stays in the overlay"
+    );
+}
+
+/// The cursor clamps rather than wraps: with two options, wrapping makes j and
+/// k the same key and the highlight appears not to move.
+#[test]
+fn chooser_cursor_clamps_at_both_ends() {
+    let mut app = todos_app();
+    seed_selected_todo(&mut app, "plan me");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('k'))).unwrap();
+    assert_eq!(
+        launch_step(&app).unwrap().selected(),
+        0,
+        "k at the top stays"
+    );
+
+    for _ in 0..3 {
+        crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
+    }
+    assert_eq!(
+        launch_step(&app).unwrap().selected(),
+        1,
+        "j past the end stays"
+    );
+}
+
+/// A TODO already planned into a feature jumps there instead of asking again —
+/// the decision was made the first time.
+#[test]
+fn g_on_a_todo_linked_to_a_live_feature_jumps_there_without_asking() {
+    let mut tmux = MockTmuxOps::new();
+    // The jump enters the feature's view, which reconciles against tmux.
+    tmux.expect_session_exists().return_const(true);
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Todos(empty_todo_view());
+    let feature_id = app.store.projects[0].features[0].id.clone();
+    seed_selected_todo(&mut app, "already planned");
+    match &mut app.mode {
+        AppMode::Todos(state) => {
+            state.todos[0].linked_feature_id = Some(feature_id);
+        }
+        _ => unreachable!(),
+    }
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+
+    assert!(
+        !matches!(app.mode, AppMode::Todos(_)),
+        "the jump leaves the overlay"
+    );
+}
+
+/// A link whose feature was deleted must not be a dead end: it is dropped, the
+/// user is told, and the next press offers the chooser.
+#[test]
+fn g_on_a_todo_linked_to_a_deleted_feature_clears_the_link_and_offers_the_chooser() {
+    let mut app = todos_app();
+    seed_selected_todo(&mut app, "planned into a ghost");
+    match &mut app.mode {
+        AppMode::Todos(state) => {
+            state.todos[0].linked_feature_id = Some("feat-that-is-gone".to_string());
+        }
+        _ => unreachable!(),
+    }
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(
+                state.todos[0].linked_feature_id.is_none(),
+                "the dead link is dropped"
+            );
+            assert!(
+                matches!(
+                    state.launch,
+                    Some(crate::app::TodoLaunchStep::Choice { .. })
+                ),
+                "and the chooser is offered in its place"
+            );
+        }
+        _ => panic!("expected to stay in the Todos overlay"),
+    }
+}
+
+/// Deleting a feature must not leave TODOs pointing at it, in memory or on
+/// disk. The TODO itself survives: the work outlived the branch.
+#[test]
+fn deleting_a_feature_clears_todo_links_to_it_but_keeps_the_todos() {
+    let mut app = todos_app();
+    seed_selected_todo(&mut app, "planned here");
+    seed_selected_todo(&mut app, "planned elsewhere");
+    match &mut app.mode {
+        AppMode::Todos(state) => {
+            state.todos[0].linked_feature_id = Some("feat-doomed".to_string());
+            state.todos[1].linked_feature_id = Some("feat-safe".to_string());
+        }
+        _ => unreachable!(),
+    }
+
+    app.clear_todo_links_to_deleted_feature(Some("feat-doomed"));
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(state.todos.len(), 2, "both TODOs survive");
+            assert!(state.todos[0].linked_feature_id.is_none());
+            assert_eq!(
+                state.todos[1].linked_feature_id.as_deref(),
+                Some("feat-safe"),
+                "an unrelated link is untouched"
+            );
+        }
+        _ => unreachable!(),
     }
 }
 

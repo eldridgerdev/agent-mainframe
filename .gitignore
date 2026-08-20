@@ -35,3 +35,4 @@ docker/*
 !docker/no-tmux/**
 .dockerignore
 docs/docker-screenshots.md
+AMF_PLAN.md

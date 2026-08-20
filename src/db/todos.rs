@@ -77,8 +77,13 @@ pub struct Todo {
     pub priority: TodoPriority,
     pub done: bool,
     pub sort_order: i64,
-    /// `FeatureSession.id` of an agent launched for this item, if any.
+    /// `FeatureSession.id` of an agent launched for this item, if any. Always
+    /// a session inside the list's *host* feature.
     pub spawned_session_id: Option<String>,
+    /// `Feature.id` of a feature plan mode created for this item, if any. A
+    /// different destination from [`Self::spawned_session_id`], and a TODO can
+    /// carry both.
+    pub linked_feature_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -171,7 +176,7 @@ pub fn delete_list_for_project(conn: &Connection, project_id: &str) -> Result<()
 pub fn list_todos(conn: &Connection, list_id: &str) -> Result<Vec<Todo>> {
     let mut stmt = conn.prepare(
         "SELECT id, list_id, title, body, priority, done, sort_order,
-                spawned_session_id, created_at, updated_at
+                spawned_session_id, linked_feature_id, created_at, updated_at
          FROM todos WHERE list_id = ?1
          ORDER BY done ASC, sort_order ASC",
     )?;
@@ -187,8 +192,9 @@ pub fn list_todos(conn: &Connection, list_id: &str) -> Result<Vec<Todo>> {
             done: done != 0,
             sort_order: row.get(6)?,
             spawned_session_id: row.get(7)?,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
+            linked_feature_id: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
         })
     })?;
 
@@ -217,8 +223,9 @@ pub fn add_todo(
     conn.execute(
         "INSERT INTO todos
             (id, list_id, title, body, priority, done, sort_order,
-             spawned_session_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, NULL, datetime('now'), datetime('now'))",
+             spawned_session_id, linked_feature_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, NULL, NULL,
+                 datetime('now'), datetime('now'))",
         params![id, list_id, title, body, priority.as_db_str(), next_order],
     )?;
     Ok(Todo {
@@ -230,6 +237,7 @@ pub fn add_todo(
         done: false,
         sort_order: next_order,
         spawned_session_id: None,
+        linked_feature_id: None,
         created_at: String::new(),
         updated_at: String::new(),
     })
@@ -241,7 +249,8 @@ pub fn update_todo(conn: &Connection, todo: &Todo) -> Result<()> {
     conn.execute(
         "UPDATE todos SET
             list_id = ?2, title = ?3, body = ?4, priority = ?5, done = ?6,
-            sort_order = ?7, spawned_session_id = ?8, updated_at = datetime('now')
+            sort_order = ?7, spawned_session_id = ?8, linked_feature_id = ?9,
+            updated_at = datetime('now')
          WHERE id = ?1",
         params![
             todo.id,
@@ -252,6 +261,7 @@ pub fn update_todo(conn: &Connection, todo: &Todo) -> Result<()> {
             todo.done as i64,
             todo.sort_order,
             todo.spawned_session_id,
+            todo.linked_feature_id,
         ],
     )?;
     Ok(())
@@ -260,6 +270,47 @@ pub fn update_todo(conn: &Connection, todo: &Todo) -> Result<()> {
 /// Delete a single TODO by id. Any session it spawned is left untouched.
 pub fn delete_todo(conn: &Connection, todo_id: &str) -> Result<()> {
     conn.execute("DELETE FROM todos WHERE id = ?1", params![todo_id])?;
+    Ok(())
+}
+
+/// Point a TODO at the feature a plan run created for it.
+///
+/// A targeted write rather than [`update_todo`]: by the time a plan is
+/// accepted the TODOs overlay is gone, so there is no in-memory row to write
+/// back — and a stale one reconstructed from before the interview would undo
+/// whatever else changed meanwhile.
+pub fn set_linked_feature(conn: &Connection, todo_id: &str, feature_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE todos SET linked_feature_id = ?2, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![todo_id, feature_id],
+    )?;
+    Ok(())
+}
+
+/// Point a TODO at the session spawned for it. Targeted for the same reason as
+/// [`set_linked_feature`].
+pub fn set_spawned_session(conn: &Connection, todo_id: &str, session_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE todos SET spawned_session_id = ?2, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![todo_id, session_id],
+    )?;
+    Ok(())
+}
+
+/// Drop any TODO's link to `feature_id`, across every list.
+///
+/// Called when a feature is deleted: `linked_feature_id` has no FK (see
+/// MIGRATION_023), so nothing else would clear it, and a TODO left pointing at
+/// a feature that no longer exists would offer a jump that cannot land. The
+/// TODO itself is kept — the work it describes outlived the feature.
+pub fn clear_linked_feature(conn: &Connection, feature_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE todos SET linked_feature_id = NULL, updated_at = datetime('now')
+         WHERE linked_feature_id = ?1",
+        params![feature_id],
+    )?;
     Ok(())
 }
 
@@ -413,6 +464,49 @@ mod tests {
         let loaded = db.todo_list("proj-1").unwrap().unwrap();
         assert_eq!(loaded.carry_over.as_deref(), Some("finishing the parser"));
         assert_eq!(loaded.feature_id, "feat-2");
+    }
+
+    #[test]
+    fn linked_feature_survives_a_roundtrip_and_is_independent_of_the_session_link() {
+        let (_tmp, db) = open_temp_db();
+        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let mut todo = db
+            .add_todo(&list.id, "plan it", None, TodoPriority::Med)
+            .unwrap();
+        assert!(todo.linked_feature_id.is_none());
+
+        // Both links can be held at once: they point at different things.
+        todo.spawned_session_id = Some("sess-1".to_string());
+        todo.linked_feature_id = Some("feat-new".to_string());
+        db.update_todo(&todo).unwrap();
+
+        let loaded = &db.todos(&list.id).unwrap()[0];
+        assert_eq!(loaded.spawned_session_id.as_deref(), Some("sess-1"));
+        assert_eq!(loaded.linked_feature_id.as_deref(), Some("feat-new"));
+    }
+
+    #[test]
+    fn clearing_a_deleted_features_link_keeps_the_todo_and_its_session_link() {
+        let (_tmp, db) = open_temp_db();
+        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let mut a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
+        let mut b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
+        a.linked_feature_id = Some("feat-gone".to_string());
+        a.spawned_session_id = Some("sess-1".to_string());
+        b.linked_feature_id = Some("feat-kept".to_string());
+        db.update_todo(&a).unwrap();
+        db.update_todo(&b).unwrap();
+
+        db.clear_todo_linked_feature("feat-gone").unwrap();
+
+        let loaded = db.todos(&list.id).unwrap();
+        assert_eq!(loaded.len(), 2, "the TODOs outlive the feature");
+        let a = loaded.iter().find(|t| t.title == "a").unwrap();
+        let b = loaded.iter().find(|t| t.title == "b").unwrap();
+        assert!(a.linked_feature_id.is_none());
+        // Only the feature link is dropped; the session link is a separate one.
+        assert_eq!(a.spawned_session_id.as_deref(), Some("sess-1"));
+        assert_eq!(b.linked_feature_id.as_deref(), Some("feat-kept"));
     }
 
     #[test]

@@ -227,6 +227,7 @@ impl App {
         let enable_chrome = state.enable_chrome;
         let remote_control = state.remote_control;
         let steering_enabled = state.steering_enabled;
+        let todo_origin = state.todo_origin.clone();
 
         if branch.is_empty() {
             self.set_create_feature_branch_error("Feature name cannot be empty");
@@ -330,6 +331,7 @@ impl App {
                             remote_control,
                             steering_enabled,
                             session_name,
+                            todo_origin: todo_origin.clone(),
                         },
                     );
                 } else {
@@ -347,6 +349,7 @@ impl App {
                         enable_chrome,
                         remote_control,
                         steering_enabled,
+                        todo_origin,
                         None,
                     );
                 }
@@ -374,6 +377,7 @@ impl App {
             steering_enabled,
             hook_succeeded: None,
             startup_prompt: None,
+            todo_origin,
         };
 
         self.finish_feature_launch(prepared)
@@ -1433,6 +1437,7 @@ impl App {
             }
         }
         self.delete_plan_interviews_for_deleted_feature(&project_name, &feature_name, &feature_id);
+        self.clear_todo_links_to_deleted_feature(feature_id.as_deref());
         self.store.remove_feature(&project_name, &feature_name);
         self.save()?;
 
@@ -1581,6 +1586,7 @@ impl App {
                         &deletion.feature_name,
                         &feature_id,
                     );
+                    self.clear_todo_links_to_deleted_feature(feature_id.as_deref());
                     self.store
                         .remove_feature(&deletion.project_name, &deletion.feature_name);
                     let _ = self.save();
@@ -1726,6 +1732,8 @@ impl App {
                         enable_chrome,
                         remote_control,
                         steering_enabled: false,
+                        // Not reachable from a TODO: this is the fork/batch path.
+                        todo_origin: None,
                     },
                 );
                 return Ok(());
@@ -1745,6 +1753,8 @@ impl App {
                 enable_chrome,
                 remote_control,
                 false,
+                // Not reachable from a TODO: this is the fork path.
+                None,
                 None,
             );
             return Ok(());

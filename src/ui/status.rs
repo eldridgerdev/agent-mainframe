@@ -333,12 +333,30 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(" close"),
             ]),
         },
-        AppMode::Todos(_) => Line::from(vec![
-            Span::styled("j/k", key_style()),
-            Span::raw(" navigate  "),
-            Span::styled("Esc/q", key_style()),
-            Span::raw(" close"),
-        ]),
+        AppMode::Todos(state) => match &state.launch {
+            Some(crate::app::TodoLaunchStep::Choice { .. }) => Line::from(vec![
+                Span::styled("j/k", key_style()),
+                Span::raw(" choose  "),
+                Span::styled("Enter", key_style()),
+                Span::raw(" confirm  "),
+                Span::styled("Esc", key_style()),
+                Span::raw(" back to list"),
+            ]),
+            Some(crate::app::TodoLaunchStep::Destination { .. }) => Line::from(vec![
+                Span::styled("j/k", key_style()),
+                Span::raw(" choose  "),
+                Span::styled("Enter", key_style()),
+                Span::raw(" start interview  "),
+                Span::styled("Esc", key_style()),
+                Span::raw(" back"),
+            ]),
+            None => Line::from(vec![
+                Span::styled("j/k", key_style()),
+                Span::raw(" navigate  "),
+                Span::styled("Esc/q", key_style()),
+                Span::raw(" close"),
+            ]),
+        },
         AppMode::TodoQuickCapture(_) => Line::from(vec![
             Span::styled("Enter", key_style()),
             Span::raw(" add TODO  "),

@@ -8,8 +8,25 @@
 use anyhow::Result;
 use uuid::Uuid;
 
-use crate::app::{App, AppMode, Selection, StartIntent, TodoViewState, TodosHostReassignState};
+use crate::app::{
+    App, AppMode, Selection, StartIntent, TodoLaunchAction, TodoLaunchStep, TodoPlanDestination,
+    TodoPlanOrigin, TodoViewState, TodosHostReassignState,
+};
 use crate::db::todos::{Todo, TodoPriority};
+
+/// The selected TODO and the overlay context needed to act on it, gathered in
+/// one read so callers do not re-borrow `self.mode` field by field.
+pub(crate) struct SelectedTodoContext {
+    pub todo: Todo,
+    pub pi: usize,
+    /// The feature the TODOs *session* lives under, used when the list's own
+    /// host feature can no longer be resolved.
+    pub fallback_fi: usize,
+    pub host_feature_id: Option<String>,
+    pub list_id: Option<String>,
+    /// The list-level scratchpad note (`todo_lists.carry_over`).
+    pub scratchpad: Option<String>,
+}
 
 impl App {
     /// Open the native TODOs overlay for the TODOs session at `(pi, fi, si)`.
@@ -44,6 +61,7 @@ impl App {
             scroll_offset: 0,
             editor: None,
             pending_delete: false,
+            launch: None,
         });
         Ok(())
     }
@@ -411,6 +429,7 @@ impl App {
                 done: false,
                 sort_order: next_order,
                 spawned_session_id: None,
+                linked_feature_id: None,
                 created_at: String::new(),
                 updated_at: String::new(),
             },
@@ -531,6 +550,251 @@ impl App {
     /// already links a session that is still live, that session is reused (jumped
     /// to and added onto) instead of spawning a second. The launched session's
     /// id is recorded on the TODO so the list can show it as "launched".
+    /// `g`/`Enter` on the selected TODO.
+    ///
+    /// Resolves what the key means before offering a choice, because a TODO
+    /// that already has somewhere to go should go there rather than ask again:
+    ///
+    /// 1. A linked feature (a previous plan-mode run created one) — jump to it.
+    /// 2. A live linked session — jump to it, as this key always has.
+    /// 3. Otherwise — open the chooser.
+    ///
+    /// The feature link wins when a TODO carries both. A feature is the larger
+    /// destination: the session link points at one agent inside the host
+    /// feature, while the feature link points at a whole checkout created for
+    /// this item, and that is where the work moved to.
+    ///
+    /// A link whose target is gone is dropped rather than reported as a dead
+    /// end, so the next press offers the chooser instead of failing again.
+    pub fn todos_launch_selected(&mut self) -> Result<()> {
+        let Some(ctx) = self.selected_todo_context() else {
+            self.push_toast_warning("No TODO selected");
+            return Ok(());
+        };
+        let (todo, pi, list_id) = (ctx.todo, ctx.pi, ctx.list_id);
+        let fi =
+            self.resolve_todo_host_feature(pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
+
+        // 1. A feature created for this TODO by an earlier plan run.
+        if let Some(feature_id) = todo.linked_feature_id.as_deref() {
+            match self.feature_indices_by_id(feature_id) {
+                Some((fpi, ffi)) => return self.jump_to_linked_feature(fpi, ffi),
+                None => {
+                    self.clear_todo_linked_feature(&todo.id)?;
+                    self.push_toast_warning(
+                        "The feature planned for this TODO no longer exists; the link was cleared",
+                    );
+                }
+            }
+        }
+
+        // 2. A still-live session spawned for this TODO.
+        if let Some(session_id) = todo.spawned_session_id.as_deref()
+            && let Some(si) = self.session_index_in_feature(pi, fi, session_id)
+        {
+            self.selection = Selection::Session(pi, fi, si);
+            return self.enter_view();
+        }
+
+        // 3. Nothing to return to: ask what this key should do.
+        let host_feature_id = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| f.id.clone())
+            .unwrap_or_default();
+        self.open_todo_launch_choice(TodoPlanOrigin {
+            todo_id: todo.id.clone(),
+            list_id: list_id.unwrap_or_default(),
+            todo_title: todo.title.clone(),
+            host_feature_id,
+        });
+        Ok(())
+    }
+
+    /// The selected TODO plus everything acting on it needs from the overlay.
+    pub(crate) fn selected_todo_context(&self) -> Option<SelectedTodoContext> {
+        match &self.mode {
+            AppMode::Todos(state) => Some(SelectedTodoContext {
+                todo: state.todos.get(state.selected).cloned()?,
+                pi: state.pi,
+                fallback_fi: state.fi,
+                host_feature_id: state.list.as_ref().map(|l| l.feature_id.clone()),
+                list_id: state.list.as_ref().map(|l| l.id.clone()),
+                scratchpad: state.list.as_ref().and_then(|l| l.carry_over.clone()),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Locate a feature anywhere in the store by id.
+    pub(crate) fn feature_indices_by_id(&self, feature_id: &str) -> Option<(usize, usize)> {
+        self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+            p.features
+                .iter()
+                .position(|f| f.id == feature_id)
+                .map(|fi| (pi, fi))
+        })
+    }
+
+    fn session_index_in_feature(&self, pi: usize, fi: usize, session_id: &str) -> Option<usize> {
+        self.store
+            .projects
+            .get(pi)?
+            .features
+            .get(fi)?
+            .sessions
+            .iter()
+            .position(|s| s.id == session_id)
+    }
+
+    /// Select the feature a TODO was planned into and open it.
+    ///
+    /// Its first agent session is preferred over the feature row, since the
+    /// point of the jump is to get back to the agent working the plan; a
+    /// feature with no agent session selects the feature itself.
+    fn jump_to_linked_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
+        let agent_si = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .and_then(|f| f.sessions.iter().position(|s| s.kind.is_agent_harness()));
+        self.selection = match agent_si {
+            Some(si) => Selection::Session(pi, fi, si),
+            None => Selection::Feature(pi, fi),
+        };
+        self.enter_view()
+    }
+
+    /// Drop a TODO's dead feature link, in memory and (with a DB) on disk.
+    fn clear_todo_linked_feature(&mut self, todo_id: &str) -> Result<()> {
+        let updated = match &mut self.mode {
+            AppMode::Todos(state) => state.todos.iter_mut().find(|t| t.id == todo_id).map(|t| {
+                t.linked_feature_id = None;
+                t.clone()
+            }),
+            _ => None,
+        };
+        if let (Some(db), Some(todo)) = (&self.db, &updated) {
+            db.update_todo(todo)?;
+        }
+        Ok(())
+    }
+
+    // ----- launch chooser -------------------------------------------------
+
+    fn open_todo_launch_choice(&mut self, origin: TodoPlanOrigin) {
+        if let AppMode::Todos(state) = &mut self.mode {
+            state.launch = Some(TodoLaunchStep::Choice {
+                origin,
+                selected: 0,
+            });
+        }
+    }
+
+    pub fn todo_launch_step_move(&mut self, delta: isize) {
+        if let AppMode::Todos(state) = &mut self.mode
+            && let Some(step) = &mut state.launch
+        {
+            step.move_cursor(delta);
+        }
+    }
+
+    /// `Esc`: unwind one step — destination back to the chooser, chooser back
+    /// to the list.
+    pub fn cancel_todo_launch_step(&mut self) {
+        if let AppMode::Todos(state) = &mut self.mode {
+            state.launch = match state.launch.take() {
+                Some(TodoLaunchStep::Destination { origin, .. }) => Some(TodoLaunchStep::Choice {
+                    origin,
+                    // Return the cursor to the option that got here.
+                    selected: 1,
+                }),
+                _ => None,
+            };
+        }
+    }
+
+    pub fn confirm_todo_launch_step(&mut self) -> Result<()> {
+        let step = match &self.mode {
+            AppMode::Todos(state) => state.launch.clone(),
+            _ => None,
+        };
+        let Some(step) = step else { return Ok(()) };
+
+        match (&step, step.action(), step.destination()) {
+            (_, Some(TodoLaunchAction::SpawnSession), _) => {
+                self.close_todo_launch_step();
+                self.todos_spawn_agent()
+            }
+            (_, Some(TodoLaunchAction::PlanMode), _) => {
+                self.open_todo_plan_destination(step.origin().clone());
+                Ok(())
+            }
+            (_, _, Some(TodoPlanDestination::HostFeature)) => {
+                let origin = step.origin().clone();
+                self.close_todo_launch_step();
+                self.start_todo_plan_in_host_feature(origin)
+            }
+            (
+                TodoLaunchStep::Destination {
+                    can_create_worktree,
+                    ..
+                },
+                _,
+                Some(TodoPlanDestination::NewFeature),
+            ) => {
+                if !*can_create_worktree {
+                    self.push_toast_warning(
+                        "This project has no git repository, so a new worktree cannot be created",
+                    );
+                    return Ok(());
+                }
+                let origin = step.origin().clone();
+                self.close_todo_launch_step();
+                self.start_todo_plan_in_new_feature(origin)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn close_todo_launch_step(&mut self) {
+        if let AppMode::Todos(state) = &mut self.mode {
+            state.launch = None;
+        }
+    }
+
+    fn open_todo_plan_destination(&mut self, origin: TodoPlanOrigin) {
+        let (host_feature_name, can_create_worktree) = match &self.mode {
+            AppMode::Todos(state) => {
+                let fi = self.resolve_todo_host_feature(
+                    state.pi,
+                    state.list.as_ref().map(|l| l.feature_id.as_str()),
+                    state.fi,
+                );
+                let project = self.store.projects.get(state.pi);
+                (
+                    project
+                        .and_then(|p| p.features.get(fi))
+                        .map(|f| f.name.clone())
+                        .unwrap_or_else(|| state.feature_name.clone()),
+                    project.is_some_and(|p| p.is_git),
+                )
+            }
+            _ => return,
+        };
+        if let AppMode::Todos(state) = &mut self.mode {
+            state.launch = Some(TodoLaunchStep::Destination {
+                origin,
+                host_feature_name,
+                can_create_worktree,
+                selected: 0,
+            });
+        }
+    }
+
     pub fn todos_spawn_agent(&mut self) -> Result<()> {
         let (todo, host_feature_id, fallback_fi, pi) = match &self.mode {
             AppMode::Todos(state) => {
@@ -636,8 +900,124 @@ impl App {
         prompt
     }
 
+    /// Compose the feature brief a TODO-originated plan interview opens on.
+    ///
+    /// Everything the TODO row actually carries goes in: its title as the
+    /// heading, its notes, the list-level scratchpad, and a **provenance**
+    /// paragraph naming work already started for it. The brief is a starting
+    /// point, not a submission — the interview's `Brief` phase opens it in an
+    /// editor, so a wrong guess here costs the user an edit, not an answer.
+    ///
+    /// Provenance is deliberately a statement *that* work happened, not a
+    /// transcript of it. AMF keeps no per-TODO history: transcripts are scoped
+    /// to a workdir (and in practice to one harness), and a tmux capture holds
+    /// only whatever is still on screen. Either would put text in the brief
+    /// that does not reliably describe this TODO, which is worse than a line
+    /// the reader can trust.
+    pub(crate) fn compose_plan_brief(
+        todo: &Todo,
+        scratchpad: Option<&str>,
+        provenance: &[String],
+    ) -> String {
+        let mut brief = format!("## {}\n", todo.title.trim());
+
+        if let Some(body) = todo
+            .body
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+        {
+            brief.push('\n');
+            brief.push_str(body);
+            brief.push('\n');
+        }
+
+        // The scratchpad belongs to the list, not the item, so it is labelled
+        // as the shared note it is rather than folded in as if the user had
+        // written it about this TODO.
+        if let Some(note) = scratchpad.map(str::trim).filter(|n| !n.is_empty()) {
+            brief.push_str("\n## List scratchpad\n\n");
+            brief.push_str(note);
+            brief.push('\n');
+        }
+
+        if !provenance.is_empty() {
+            brief.push_str("\n## Prior work\n\n");
+            for line in provenance {
+                brief.push_str(line);
+                brief.push('\n');
+            }
+        }
+
+        brief
+    }
+
+    /// Provenance lines for `todo`: what AMF has already started for it.
+    ///
+    /// Each link is reported only when its target still exists, and says so
+    /// when it does not, because a brief that names a session the user cannot
+    /// find is worse than one that says the session is gone.
+    pub(crate) fn todo_provenance(&self, pi: usize, fi: usize, todo: &Todo) -> Vec<String> {
+        let mut lines = Vec::new();
+
+        if let Some(session_id) = todo.spawned_session_id.as_deref() {
+            let found = self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|project| project.features.get(fi))
+                .and_then(|feature| {
+                    feature
+                        .sessions
+                        .iter()
+                        .find(|session| session.id == session_id)
+                        .map(|session| (session.label.clone(), feature.clone()))
+                });
+            match found {
+                Some((label, feature)) => {
+                    let live = feature.status != crate::project::ProjectStatus::Stopped
+                        && self.tmux.session_exists(&feature.tmux_session);
+                    lines.push(format!(
+                        "- An agent session \"{label}\" was already started for this item in \
+                         feature \"{}\" and is {}.",
+                        feature.name,
+                        if live { "still running" } else { "not running" }
+                    ));
+                }
+                None => lines.push(
+                    "- An agent session was started for this item earlier, but it no longer \
+                     exists."
+                        .to_string(),
+                ),
+            }
+        }
+
+        if let Some(feature_id) = todo.linked_feature_id.as_deref() {
+            let found = self
+                .store
+                .projects
+                .iter()
+                .flat_map(|project| project.features.iter())
+                .find(|feature| feature.id == feature_id);
+            match found {
+                Some(feature) => lines.push(format!(
+                    "- A feature \"{}\" was already created for this item from a previous plan \
+                     run, on branch \"{}\".",
+                    feature.name, feature.branch
+                )),
+                None => lines.push(
+                    "- A feature was created for this item from a previous plan run, but it has \
+                     since been deleted."
+                        .to_string(),
+                ),
+            }
+        }
+
+        lines
+    }
+
     /// Truncate `title` to at most `max` characters, appending an ellipsis when
-    /// it was shortened.
+    /// it was shortened."""
     fn truncate_title(title: &str, max: usize) -> String {
         if title.chars().count() > max {
             let truncated: String = title.chars().take(max).collect();
@@ -677,6 +1057,36 @@ impl App {
             db.update_todo(todo)?;
         }
         Ok(())
+    }
+
+    /// Drop any TODO's link to a feature that has just been deleted.
+    ///
+    /// Separate from [`Self::handle_todos_host_feature_deleted`], which is
+    /// about the *list's* home: this is about individual rows that were planned
+    /// into the deleted feature. The TODO survives — the work it describes
+    /// outlived the branch — and the next `g` offers the chooser again rather
+    /// than a jump that cannot land.
+    pub(crate) fn clear_todo_links_to_deleted_feature(&mut self, feature_id: Option<&str>) {
+        let Some(feature_id) = feature_id else { return };
+        if let Some(db) = self.db.as_ref()
+            && let Err(e) = db.clear_todo_linked_feature(feature_id)
+        {
+            self.log_warn(
+                "todos",
+                format!("failed to clear TODO links to deleted feature {feature_id}: {e}"),
+            );
+        }
+        // The overlay is not open during a deletion, but keep any loaded rows
+        // truthful rather than relying on that.
+        if let AppMode::Todos(state) = &mut self.mode {
+            for todo in state
+                .todos
+                .iter_mut()
+                .filter(|t| t.linked_feature_id.as_deref() == Some(feature_id))
+            {
+                todo.linked_feature_id = None;
+            }
+        }
     }
 
     // ----- delete --------------------------------------------------------

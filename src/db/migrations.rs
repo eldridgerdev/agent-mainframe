@@ -104,6 +104,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Pin an agent reply draft to the session that generated it",
             MIGRATION_022,
         ),
+        (
+            "Link a TODO to the feature a plan-mode run created for it",
+            MIGRATION_023,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -593,16 +597,31 @@ ALTER TABLE pr_comment_reply_drafts
     ADD COLUMN provenance TEXT;
 ";
 
+/// A TODO can point at a feature that plan mode created for it, separately from
+/// `spawned_session_id`, which points at a session inside the TODO's *host*
+/// feature. The two are different destinations and a TODO can accumulate both,
+/// so this is a new column rather than a reuse of that one.
+///
+/// Plain TEXT with no FK, like every other id in the todo tables: `store::save`
+/// full-replaces `features`, which would cascade-wipe these rows. A feature
+/// deleted out from under a TODO is repaired explicitly in `app/feature_ops.rs`.
+const MIGRATION_023: &str = "
+ALTER TABLE todos
+    ADD COLUMN linked_feature_id TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
 
-    /// The tables a DB last touched around v018 actually has: 001's base schema
-    /// plus the reply-draft table 013/014 built. Fixtures that seed a version
-    /// this high have to stand up everything later migrations alter — 022 alters
-    /// `pr_comment_reply_drafts`.
+    /// The tables a DB last touched around v018 actually has: 001's base schema,
+    /// the todo tables 011 built, and the reply-draft table 013/014 built.
+    /// Fixtures that seed a version this high have to stand up everything later
+    /// migrations alter — 022 alters `pr_comment_reply_drafts` and 023 alters
+    /// `todos`.
     fn seed_pre_learning_schema(conn: &Connection) {
         conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
     }
@@ -627,7 +646,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -722,7 +741,49 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
+    }
+
+    /// Migration 023 adds `linked_feature_id` to TODOs written before it
+    /// existed. They come back NULL — "never planned into a feature" — which is
+    /// what every pre-023 TODO actually is, and leaves `spawned_session_id`
+    /// (the other, older link) untouched.
+    #[test]
+    fn migration_023_leaves_existing_todos_unlinked_but_keeps_their_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_011).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (22, datetime('now'), 'seed');",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO todo_lists (id, project_id, feature_id, created_at, updated_at)
+             VALUES ('l1', 'p1', 'f1', datetime('now'), datetime('now'));
+             INSERT INTO todos
+                (id, list_id, title, spawned_session_id, created_at, updated_at)
+             VALUES ('t1', 'l1', 'ship it', 'sess-1',
+                     datetime('now'), datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let (linked, session): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT linked_feature_id, spawned_session_id FROM todos WHERE id = 't1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(linked, None, "an existing TODO has no planned feature");
+        assert_eq!(
+            session.as_deref(),
+            Some("sess-1"),
+            "the older link survives"
+        );
     }
 
     /// Migration 022 adds `provenance` to reply drafts written before it
@@ -732,6 +793,8 @@ mod tests {
     fn migration_022_leaves_existing_reply_drafts_without_provenance() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
+        // 023 replays after 022 here and alters `todos`, so it has to exist.
+        conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
         conn.execute_batch(
@@ -769,7 +832,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 22);
+        assert_eq!(rows, 23);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

@@ -1767,6 +1767,93 @@ fn sync_statuses_idle_stays_idle_when_session_live() {
     );
 }
 
+/// A sweep cut short by the rate limit must leave the badges it never looked
+/// at exactly as they were. Blanking them would report "no PR" for features
+/// that certainly still have one.
+#[test]
+fn a_skipped_pr_lookup_leaves_the_previous_badge_untouched() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+
+    app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "abc123".to_string(),
+            number: 321,
+            unresolved_threads: Some(4),
+        }),
+    }]);
+
+    let changed = app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Skipped,
+    }]);
+
+    assert!(!changed, "a skipped lookup is not a change");
+    let pr = app.active_pr_for_feature(&feature_id).unwrap();
+    assert_eq!(pr.number, 321);
+    assert_eq!(pr.unresolved_threads, Some(4), "the count is preserved");
+}
+
+/// Once the budget is known gone, the sweep must stand down — otherwise the
+/// 5-minute timer keeps spending calls that can only fail, and keeps the
+/// budget at zero as it tries to refill.
+#[test]
+fn hitting_the_graphql_limit_pauses_the_pr_sweep_and_says_so() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    assert!(app.gh_graphql_backoff_remaining().is_none());
+
+    app.note_gh_graphql_rate_limited();
+
+    let remaining = app
+        .gh_graphql_backoff_remaining()
+        .expect("backoff is running");
+    assert!(remaining <= crate::app::GH_GRAPHQL_BACKOFF);
+    assert!(!app.toasts.is_empty(), "the pause is announced, not silent");
+
+    // The sweep refuses to start while backing off.
+    app.sync_active_prs_background();
+    assert!(
+        app.active_pr_bg.is_none(),
+        "no worker is spawned during backoff"
+    );
+}
+
+/// Being rate-limited twice must not stack up toasts; the user already knows.
+#[test]
+fn a_repeated_rate_limit_extends_the_pause_without_re_announcing_it() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.note_gh_graphql_rate_limited();
+    let announced = app.toasts.len();
+    app.note_gh_graphql_rate_limited();
+
+    assert_eq!(app.toasts.len(), announced, "announced once, not twice");
+    assert!(app.gh_graphql_backoff_remaining().is_some());
+}
+
 #[test]
 fn active_pr_updates_cache_current_branch_and_remove_confirmed_absence() {
     use super::sync::{ActivePrLookup, ActivePrUpdate};

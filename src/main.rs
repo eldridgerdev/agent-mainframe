@@ -57,7 +57,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
-use app::{App, load_config};
+use app::{ACTIVE_PR_SYNC_INTERVAL, App, load_config};
 use tmux::TmuxManager;
 
 #[derive(Parser, Debug)]
@@ -1346,6 +1346,7 @@ fn run_loop<B: Backend + io::Write>(
             };
             deadlines.register_after(last_thinking_sync, thinking_fallback);
             deadlines.register_after(last_file_log_flush, Duration::from_secs(1));
+            deadlines.register_after(last_active_pr_sync, ACTIVE_PR_SYNC_INTERVAL);
             if !is_viewing {
                 let statuses_fallback = if app.tmux_observer.is_some() {
                     STATUSES_SYNC_FALLBACK_INTERVAL
@@ -1627,10 +1628,13 @@ fn run_loop<B: Backend + io::Write>(
         }
 
         // Unlike the block above, this runs while viewing/composing too —
-        // see `last_active_pr_sync`'s comment.
+        // see `last_active_pr_sync`'s comment. It has its own, much longer
+        // cadence: both `gh pr view` and the review-thread query are GraphQL,
+        // billed against a small hourly point budget, and they run once per
+        // feature (see `ACTIVE_PR_SYNC_INTERVAL`).
         if !handled_user_events
             && !startup_tasks_pending
-            && last_active_pr_sync.elapsed() >= statuses_fallback
+            && last_active_pr_sync.elapsed() >= ACTIVE_PR_SYNC_INTERVAL
         {
             app.sync_active_prs_background();
             last_active_pr_sync = Instant::now();

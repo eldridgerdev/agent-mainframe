@@ -194,7 +194,7 @@ fn extract_failed_command_text(raw: &Value) -> Option<String> {
         ],
     );
 
-    let mut lines = vec![format!("State: tool failed"), format!("Tool: {command}")];
+    let mut lines = vec!["State: tool failed".to_string(), format!("Tool: {command}")];
     if let Some(exit_code) = exit_code {
         lines.push(format!("Exit: {exit_code}"));
     }

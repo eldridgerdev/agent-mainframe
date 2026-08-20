@@ -8,7 +8,8 @@ use ratatui::{
 
 use super::super::dashboard::centered_rect;
 use crate::app::{
-    TodoEditTarget, TodoEditor, TodoQuickCaptureState, TodoViewState, TodosHostReassignState,
+    TodoEditTarget, TodoEditor, TodoLaunchAction, TodoLaunchStep, TodoQuickCaptureState,
+    TodoViewState, TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority};
 use crate::theme::Theme;
@@ -218,11 +219,14 @@ pub fn draw_todos_view(frame: &mut Frame, state: &TodoViewState, theme: &Theme, 
     draw_list(frame, list_area, state, theme, nerd_font);
     draw_hint(frame, hint_area, theme);
 
-    // Overlays on top of the list.
-    if let Some(editor) = &state.editor {
-        draw_editor(frame, editor, theme);
-    } else if state.pending_delete {
+    // Overlays on top of the list, in the same precedence the key handler
+    // uses: delete confirmation, then the launch step, then an inline edit.
+    if state.pending_delete {
         draw_delete_confirm(frame, state, theme);
+    } else if let Some(step) = &state.launch {
+        draw_launch_step(frame, state, step, theme);
+    } else if let Some(editor) = &state.editor {
+        draw_editor(frame, editor, theme);
     }
 }
 
@@ -306,6 +310,169 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme
     }
 }
 
+/// Wrap `detail` into pre-indented lines that hang under an option's label.
+///
+/// `Paragraph`'s own wrapping cannot hang-indent: a continuation line starts at
+/// column zero, so a wrapped explanation reads as if it belonged to the dialog
+/// rather than to the option above it. Wrapping here, against the width the
+/// dialog actually has, keeps the indent on every line.
+fn detail_lines(detail: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    const INDENT: &str = "     ";
+    let avail = (width as usize).saturating_sub(INDENT.len() + 1);
+    if avail == 0 {
+        return Vec::new();
+    }
+
+    let style = Style::default().fg(theme.text_muted.to_color());
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in detail.split_whitespace() {
+        // A word longer than the line gets its own line rather than forcing a
+        // break mid-word; the terminal truncates it, which is legible.
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if candidate.chars().count() > avail && !current.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw(INDENT),
+                Span::styled(std::mem::take(&mut current), style),
+            ]));
+            current = word.to_string();
+        } else {
+            current = candidate;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(Line::from(vec![
+            Span::raw(INDENT),
+            Span::styled(current, style),
+        ]));
+    }
+    lines
+}
+
+/// The launch step layered over the list: the chooser, then the destination.
+///
+/// Drawn as a modal over the list rather than replacing it, matching the delete
+/// confirmation, so the TODO being acted on stays visible behind the prompt.
+fn draw_launch_step(frame: &mut Frame, state: &TodoViewState, step: &TodoLaunchStep, theme: &Theme) {
+    let area = centered_rect(64, 46, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let title = match step {
+        TodoLaunchStep::Choice { .. } => " Start work on this TODO ",
+        TodoLaunchStep::Destination { .. } => " Where should this plan land? ",
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                step.origin().todo_title.clone(),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    match step {
+        TodoLaunchStep::Choice { selected, .. } => {
+            for (i, action) in TodoLaunchAction::ALL.iter().enumerate() {
+                lines.push(option_line(
+                    action.label().to_string(),
+                    i == *selected,
+                    theme.primary.to_color(),
+                    theme,
+                ));
+                lines.extend(detail_lines(action.detail(), inner.width, theme));
+            }
+        }
+        TodoLaunchStep::Destination {
+            host_feature_name,
+            can_create_worktree,
+            selected,
+            ..
+        } => {
+            lines.push(option_line(
+                format!("Here, in \"{host_feature_name}\""),
+                *selected == 0,
+                theme.primary.to_color(),
+                theme,
+            ));
+            lines.extend(detail_lines(
+                "Plans into this feature and starts an agent on it. Nothing new is checked out.",
+                inner.width,
+                theme,
+            ));
+
+            let new_accent = if *can_create_worktree {
+                theme.primary.to_color()
+            } else {
+                theme.text_muted.to_color()
+            };
+            lines.push(option_line(
+                "In a new feature and worktree".to_string(),
+                *selected == 1,
+                new_accent,
+                theme,
+            ));
+            // A blocked option says why here rather than only on Enter: the
+            // reason is a property of the project, not of the keypress.
+            let detail = if *can_create_worktree {
+                "Creates the branch first, then plans into it and starts its agent."
+            } else {
+                "Unavailable: this project is not a git repository."
+            };
+            let mut detail_rows = detail_lines(detail, inner.width, theme);
+            if !*can_create_worktree {
+                // A blocked option's reason is a warning, not an aside.
+                for line in &mut detail_rows {
+                    for span in &mut line.spans {
+                        span.style = span.style.fg(theme.warning.to_color());
+                    }
+                }
+            }
+            lines.extend(detail_rows);
+        }
+    }
+
+    lines.push(Line::from(""));
+    let back = match step {
+        TodoLaunchStep::Choice { .. } => " back to list",
+        TodoLaunchStep::Destination { .. } => " back",
+    };
+    lines.push(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " choose  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " confirm  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(back, Style::default().fg(theme.text_muted.to_color())),
+    ]));
+
+    let _ = state;
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(para, inner);
+}
+
 fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool) -> Line<'a> {
     let (prio_marker, prio_color) = match todo.priority {
         TodoPriority::High => ("!", theme.danger.to_color()),
@@ -346,6 +513,14 @@ fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool)
         ""
     };
 
+    // A TODO planned into its own feature. Distinct from the session marker:
+    // `g` goes to the feature, not to a session in this one.
+    let planned_indicator = if todo.linked_feature_id.is_some() {
+        if nerd_font { "  \u{e0a0}" } else { "  ⑂" }
+    } else {
+        ""
+    };
+
     let mut spans = vec![
         Span::styled(cursor, Style::default().fg(theme.primary.to_color())),
         Span::styled(
@@ -374,12 +549,18 @@ fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool)
             Style::default().fg(theme.success.to_color()),
         ));
     }
+    if !planned_indicator.is_empty() {
+        spans.push(Span::styled(
+            planned_indicator,
+            Style::default().fg(theme.primary.to_color()),
+        ));
+    }
     Line::from(spans)
 }
 
 fn draw_hint(frame: &mut Frame, area: Rect, theme: &Theme) {
     let hint = Line::from(vec![Span::styled(
-        "  j/k move  a add  e title  o notes  space done  p prio  J/K reorder  g agent  b scratch  d del  Esc/q close",
+        "  j/k move  a add  e title  o notes  space done  p prio  J/K reorder  g start/plan  b scratch  d del  Esc/q close",
         Style::default().fg(theme.text_muted.to_color()),
     )]);
     frame.render_widget(Paragraph::new(hint), area);

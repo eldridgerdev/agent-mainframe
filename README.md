@@ -321,6 +321,31 @@ Add a `TODOs` session with `s` to maintain a project-wide checklist. From any
 session, press `Ctrl+Space`, then `N` to capture a TODO without leaving your
 current work.
 
+Press `g` (or `Enter`) on a TODO to start work on it. AMF asks how:
+
+| Choice | What happens |
+| --- | --- |
+| **Start an agent on this TODO** | Opens a session in this feature with the TODO in the composer, unsent. |
+| **Plan this TODO first** | Runs the guided plan interview, with the TODO's title, notes, and the list scratchpad already filled in as the feature brief — editable before the first question. |
+
+If you choose to plan it, AMF then asks where the plan should land: **here**, in
+the feature the list lives in, or in a **new feature and worktree** created for
+it. Picking a new feature opens the ordinary create-feature wizard, pre-filled
+from the TODO, so the branch, agent, and permission mode are still yours to
+change; the worktree is created before the interview starts, so the plan is
+written into a real checkout.
+
+Either way the accepted plan is saved and an agent is started on it. A plan that
+lands in an existing feature is written to `AMF_PLAN.todo-<name>.md` rather than
+`AMF_PLAN.md`, so it sits beside that feature's own plan instead of replacing
+it, and the agent is told which file is its own.
+
+A TODO planned into a new feature stays open on the list, marked as linked, and
+`g` afterwards jumps to that feature rather than asking again. If the feature is
+later deleted the TODO survives, the link is dropped, and `g` offers the choice
+again. An interrupted interview is saved as a draft and offered back the next
+time you press `g` on that TODO.
+
 ### See which agents need you
 
 A stopped agent has stopped for a reason, and "waiting for input" does not say

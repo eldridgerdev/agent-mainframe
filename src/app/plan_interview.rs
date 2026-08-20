@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use super::pr_review::estimate_tokens;
 use super::{
     App, AppMode, PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget, PreparedFeatureLaunch,
-    Selection,
+    Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
@@ -209,7 +209,20 @@ impl App {
                     .plan_interview_questions()
             })
             .unwrap_or_else(crate::plan_interview::builtin_questions);
+        let todo_origin = prepared.todo_origin.clone();
         let mut state = PlanInterviewState::for_feature_creation(prepared, questions);
+
+        // A launch started from a TODO opens on the brief that TODO composed,
+        // editable like any other. The stash is taken either way, so a brief
+        // left behind by an abandoned wizard cannot leak into a later launch.
+        let composed_brief = self.pending_todo_plan_brief.take();
+        if let Some(origin) = todo_origin {
+            if let Some(brief) = composed_brief {
+                state.editor = crate::editor::TextEditor::new(brief);
+            }
+            state.todo_origin = Some(origin);
+        }
+
         if let Some(draft) = self.load_plan_interview_draft(&state.interview_key) {
             state.offer_resume(draft);
         }
@@ -268,6 +281,115 @@ impl App {
 
         self.mode = AppMode::PlanInterview(state);
         self.message = notice.map(Into::into);
+    }
+
+    /// Start a TODO's plan interview against the **host feature**, which
+    /// already exists.
+    ///
+    /// Nothing is checked out: the plan is written into the host feature's
+    /// workdir and accepting it spawns a session there. The interview is keyed
+    /// by the TODO rather than the feature, so it neither reads nor overwrites
+    /// the feature's own `P` transcript.
+    pub(crate) fn start_todo_plan_in_host_feature(&mut self, origin: TodoPlanOrigin) -> Result<()> {
+        let Some(ctx) = self.selected_todo_context() else {
+            self.push_toast_warning("No TODO selected");
+            return Ok(());
+        };
+        let (todo, pi, scratchpad) = (ctx.todo, ctx.pi, ctx.scratchpad);
+        let fi =
+            self.resolve_todo_host_feature(pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
+
+        let Some((repo, feature_name, workdir, agent)) =
+            self.store.projects.get(pi).and_then(|project| {
+                project.features.get(fi).map(|feature| {
+                    (
+                        project.repo.clone(),
+                        feature.name.clone(),
+                        feature.workdir.clone(),
+                        feature.agent.clone(),
+                    )
+                })
+            })
+        else {
+            self.push_toast_warning("This TODO's feature no longer exists");
+            return Ok(());
+        };
+
+        let provenance = self.todo_provenance(pi, fi, &todo);
+        let brief = Self::compose_plan_brief(&todo, scratchpad.as_deref(), &provenance);
+
+        let questions = self.extension_for_repo(&repo).plan_interview_questions();
+        let mut state =
+            PlanInterviewState::for_todo(feature_name, origin, questions, workdir, agent, brief);
+
+        // A draft filed under this TODO is offered before anything else, so an
+        // interview interrupted last time resumes instead of starting over on
+        // top of a freshly composed brief.
+        if let Some(draft) = self.load_plan_interview_draft(&state.interview_key) {
+            state.offer_resume(draft);
+        }
+
+        self.mode = AppMode::PlanInterview(state);
+        self.message = None;
+        Ok(())
+    }
+
+    /// Start a TODO's plan interview in a **new** feature, by way of the
+    /// ordinary create-feature wizard.
+    ///
+    /// The wizard is pre-seeded rather than bypassed: branch, agent, and
+    /// permission mode are still the user's to change, and plan mode is forced
+    /// on because that is what was just chosen. Everything after this point is
+    /// the existing flow — the wizard creates the worktree, hands the launch to
+    /// the interview, and the interview's accept creates the feature.
+    pub(crate) fn start_todo_plan_in_new_feature(&mut self, origin: TodoPlanOrigin) -> Result<()> {
+        let Some(ctx) = self.selected_todo_context() else {
+            self.push_toast_warning("No TODO selected");
+            return Ok(());
+        };
+        let (todo, pi, scratchpad) = (ctx.todo, ctx.pi, ctx.scratchpad);
+        let fi =
+            self.resolve_todo_host_feature(pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
+        let provenance = self.todo_provenance(pi, fi, &todo);
+        let brief = Self::compose_plan_brief(&todo, scratchpad.as_deref(), &provenance);
+        let host = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+            .map(|feature| (feature.agent.clone(), feature.mode.clone()));
+
+        // Selecting the TODOs session already puts the wizard on the right
+        // project; it reads `self.selection` for that.
+        self.start_create_feature();
+        let session_name_for_agent = |agent: &crate::project::AgentKind| {
+            Self::default_session_name_for_agent(agent)
+        };
+        let AppMode::CreatingFeature(state) = &mut self.mode else {
+            // `start_create_feature` refused (no harness, a parked interview);
+            // it has already said why, and that message must survive.
+            return Ok(());
+        };
+
+        state.branch = crate::app::util::slugify(&todo.title);
+        state.branch_error = None;
+        state.step = crate::app::CreateFeatureStep::Branch;
+        state.use_worktree = true;
+        // Plan mode is the whole point of this route, not a default to toggle.
+        state.plan_mode = true;
+        state.todo_origin = Some(origin);
+        if let Some((agent, mode)) = host {
+            state.agent = agent;
+            state.mode = mode;
+            state.session_name = session_name_for_agent(&state.agent);
+        }
+
+        // The composed brief is stashed for `start_plan_interview` to pick up
+        // once the wizard hands over: the interview state does not exist yet,
+        // and the wizard has nowhere to keep a brief.
+        self.pending_todo_plan_brief = Some(brief);
+        self.message = None;
+        Ok(())
     }
 
     /// The saved draft for `interview_key`, or `None` when there is nothing to
@@ -1483,7 +1605,7 @@ impl App {
 
     /// Accept the reviewed plan and execute the launch it has been holding.
     pub(crate) fn complete_plan_interview(&mut self) -> Result<()> {
-        let (workdir, plan, interview_key) = match &self.mode {
+        let (workdir, plan, interview_key, todo_origin) = match &self.mode {
             AppMode::PlanInterview(state) => (
                 state.workdir.clone(),
                 state.synthesized_plan.clone().unwrap_or_else(|| {
@@ -1495,13 +1617,26 @@ impl App {
                     )
                 }),
                 state.interview_key.clone(),
+                state.todo_origin.clone(),
             ),
             _ => return Ok(()),
         };
 
+        // A TODO planned into an existing feature writes beside that feature's
+        // own plan rather than over it: `AMF_PLAN.md` belongs to the feature,
+        // and a `P` run's accepted plan must survive a TODO being planned in
+        // the same checkout. A new feature has no such neighbour, so it keeps
+        // the ordinary name the harness instruction block already points at.
+        let plan_file = match &todo_origin {
+            Some(origin) if self.plan_lands_in_host_feature(&todo_origin) => {
+                todo_plan_file_name(&origin.todo_title)
+            }
+            _ => PLAN_FILE_NAME.to_string(),
+        };
+
         // Keep the interview open if either write fails so the user can retry
         // or abort without losing the answers they just entered.
-        write_plan_file(&workdir, &plan)?;
+        write_plan_file_named(&workdir, &plan_file, &plan)?;
 
         // The draft has to exist for the accept to finalize it, and it only
         // exists if something was saved during the interview. Save the accepted
@@ -1526,7 +1661,20 @@ impl App {
             prepared.startup_prompt = Some(PLAN_KICKOFF_PROMPT.to_string());
             self.finish_feature_launch_without_interview(prepared)?;
             self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
+            // The feature exists only now, so this is the first moment the TODO
+            // can be pointed at it. The row itself stays open: the plan is the
+            // start of the work, not the end of it.
+            if let Some(origin) = &todo_origin {
+                self.link_todo_to_new_feature(origin, &project_name, &branch);
+            }
             Ok(())
+        } else if let Some(origin) = todo_origin {
+            // A TODO planned into its host feature. The plan is on disk beside
+            // the feature's own; accepting starts an agent on it rather than
+            // offering the plan to whatever session happens to be running,
+            // because this TODO asked for its own worker.
+            self.finalize_plan_interview_transcript(&interview_key, "", "", &plan);
+            self.start_todo_plan_session(&origin, &workdir, &plan_file)
         } else {
             // On-demand: the feature already exists and is possibly already
             // running, so accepting rewrites its plan rather than launching
@@ -1535,7 +1683,7 @@ impl App {
             self.apply_on_demand_plan(&interview_key, &workdir);
             self.finalize_plan_interview_transcript(&interview_key, "", "", &plan);
 
-            let plan_path = workdir.join(PLAN_FILE_NAME);
+            let plan_path = workdir.join(&plan_file);
             // A running agent has no reason to re-read its instruction file, so
             // a plan written underneath it goes unnoticed until something says
             // so. Offer the handoff rather than sending it: the session may be
@@ -1558,6 +1706,108 @@ impl App {
             }
             Ok(())
         }
+    }
+
+    /// Whether this interview's plan lands in a feature that already exists.
+    ///
+    /// True only for the host-feature destination: a new-feature run also
+    /// carries a `todo_origin`, but its plan goes into a fresh worktree where
+    /// nothing can be overwritten.
+    fn plan_lands_in_host_feature(&self, todo_origin: &Option<TodoPlanOrigin>) -> bool {
+        todo_origin.is_some()
+            && matches!(&self.mode, AppMode::PlanInterview(state) if state.pending_launch.is_none())
+    }
+
+    /// Point the origin TODO at the feature its plan just created.
+    ///
+    /// Best-effort and non-fatal: the feature and its plan exist either way,
+    /// and failing the accept over a bookkeeping write would cost the user the
+    /// interview. A missing link degrades to the chooser on the next `g`.
+    fn link_todo_to_new_feature(
+        &mut self,
+        origin: &TodoPlanOrigin,
+        project_name: &str,
+        branch: &str,
+    ) {
+        let feature_id = self
+            .store
+            .find_project(project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == branch)
+            })
+            .map(|feature| feature.id.clone());
+
+        let Some(feature_id) = feature_id else {
+            self.log_warn(
+                "todos",
+                format!("planned feature '{branch}' not found; TODO left unlinked"),
+            );
+            return;
+        };
+
+        if let Some(db) = self.db.as_ref()
+            && let Err(e) = db.set_todo_linked_feature(&origin.todo_id, &feature_id)
+        {
+            self.log_warn("todos", format!("failed to link TODO to '{branch}': {e}"));
+            return;
+        }
+        self.push_toast_info(format!("TODO linked to new feature '{branch}'"));
+    }
+
+    /// Start an agent on an accepted host-feature TODO plan.
+    ///
+    /// A new session rather than the running one: the TODO asked for its own
+    /// worker, and the feature's existing agent may be mid-task on something
+    /// else. The seed names the plan file explicitly, because the harness's
+    /// injected instruction block points at `AMF_PLAN.md` and this plan is
+    /// deliberately not that file.
+    fn start_todo_plan_session(
+        &mut self,
+        origin: &TodoPlanOrigin,
+        workdir: &Path,
+        plan_file: &str,
+    ) -> Result<()> {
+        let plan_path = workdir.join(plan_file);
+
+        let Some((pi, fi)) = self.feature_indices_by_id(&origin.host_feature_id) else {
+            self.mode = AppMode::Normal;
+            self.message = Some(format!("Plan written to {}", plan_path.display()));
+            return Ok(());
+        };
+
+        self.mode = AppMode::Normal;
+        let agent = self.store.projects[pi].features[fi].agent.clone();
+        let label = Self::todo_session_label(&origin.todo_title);
+        // Warn rather than park: the confirmation dialog is an `AppMode`, and
+        // the interview it would replace has already been consumed here.
+        let si = match self.create_agent_session_labeled(
+            pi,
+            fi,
+            &label,
+            Some(agent),
+            StartIntent::Warn("the agent for this TODO's plan"),
+        ) {
+            Ok(si) => si,
+            Err(e) => {
+                self.push_toast_error(format!("Plan saved, but the agent failed to start: {e}"));
+                self.message = Some(format!("Plan written to {}", plan_path.display()));
+                return Ok(());
+            }
+        };
+
+        let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
+        if let Some(db) = self.db.as_ref()
+            && let Err(e) = db.set_todo_spawned_session(&origin.todo_id, &session_id)
+        {
+            self.log_warn("todos", format!("failed to link TODO to its session: {e}"));
+        }
+
+        self.selection = Selection::Session(pi, fi, si);
+        self.enter_view_without_auto_compose()?;
+        self.open_compose_seeded(todo_plan_kickoff_prompt(plan_file))
     }
 
     /// Locate a live agent session for the feature an on-demand plan was just
@@ -1981,14 +2231,53 @@ fn render_static_plan(
     plan
 }
 
-fn write_plan_file(workdir: &Path, contents: &str) -> Result<()> {
+/// Write a plan into `workdir` under `file_name`, gitignoring that exact name.
+///
+/// The gitignore entry is per file rather than a glob: a user who decides to
+/// track one plan should not have to fight a pattern that re-hides the next.
+fn write_plan_file_named(workdir: &Path, file_name: &str, contents: &str) -> Result<()> {
     fs::create_dir_all(workdir)
         .with_context(|| format!("failed to create plan directory {}", workdir.display()))?;
-    ensure_gitignore_entry(&workdir.join(".gitignore"), PLAN_FILE_NAME)?;
+    ensure_gitignore_entry(&workdir.join(".gitignore"), file_name)?;
 
-    let plan_path = workdir.join(PLAN_FILE_NAME);
+    let plan_path = workdir.join(file_name);
     fs::write(&plan_path, contents)
         .with_context(|| format!("failed to write plan file {}", plan_path.display()))
+}
+
+/// The file a TODO's plan is written to when it lands in a feature that already
+/// exists: `AMF_PLAN.todo-<slug>.md`.
+///
+/// Named after the TODO rather than its uuid so the file is readable in a
+/// directory listing, and prefixed `AMF_PLAN.` so it sorts beside the feature's
+/// own plan instead of scattering. A title that slugifies to nothing (emoji,
+/// punctuation) falls back to a fixed name rather than producing `AMF_PLAN..md`.
+fn todo_plan_file_name(todo_title: &str) -> String {
+    const MAX_SLUG: usize = 40;
+    let slug: String = crate::app::util::slugify(todo_title)
+        .chars()
+        .take(MAX_SLUG)
+        .collect();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "AMF_PLAN.todo.md".to_string()
+    } else {
+        format!("AMF_PLAN.todo-{slug}.md")
+    }
+}
+
+/// The kickoff seed for a plan that is *not* in `AMF_PLAN.md`.
+///
+/// The harness's injected instruction block names `AMF_PLAN.md`, so a seed that
+/// said only "read the plan" would send the agent to the wrong file — or to the
+/// feature's own plan, which is someone else's work.
+fn todo_plan_kickoff_prompt(plan_file: &str) -> String {
+    format!(
+        "Read `{plan_file}`. It is the plan I approved for this TODO \u{2014} its decisions are \
+settled unless I say otherwise. Read that file, not `AMF_PLAN.md`: `AMF_PLAN.md` is this \
+feature's own plan and is not what I am asking you to work on.\n\nStart with the first \
+unchecked task, and keep the task checkboxes current as you go."
+    )
 }
 
 fn ensure_gitignore_entry(path: &Path, entry: &str) -> Result<()> {
@@ -2089,14 +2378,90 @@ mod tests {
         assert!(!plan.contains("truncated for model input"));
     }
 
+    /// A TODO planned into a feature that already exists writes beside that
+    /// feature's plan, never over it: `AMF_PLAN.md` is the feature's, and a `P`
+    /// run's accepted plan has to survive a TODO being planned in the same
+    /// checkout.
+    #[test]
+    fn a_todo_plan_lands_beside_the_features_own_plan_not_on_top_of_it() {
+        let workdir = TempDir::new().unwrap();
+        write_plan_file_named(workdir.path(), PLAN_FILE_NAME, "# The feature's plan\n").unwrap();
+
+        let todo_file = todo_plan_file_name("Wire up the chooser");
+        write_plan_file_named(workdir.path(), &todo_file, "# The TODO's plan\n").unwrap();
+
+        assert_eq!(todo_file, "AMF_PLAN.todo-wire-up-the-chooser.md");
+        assert_eq!(
+            fs::read_to_string(workdir.path().join(PLAN_FILE_NAME)).unwrap(),
+            "# The feature's plan\n",
+            "the feature's own plan is untouched"
+        );
+        assert_eq!(
+            fs::read_to_string(workdir.path().join(&todo_file)).unwrap(),
+            "# The TODO's plan\n"
+        );
+        // Both names are ignored, each on its own line: a user who decides to
+        // track one should not have to fight a pattern hiding the next.
+        let ignored = fs::read_to_string(workdir.path().join(".gitignore")).unwrap();
+        assert!(ignored.lines().any(|l| l == PLAN_FILE_NAME));
+        assert!(ignored.lines().any(|l| l == todo_file));
+    }
+
+    /// Two TODOs planned in one feature get one file each, rather than the
+    /// second silently replacing the first.
+    #[test]
+    fn two_todos_planned_in_one_feature_do_not_collide() {
+        assert_ne!(
+            todo_plan_file_name("Add the chooser"),
+            todo_plan_file_name("Add the destination step")
+        );
+    }
+
+    /// A title that slugifies to nothing still has to produce a usable
+    /// filename, not `AMF_PLAN.todo-.md`.
+    #[test]
+    fn a_title_with_no_sluggable_characters_falls_back_to_a_fixed_name() {
+        assert_eq!(todo_plan_file_name("🎉 !!! ???"), "AMF_PLAN.todo.md");
+        assert_eq!(todo_plan_file_name(""), "AMF_PLAN.todo.md");
+    }
+
+    /// A very long title is bounded, and never leaves a trailing dash from the
+    /// cut.
+    #[test]
+    fn a_long_title_is_truncated_without_a_dangling_separator() {
+        let name = todo_plan_file_name(&"alpha beta ".repeat(20));
+        assert!(name.len() < 70, "got {name}");
+        assert!(name.starts_with("AMF_PLAN.todo-"));
+        assert!(name.ends_with(".md"));
+        assert!(!name.contains("-.md"), "no dangling separator: {name}");
+    }
+
+    /// The kickoff seed for a TODO plan must name the file it actually wrote.
+    /// The harness's injected instruction block points at `AMF_PLAN.md`, so a
+    /// seed that only said "read the plan" would send the agent to the
+    /// feature's plan instead of this one.
+    #[test]
+    fn the_todo_kickoff_prompt_names_the_file_it_wrote() {
+        let prompt = todo_plan_kickoff_prompt("AMF_PLAN.todo-chooser.md");
+        assert!(prompt.contains("AMF_PLAN.todo-chooser.md"));
+        assert!(
+            prompt.contains("Read that file, not `AMF_PLAN.md`"),
+            "it must send the agent to its own plan, not the feature's: {prompt}"
+        );
+        assert!(
+            prompt.contains("`AMF_PLAN.md` is this feature's own plan"),
+            "and say what the other file is, so it is not read by mistake: {prompt}"
+        );
+    }
+
     #[test]
     fn writing_plan_creates_namespaced_root_file_and_preserves_repository_plan() {
         let workdir = TempDir::new().unwrap();
         fs::write(workdir.path().join(".gitignore"), "target/\n").unwrap();
         fs::write(workdir.path().join("PLAN.md"), "# Repository plan\n").unwrap();
 
-        write_plan_file(workdir.path(), "# First plan\n").unwrap();
-        write_plan_file(workdir.path(), "# Updated plan\n").unwrap();
+        write_plan_file_named(workdir.path(), PLAN_FILE_NAME, "# First plan\n").unwrap();
+        write_plan_file_named(workdir.path(), PLAN_FILE_NAME, "# Updated plan\n").unwrap();
 
         assert_eq!(
             fs::read_to_string(workdir.path().join("AMF_PLAN.md")).unwrap(),
@@ -2117,8 +2482,9 @@ mod tests {
         let repo = TempDir::new().unwrap();
         let expected_plan = repo.path().join("AMF_PLAN.md");
 
-        write_plan_file(
+        write_plan_file_named(
             repo.path(),
+            PLAN_FILE_NAME,
             "# Plan: first feature\n\n## Feature brief\n\nShip it.\n",
         )
         .unwrap();

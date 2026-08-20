@@ -781,6 +781,15 @@ pub struct App {
     /// dashboard or one of its sessions. Unlike a persisted draft this keeps
     /// the live editor cursor and uncommitted answer text intact.
     pub paused_plan_interview: Option<PlanInterviewState>,
+    /// Brief composed from a TODO, waiting for the create-feature wizard to
+    /// hand over to the interview it seeds.
+    ///
+    /// It cannot ride on the wizard state: the wizard may detour through an
+    /// `on_worktree_created` hook that rebuilds its launch from scratch. Taken
+    /// by `start_plan_interview`, and only ever read when that launch carries a
+    /// `todo_origin`, so an unrelated feature created afterwards cannot pick up
+    /// a stale brief.
+    pub pending_todo_plan_brief: Option<String>,
     pub message: Option<String>,
     pub toasts: Vec<Toast>,
     pub should_quit: bool,
@@ -2251,6 +2260,7 @@ impl App {
             selection: Selection::Project(0),
             mode: AppMode::Normal,
             paused_plan_interview: None,
+            pending_todo_plan_brief: None,
             message: None,
             toasts: Vec::new(),
             should_quit: false,
@@ -2482,6 +2492,7 @@ impl App {
             selection: Selection::Project(0),
             mode: AppMode::Normal,
             paused_plan_interview: None,
+            pending_todo_plan_brief: None,
             message: None,
             toasts: Vec::new(),
             should_quit: false,

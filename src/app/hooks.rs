@@ -124,6 +124,7 @@ impl App {
         &mut self,
         workdir: PathBuf,
         project_name: String,
+        todo_origin: Option<TodoPlanOrigin>,
         branch: String,
         mode: VibeMode,
         review: bool,
@@ -179,6 +180,7 @@ impl App {
             steering_enabled,
             hook_succeeded: None,
             startup_prompt: None,
+            todo_origin,
         };
 
         self.finish_feature_launch(prepared)
@@ -326,6 +328,7 @@ impl App {
                 enable_chrome,
                 remote_control,
                 steering_enabled,
+                todo_origin,
             } => {
                 self.start_worktree_hook(
                     &state.script,
@@ -341,6 +344,7 @@ impl App {
                     enable_chrome,
                     remote_control,
                     steering_enabled,
+                    todo_origin,
                     Some(choice),
                 );
             }
@@ -373,6 +377,7 @@ impl App {
         enable_chrome: bool,
         remote_control: bool,
         steering_enabled: bool,
+        todo_origin: Option<TodoPlanOrigin>,
         choice: Option<String>,
     ) {
         let expanded = if script.starts_with("~/") {
@@ -442,6 +447,7 @@ impl App {
             script: script.to_string(),
             workdir,
             project_name,
+            todo_origin,
             branch,
             mode,
             review,
@@ -500,6 +506,7 @@ impl App {
         let (
             workdir,
             project_name,
+            todo_origin,
             branch,
             mode,
             review,
@@ -516,6 +523,7 @@ impl App {
                 AppMode::RunningHook(s) => (
                     s.workdir.clone(),
                     s.project_name.clone(),
+                    s.todo_origin.clone(),
                     s.branch.clone(),
                     s.mode.clone(),
                     s.review,
@@ -536,6 +544,7 @@ impl App {
         self.finalize_worktree_hook_feature(
             workdir,
             project_name.clone(),
+            todo_origin,
             branch.clone(),
             mode,
             review,
@@ -621,6 +630,7 @@ impl App {
                 if let Err(err) = self.finalize_worktree_hook_feature(
                     hook.workdir.clone(),
                     hook.project_name.clone(),
+                    hook.todo_origin.clone(),
                     hook.branch.clone(),
                     hook.mode.clone(),
                     hook.review,

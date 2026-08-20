@@ -950,6 +950,7 @@ mod tests {
                     steering_enabled: false,
                     hook_succeeded: None,
                     startup_prompt: None,
+                    todo_origin: None,
                 },
                 Vec::new(),
             ));

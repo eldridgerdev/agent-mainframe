@@ -280,7 +280,8 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("p", "Cycle priority (High/Med/Low)"),
         ("J / K", "Reorder up/down"),
         ("d", "Delete TODO (y/n confirm)"),
-        ("g / Enter", "Spawn agent (or jump to linked session)"),
+        ("g / Enter", "Start work: agent now, or plan it first"),
+        ("", "  (jumps straight to a linked session or feature)"),
         ("q / Esc / Ctrl+Q", "Exit TODOs view"),
     ];
 

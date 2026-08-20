@@ -1,10 +1,10 @@
 # Feature TODOs
 
-- **Status:** All epics shipped. Epics 2–6 (session kind, native view,
-  editing, spawn agent from a TODO, quick-capture + scratchpad,
-  help-overlay wiring, docs) plus Epic 1's final item — the host-feature
-  deletion re-home/delete prompt (`AppMode::TodosHostReassign`) — are now
-  complete.
+- **Status:** All epics shipped, including Epic 7 (plan mode from a
+  TODO). Epics 2–6 (session kind, native view, editing, spawn agent from a
+  TODO, quick-capture + scratchpad, help-overlay wiring, docs) plus Epic
+  1's final item — the host-feature deletion re-home/delete prompt
+  (`AppMode::TodosHostReassign`) — were complete before it.
 - **Owner:** unassigned
 - **Relates to:** `SessionKind` (`src/project.rs`), session picker
   (`src/app/session_ops.rs`, `src/handlers/picker.rs`), composer seed
@@ -284,6 +284,89 @@ project/feature is deleted (extend the existing delete paths).
       entries in the app/handlers/ui-dialogs module listings. The
       `CHANGELOG.md` "Per-project TODO lists" entry under v0.29.0
       already covers the user-facing surface, so it was left as-is.
+
+### Epic 7 — Plan mode from a TODO
+
+Shipped. `g`/`Enter` no longer spawns straight away: it resolves what the
+key should mean, then offers the choice it cannot resolve. The decisions
+below come from a feature-discovery interview; the working plan it produced
+lived in the branch's (gitignored) `AMF_PLAN.md`, so its conclusions are
+recorded here rather than linked.
+
+- [x] `g`/`Enter` resolves before it asks: a linked feature wins, then a
+      live linked session (today's behavior), then the chooser
+      (`todos_launch_selected`). A link whose target is gone is dropped
+      and announced rather than failing again.
+- [x] Chooser + destination step as a **layer over the list**
+      (`TodoLaunchStep` in `TodoViewState.launch`), not new `AppMode`
+      variants — the same reason `pending_delete` and `editor` are
+      fields: a separate mode replaces `TodoViewState` wholesale, forcing
+      a reload and discarding the in-memory list that is the overlay's
+      source of truth. `Esc` unwinds one step at a time.
+- [x] Brief composed from every field the row carries — title, notes,
+      list scratchpad, plus a bounded **provenance** paragraph
+      (`compose_plan_brief` + `todo_provenance`). Provenance states *that*
+      work was started, not a transcript of it: AMF keeps no per-TODO
+      history (transcripts are workdir-scoped and effectively Claude-only,
+      a tmux capture holds only what is still on screen), so quoting
+      either would put text in the brief that does not describe this TODO.
+      The brief opens in the interview's existing editable `Brief` phase.
+- [x] Host-feature destination: interview keyed
+      `todo_interview_key(todo_id)` → `todo:<id>`, **not** the host
+      feature's id, which is where that feature's own `P` draft and
+      accepted transcript live and would otherwise be overwritten and
+      pre-filled from. Draft/resume comes free from `plan_interviews`
+      (`MIGRATION_016`), so no new draft storage was needed.
+- [x] Host-feature accept writes `AMF_PLAN.todo-<slug>.md` **beside** the
+      feature's own `AMF_PLAN.md` rather than over it, spawns a session in
+      the host feature, records `spawned_session_id`, and seeds the
+      composer with a kickoff prompt that names the file explicitly — the
+      harness's injected instruction block still points at `AMF_PLAN.md`,
+      so an unqualified "read the plan" would send the agent to the
+      feature's plan instead of this one.
+- [x] New-feature destination reuses the `n` create-feature wizard
+      pre-seeded (branch = slugified title, agent/mode from the host
+      feature, plan mode forced on). No new creation path: the wizard
+      already checks out the worktree *before* the interview when plan
+      mode is on, so "created up front" needed no new code. The AMF
+      `Feature` row is still deferred to accept, which is the first moment
+      `linked_feature_id` can be written.
+- [x] `TodoPlanOrigin` threaded through `PreparedFeatureLaunch`,
+      `HookNext::WorktreeCreated`, `RunningHookState`, and
+      `BackgroundHook`: the `on_worktree_created` detour rebuilds the
+      launch from scratch and would otherwise drop the link silently on
+      any project with that hook.
+- [x] `MIGRATION_023` adds `todos.linked_feature_id`, a separate link
+      from `spawned_session_id` (a session inside the host feature) since
+      a TODO can carry both. Cleared explicitly on feature deletion
+      (`clear_todo_links_to_deleted_feature`) — no FK, same as every other
+      id in these tables.
+- [x] Row indicators for a linked feature, `README.md` / help-overlay /
+      `CHANGELOG.md` updates, and unit coverage for the resolver, the step
+      machine, brief composition, plan-file naming, and link clearing.
+
+**Verified by running the app** (`scripts/dev/screenshot/amf-capture.sh`,
+throwaway repo + scratch instance): both destinations reach the interview
+with the brief pre-filled; the new-feature path checks out a real worktree
+before the interview opens; and an accept into a host feature that already
+had a plan left that plan untouched, wrote the per-TODO file beside it,
+spawned the labelled session, and seeded the composer unsent. Fixed while
+walking it: wrapped option details lost their hanging indent, since
+`Paragraph` wrapping restarts continuation lines at column zero
+(`detail_lines`).
+
+## Open (not built)
+
+- **Cancelling after the worktree exists** leaves an orphan checkout with
+  no `Feature` row. Existing behavior keeps it and says so
+  (`cancel_plan_interview_feature`); unresolved whether a TODO-originated
+  cancel should offer to remove it.
+- **Re-planning a linked TODO.** Once linked, `g` jumps to the feature.
+  Whether the interview can be re-run from the row (the way `P` re-runs on
+  a feature) was never decided.
+- **New-feature accept is unproven by a real run** — the
+  `linked_feature_id` write and the harness kickoff need a live harness
+  rather than a seeded draft. Pi's seeding path specifically is untested.
 
 ## Resolved decisions
 

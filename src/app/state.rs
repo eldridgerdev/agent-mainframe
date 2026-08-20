@@ -2995,6 +2995,8 @@ pub struct TodoViewState {
     pub editor: Option<TodoEditor>,
     /// Set when a delete is awaiting y/n confirmation.
     pub pending_delete: bool,
+    /// Active launch step (chooser / destination), layered over the list.
+    pub launch: Option<TodoLaunchStep>,
 }
 
 /// Single-line quick-capture of a TODO from inside a session view. The typed
@@ -3026,6 +3028,162 @@ pub struct TodosHostReassignState {
     pub selected: usize,
     /// Number of TODOs in the list (shown so the user knows what's at stake).
     pub todo_count: usize,
+}
+
+/// Which TODO a plan-mode run was started from, carried through the interview
+/// so accepting the plan can link the result back to the row it came from.
+///
+/// The list id rides along with the todo id because the overlay may be closed
+/// by the time the plan is accepted — a new-feature run leaves the Todos mode
+/// entirely — so the link has to be written straight to the DB rather than
+/// through the in-memory list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoPlanOrigin {
+    pub todo_id: String,
+    pub list_id: String,
+    /// The TODO's title when the run started. Used for the interview header
+    /// and to name the plan file, so it is captured rather than re-read: the
+    /// title can be edited while the interview runs.
+    pub todo_title: String,
+    /// The feature hosting the TODO list when the run started. The host-feature
+    /// destination spawns its session here; the new-feature destination
+    /// ignores it.
+    pub host_feature_id: String,
+}
+
+/// What `g`/`Enter` on an unlinked TODO offers: the original spawn, or a plan
+/// interview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoLaunchAction {
+    /// Today's behavior: an agent session in the host feature, composer seeded
+    /// with the TODO, editable and unsent.
+    SpawnSession,
+    /// Run the guided plan interview with the TODO as its brief.
+    PlanMode,
+}
+
+impl TodoLaunchAction {
+    pub const ALL: [TodoLaunchAction; 2] =
+        [TodoLaunchAction::SpawnSession, TodoLaunchAction::PlanMode];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TodoLaunchAction::SpawnSession => "Start an agent on this TODO",
+            TodoLaunchAction::PlanMode => "Plan this TODO first",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            TodoLaunchAction::SpawnSession => {
+                "Opens a session in this feature with the TODO in the composer, unsent."
+            }
+            TodoLaunchAction::PlanMode => {
+                "Runs the discovery interview, then starts work from the plan you accept."
+            }
+        }
+    }
+}
+
+/// Where an accepted TODO plan lands. Chosen up front, before the interview, so
+/// the plan is written into the worktree it is actually for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoPlanDestination {
+    /// The feature hosting the TODO list. Accepting spawns a seeded session
+    /// there; nothing new is checked out.
+    HostFeature,
+    /// A new AMF feature and git worktree, created through the ordinary
+    /// create-feature wizard with plan mode on.
+    NewFeature,
+}
+
+impl TodoPlanDestination {
+    pub const ALL: [TodoPlanDestination; 2] = [
+        TodoPlanDestination::HostFeature,
+        TodoPlanDestination::NewFeature,
+    ];
+}
+
+/// A modal step layered over the TODO list, the way `pending_delete` and
+/// `editor` are: the list, cursor, and scroll stay intact underneath, so `Esc`
+/// returns to exactly what the user was looking at.
+///
+/// A separate [`AppMode`] would replace [`TodoViewState`] wholesale and force
+/// the list to be reloaded — and the in-memory list is the overlay's source of
+/// truth, so it would also lose unsaved state on a DB-less run.
+#[derive(Debug, Clone)]
+pub enum TodoLaunchStep {
+    /// `g`/`Enter` on a TODO with no existing link: spawn, or plan first.
+    Choice {
+        origin: TodoPlanOrigin,
+        selected: usize,
+    },
+    /// Where an accepted plan should land. Asked before the interview so the
+    /// plan is written into the worktree it is actually for.
+    Destination {
+        origin: TodoPlanOrigin,
+        /// Name of the feature hosting the list, shown on the first option.
+        host_feature_name: String,
+        /// False when the project has no git repository, which makes a new
+        /// worktree impossible. The option is still shown, and says why.
+        can_create_worktree: bool,
+        selected: usize,
+    },
+}
+
+impl TodoLaunchStep {
+    pub fn origin(&self) -> &TodoPlanOrigin {
+        match self {
+            TodoLaunchStep::Choice { origin, .. } => origin,
+            TodoLaunchStep::Destination { origin, .. } => origin,
+        }
+    }
+
+    pub fn selected(&self) -> usize {
+        match self {
+            TodoLaunchStep::Choice { selected, .. } => *selected,
+            TodoLaunchStep::Destination { selected, .. } => *selected,
+        }
+    }
+
+    pub fn option_count(&self) -> usize {
+        match self {
+            TodoLaunchStep::Choice { .. } => TodoLaunchAction::ALL.len(),
+            TodoLaunchStep::Destination { .. } => TodoPlanDestination::ALL.len(),
+        }
+    }
+
+    /// Move the cursor, clamped rather than wrapped: with two options, wrapping
+    /// makes `j` and `k` the same key and the highlight appears not to move.
+    pub fn move_cursor(&mut self, delta: isize) {
+        let last = self.option_count().saturating_sub(1);
+        let current = self.selected() as isize;
+        let next = (current + delta).clamp(0, last as isize) as usize;
+        match self {
+            TodoLaunchStep::Choice { selected, .. } => *selected = next,
+            TodoLaunchStep::Destination { selected, .. } => *selected = next,
+        }
+    }
+
+    /// The chosen action, or `None` on the destination step.
+    pub fn action(&self) -> Option<TodoLaunchAction> {
+        match self {
+            TodoLaunchStep::Choice { selected, .. } => {
+                Some(TodoLaunchAction::ALL[(*selected).min(TodoLaunchAction::ALL.len() - 1)])
+            }
+            TodoLaunchStep::Destination { .. } => None,
+        }
+    }
+
+    /// The chosen destination, or `None` on the chooser step.
+    pub fn destination(&self) -> Option<TodoPlanDestination> {
+        match self {
+            TodoLaunchStep::Destination { selected, .. } => {
+                Some(TodoPlanDestination::ALL[(*selected).min(TodoPlanDestination::ALL.len() - 1)])
+            }
+            TodoLaunchStep::Choice { .. } => None,
+        }
+    }
 }
 
 /// Which files Learning Mode lists.
@@ -4449,6 +4607,10 @@ pub enum HookNext {
         enable_chrome: bool,
         remote_control: bool,
         steering_enabled: bool,
+        /// Carried across the hook detour, which rebuilds the launch from
+        /// scratch and would otherwise drop the TODO link on any project with
+        /// an `on_worktree_created` hook.
+        todo_origin: Option<TodoPlanOrigin>,
     },
     StartFeature {
         pi: usize,
@@ -4473,6 +4635,7 @@ pub struct RunningHookState {
     pub script: String,
     pub workdir: PathBuf,
     pub project_name: String,
+    pub todo_origin: Option<TodoPlanOrigin>,
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
@@ -4552,6 +4715,7 @@ pub struct BackgroundHook {
     pub script: String,
     pub workdir: PathBuf,
     pub project_name: String,
+    pub todo_origin: Option<TodoPlanOrigin>,
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
@@ -4574,6 +4738,7 @@ impl BackgroundHook {
             script: state.script,
             workdir: state.workdir,
             project_name: state.project_name,
+            todo_origin: state.todo_origin,
             branch: state.branch,
             mode: state.mode,
             review: state.review,
@@ -4665,6 +4830,11 @@ pub enum CreateBatchFeaturesStep {
 pub struct CreateFeatureState {
     pub project_name: String,
     pub project_repo: PathBuf,
+    /// Set when the wizard was opened from a TODO, so the feature it creates
+    /// can be linked back to that row. Lives on the wizard state (not on
+    /// `App`) so cancelling the wizard drops it — a stale origin would attach
+    /// the next unrelated feature to the wrong TODO.
+    pub todo_origin: Option<TodoPlanOrigin>,
     pub branch: String,
     pub branch_error: Option<String>,
     pub allowed_agents: Vec<AgentKind>,
@@ -4726,6 +4896,7 @@ impl CreateFeatureState {
         Self {
             project_name,
             project_repo,
+            todo_origin: None,
             branch,
             branch_error: None,
             allowed_agents: AgentKind::ALL.to_vec(),
@@ -4829,6 +5000,9 @@ pub struct PreparedFeatureLaunch {
     pub hook_succeeded: Option<bool>,
     /// Optional composer seed to show immediately after the agent starts.
     pub startup_prompt: Option<String>,
+    /// Set when this launch was started from a TODO, so accepting the plan can
+    /// link the created feature back to the row it came from.
+    pub todo_origin: Option<TodoPlanOrigin>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5033,6 +5207,10 @@ pub struct PlanInterviewState {
     /// set in [`PlanInterviewPhase::KickoffHandoff`], which is only reached
     /// after the plan file is already on disk.
     pub kickoff_handoff: Option<PlanKickoffTarget>,
+    /// The TODO this interview was started from, if any. Carried so accepting
+    /// the plan can record the result on that row — and so the header can say
+    /// which TODO is being planned.
+    pub todo_origin: Option<TodoPlanOrigin>,
 }
 
 impl PlanInterviewState {
@@ -5062,6 +5240,33 @@ impl PlanInterviewState {
         let mut state = Self::new(feature_name, feature_id, questions, None);
         state.workdir = workdir;
         state.preferred_harness = agent;
+        state
+    }
+
+    /// An interview started from a TODO that plans work into the TODO's
+    /// **host feature**, which already exists.
+    ///
+    /// Keyed by the TODO rather than the feature
+    /// ([`crate::plan_interview::todo_interview_key`]): the host feature has
+    /// its own `P` draft and accepted transcript, and planning a TODO against
+    /// it must not overwrite them or be pre-filled from them.
+    ///
+    /// The brief is pre-filled and the interview opens on it, so the composed
+    /// text is something the user edits rather than something they are handed.
+    pub fn for_todo(
+        feature_name: String,
+        origin: TodoPlanOrigin,
+        questions: Vec<PlanQuestion>,
+        workdir: PathBuf,
+        agent: AgentKind,
+        brief: String,
+    ) -> Self {
+        let interview_key = crate::plan_interview::todo_interview_key(&origin.todo_id);
+        let mut state = Self::new(feature_name, interview_key, questions, None);
+        state.workdir = workdir;
+        state.preferred_harness = agent;
+        state.editor = TextEditor::new(brief);
+        state.todo_origin = Some(origin);
         state
     }
 
@@ -5127,6 +5332,7 @@ impl PlanInterviewState {
             prior_brief: None,
             prior_answers: HashMap::new(),
             kickoff_handoff: None,
+            todo_origin: None,
         }
     }
 
@@ -6674,6 +6880,7 @@ mod tests {
             steering_enabled: false,
             hook_succeeded: None,
             startup_prompt: None,
+            todo_origin: None,
         }
     }
 

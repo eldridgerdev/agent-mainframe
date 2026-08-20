@@ -779,7 +779,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(linked, None, "an existing TODO has no planned feature");
-        assert_eq!(session.as_deref(), Some("sess-1"), "the older link survives");
+        assert_eq!(
+            session.as_deref(),
+            Some("sess-1"),
+            "the older link survives"
+        );
     }
 
     /// Migration 022 adds `provenance` to reply drafts written before it

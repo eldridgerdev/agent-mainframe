@@ -18120,7 +18120,10 @@ fn g_on_an_unlinked_todo_opens_the_chooser_instead_of_spawning() {
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
 
     assert!(
-        matches!(launch_step(&app), Some(crate::app::TodoLaunchStep::Choice { .. })),
+        matches!(
+            launch_step(&app),
+            Some(crate::app::TodoLaunchStep::Choice { .. })
+        ),
         "expected the chooser, got {:?}",
         launch_step(&app).is_some()
     );
@@ -18146,13 +18149,22 @@ fn esc_walks_back_from_destination_to_chooser_to_the_list() {
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
     assert!(
-        matches!(launch_step(&app), Some(crate::app::TodoLaunchStep::Choice { selected: 1, .. })),
+        matches!(
+            launch_step(&app),
+            Some(crate::app::TodoLaunchStep::Choice { selected: 1, .. })
+        ),
         "Esc returns to the chooser with the cursor on the option that got here"
     );
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
-    assert!(launch_step(&app).is_none(), "a second Esc returns to the list");
-    assert!(matches!(app.mode, AppMode::Todos(_)), "and stays in the overlay");
+    assert!(
+        launch_step(&app).is_none(),
+        "a second Esc returns to the list"
+    );
+    assert!(
+        matches!(app.mode, AppMode::Todos(_)),
+        "and stays in the overlay"
+    );
 }
 
 /// The cursor clamps rather than wraps: with two options, wrapping makes j and
@@ -18164,12 +18176,20 @@ fn chooser_cursor_clamps_at_both_ends() {
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('k'))).unwrap();
-    assert_eq!(launch_step(&app).unwrap().selected(), 0, "k at the top stays");
+    assert_eq!(
+        launch_step(&app).unwrap().selected(),
+        0,
+        "k at the top stays"
+    );
 
     for _ in 0..3 {
         crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
     }
-    assert_eq!(launch_step(&app).unwrap().selected(), 1, "j past the end stays");
+    assert_eq!(
+        launch_step(&app).unwrap().selected(),
+        1,
+        "j past the end stays"
+    );
 }
 
 /// A TODO already planned into a feature jumps there instead of asking again —
@@ -18224,7 +18244,10 @@ fn g_on_a_todo_linked_to_a_deleted_feature_clears_the_link_and_offers_the_choose
                 "the dead link is dropped"
             );
             assert!(
-                matches!(state.launch, Some(crate::app::TodoLaunchStep::Choice { .. })),
+                matches!(
+                    state.launch,
+                    Some(crate::app::TodoLaunchStep::Choice { .. })
+                ),
                 "and the chooser is offered in its place"
             );
         }

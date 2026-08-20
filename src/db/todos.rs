@@ -470,7 +470,9 @@ mod tests {
     fn linked_feature_survives_a_roundtrip_and_is_independent_of_the_session_link() {
         let (_tmp, db) = open_temp_db();
         let list = db.create_todo_list("proj-1", "feat-1").unwrap();
-        let mut todo = db.add_todo(&list.id, "plan it", None, TodoPriority::Med).unwrap();
+        let mut todo = db
+            .add_todo(&list.id, "plan it", None, TodoPriority::Med)
+            .unwrap();
         assert!(todo.linked_feature_id.is_none());
 
         // Both links can be held at once: they point at different things.

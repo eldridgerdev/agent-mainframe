@@ -1732,7 +1732,7 @@ impl App {
                         enable_chrome,
                         remote_control,
                         steering_enabled: false,
-                                            // Not reachable from a TODO: this is the fork/batch path.
+                        // Not reachable from a TODO: this is the fork/batch path.
                         todo_origin: None,
                     },
                 );

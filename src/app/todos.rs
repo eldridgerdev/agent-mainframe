@@ -9,8 +9,8 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::app::{
-    App, AppMode, Selection, StartIntent, TodoLaunchAction, TodoLaunchStep,
-    TodoPlanDestination, TodoPlanOrigin, TodoViewState, TodosHostReassignState,
+    App, AppMode, Selection, StartIntent, TodoLaunchAction, TodoLaunchStep, TodoPlanDestination,
+    TodoPlanOrigin, TodoViewState, TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority};
 
@@ -738,7 +738,14 @@ impl App {
                 self.close_todo_launch_step();
                 self.start_todo_plan_in_host_feature(origin)
             }
-            (TodoLaunchStep::Destination { can_create_worktree, .. }, _, Some(TodoPlanDestination::NewFeature)) => {
+            (
+                TodoLaunchStep::Destination {
+                    can_create_worktree,
+                    ..
+                },
+                _,
+                Some(TodoPlanDestination::NewFeature),
+            ) => {
                 if !*can_create_worktree {
                     self.push_toast_warning(
                         "This project has no git repository, so a new worktree cannot be created",

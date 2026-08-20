@@ -362,9 +362,8 @@ impl App {
         // Selecting the TODOs session already puts the wizard on the right
         // project; it reads `self.selection` for that.
         self.start_create_feature();
-        let session_name_for_agent = |agent: &crate::project::AgentKind| {
-            Self::default_session_name_for_agent(agent)
-        };
+        let session_name_for_agent =
+            |agent: &crate::project::AgentKind| Self::default_session_name_for_agent(agent);
         let AppMode::CreatingFeature(state) = &mut self.mode else {
             // `start_create_feature` refused (no harness, a parked interview);
             // it has already said why, and that message must survive.

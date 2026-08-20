@@ -357,7 +357,12 @@ fn detail_lines(detail: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
 ///
 /// Drawn as a modal over the list rather than replacing it, matching the delete
 /// confirmation, so the TODO being acted on stays visible behind the prompt.
-fn draw_launch_step(frame: &mut Frame, state: &TodoViewState, step: &TodoLaunchStep, theme: &Theme) {
+fn draw_launch_step(
+    frame: &mut Frame,
+    state: &TodoViewState,
+    step: &TodoLaunchStep,
+    theme: &Theme,
+) {
     let area = centered_rect(64, 46, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 

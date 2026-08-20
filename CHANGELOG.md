@@ -10,6 +10,35 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- **AMF no longer exhausts your GitHub API budget refreshing PR badges.** The
+  dashboard's pull-request badge was refreshed every 30 seconds, and each sweep
+  made a GitHub API call for *every* feature you have — not just the ones with
+  open pull requests. On a workspace with ~34 features that is around 8,500
+  points an hour against GitHub's 5,000-point hourly GraphQL budget, so simply
+  leaving AMF open drained the whole allowance in about 35 minutes. The first
+  visible symptom was usually PR Triage failing with a rate-limit error — the
+  one workflow that had not caused it.
+
+  Two changes fix it. The sweep now makes **one request per repository** rather
+  than one per feature: a single query returns every open PR in a repo with its
+  unresolved-thread count, and each feature's branch is matched against that
+  locally. A project with thirty worktrees now costs the same as one with a
+  single feature. Badges also refresh every 5 minutes instead of every 30
+  seconds, which is far inside a PR badge's useful freshness.
+
+  When GitHub does report an exhausted budget, AMF now says so and pauses badge
+  refresh for 15 minutes rather than retrying into an empty allowance, and
+  features it did not get to keep their existing badge instead of blanking.
+
+  Two smaller behavior changes come with the batching: a repository with no
+  GitHub remote is now treated as "no pull requests" instead of reporting an
+  error per feature, and a feature is matched by the branch AMF has recorded for
+  it rather than by whatever branch its worktree currently has checked out. Note
+  that a worktree whose `origin` is a **fork**, with its PR on the upstream
+  repository, no longer shows a badge.
+
 ### Added
 
 - **A TODO can start a plan interview, in place or in a new worktree.** `g`
@@ -48,13 +77,32 @@ are tagged.
 
 ### Changed
 
+- **Project config moved to `amf.json` at the repo root.** AMF's per-project
+  settings — custom sessions, feature presets, lifecycle hooks, keybindings,
+  plan questions, and prompt templates — now live in a tracked `amf.json`
+  beside `Cargo.toml`, instead of `.amf/config.json`. Committing config no
+  longer needs `git add -f`: `.amf/` is ignored dir-wide because everything
+  still inside it is generated, and the config file is no longer an exception
+  hidden in an ignored directory. Existing `.amf/config.json` files keep being
+  read until the next config write moves them, and that move either completes
+  or leaves the old file untouched — an interrupted migration never leaves you
+  with a half-written config.
+- **`amf doctor` reports projects still on the legacy config path.** The new
+  `config-path` finding names each `.amf/config.json` it can still see, and
+  distinguishes the two cases: a file that is simply not migrated yet (still
+  read, and moved on the next config write) from one sitting next to an
+  `amf.json` that has already superseded it, where edits to the old file do
+  nothing.
+- **`.amf/` explains itself.** The directory now gets a `README.md` when AMF
+  creates it, saying that its contents are generated and safe to delete, and
+  pointing at `amf.json` for real settings. Your own edits to that README are
+  left alone.
 - **The dashboard's needs-attention badge now shows `<leader i>`.** Questions,
   completed work, waiting sessions, and other input requests now advertise the
   shortcut that opens the list, so the action is discoverable without first
   opening help. On a narrow terminal the working directory is shortened before
   the badge is, so the shortcut stays readable. No configuration change is
   required.
-
 - **Plan mode now keeps its approved plan in `AMF_PLAN.md` at the feature root.**
   The plan is no longer hidden under the Claude-specific `.claude/` directory,
   and the AMF-specific name avoids overwriting a repository's conventional
@@ -81,11 +129,18 @@ are tagged.
 
 ### Migration
 
-- No migration is required. The next plan you accept is written to
-  `AMF_PLAN.md`; older `.claude/plan.md` files may be removed when no longer
+- **Project config migrates itself.** `.amf/config.json` is still read, so
+  existing checkouts keep working untouched. The next time AMF writes config
+  — saving the config wizard, exporting a prompt template — it writes
+  `amf.json` and removes the old file, so there is only ever one answer to
+  where config lives. To migrate by hand, `git mv .amf/config.json amf.json`.
+  Drop the force-tracked `.amf/config.json` exception from your `.gitignore`
+  once you have.
+- No migration is required for plan mode. The next plan you accept is written
+  to `AMF_PLAN.md`; older `.claude/plan.md` files may be removed when no longer
   needed.
-- Existing `PR Triage` and legacy `PR Review`
-  sessions continue to be recognized when the default name is used.
+- Existing `PR Triage` and legacy `PR Review` sessions continue to be
+  recognized when the default name is used.
 
 ## [v0.37.0] - 2026-08-18
 

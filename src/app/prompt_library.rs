@@ -15,9 +15,9 @@ use crate::prompt_library::{
 pub enum PromptExportTarget {
     /// `~/.config/amf/config.json` (the `extension` block).
     Global,
-    /// `{project.repo}/.amf/config.json` — the main repo root.
+    /// `{project.repo}/amf.json` — the main repo root.
     Project,
-    /// `{feature.workdir}/.amf/config.json` — the active worktree.
+    /// `{feature.workdir}/amf.json` — the active worktree.
     /// Lets the user commit the template on a feature branch and
     /// promote it to the main repo via git later.
     Worktree,
@@ -28,7 +28,7 @@ impl App {
 
     /// Build the merged, source-tagged template list and enter the
     /// prompt-library picker. Surfaces editable `User` templates from the
-    /// SQLite store alongside read-only `Project` (`{repo}/.amf/config.json`)
+    /// SQLite store alongside read-only `Project` (`{repo}/amf.json`)
     /// and `Global` (`~/.config/amf/config.json`) declarative templates.
     pub fn open_prompt_library(&mut self, from_view: Option<ViewState>) {
         self.rebuild_prompt_library(from_view, None);
@@ -721,7 +721,7 @@ impl App {
         Ok(())
     }
 
-    /// Resolve the repo whose `.amf/config.json` project templates should
+    /// Resolve the repo whose `amf.json` project templates should
     /// appear in the picker: the viewed feature's project repo when opened
     /// from a session, else the currently selected project's repo. Never
     /// falls back to the working directory, so the picker only shows project
@@ -773,10 +773,10 @@ impl App {
             PromptSource::Global => Some(crate::project::amf_config_dir().join("config.json")),
             PromptSource::Project => self
                 .resolve_library_repo(from_view)
-                .map(|repo| repo.join(".amf").join("config.json")),
+                .map(|repo| crate::extension::project_config_path(&repo)),
             PromptSource::Worktree => self
                 .resolve_worktree_dir(from_view)
-                .map(|dir| dir.join(".amf").join("config.json")),
+                .map(|dir| crate::extension::project_config_path(&dir)),
         }
     }
 
@@ -814,14 +814,14 @@ impl App {
     }
 }
 
-/// Read the `prompt_templates` declared in `{repo}/.amf/config.json`.
-/// Returns an empty list when the file is absent or unparseable, mirroring
-/// the tolerant loading in `merge_project_extension_config`.
+/// Read the `prompt_templates` declared in the project config (`amf.json`,
+/// or the legacy `.amf/config.json`). Returns an empty list when the file
+/// is absent or unparseable, mirroring the tolerant loading in
+/// `merge_project_extension_config`.
 fn load_project_prompt_templates(repo: &Path) -> Vec<PromptTemplate> {
-    let path = repo.join(".amf").join("config.json");
-    if !path.exists() {
+    let Some(path) = crate::extension::resolve_project_config_path(repo) else {
         return Vec::new();
-    }
+    };
     std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str::<crate::extension::ExtensionConfig>(&s).ok())
@@ -941,19 +941,17 @@ fn upsert_template(list: &mut Vec<PromptTemplate>, template: PromptTemplate) {
     }
 }
 
-/// Write `template` into `{repo}/.amf/config.json`'s `prompt_templates`
-/// array, replacing any same-name entry and preserving all other keys in
-/// the file. Returns the path written.
+/// Write `template` into the project config's `prompt_templates` array,
+/// replacing any same-name entry and preserving all other keys in the
+/// file. Reads through the legacy path when that is where config still
+/// lives, but always writes `amf.json`. Returns the path written.
 fn export_template_to_project_config(repo: &Path, template: &PromptTemplate) -> Result<PathBuf> {
-    let dir = repo.join(".amf");
-    let path = dir.join("config.json");
-    std::fs::create_dir_all(&dir)?;
-
-    let mut root: serde_json::Value = if path.exists() {
-        let contents = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
+    let mut root: serde_json::Value = match crate::extension::resolve_project_config_path(repo) {
+        Some(existing) => {
+            let contents = std::fs::read_to_string(&existing)?;
+            serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}))
+        }
+        None => serde_json::json!({}),
     };
     if !root.is_object() {
         root = serde_json::json!({});
@@ -978,17 +976,15 @@ fn export_template_to_project_config(repo: &Path, template: &PromptTemplate) -> 
         arr.push(entry);
     }
 
-    std::fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
-    Ok(path)
+    crate::extension::write_project_config(repo, &(serde_json::to_string_pretty(&root)? + "\n"))
 }
 
-/// Remove the entry matching `name` from `{repo}/.amf/config.json`. Used
-/// when renaming a config-source template so the old name doesn't linger.
+/// Remove the entry matching `name` from the project config. Used when
+/// renaming a config-source template so the old name doesn't linger.
 fn remove_template_from_config(repo: &Path, name: &str) -> Result<()> {
-    let path = repo.join(".amf").join("config.json");
-    if !path.exists() {
+    let Some(path) = crate::extension::resolve_project_config_path(repo) else {
         return Ok(());
-    }
+    };
     let contents = std::fs::read_to_string(&path)?;
     let mut root: serde_json::Value =
         serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}));
@@ -998,7 +994,10 @@ fn remove_template_from_config(repo: &Path, name: &str) -> Result<()> {
     {
         arr.retain(|v| v.get("name").and_then(|n| n.as_str()) != Some(name));
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
+    // Writes go through the migrating helper too, so a rename on a repo
+    // still holding the legacy file lands in `amf.json` rather than
+    // rewriting the file the next read will ignore.
+    crate::extension::write_project_config(repo, &(serde_json::to_string_pretty(&root)? + "\n"))?;
     Ok(())
 }
 
@@ -1148,7 +1147,7 @@ mod tests {
         let template = PromptTemplate::new("Fix bug".to_string(), "Fix {{area}}".to_string());
 
         let path = export_template_to_project_config(tmp.path(), &template).unwrap();
-        assert_eq!(path, tmp.path().join(".amf").join("config.json"));
+        assert_eq!(path, tmp.path().join("amf.json"));
 
         // Re-read through the real config parser to confirm it loads.
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1163,7 +1162,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let amf = tmp.path().join(".amf");
         std::fs::create_dir_all(&amf).unwrap();
-        // Pre-existing config with an unrelated key and a same-name entry.
+        // Seeded at the *legacy* path, so this also pins the migration:
+        // the export reads it, writes `amf.json`, and drops the old file.
         std::fs::write(
             amf.join("config.json"),
             r#"{ "allowed_agents": ["claude"], "prompt_templates": [
@@ -1176,8 +1176,10 @@ mod tests {
         updated.description = Some("desc".to_string());
         export_template_to_project_config(tmp.path(), &updated).unwrap();
 
-        let contents = std::fs::read_to_string(amf.join("config.json")).unwrap();
+        let contents = std::fs::read_to_string(tmp.path().join("amf.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        // Migrated: the legacy file is gone, so reads have one answer.
+        assert!(!amf.join("config.json").exists());
         // Unrelated key preserved.
         assert_eq!(value["allowed_agents"][0], "claude");
         // Same-name entry replaced (not duplicated).
@@ -1343,7 +1345,7 @@ mod tests {
             .unwrap();
 
         // Reopen the library (still no view) and assert the Project-source
-        // entry is present — it should have been written to `repo/.amf/config.json`,
+        // entry is present — it should have been written to `repo/amf.json`,
         // not to some worktree subdirectory.
         app.open_prompt_library(None);
         let AppMode::PromptLibrary(ref state) = app.mode else {
@@ -1362,7 +1364,7 @@ mod tests {
         assert_eq!(project_entries[0].template.name, "My prompt");
 
         // The config.json must be at the project's main repo root, not CWD.
-        assert!(repo.path().join(".amf").join("config.json").exists());
+        assert!(repo.path().join("amf.json").exists());
     }
 
     #[test]
@@ -1400,7 +1402,7 @@ mod tests {
             .expect("project entry");
         assert_eq!(
             project.source_path.as_deref(),
-            Some(repo.path().join(".amf").join("config.json").as_path()),
+            Some(repo.path().join("amf.json").as_path()),
         );
 
         // The User entry has no real store path under the test harness
@@ -1428,7 +1430,7 @@ mod tests {
 
         let msg = app.build_export_menu_message(None);
         // The project target names the resolved repo config path.
-        let expected = repo.path().join(".amf").join("config.json");
+        let expected = repo.path().join("amf.json");
         assert!(
             msg.contains(&crate::app::util::shorten_path(&expected)),
             "export menu should name the project path, got: {msg}"

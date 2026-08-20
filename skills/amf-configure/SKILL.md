@@ -11,9 +11,9 @@ allowed-tools: Bash(cat *) Bash(test *)
 disable-model-invocation: true
 ---
 
-## Current project config (.amf/config.json)
+## Current project config (amf.json)
 
-!`cat .amf/config.json 2>/dev/null || echo "(none — file does not exist yet)"`
+!`cat amf.json 2>/dev/null || cat .amf/config.json 2>/dev/null || echo "(none — file does not exist yet)"`
 
 ## Current global config (~/.config/amf/config.json)
 
@@ -23,7 +23,7 @@ disable-model-invocation: true
 
 | Scope | File | Key |
 |---|---|---|
-| This project only | `.amf/config.json` | top-level |
+| This project only | `amf.json` | top-level |
 | All projects | `~/.config/amf/config.json` | under `"extension"` |
 
 Project config wins over global for the same key/name.
@@ -84,4 +84,4 @@ Based on what the user is asking for, invoke the appropriate skill:
   `/amf:add-hook`
 - Creating a feature template or preset → `/amf:add-preset`
 - Anything else — explain using the schema above and edit
-  `.amf/config.json` directly
+  `amf.json` directly

@@ -1,5 +1,6 @@
+use super::GH_GRAPHQL_BACKOFF;
 use super::*;
-use crate::github::{GhCli, PrResolution};
+use crate::github::{GhCli, GhGraphqlError};
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
 use crate::tmux::TmuxManager;
@@ -16,7 +17,13 @@ use std::path::{Path, PathBuf};
 struct ActivePrJob {
     feature_id: String,
     branch: String,
-    workdir: PathBuf,
+}
+
+/// One repository's worth of work: a single query answers every feature that
+/// lives in it.
+struct ActivePrRepoJob {
+    repo: PathBuf,
+    features: Vec<ActivePrJob>,
 }
 
 #[derive(Debug)]
@@ -24,6 +31,19 @@ pub(crate) enum ActivePrLookup {
     Found(ActivePrStatus),
     NoPr,
     Failed(String),
+    /// Not looked up, because the GraphQL budget ran out earlier in the sweep.
+    /// Distinct from `Failed` so the badge keeps its previous value instead of
+    /// reporting an error the feature had nothing to do with.
+    Skipped,
+}
+
+/// One completed pass of the dashboard PR refresh.
+#[derive(Debug)]
+pub(crate) struct ActivePrSweep {
+    pub updates: Vec<ActivePrUpdate>,
+    /// Set when any job hit GitHub's GraphQL point budget, so the main loop can
+    /// stop scheduling sweeps until the budget resets.
+    pub rate_limited: bool,
 }
 
 #[derive(Debug)]
@@ -370,64 +390,163 @@ pub(super) fn opencode_sidebar_thinking_state(
 }
 
 impl App {
+    /// Record that GitHub's GraphQL budget is exhausted, and say so once.
+    ///
+    /// Announced rather than silent: until this, a depleted budget showed up
+    /// only as PR badges quietly going blank, and the first *visible* symptom
+    /// was PR Triage failing — which is the one path that did not cause it.
+    pub(crate) fn note_gh_graphql_rate_limited(&mut self) {
+        let already_backing_off = self.gh_graphql_backoff_remaining().is_some();
+        self.gh_graphql_limited_at = Some(Instant::now());
+        if already_backing_off {
+            return;
+        }
+        self.log_warn(
+            "sync",
+            format!(
+                "GitHub GraphQL rate limit exhausted; pausing PR badge refresh for {} minutes",
+                GH_GRAPHQL_BACKOFF.as_secs() / 60
+            ),
+        );
+        self.push_toast_warning(format!(
+            "GitHub's hourly API budget is used up — PR badges paused for {} min",
+            GH_GRAPHQL_BACKOFF.as_secs() / 60
+        ));
+    }
+
+    /// How much of the GraphQL backoff is left, or `None` when it has expired
+    /// (or never started).
+    pub(crate) fn gh_graphql_backoff_remaining(&self) -> Option<Duration> {
+        let since = self.gh_graphql_limited_at?.elapsed();
+        GH_GRAPHQL_BACKOFF
+            .checked_sub(since)
+            .filter(|d| !d.is_zero())
+    }
+
     /// Refresh dashboard PR badges without ever blocking rendering or input.
-    /// The main loop starts this on the existing feature-status cadence and
-    /// refuses to overlap jobs, so a slow `gh` invocation cannot build up a
-    /// queue of redundant work.
+    /// The main loop starts this on [`ACTIVE_PR_SYNC_INTERVAL`] and refuses to
+    /// overlap jobs, so a slow `gh` invocation cannot build up a queue of
+    /// redundant work.
+    ///
+    /// Work is batched **per repository**, not per feature: one query returns
+    /// every open PR in a repo with its unresolved-thread count, and each
+    /// feature's branch is matched against that locally. A worktree-heavy
+    /// project is then the same cost as a single-feature one.
     pub fn sync_active_prs_background(&mut self) {
         if self.active_pr_bg.is_some() {
             return;
         }
+        // A depleted budget stays depleted for the rest of the hour, so a
+        // sweep launched now would spend nothing but failures.
+        if self.gh_graphql_backoff_remaining().is_some() {
+            return;
+        }
 
-        let jobs = self
-            .store
-            .projects
-            .iter()
-            .filter(|project| project.is_git)
-            .flat_map(|project| {
-                project.features.iter().map(|feature| ActivePrJob {
+        // Group by repository root. Features of one project share a repo, and
+        // two projects can point at the same one, so the key is the repo path
+        // rather than the project.
+        let mut repos: Vec<ActivePrRepoJob> = Vec::new();
+        for project in self.store.projects.iter().filter(|project| project.is_git) {
+            if project.features.is_empty() {
+                continue;
+            }
+            let features = project
+                .features
+                .iter()
+                .map(|feature| ActivePrJob {
                     feature_id: feature.id.clone(),
                     branch: feature.branch.clone(),
-                    workdir: feature.workdir.clone(),
                 })
-            })
-            .collect::<Vec<_>>();
-        if jobs.is_empty() {
+                .collect::<Vec<_>>();
+
+            match repos.iter_mut().find(|job| job.repo == project.repo) {
+                Some(existing) => existing.features.extend(features),
+                None => repos.push(ActivePrRepoJob {
+                    repo: project.repo.clone(),
+                    features,
+                }),
+            }
+        }
+        if repos.is_empty() {
             return;
         }
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.active_pr_bg = Some(rx);
         std::thread::spawn(move || {
-            let updates = jobs
-                .into_iter()
-                .map(|job| {
-                    let lookup = match GhCli::resolve_pr(&job.workdir) {
-                        Ok(PrResolution::Found(pr)) => {
-                            let unresolved_threads =
-                                GhCli::review_threads(&job.workdir, &pr.owner, &pr.repo, pr.number)
-                                    .ok()
-                                    .map(|threads| {
-                                        threads.iter().filter(|thread| !thread.is_resolved).count()
-                                    });
-                            ActivePrLookup::Found(ActivePrStatus {
-                                branch: job.branch.clone(),
-                                head_sha: pr.head_sha,
-                                number: pr.number,
-                                unresolved_threads,
-                            })
-                        }
-                        Ok(PrResolution::NoPrForBranch) => ActivePrLookup::NoPr,
-                        Err(error) => ActivePrLookup::Failed(error.to_string()),
+            let mut rate_limited = false;
+            let mut updates = Vec::new();
+
+            for job in repos {
+                // One depleted budget means every remaining repository would
+                // fail the same way, so the first to see it stops the rest.
+                if rate_limited {
+                    updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
+                        feature_id: feature.feature_id,
+                        branch: feature.branch,
+                        lookup: ActivePrLookup::Skipped,
+                    }));
+                    continue;
+                }
+
+                // No GitHub remote is a settled answer, not a failure: the
+                // repository simply has no PRs to badge. Costs no API call.
+                let Some((owner, repo)) = crate::github::owner_repo_from_remote(&job.repo) else {
+                    updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
+                        feature_id: feature.feature_id,
+                        branch: feature.branch,
+                        lookup: ActivePrLookup::NoPr,
+                    }));
+                    continue;
+                };
+
+                let open = match GhCli::open_prs(&job.repo, &owner, &repo) {
+                    Ok(open) => open,
+                    Err(GhGraphqlError::RateLimited) => {
+                        rate_limited = true;
+                        updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
+                            feature_id: feature.feature_id,
+                            branch: feature.branch,
+                            lookup: ActivePrLookup::Skipped,
+                        }));
+                        continue;
+                    }
+                    Err(GhGraphqlError::Failed(error)) => {
+                        // One failed repository must not blank the badges of
+                        // features in the repositories that did answer.
+                        updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
+                            feature_id: feature.feature_id,
+                            branch: feature.branch,
+                            lookup: ActivePrLookup::Failed(error.clone()),
+                        }));
+                        continue;
+                    }
+                };
+
+                updates.extend(job.features.into_iter().map(|feature| {
+                    let lookup = match open.iter().find(|pr| pr.head_ref == feature.branch) {
+                        Some(pr) => ActivePrLookup::Found(ActivePrStatus {
+                            branch: feature.branch.clone(),
+                            head_sha: pr.head_sha.clone(),
+                            number: pr.number,
+                            unresolved_threads: Some(pr.unresolved_threads),
+                        }),
+                        // The repository answered and this branch was not in
+                        // its open PRs: a confirmed absence, not a failure.
+                        None => ActivePrLookup::NoPr,
                     };
                     ActivePrUpdate {
-                        feature_id: job.feature_id,
-                        branch: job.branch,
+                        feature_id: feature.feature_id,
+                        branch: feature.branch,
                         lookup,
                     }
-                })
-                .collect();
-            let _ = tx.send(updates);
+                }));
+            }
+
+            let _ = tx.send(ActivePrSweep {
+                updates,
+                rate_limited,
+            });
         });
     }
 
@@ -438,9 +557,12 @@ impl App {
             return false;
         };
         match rx.try_recv() {
-            Ok(updates) => {
+            Ok(sweep) => {
                 self.active_pr_bg = None;
-                self.apply_active_pr_updates(updates)
+                if sweep.rate_limited {
+                    self.note_gh_graphql_rate_limited();
+                }
+                self.apply_active_pr_updates(sweep.updates)
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -491,6 +613,9 @@ impl App {
                 ActivePrLookup::NoPr => {
                     changed |= self.active_prs.remove(&update.feature_id).is_some();
                 }
+                // Nothing was looked up, so nothing is known: leave the
+                // previous badge in place rather than blanking or erroring it.
+                ActivePrLookup::Skipped => {}
                 ActivePrLookup::Failed(error) => {
                     self.log_debug(
                         "github",

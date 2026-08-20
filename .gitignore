@@ -8,8 +8,9 @@ IDEAS.md
 .codex/
 
 # AMF / opencode runtime-generated artifacts — never part of a branch's
-# real changes. (.amf/config.json is intentional shared config and is
-# force-tracked despite this dir-wide ignore.)
+# real changes. Nothing in here is hand-authored: project config lives in
+# the tracked `amf.json` at the repo root, so this ignore has no
+# exceptions and needs no `git add -f`.
 .amf/
 tui.json
 
@@ -21,6 +22,7 @@ tui.json
 .claude/final-review-progress.json
 .claude/final-review-snapshot.json
 .claude/latest-prompt.txt
+.claude/amf-hook-state.json
 .claude/notifications/
 .claude/skills/amf-*/
 

@@ -120,6 +120,28 @@ pub const VIEW_BURST_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(16)
 pub const VIEW_BURST_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(40);
 pub const VIEW_BACKGROUND_SYNC_DEFER_INTERVAL: Duration = Duration::from_millis(1500);
 
+/// How long the dashboard PR sweep stands down after GitHub reports an
+/// exhausted GraphQL budget.
+///
+/// The budget refills on a rolling hourly window, so the exact reset is not
+/// knowable from a failed call. Fifteen minutes retries a few times an hour at
+/// a cost of one sweep each, rather than either giving up for the hour or
+/// hammering a limit that is still empty.
+pub const GH_GRAPHQL_BACKOFF: Duration = Duration::from_secs(15 * 60);
+
+/// How often dashboard PR badges refresh.
+///
+/// This used to ride the 30-second feature-status cadence, which is wrong for
+/// this data: the sweep runs `gh pr view` once per *feature* (measured at 2
+/// GraphQL points each) plus a thread query per open PR, against a 5,000-point
+/// hourly budget. At ~34 features that is ~71 points a sweep, and at 120
+/// sweeps an hour roughly 8,500 points — the budget is gone in about 35
+/// minutes of AMF simply being open, which then takes PR Triage down with it.
+///
+/// Volume is the whole problem; no single call here is expensive. Five minutes
+/// cuts it tenfold and is still far inside a PR badge's useful freshness.
+pub const ACTIVE_PR_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
 /// Cached dashboard metadata for an open pull request associated with a
 /// feature's branch. The branch and head SHA travel with the badge so a
 /// background result can never be applied after the feature changes branches.
@@ -855,7 +877,12 @@ pub struct App {
     /// Background refresh and last-known values for the dashboard's open-PR
     /// badges. Rendering only reads `active_prs`; all `gh` calls happen on the
     /// worker behind `active_pr_bg`.
-    pub(crate) active_pr_bg: Option<Receiver<Vec<sync::ActivePrUpdate>>>,
+    pub(crate) active_pr_bg: Option<Receiver<sync::ActivePrSweep>>,
+    /// When GitHub's GraphQL point budget was seen exhausted. The dashboard PR
+    /// sweep stops until `GH_GRAPHQL_BACKOFF` has passed, because every call in
+    /// the depleted window fails identically and retrying only keeps the budget
+    /// at zero once it starts refilling.
+    pub(crate) gh_graphql_limited_at: Option<Instant>,
     pub(crate) active_prs: HashMap<String, ActivePrStatus>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
@@ -2306,6 +2333,7 @@ impl App {
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
             active_pr_bg: None,
+            gh_graphql_limited_at: None,
             active_prs: HashMap::new(),
             pr_review_bg: None,
             plan_interview_ai_bg: None,
@@ -2538,6 +2566,7 @@ impl App {
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
             active_pr_bg: None,
+            gh_graphql_limited_at: None,
             active_prs: HashMap::new(),
             pr_review_bg: None,
             plan_interview_ai_bg: None,

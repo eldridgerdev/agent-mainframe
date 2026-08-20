@@ -21,13 +21,23 @@ are tagged.
   visible symptom was usually PR Triage failing with a rate-limit error — the
   one workflow that had not caused it.
 
-  Badges now refresh every 5 minutes instead of every 30 seconds, which is the
-  fix; a PR badge does not change on a 30-second timescale. When GitHub does
-  report an exhausted budget, AMF now says so and pauses badge refresh for 15
-  minutes rather than retrying into an empty allowance, and features it did not
-  get to keep their existing badge instead of blanking. The badge also now asks
-  only for the thread-resolution count it displays rather than every thread's
-  comments.
+  Two changes fix it. The sweep now makes **one request per repository** rather
+  than one per feature: a single query returns every open PR in a repo with its
+  unresolved-thread count, and each feature's branch is matched against that
+  locally. A project with thirty worktrees now costs the same as one with a
+  single feature. Badges also refresh every 5 minutes instead of every 30
+  seconds, which is far inside a PR badge's useful freshness.
+
+  When GitHub does report an exhausted budget, AMF now says so and pauses badge
+  refresh for 15 minutes rather than retrying into an empty allowance, and
+  features it did not get to keep their existing badge instead of blanking.
+
+  Two smaller behavior changes come with the batching: a repository with no
+  GitHub remote is now treated as "no pull requests" instead of reporting an
+  error per feature, and a feature is matched by the branch AMF has recorded for
+  it rather than by whatever branch its worktree currently has checked out. Note
+  that a worktree whose `origin` is a **fork**, with its PR on the upstream
+  repository, no longer shows a badge.
 
 ### Added
 

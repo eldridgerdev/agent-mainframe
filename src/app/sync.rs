@@ -1,5 +1,5 @@
 use super::*;
-use crate::github::{GhCli, GhGraphqlError, PrResolution, is_rate_limit_message};
+use crate::github::{GhCli, GhGraphqlError};
 use super::GH_GRAPHQL_BACKOFF;
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
@@ -17,7 +17,13 @@ use std::path::{Path, PathBuf};
 struct ActivePrJob {
     feature_id: String,
     branch: String,
-    workdir: PathBuf,
+}
+
+/// One repository's worth of work: a single query answers every feature that
+/// lives in it.
+struct ActivePrRepoJob {
+    repo: PathBuf,
+    features: Vec<ActivePrJob>,
 }
 
 #[derive(Debug)]
@@ -416,9 +422,14 @@ impl App {
     }
 
     /// Refresh dashboard PR badges without ever blocking rendering or input.
-    /// The main loop starts this on the existing feature-status cadence and
-    /// refuses to overlap jobs, so a slow `gh` invocation cannot build up a
-    /// queue of redundant work.
+    /// The main loop starts this on [`ACTIVE_PR_SYNC_INTERVAL`] and refuses to
+    /// overlap jobs, so a slow `gh` invocation cannot build up a queue of
+    /// redundant work.
+    ///
+    /// Work is batched **per repository**, not per feature: one query returns
+    /// every open PR in a repo with its unresolved-thread count, and each
+    /// feature's branch is matched against that locally. A worktree-heavy
+    /// project is then the same cost as a single-feature one.
     pub fn sync_active_prs_background(&mut self) {
         if self.active_pr_bg.is_some() {
             return;
@@ -429,20 +440,32 @@ impl App {
             return;
         }
 
-        let jobs = self
-            .store
-            .projects
-            .iter()
-            .filter(|project| project.is_git)
-            .flat_map(|project| {
-                project.features.iter().map(|feature| ActivePrJob {
+        // Group by repository root. Features of one project share a repo, and
+        // two projects can point at the same one, so the key is the repo path
+        // rather than the project.
+        let mut repos: Vec<ActivePrRepoJob> = Vec::new();
+        for project in self.store.projects.iter().filter(|project| project.is_git) {
+            if project.features.is_empty() {
+                continue;
+            }
+            let features = project
+                .features
+                .iter()
+                .map(|feature| ActivePrJob {
                     feature_id: feature.id.clone(),
                     branch: feature.branch.clone(),
-                    workdir: feature.workdir.clone(),
                 })
-            })
-            .collect::<Vec<_>>();
-        if jobs.is_empty() {
+                .collect::<Vec<_>>();
+
+            match repos.iter_mut().find(|job| job.repo == project.repo) {
+                Some(existing) => existing.features.extend(features),
+                None => repos.push(ActivePrRepoJob {
+                    repo: project.repo.clone(),
+                    features,
+                }),
+            }
+        }
+        if repos.is_empty() {
             return;
         }
 
@@ -450,65 +473,74 @@ impl App {
         self.active_pr_bg = Some(rx);
         std::thread::spawn(move || {
             let mut rate_limited = false;
-            let updates = jobs
-                .into_iter()
-                .map(|job| {
-                    // One depleted budget means every remaining job in this
-                    // pass would fail the same way, so the first one to see it
-                    // stops the rest rather than spending 30 more calls
-                    // discovering it again.
-                    if rate_limited {
-                        return ActivePrUpdate {
-                            feature_id: job.feature_id,
-                            branch: job.branch,
+            let mut updates = Vec::new();
+
+            for job in repos {
+                // One depleted budget means every remaining repository would
+                // fail the same way, so the first to see it stops the rest.
+                if rate_limited {
+                    updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
+                        feature_id: feature.feature_id,
+                        branch: feature.branch,
+                        lookup: ActivePrLookup::Skipped,
+                    }));
+                    continue;
+                }
+
+                // No GitHub remote is a settled answer, not a failure: the
+                // repository simply has no PRs to badge. Costs no API call.
+                let Some((owner, repo)) = crate::github::owner_repo_from_remote(&job.repo) else {
+                    updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
+                        feature_id: feature.feature_id,
+                        branch: feature.branch,
+                        lookup: ActivePrLookup::NoPr,
+                    }));
+                    continue;
+                };
+
+                let open = match GhCli::open_prs(&job.repo, &owner, &repo) {
+                    Ok(open) => open,
+                    Err(GhGraphqlError::RateLimited) => {
+                        rate_limited = true;
+                        updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
+                            feature_id: feature.feature_id,
+                            branch: feature.branch,
                             lookup: ActivePrLookup::Skipped,
-                        };
+                        }));
+                        continue;
                     }
-                    let lookup = match GhCli::resolve_pr(&job.workdir) {
-                        Ok(PrResolution::Found(pr)) => {
-                            // The badge needs a count, not the threads: the
-                            // count-only query scores ~1 GraphQL point where
-                            // `review_threads` scores ~100. See
-                            // `GhCli::unresolved_thread_count`.
-                            let unresolved_threads = match GhCli::unresolved_thread_count(
-                                &job.workdir,
-                                &pr.owner,
-                                &pr.repo,
-                                pr.number,
-                            ) {
-                                Ok(count) => Some(count),
-                                Err(GhGraphqlError::RateLimited) => {
-                                    rate_limited = true;
-                                    None
-                                }
-                                Err(GhGraphqlError::Failed(_)) => None,
-                            };
-                            ActivePrLookup::Found(ActivePrStatus {
-                                branch: job.branch.clone(),
-                                head_sha: pr.head_sha,
-                                number: pr.number,
-                                unresolved_threads,
-                            })
-                        }
-                        Ok(PrResolution::NoPrForBranch) => ActivePrLookup::NoPr,
-                        Err(error) => {
-                            // `gh pr view` is GraphQL too, so it depletes the
-                            // same budget and reports the same way.
-                            if is_rate_limit_message(&error.to_string()) {
-                                rate_limited = true;
-                                ActivePrLookup::Skipped
-                            } else {
-                                ActivePrLookup::Failed(error.to_string())
-                            }
-                        }
+                    Err(GhGraphqlError::Failed(error)) => {
+                        // One failed repository must not blank the badges of
+                        // features in the repositories that did answer.
+                        updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
+                            feature_id: feature.feature_id,
+                            branch: feature.branch,
+                            lookup: ActivePrLookup::Failed(error.clone()),
+                        }));
+                        continue;
+                    }
+                };
+
+                updates.extend(job.features.into_iter().map(|feature| {
+                    let lookup = match open.iter().find(|pr| pr.head_ref == feature.branch) {
+                        Some(pr) => ActivePrLookup::Found(ActivePrStatus {
+                            branch: feature.branch.clone(),
+                            head_sha: pr.head_sha.clone(),
+                            number: pr.number,
+                            unresolved_threads: Some(pr.unresolved_threads),
+                        }),
+                        // The repository answered and this branch was not in
+                        // its open PRs: a confirmed absence, not a failure.
+                        None => ActivePrLookup::NoPr,
                     };
                     ActivePrUpdate {
-                        feature_id: job.feature_id,
-                        branch: job.branch,
+                        feature_id: feature.feature_id,
+                        branch: feature.branch,
                         lookup,
                     }
-                })
-                .collect();
+                }));
+            }
+
             let _ = tx.send(ActivePrSweep {
                 updates,
                 rate_limited,

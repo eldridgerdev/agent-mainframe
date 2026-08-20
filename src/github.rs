@@ -454,74 +454,76 @@ impl GhCli {
         )
     }
 
-    /// Count a PR's unresolved review threads, for the dashboard badge.
+    /// Every open PR in one repository, with each one's unresolved
+    /// review-thread count, in a single query.
     ///
-    /// Deliberately *not* [`Self::review_threads`]: the badge renders a count,
-    /// so fetching every thread's comment ids and discarding them is work
-    /// nothing reads.
+    /// This replaces a `gh pr view` *per feature* plus a thread query per PR.
+    /// Cost now scales with the number of **repositories** on the dashboard
+    /// rather than the number of features, which is what made the badge sweep
+    /// able to exhaust an account's hourly GraphQL budget: 34 features cost ~68
+    /// points a sweep where the repositories behind them cost a handful.
     ///
-    /// The saving is in returned nodes, not in the point score. GitHub charges
-    /// GraphQL by the nodes a query *actually* returns, with a floor of 1, so
-    /// on ordinary PRs both queries measure 1 point — this is not where the
-    /// budget goes (that is call volume; see `ACTIVE_PR_SYNC_INTERVAL`). Cost
-    /// rises with real node counts, so this query can only ever be cheaper than
-    /// the other one, but do not expect a large number here.
+    /// Callers match a feature's branch against [`OpenPr::head_ref`].
     ///
-    /// Returns [`GhGraphqlError::RateLimited`] rather than a generic failure so
-    /// the caller can stop asking instead of spending the next hour retrying
-    /// into an empty budget.
-    pub fn unresolved_thread_count(
+    /// **Fork limitation.** This asks the repository `origin` points at. When a
+    /// worktree's `origin` is a fork and the PR lives on the upstream
+    /// repository, the PR is not in this result and the feature shows no badge.
+    /// `gh pr view` resolved that case because it knows the base repo. Covering
+    /// it means either pulling every open PR of the upstream (unbounded on a
+    /// busy project) or going back to a query per branch, which is the cost
+    /// this replaced — so it is deliberately left out rather than paid for on
+    /// every sweep.
+    pub fn open_prs(
         workdir: &Path,
         owner: &str,
         repo: &str,
-        number: u32,
-    ) -> Result<usize, GhGraphqlError> {
-        const QUERY: &str = "query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){\
-            repository(owner:$owner,name:$repo){pullRequest(number:$pr){\
-            reviewThreads(first:100,after:$cursor){\
+    ) -> Result<Vec<OpenPr>, GhGraphqlError> {
+        // `first:50` rather than 100: cost scales with nodes actually
+        // returned, and a repository with 50 open PRs already returns their
+        // threads too. Pagination covers the rest.
+        const QUERY: &str = "query($owner:String!,$repo:String!,$cursor:String){\
+            repository(owner:$owner,name:$repo){\
+            pullRequests(states:OPEN,first:50,after:$cursor){\
             pageInfo{hasNextPage endCursor}\
-            nodes{isResolved}}}}}";
+            nodes{number headRefName headRefOid\
+            reviewThreads(first:100){nodes{isResolved}}}}}}";
 
-        let mut unresolved = 0usize;
+        let mut all = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
             let mut cmd = Command::new("gh");
             cmd.args(["api", "graphql", "-f", &format!("query={QUERY}")])
                 .args(["-F", &format!("owner={owner}")])
                 .args(["-F", &format!("repo={repo}")])
-                .args(["-F", &format!("pr={number}")])
                 .current_dir(workdir);
             if let Some(c) = &cursor {
                 cmd.args(["-F", &format!("cursor={c}")]);
             }
-            let output = cmd
-                .output()
-                .map_err(|e| GhGraphqlError::Failed(format!("failed to run `gh api graphql`: {e}")))?;
+            let output = cmd.output().map_err(|e| {
+                GhGraphqlError::Failed(format!("failed to run `gh api graphql`: {e}"))
+            })?;
 
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // A depleted budget is reported on stdout as a GraphQL error with a
-            // 200, and on stderr for the REST-shaped secondary limit, so both
-            // are checked before the exit status is trusted.
             if is_rate_limited(&stdout) || is_rate_limited(&stderr) {
                 return Err(GhGraphqlError::RateLimited);
             }
             if !output.status.success() {
                 return Err(GhGraphqlError::Failed(format!(
-                    "`gh api graphql` (unresolved threads) failed: {}",
+                    "`gh api graphql` (open PRs) failed: {}",
                     stderr.trim()
                 )));
             }
 
-            let (page_unresolved, next) = parse_unresolved_count_page(&output.stdout)
+            let (mut page, next) = parse_open_prs_page(&output.stdout)
                 .map_err(|e| GhGraphqlError::Failed(e.to_string()))?;
-            unresolved += page_unresolved;
+            all.append(&mut page);
             match next {
                 Some(c) => cursor = Some(c),
                 None => break,
             }
         }
-        Ok(unresolved)
+        Ok(all)
     }
 
     /// Review-thread resolution state via GraphQL. REST can't report whether a
@@ -825,6 +827,110 @@ fn fetch_paginated<T: DeserializeOwned>(workdir: &Path, endpoint: &str) -> Resul
 
 /// Parse one page of the review-threads GraphQL response into
 /// `(threads, next_cursor)`.
+/// One open pull request, as the dashboard badge needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenPr {
+    pub number: u32,
+    /// GitHub's `headRefName` — the branch the PR is *from*, which is what a
+    /// feature's branch is matched against.
+    pub head_ref: String,
+    pub head_sha: String,
+    pub unresolved_threads: usize,
+}
+
+/// Resolve `owner/repo` from the repository's `origin` remote.
+///
+/// Deliberately local: this is `git remote get-url`, not an API call. The
+/// previous route to owner/repo was parsing it back out of a PR url returned by
+/// `gh pr view`, which meant spending an API call *per feature* just to learn
+/// something every worktree of a repo already agrees on.
+///
+/// Handles both remote spellings: `https://host/owner/repo(.git)` and
+/// `git@host:owner/repo(.git)`.
+pub fn owner_repo_from_remote(workdir: &Path) -> Option<(String, String)> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(workdir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_remote_owner_repo(String::from_utf8_lossy(&output.stdout).trim())
+}
+
+/// Pull `owner/repo` out of a git remote url, in either spelling.
+fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    // The presence of a scheme is what separates the two spellings. Testing
+    // for `://` rather than for `:` matters: `ssh://git@host/owner/repo` has
+    // both, and treating it as scp-style yields the host as the owner.
+    let path = match url.split_once("://") {
+        // Any scheme (https, ssh, git). Whatever precedes the first `/` is the
+        // host, with userinfo already attached to it.
+        Some((_scheme, rest)) => rest.split_once('/')?.1.to_string(),
+        // scp-style: git@host:owner/repo(.git)
+        None => url.split_once(':')?.1.to_string(),
+    };
+
+    let path = path.trim_start_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut segments = path.split('/').filter(|s| !s.is_empty());
+    let owner = segments.next()?.to_string();
+    let repo = segments.next()?.to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo))
+}
+
+/// Sum unresolved threads on one PR node, tolerating a missing connection.
+fn unresolved_in_node(node: &serde_json::Value) -> usize {
+    node["reviewThreads"]["nodes"]
+        .as_array()
+        .map(|threads| {
+            threads
+                .iter()
+                .filter(|t| !t["isResolved"].as_bool().unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Parse one page of the repository-wide open-PR query.
+fn parse_open_prs_page(stdout: &[u8]) -> Result<(Vec<OpenPr>, Option<String>)> {
+    let v: serde_json::Value =
+        serde_json::from_slice(stdout).context("Failed to parse open-PRs GraphQL JSON.")?;
+    let prs = &v["data"]["repository"]["pullRequests"];
+
+    let open = prs["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| {
+                    Some(OpenPr {
+                        number: u32::try_from(n["number"].as_u64()?).ok()?,
+                        head_ref: n["headRefName"].as_str()?.to_string(),
+                        head_sha: n["headRefOid"].as_str().unwrap_or_default().to_string(),
+                        unresolved_threads: unresolved_in_node(n),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let next = if prs["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false) {
+        prs["pageInfo"]["endCursor"].as_str().map(|s| s.to_string())
+    } else {
+        None
+    };
+    Ok((open, next))
+}
+
 /// Why a GraphQL call failed, distinguishing the one cause worth reacting to.
 ///
 /// A depleted point budget is not a transient error: every subsequent call in
@@ -849,51 +955,29 @@ impl std::fmt::Display for GhGraphqlError {
     }
 }
 
-/// Whether an error message from any `gh` invocation reports an exhausted rate
-/// limit. `gh pr view --json` is a GraphQL call too, so it depletes the same
-/// budget and has to be recognised the same way.
-pub fn is_rate_limit_message(text: &str) -> bool {
-    is_rate_limited(text)
-}
-
 /// Whether a `gh` response reports an exhausted rate limit.
 ///
-/// GraphQL returns this as an `errors[].type` of `RATE_LIMITED` with HTTP 200,
-/// so the exit status alone does not catch it; the REST-shaped message is
-/// matched too because secondary limits surface that way on stderr.
+/// Matched on text rather than a parsed shape because GitHub reports this
+/// several different ways, and an exhausted budget must be recognised through
+/// all of them. Observed from a real depleted account:
+///
+/// ```text
+/// {"errors":[{"type":"RATE_LIMIT","code":"graphql_rate_limit",
+///   "message":"API rate limit already exceeded for user ID 1."}]}
+/// ```
+///
+/// Note `RATE_LIMIT`, not the `RATE_LIMITED` the schema's enum suggests, and
+/// note it arrives with HTTP 200 — so neither the exit status nor a guess at
+/// the type name is enough on its own. `already exceeded` also differs from the
+/// REST wording (`API rate limit exceeded`), which is why the last clause
+/// matches the two words separately rather than a fixed phrase.
 fn is_rate_limited(text: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
-    lowered.contains("rate_limited")
-        || lowered.contains("api rate limit exceeded")
+    lowered.contains("graphql_rate_limit")
+        || lowered.contains("rate_limited")
+        || lowered.contains("\"rate_limit\"")
         || lowered.contains("secondary rate limit")
         || (lowered.contains("rate limit") && lowered.contains("exceeded"))
-}
-
-/// Sum the unresolved threads on one page of the count-only query, plus the
-/// cursor for the next page.
-fn parse_unresolved_count_page(stdout: &[u8]) -> Result<(usize, Option<String>)> {
-    let v: serde_json::Value = serde_json::from_slice(stdout)
-        .context("Failed to parse unresolved-threads GraphQL JSON.")?;
-    let rt = &v["data"]["repository"]["pullRequest"]["reviewThreads"];
-
-    let unresolved = rt["nodes"]
-        .as_array()
-        .map(|nodes| {
-            nodes
-                .iter()
-                // A node missing `isResolved` counts as unresolved, matching
-                // `parse_review_threads_page`'s `unwrap_or(false)`.
-                .filter(|n| !n["isResolved"].as_bool().unwrap_or(false))
-                .count()
-        })
-        .unwrap_or(0);
-
-    let next = if rt["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false) {
-        rt["pageInfo"]["endCursor"].as_str().map(|s| s.to_string())
-    } else {
-        None
-    };
-    Ok((unresolved, next))
 }
 
 fn parse_review_threads_page(stdout: &[u8]) -> Result<(Vec<ReviewThread>, Option<String>)> {
@@ -1064,51 +1148,98 @@ fn parse_owner_repo(url: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    /// The badge query must not ask for comments. That nesting is what makes
-    /// `review_threads` cost ~100 GraphQL points instead of 1, and the badge
-    /// only ever renders a count.
+    /// One query answers a whole repository: each PR carries the branch it is
+    /// from and its own unresolved count, so a feature is matched locally
+    /// instead of costing an API call of its own.
     #[test]
-    fn the_unresolved_count_page_parser_ignores_everything_but_resolution() {
-        let json = br#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
+    fn the_open_prs_parser_reads_branch_sha_and_unresolved_count_per_pr() {
+        let json = br#"{"data":{"repository":{"pullRequests":{
             "pageInfo":{"hasNextPage":false,"endCursor":null},
-            "nodes":[{"isResolved":false},{"isResolved":true},{"isResolved":false}]}}}}}"#;
-        let (unresolved, next) = parse_unresolved_count_page(json).unwrap();
-        assert_eq!(unresolved, 2);
+            "nodes":[
+              {"number":546,"headRefName":"todo-plan","headRefOid":"abc1234",
+               "reviewThreads":{"nodes":[{"isResolved":false},{"isResolved":true}]}},
+              {"number":343,"headRefName":"fixture","headRefOid":"def5678",
+               "reviewThreads":{"nodes":[]}}]}}}}"#;
+        let (prs, next) = parse_open_prs_page(json).unwrap();
         assert_eq!(next, None);
+        assert_eq!(prs.len(), 2);
+        assert_eq!(prs[0].number, 546);
+        assert_eq!(prs[0].head_ref, "todo-plan");
+        assert_eq!(prs[0].head_sha, "abc1234");
+        assert_eq!(prs[0].unresolved_threads, 1);
+        assert_eq!(prs[1].unresolved_threads, 0);
     }
 
-    /// A node with no `isResolved` counts as unresolved, matching
+    /// A thread with no `isResolved` counts as unresolved, matching
     /// `parse_review_threads_page`'s `unwrap_or(false)`. Under-reporting work
     /// still to do is the worse failure.
     #[test]
     fn a_thread_missing_its_resolution_counts_as_unresolved() {
-        let json = br#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
-            "pageInfo":{"hasNextPage":false},
-            "nodes":[{},{"isResolved":true}]}}}}}"#;
-        let (unresolved, _) = parse_unresolved_count_page(json).unwrap();
-        assert_eq!(unresolved, 1);
+        let json = br#"{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},
+            "nodes":[{"number":1,"headRefName":"b","headRefOid":"s",
+              "reviewThreads":{"nodes":[{},{"isResolved":true}]}}]}}}}"#;
+        let (prs, _) = parse_open_prs_page(json).unwrap();
+        assert_eq!(prs[0].unresolved_threads, 1);
     }
 
-    /// Pagination carries the cursor, so a PR with more than 100 threads is
-    /// counted in full rather than truncated at the first page.
+    /// Pagination carries the cursor, so a repository with more than 50 open
+    /// PRs is read in full rather than truncated at the first page.
     #[test]
-    fn the_unresolved_count_parser_reports_the_next_cursor() {
-        let json = br#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
-            "pageInfo":{"hasNextPage":true,"endCursor":"Y3Vyc29yOjEwMA=="},
-            "nodes":[{"isResolved":false}]}}}}}"#;
-        let (unresolved, next) = parse_unresolved_count_page(json).unwrap();
-        assert_eq!(unresolved, 1);
-        assert_eq!(next.as_deref(), Some("Y3Vyc29yOjEwMA=="));
+    fn the_open_prs_parser_reports_the_next_cursor() {
+        let json = br#"{"data":{"repository":{"pullRequests":{
+            "pageInfo":{"hasNextPage":true,"endCursor":"Y3Vyc29yOjUw"},
+            "nodes":[]}}}}"#;
+        let (prs, next) = parse_open_prs_page(json).unwrap();
+        assert!(prs.is_empty());
+        assert_eq!(next.as_deref(), Some("Y3Vyc29yOjUw"));
     }
 
-    /// An empty or shape-drifted response is zero threads, not an error: the
-    /// badge degrades to "no unresolved threads" rather than taking the sweep
-    /// down.
+    /// An empty or shape-drifted response is "no open PRs", not an error: the
+    /// sweep degrades to clearing badges rather than failing the repository.
     #[test]
-    fn an_unexpected_shape_counts_as_no_threads() {
-        let (unresolved, next) = parse_unresolved_count_page(b"{}").unwrap();
-        assert_eq!(unresolved, 0);
+    fn an_unexpected_shape_reads_as_no_open_prs() {
+        let (prs, next) = parse_open_prs_page(b"{}").unwrap();
+        assert!(prs.is_empty());
         assert_eq!(next, None);
+    }
+
+    /// A PR missing `headRefName` cannot be matched to a feature branch, so it
+    /// is dropped rather than matched against every feature with an empty
+    /// branch name.
+    #[test]
+    fn a_pr_without_a_head_branch_is_skipped() {
+        let json = br#"{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},
+            "nodes":[{"number":7,"headRefOid":"s","reviewThreads":{"nodes":[]}}]}}}}"#;
+        let (prs, _) = parse_open_prs_page(json).unwrap();
+        assert!(prs.is_empty());
+    }
+
+    /// Owner/repo comes from the git remote, in either spelling, so learning it
+    /// costs no API call at all.
+    #[test]
+    fn owner_repo_is_read_from_either_remote_spelling() {
+        for url in [
+            "https://github.com/eldridgerdev/agent-mainframe.git",
+            "https://github.com/eldridgerdev/agent-mainframe",
+            "git@github.com:eldridgerdev/agent-mainframe.git",
+            "ssh://git@github.com/eldridgerdev/agent-mainframe.git",
+            "git@git.example.com:eldridgerdev/agent-mainframe",
+        ] {
+            assert_eq!(
+                parse_remote_owner_repo(url),
+                Some(("eldridgerdev".into(), "agent-mainframe".into())),
+                "failed on {url}"
+            );
+        }
+    }
+
+    /// A remote that names no repository yields nothing, so the sweep reports
+    /// "no PR" instead of querying a repo it cannot name.
+    #[test]
+    fn an_unusable_remote_yields_no_owner_repo() {
+        for url in ["", "   ", "https://github.com/onlyowner", "not a url"] {
+            assert_eq!(parse_remote_owner_repo(url), None, "failed on {url:?}");
+        }
     }
 
     /// GraphQL reports a depleted budget with HTTP 200 and an `errors[].type`,
@@ -1117,6 +1248,13 @@ mod tests {
     /// budget and fails its own way.
     #[test]
     fn rate_limit_detection_covers_how_gh_actually_reports_it() {
+        // Captured verbatim from a real depleted account. Note `RATE_LIMIT`
+        // (not the `RATE_LIMITED` the enum name suggests) and "already
+        // exceeded" (not REST's "exceeded") — this case is why the matcher
+        // does not key on one phrase.
+        assert!(is_rate_limited(
+            r#"{"errors":[{"type":"RATE_LIMIT","code":"graphql_rate_limit","message":"API rate limit already exceeded for user ID 72774132."}]}"#
+        ));
         assert!(is_rate_limited(
             r#"{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}"#
         ));

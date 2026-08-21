@@ -478,21 +478,11 @@ impl GhCli {
         owner: &str,
         repo: &str,
     ) -> Result<Vec<OpenPr>, GhGraphqlError> {
-        // `first:50` rather than 100: cost scales with nodes actually
-        // returned, and a repository with 50 open PRs already returns their
-        // threads too. Pagination covers the rest.
-        const QUERY: &str = "query($owner:String!,$repo:String!,$cursor:String){\
-            repository(owner:$owner,name:$repo){\
-            pullRequests(states:OPEN,first:50,after:$cursor){\
-            pageInfo{hasNextPage endCursor}\
-            nodes{number headRefName headRefOid\
-            reviewThreads(first:100){nodes{isResolved}}}}}}";
-
         let mut all = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
             let mut cmd = Command::new("gh");
-            cmd.args(["api", "graphql", "-f", &format!("query={QUERY}")])
+            cmd.args(["api", "graphql", "-f", &format!("query={OPEN_PRS_QUERY}")])
                 .args(["-F", &format!("owner={owner}")])
                 .args(["-F", &format!("repo={repo}")])
                 .current_dir(workdir);
@@ -534,21 +524,20 @@ impl GhCli {
         repo: &str,
         number: u32,
     ) -> Result<Vec<ReviewThread>> {
-        const QUERY: &str = "query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){\
-            repository(owner:$owner,name:$repo){pullRequest(number:$pr){\
-            reviewThreads(first:100,after:$cursor){\
-            pageInfo{hasNextPage endCursor}\
-            nodes{id isResolved comments(first:100){nodes{databaseId}}}}}}}";
-
         let mut threads = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
             let mut cmd = Command::new("gh");
-            cmd.args(["api", "graphql", "-f", &format!("query={QUERY}")])
-                .args(["-F", &format!("owner={owner}")])
-                .args(["-F", &format!("repo={repo}")])
-                .args(["-F", &format!("pr={number}")])
-                .current_dir(workdir);
+            cmd.args([
+                "api",
+                "graphql",
+                "-f",
+                &format!("query={REVIEW_THREADS_QUERY}"),
+            ])
+            .args(["-F", &format!("owner={owner}")])
+            .args(["-F", &format!("repo={repo}")])
+            .args(["-F", &format!("pr={number}")])
+            .current_dir(workdir);
             if let Some(c) = &cursor {
                 cmd.args(["-F", &format!("cursor={c}")]);
             }
@@ -827,6 +816,47 @@ fn fetch_paginated<T: DeserializeOwned>(workdir: &Path, endpoint: &str) -> Resul
 
 /// Parse one page of the review-threads GraphQL response into
 /// `(threads, next_cursor)`.
+/// PR Triage's review-thread query: thread resolution plus the comment ids
+/// that map each comment to its thread.
+const REVIEW_THREADS_QUERY: &str = "
+    query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$pr){
+          reviewThreads(first:100,after:$cursor){
+            pageInfo{hasNextPage endCursor}
+            nodes{id isResolved comments(first:100){nodes{databaseId}}}
+          }
+        }
+      }
+    }";
+
+/// The dashboard badge's per-repository query.
+///
+/// Written as a real multi-line string, not with `\` continuations. A
+/// continuation eats the newline *and* the following indentation, so a line
+/// ending in one field name and the next beginning with another silently fuses
+/// them — which is exactly how this query first shipped, asking GitHub for
+/// `headRefOidreviewThreads` and failing every call. GraphQL is
+/// whitespace-insensitive, so real newlines cost nothing.
+///
+/// `first:50` rather than 100: cost scales with nodes actually returned, and a
+/// repository with 50 open PRs already returns their threads too. Pagination
+/// covers the rest.
+const OPEN_PRS_QUERY: &str = "
+            query($owner:String!,$repo:String!,$cursor:String){
+              repository(owner:$owner,name:$repo){
+                pullRequests(states:OPEN,first:50,after:$cursor){
+                  pageInfo{hasNextPage endCursor}
+                  nodes{
+                    number
+                    headRefName
+                    headRefOid
+                    reviewThreads(first:100){nodes{isResolved}}
+                  }
+                }
+              }
+            }";
+
 /// One open pull request, as the dashboard badge needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenPr {
@@ -1148,6 +1178,127 @@ fn parse_owner_repo(url: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    /// Every identifier in a GraphQL document, in order.
+    fn graphql_identifiers(query: &str) -> Vec<String> {
+        query
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|token| !token.is_empty() && !token.starts_with(|c: char| c.is_ascii_digit()))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The query has to be *checked*, not just its parser.
+    ///
+    /// This module's tests exercised `parse_open_prs_page` against handcrafted
+    /// JSON and passed while the query itself was malformed: a `\` line
+    /// continuation had fused two field names into `headRefOidreviewThreads`,
+    /// so GitHub rejected every call and the badge silently reported nothing.
+    /// Nothing that ran offline could see it, because nothing looked at the
+    /// query string.
+    ///
+    /// An unknown identifier is the signature of exactly that failure — two
+    /// legal names concatenated make one illegal one — so the assertion is
+    /// that the document contains no identifier this query has no business
+    /// asking for.
+    #[test]
+    fn the_open_prs_query_names_every_field_as_its_own_token() {
+        const EXPECTED: &[&str] = &[
+            // operation + variables
+            "query",
+            "owner",
+            "String",
+            "repo",
+            "cursor",
+            // selection
+            "repository",
+            "name",
+            "pullRequests",
+            "states",
+            "OPEN",
+            "first",
+            "after",
+            "pageInfo",
+            "hasNextPage",
+            "endCursor",
+            "nodes",
+            "number",
+            "headRefName",
+            "headRefOid",
+            "reviewThreads",
+            "isResolved",
+        ];
+
+        let identifiers = graphql_identifiers(OPEN_PRS_QUERY);
+
+        for field in [
+            "number",
+            "headRefName",
+            "headRefOid",
+            "reviewThreads",
+            "isResolved",
+            "hasNextPage",
+            "endCursor",
+        ] {
+            assert!(
+                identifiers.iter().any(|token| token == field),
+                "`{field}` is missing or fused with a neighbour; query was:\n{OPEN_PRS_QUERY}"
+            );
+        }
+
+        for token in &identifiers {
+            assert!(
+                EXPECTED.contains(&token.as_str()),
+                "unexpected identifier `{token}` — two field names have probably \
+                 run together; query was:\n{OPEN_PRS_QUERY}"
+            );
+        }
+    }
+
+    /// The same check for the review-thread query PR Triage uses. Its line
+    /// breaks happen to fall after braces today, so it survived the bug above
+    /// by luck rather than by design.
+    #[test]
+    fn the_review_threads_query_names_every_field_as_its_own_token() {
+        const EXPECTED: &[&str] = &[
+            "query",
+            "owner",
+            "String",
+            "repo",
+            "pr",
+            "Int",
+            "cursor",
+            "repository",
+            "name",
+            "pullRequest",
+            "number",
+            "reviewThreads",
+            "first",
+            "after",
+            "pageInfo",
+            "hasNextPage",
+            "endCursor",
+            "nodes",
+            "id",
+            "isResolved",
+            "comments",
+            "databaseId",
+        ];
+
+        let identifiers = graphql_identifiers(REVIEW_THREADS_QUERY);
+        for field in ["id", "isResolved", "comments", "databaseId"] {
+            assert!(
+                identifiers.iter().any(|token| token == field),
+                "`{field}` is missing or fused with a neighbour"
+            );
+        }
+        for token in &identifiers {
+            assert!(
+                EXPECTED.contains(&token.as_str()),
+                "unexpected identifier `{token}` — two field names have probably run together"
+            );
+        }
+    }
+
     /// One query answers a whole repository: each PR carries the branch it is
     /// from and its own unresolved count, so a feature is matched locally
     /// instead of costing an API call of its own.

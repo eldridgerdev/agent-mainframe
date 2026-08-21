@@ -81,14 +81,18 @@ doc always says exactly what remains.
   transcripts persisted for re-runs. Six epics: interview engine,
   config templates, AI rounds, synthesis + review gate, on-demand +
   persistence, polish.
-- [Feature TODOs](feature-todos-plan.md) — _All epics shipped._ A
-  per-project TODO list added as a `SessionKind::Todos` session via the
-  `s` picker (one per project, native UI, SQLite-backed). Each TODO
-  carries priority, notes, and done state; the list can be re-homed or
-  dropped when its host feature is deleted. Full editing
-  (add/edit/notes/done/priority/reorder/delete + a scratchpad note),
-  spawning an agent from a TODO with a pre-filled composer prompt, and
-  quick-capture from any session view are all in place.
+- [Feature TODOs](feature-todos-plan.md) — _All epics shipped._ Scoped
+  TODO lists added as a `SessionKind::Todos` session via the `s` picker
+  (one per feature, native UI, SQLite-backed). A feature's editor opens
+  on its own **worktree** list, with the **project** list and a
+  machine-wide **global** list one keypress away as side panes; items
+  move or copy between scopes. Each TODO carries priority, notes, and
+  done state. Full editing (add/edit/notes/done/priority/reorder/delete
+  + a per-list scratchpad), spawning an agent from a TODO with a
+  pre-filled composer prompt, "implement next" across the visible
+  scopes, plan mode from a TODO, and quick-capture from any session view
+  are all in place. Deleting a feature asks what happens to the
+  unfinished work in its worktree list.
 - [Learning Mode](learning-mode-plan.md) — _All epics shipped._ A read-only
   overlay (`K`) for studying a project you didn't write: browse the repo as a
   collapsible folder tree or just the branch's changes, anchor a question to a

@@ -75,8 +75,9 @@ pub use prompt_library::{
 pub use search::handle_search_key;
 pub use skill_picker::handle_skill_picker_key;
 pub use todos::{
-    handle_todo_implement_choice_key, handle_todo_quick_capture_key,
-    handle_todos_host_reassign_key, handle_todos_key,
+    handle_todo_delete_disposition_key, handle_todo_implement_choice_key,
+    handle_todo_quick_capture_key, handle_todo_spawn_target_key, handle_todos_host_reassign_key,
+    handle_todos_key,
 };
 pub use view::handle_view_key;
 
@@ -90,6 +91,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::TodoQuickCapture(_) => handle_todo_quick_capture_key(app, key),
         AppMode::TodosHostReassign(_) => handle_todos_host_reassign_key(app, key.code),
         AppMode::TodoImplementChoice(_) => handle_todo_implement_choice_key(app, key.code),
+        AppMode::TodoSpawnTarget(_) => handle_todo_spawn_target_key(app, key.code),
+        AppMode::TodoDeleteDisposition(_) => handle_todo_delete_disposition_key(app, key.code),
         AppMode::CreatingProject(_) => handle_create_project_key(app, key),
         AppMode::BrowsingPath(_) => handle_browse_path_key(app, key),
         AppMode::CreatingFeature(_) => handle_create_feature_key(app, key.code),

@@ -1,19 +1,26 @@
-//! Native TODOs overlay: open/close, navigation, and editing. Agent-spawn
-//! lands in a later epic (see `docs/backlog/feature-todos-plan.md`).
+//! Native TODOs overlay: open/close, navigation, and editing across the three
+//! scopes a feature can file work under.
 //!
-//! Edits mutate the in-memory [`TodoViewState`] and, when a DB is present,
-//! persist the change. The in-memory list is the source of truth for the
-//! overlay (so it works without a DB, e.g. in tests).
+//! The overlay shows up to three panes — the feature's own **worktree** list,
+//! its **project** list, and the machine-wide **global** list — of which only
+//! the worktree pane is on screen until the side panes are revealed. Each pane
+//! keeps its own items, cursor, scroll, and scratchpad, so moving focus never
+//! disturbs the pane being left.
+//!
+//! Edits mutate the in-memory [`TodoPane`] and, when a DB is present, persist
+//! the change. The in-memory panes are the source of truth for the overlay (so
+//! it works without a DB, e.g. in tests).
 
 use anyhow::Result;
 use uuid::Uuid;
 
 use crate::app::{
-    App, AppMode, Selection, StartIntent, TodoImplementChoice, TodoImplementChoiceState,
-    TodoLaunchAction, TodoLaunchStep, TodoPlanDestination, TodoPlanOrigin, TodoViewState,
+    App, AppMode, Selection, StartIntent, TodoDeleteDisposition, TodoImplementChoice,
+    TodoImplementChoiceState, TodoLaunchAction, TodoLaunchStep, TodoPane, TodoPaneKind,
+    TodoPlanDestination, TodoPlanOrigin, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
     TodosHostReassignState,
 };
-use crate::db::todos::{Todo, TodoPriority};
+use crate::db::todos::{Todo, TodoPriority, TodoScope};
 
 /// The selected TODO and the overlay context needed to act on it, gathered in
 /// one read so callers do not re-borrow `self.mode` field by field.
@@ -25,6 +32,9 @@ pub(crate) struct SelectedTodoContext {
     pub fallback_fi: usize,
     pub host_feature_id: Option<String>,
     pub list_id: Option<String>,
+    /// Which pane the item came from — the scope decides whether a spawn can
+    /// pick its own feature or has to ask for one.
+    pub pane_kind: TodoPaneKind,
     /// The list-level scratchpad note (`todo_lists.carry_over`).
     pub scratchpad: Option<String>,
 }
@@ -39,21 +49,120 @@ pub(crate) enum NextTodo {
     Started(usize),
 }
 
-/// The list "implement next" scans and the indices it acts under, gathered from
-/// whichever surface invoked it.
-pub(crate) struct ImplementNextCtx {
-    pub pi: usize,
-    /// The feature the TODOs *session* lives under, used when the list's own
-    /// host feature can no longer be resolved.
-    pub fallback_fi: usize,
-    pub host_feature_id: Option<String>,
+/// One scope's list as "implement next" sees it.
+pub(crate) struct ImplementNextList {
+    pub kind: TodoPaneKind,
+    pub list_id: Option<String>,
+    /// The feature whose agent and mode a spawn from this list would inherit,
+    /// when the scope names one. `None` for the global list, and unused for
+    /// project scope, which asks the user regardless.
+    pub host: Option<(usize, usize)>,
     pub todos: Vec<Todo>,
 }
 
+/// The lists "implement next" scans and the indices it acts under, gathered
+/// from whichever surface invoked it.
+pub(crate) struct ImplementNextCtx {
+    pub pi: usize,
+    /// The feature the TODOs *session* lives under, used when a list's own
+    /// host feature can no longer be resolved.
+    pub fallback_fi: usize,
+    pub lists: Vec<ImplementNextList>,
+}
+
+impl ImplementNextCtx {
+    /// Every list's items, in the order ties between scopes resolve.
+    fn slices(&self) -> Vec<&[Todo]> {
+        self.lists.iter().map(|l| l.todos.as_slice()).collect()
+    }
+}
+
 impl App {
-    /// Open the native TODOs overlay for the TODOs session at `(pi, fi, si)`.
-    /// Loads the project's list and items from the DB; with no DB (tests) it
-    /// opens an empty list.
+    // ----- scopes ---------------------------------------------------------
+
+    /// Normalize a workdir into the key a worktree list is filed under.
+    ///
+    /// Trailing separators are the one difference that shows up in practice —
+    /// a path typed with a slash and the same path without it are the same
+    /// checkout — and letting them through would silently hand the user a
+    /// second, empty list for a worktree they already have one for.
+    pub(crate) fn todo_workdir_key(workdir: &std::path::Path) -> String {
+        let raw = workdir.to_string_lossy();
+        let trimmed = raw.trim_end_matches(std::path::MAIN_SEPARATOR);
+        if trimmed.is_empty() {
+            raw.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
+
+    /// The worktree scope for `(pi, fi)`, or `None` when that feature sits on
+    /// the repo root and so has no checkout of its own to scope a list to.
+    pub(crate) fn worktree_todo_scope(&self, pi: usize, fi: usize) -> Option<TodoScope> {
+        let project = self.store.projects.get(pi)?;
+        let feature = project.features.get(fi)?;
+        feature.is_worktree.then(|| TodoScope::Worktree {
+            project_id: project.id.clone(),
+            workdir: Self::todo_workdir_key(&feature.workdir),
+        })
+    }
+
+    /// The scope a write from `(pi, fi)` lands in when no pane says otherwise:
+    /// the feature's worktree list, or the project's list at the repo root.
+    ///
+    /// Quick capture and the session-create path share this rule, so a note
+    /// taken while working in a checkout goes to that checkout's list either
+    /// way.
+    pub(crate) fn default_todo_scope(&self, pi: usize, fi: usize) -> Option<TodoScope> {
+        self.worktree_todo_scope(pi, fi).or_else(|| {
+            self.store.projects.get(pi).map(|p| TodoScope::Project {
+                project_id: p.id.clone(),
+            })
+        })
+    }
+
+    /// How a scope is named to the user: the scope's label plus what it is a
+    /// list *for*.
+    pub(crate) fn todo_scope_label(&self, scope: &TodoScope) -> String {
+        match scope {
+            TodoScope::Worktree { workdir, .. } => {
+                let name = self
+                    .store
+                    .projects
+                    .iter()
+                    .flat_map(|p| p.features.iter())
+                    .find(|f| Self::todo_workdir_key(&f.workdir) == *workdir)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| {
+                        std::path::Path::new(workdir)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| workdir.clone())
+                    });
+                format!("Worktree · {name}")
+            }
+            TodoScope::Project { project_id } => {
+                let name = self
+                    .store
+                    .projects
+                    .iter()
+                    .find(|p| p.id == *project_id)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| "project".to_string());
+                format!("Project · {name}")
+            }
+            TodoScope::Global => "Global".to_string(),
+        }
+    }
+
+    // ----- open / close ---------------------------------------------------
+
+    /// Open the native TODOs overlay for the TODOs session at `(pi, fi)`.
+    ///
+    /// The panes are resolved from the host feature: a worktree pane when the
+    /// feature has a checkout of its own, then the project pane, then the
+    /// global one. Lists are *loaded*, never created — an untouched scope
+    /// leaves no row behind, and the first write creates what it needs.
     pub fn open_todos_view(&mut self, pi: usize, fi: usize) -> Result<()> {
         let (project_id, project_name, feature_name) = match self
             .store
@@ -69,30 +178,58 @@ impl App {
             None => return Ok(()),
         };
 
-        let (list, todos) = self.load_todos_for_project(&project_id);
+        let mut scopes: Vec<(TodoPaneKind, TodoScope, String)> = Vec::new();
+        if let Some(scope) = self.worktree_todo_scope(pi, fi) {
+            scopes.push((TodoPaneKind::Worktree, scope, feature_name.clone()));
+        }
+        scopes.push((
+            TodoPaneKind::Project,
+            TodoScope::Project {
+                project_id: project_id.clone(),
+            },
+            project_name.clone(),
+        ));
+        scopes.push((TodoPaneKind::Global, TodoScope::Global, String::new()));
+
+        let panes = scopes
+            .into_iter()
+            .map(|(kind, scope, title)| {
+                let (list, todos) = self.load_todos_for_scope(&scope);
+                TodoPane {
+                    kind,
+                    scope,
+                    title,
+                    list,
+                    todos,
+                    selected: 0,
+                    scroll_offset: 0,
+                }
+            })
+            .collect();
 
         self.mode = AppMode::Todos(TodoViewState {
-            project_id,
             pi,
             fi,
             project_name,
             feature_name,
-            list,
-            todos,
-            selected: 0,
-            scroll_offset: 0,
+            panes,
+            // Index 0 is the worktree pane when there is one, the project pane
+            // otherwise — which is exactly where focus should start.
+            focus: 0,
+            side_panes_open: self.config.todo_side_panes,
             editor: None,
             pending_delete: false,
             launch: None,
+            scope_move: None,
         });
         Ok(())
     }
 
-    /// Load `(list, todos)` for a project from the DB, or `(None, empty)` when
-    /// no DB is available.
-    fn load_todos_for_project(
+    /// Load `(list, todos)` for a scope from the DB, or `(None, empty)` when
+    /// no DB is available or the scope has no list yet.
+    fn load_todos_for_scope(
         &mut self,
-        project_id: &str,
+        scope: &TodoScope,
     ) -> (
         Option<crate::db::todos::TodoList>,
         Vec<crate::db::todos::Todo>,
@@ -100,7 +237,7 @@ impl App {
         let Some(db) = &self.db else {
             return (None, Vec::new());
         };
-        let list = match db.todo_list(project_id) {
+        let list = match db.todo_list(scope) {
             Ok(list) => list,
             Err(e) => {
                 let msg = format!("failed to load todo list: {e}");
@@ -149,42 +286,98 @@ impl App {
         }
     }
 
+    // ----- panes ----------------------------------------------------------
+
+    fn todos_pane(&self) -> Option<&TodoPane> {
+        match &self.mode {
+            AppMode::Todos(state) => state.focused(),
+            _ => None,
+        }
+    }
+
+    fn todos_pane_mut(&mut self) -> Option<&mut TodoPane> {
+        match &mut self.mode {
+            AppMode::Todos(state) => state.focused_mut(),
+            _ => None,
+        }
+    }
+
     pub fn todos_select_next(&mut self) {
-        if let AppMode::Todos(state) = &mut self.mode {
-            let len = state.todos.len();
+        if let Some(pane) = self.todos_pane_mut() {
+            let len = pane.todos.len();
             if len > 0 {
-                state.selected = (state.selected + 1) % len;
+                pane.selected = (pane.selected + 1) % len;
             }
         }
     }
 
     pub fn todos_select_prev(&mut self) {
-        if let AppMode::Todos(state) = &mut self.mode {
-            let len = state.todos.len();
+        if let Some(pane) = self.todos_pane_mut() {
+            let len = pane.todos.len();
             if len > 0 {
-                state.selected = if state.selected == 0 {
+                pane.selected = if pane.selected == 0 {
                     len - 1
                 } else {
-                    state.selected - 1
+                    pane.selected - 1
                 };
             }
         }
     }
 
+    /// `Tab` / `Shift+Tab`: move focus between the panes that are on screen.
+    ///
+    /// With the side panes closed there is only one pane to be on, so this
+    /// says which key opens the others rather than swallowing the press.
+    pub fn todos_cycle_focus(&mut self, delta: isize) {
+        let AppMode::Todos(state) = &mut self.mode else {
+            return;
+        };
+        let visible = state.visible_pane_count();
+        if visible <= 1 {
+            self.push_toast_info("Only one TODO list is showing — press \\ to open the side panes");
+            return;
+        }
+        let next = (state.focus as isize + delta).rem_euclid(visible as isize);
+        state.focus = next as usize;
+    }
+
+    /// `\`: reveal or hide the project and global panes, remembering the
+    /// choice app-wide so the dashboard's `I` scans the same scopes.
+    pub fn todos_toggle_side_panes(&mut self) {
+        let open = match &mut self.mode {
+            AppMode::Todos(state) => {
+                state.side_panes_open = !state.side_panes_open;
+                state.clamp_focus();
+                state.side_panes_open
+            }
+            _ => return,
+        };
+        self.config.todo_side_panes = open;
+        self.save_config();
+    }
+
     // ----- quick-capture from a session view ----------------------------
 
     /// Open the one-line TODO quick-capture over the current session view. The
-    /// typed title is appended to the current project's list on commit. No-op
-    /// unless a session view is active.
+    /// typed title is appended to the session feature's own list on commit —
+    /// its worktree list, or the project's at the repo root — and the overlay
+    /// names that list so the target is never a guess. No-op unless a session
+    /// view is active.
     pub fn open_todo_quick_capture(&mut self) {
         let view = match &self.mode {
             AppMode::Viewing(view) => view.clone(),
             _ => return,
         };
         let project_name = view.project_name.clone();
+        let list_label = self
+            .viewing_indices(&view)
+            .and_then(|(pi, fi)| self.default_todo_scope(pi, fi))
+            .map(|scope| self.todo_scope_label(&scope))
+            .unwrap_or_else(|| "this project's list".to_string());
         self.mode = AppMode::TodoQuickCapture(crate::app::TodoQuickCaptureState {
             view,
             project_name,
+            list_label,
             input: String::new(),
         });
     }
@@ -196,10 +389,10 @@ impl App {
         }
     }
 
-    /// Append the typed title to the current project's TODO list, then return to
-    /// the session view. An empty title is a no-op cancel. If the project has no
-    /// TODOs session yet, one is created (with its list) under the current
-    /// feature before the item is appended.
+    /// Append the typed title to the session feature's list, then return to
+    /// the session view. An empty title is a no-op cancel. If the feature has
+    /// no TODOs session yet, one is created (with its list) before the item is
+    /// appended.
     pub fn commit_todo_quick_capture(&mut self) -> Result<()> {
         let (view, title) = match &self.mode {
             AppMode::TodoQuickCapture(state) => {
@@ -246,26 +439,27 @@ impl App {
         Some((pi, fi))
     }
 
-    /// Ensure the project has a TODOs session + list (creating one under feature
-    /// `fi` when it doesn't), then append `title` to the list.
+    /// Ensure the feature has a TODOs session (creating one when it doesn't),
+    /// then append `title` to the scope that feature writes to by default.
     fn quick_capture_todo(&mut self, pi: usize, fi: usize, title: &str) -> Result<()> {
-        // No-op create when the project already has a TODOs session; otherwise
-        // this adds one (and its list) under the current feature.
+        // No-op create when the feature already has a TODOs session; otherwise
+        // this adds one (and its list).
         self.add_todos_session_for_picker(pi, fi, None)?;
 
-        let (project_id, feature_id) = match self.store.projects.get(pi) {
-            Some(project) => (
-                project.id.clone(),
-                project.features.get(fi).map(|f| f.id.clone()),
-            ),
-            None => anyhow::bail!("project not found"),
+        let Some(scope) = self.default_todo_scope(pi, fi) else {
+            anyhow::bail!("project not found");
         };
-        let feature_id = feature_id.unwrap_or_default();
+        let feature_id = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| f.id.clone());
 
         // Persist only when a DB is present; without one (tests) the session was
         // still created in memory, matching the overlay's DB-optional behavior.
         if let Some(db) = &self.db {
-            let list = db.load_or_create_todo_list(&project_id, &feature_id)?;
+            let list = db.load_or_create_todo_list(&scope, feature_id.as_deref())?;
             db.add_todo(&list.id, title, None, TodoPriority::Med)?;
         }
         Ok(())
@@ -285,17 +479,17 @@ impl App {
         }
     }
 
-    /// Start adding a new TODO (empty title editor).
+    /// Start adding a new TODO (empty title editor) in the focused pane.
     pub fn todos_begin_add(&mut self) {
         self.todos_begin_edit(crate::app::TodoEditTarget::New, String::new());
     }
 
     /// Start editing the selected TODO's title.
     pub fn todos_begin_edit_title(&mut self) {
-        let initial = match &self.mode {
-            AppMode::Todos(state) => state.todos.get(state.selected).map(|t| t.title.clone()),
-            _ => None,
-        };
+        let initial = self
+            .todos_pane()
+            .and_then(|p| p.selected_todo())
+            .map(|t| t.title.clone());
         if let Some(initial) = initial {
             self.todos_begin_edit(crate::app::TodoEditTarget::Title, initial);
         }
@@ -303,28 +497,25 @@ impl App {
 
     /// Start editing the selected TODO's notes/detail body.
     pub fn todos_begin_edit_notes(&mut self) {
-        let initial = match &self.mode {
-            AppMode::Todos(state) => state
-                .todos
-                .get(state.selected)
-                .map(|t| t.body.clone().unwrap_or_default()),
-            _ => None,
-        };
+        let initial = self
+            .todos_pane()
+            .and_then(|p| p.selected_todo())
+            .map(|t| t.body.clone().unwrap_or_default());
         if let Some(initial) = initial {
             self.todos_begin_edit(crate::app::TodoEditTarget::Notes, initial);
         }
     }
 
-    /// Start editing the list's free-form scratchpad note.
+    /// Start editing the focused list's free-form scratchpad note.
     pub fn todos_begin_edit_scratchpad(&mut self) {
-        let initial = match &self.mode {
-            AppMode::Todos(state) => state
-                .list
-                .as_ref()
-                .and_then(|l| l.carry_over.clone())
-                .unwrap_or_default(),
-            _ => return,
+        let Some(pane) = self.todos_pane() else {
+            return;
         };
+        let initial = pane
+            .list
+            .as_ref()
+            .and_then(|l| l.carry_over.clone())
+            .unwrap_or_default();
         self.todos_begin_edit(crate::app::TodoEditTarget::Scratchpad, initial);
     }
 
@@ -379,29 +570,41 @@ impl App {
         Ok(())
     }
 
-    /// Resolve the list id for the current overlay, creating the list (hosted
-    /// by the current feature) on first write. With a DB this persists the
-    /// list; without one it synthesizes an in-memory list so edits still work.
-    fn todos_ensure_list_id(&mut self) -> Option<String> {
-        if let AppMode::Todos(state) = &self.mode
-            && let Some(list) = &state.list
-        {
-            return Some(list.id.clone());
-        }
-        let (project_id, pi, fi) = match &self.mode {
-            AppMode::Todos(state) => (state.project_id.clone(), state.pi, state.fi),
+    /// Resolve the list id for pane `pane_index`, creating the list on first
+    /// write. With a DB this persists the list; without one it synthesizes an
+    /// in-memory list so edits still work.
+    ///
+    /// A worktree or project list is hosted by the feature the overlay was
+    /// opened under; the global list has no host feature to record.
+    fn todos_ensure_list_id_for(&mut self, pane_index: usize) -> Option<String> {
+        let (scope, existing, pi, fi) = match &self.mode {
+            AppMode::Todos(state) => {
+                let pane = state.panes.get(pane_index)?;
+                (
+                    pane.scope.clone(),
+                    pane.list.as_ref().map(|l| l.id.clone()),
+                    state.pi,
+                    state.fi,
+                )
+            }
             _ => return None,
         };
-        let feature_id = self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-            .map(|f| f.id.clone())
-            .unwrap_or_default();
+        if let Some(id) = existing {
+            return Some(id);
+        }
+
+        let feature_id = match scope {
+            TodoScope::Global => None,
+            _ => self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .map(|f| f.id.clone()),
+        };
 
         let list = match self.db.as_ref() {
-            Some(db) => match db.load_or_create_todo_list(&project_id, &feature_id) {
+            Some(db) => match db.load_or_create_todo_list(&scope, feature_id.as_deref()) {
                 Ok(list) => list,
                 Err(e) => {
                     self.log_error("todos", format!("failed to create todo list: {e}"));
@@ -410,7 +613,7 @@ impl App {
             },
             None => crate::db::todos::TodoList {
                 id: Uuid::new_v4().to_string(),
-                project_id,
+                scope,
                 feature_id,
                 carry_over: None,
                 created_at: String::new(),
@@ -418,27 +621,34 @@ impl App {
             },
         };
         let id = list.id.clone();
-        if let AppMode::Todos(state) = &mut self.mode {
-            state.list = Some(list);
+        if let AppMode::Todos(state) = &mut self.mode
+            && let Some(pane) = state.panes.get_mut(pane_index)
+        {
+            pane.list = Some(list);
         }
         Some(id)
     }
 
-    /// Append a new TODO with `title`, persisting and selecting it.
+    /// The focused pane's list id, created on first write.
+    fn todos_ensure_list_id(&mut self) -> Option<String> {
+        let focus = match &self.mode {
+            AppMode::Todos(state) => state.focus,
+            _ => return None,
+        };
+        self.todos_ensure_list_id_for(focus)
+    }
+
+    /// Append a new TODO with `title` to the focused pane, persisting and
+    /// selecting it.
     fn todos_add(&mut self, title: String) -> Result<()> {
         let list_id = self.todos_ensure_list_id();
 
         // Persist via DB when available; otherwise build an in-memory item.
-        let next_order = match &self.mode {
-            AppMode::Todos(state) => state
-                .todos
-                .iter()
-                .map(|t| t.sort_order)
-                .max()
-                .map(|m| m + 1)
-                .unwrap_or(0),
-            _ => 0,
-        };
+        let next_order = self
+            .todos_pane()
+            .and_then(|p| p.todos.iter().map(|t| t.sort_order).max())
+            .map(|m| m + 1)
+            .unwrap_or(0);
 
         let new_todo = match (&self.db, &list_id) {
             (Some(db), Some(list_id)) => db.add_todo(list_id, &title, None, TodoPriority::Med)?,
@@ -459,36 +669,36 @@ impl App {
         };
 
         let new_id = new_todo.id.clone();
-        if let AppMode::Todos(state) = &mut self.mode {
-            state.todos.push(new_todo);
-            Self::resort_todos(&mut state.todos);
-            if let Some(pos) = state.todos.iter().position(|t| t.id == new_id) {
-                state.selected = pos;
+        if let Some(pane) = self.todos_pane_mut() {
+            pane.todos.push(new_todo);
+            Self::resort_todos(&mut pane.todos);
+            if let Some(pos) = pane.todos.iter().position(|t| t.id == new_id) {
+                pane.selected = pos;
             }
         }
         Ok(())
     }
 
-    /// Mutate the selected TODO in place, persisting the change.
+    /// Mutate the focused pane's selected TODO in place, persisting the change.
     fn todos_update_selected(&mut self, f: impl FnOnce(&mut Todo)) -> Result<()> {
-        let updated = match &mut self.mode {
-            AppMode::Todos(state) => match state.todos.get_mut(state.selected) {
+        let updated = match self.todos_pane_mut() {
+            Some(pane) => match pane.todos.get_mut(pane.selected) {
                 Some(todo) => {
                     f(todo);
                     todo.clone()
                 }
                 None => return Ok(()),
             },
-            _ => return Ok(()),
+            None => return Ok(()),
         };
         if let Some(db) = &self.db {
             db.update_todo(&updated)?;
         }
         // Re-sort in case `done` changed, keeping the cursor on the same item.
-        if let AppMode::Todos(state) = &mut self.mode {
-            Self::resort_todos(&mut state.todos);
-            if let Some(pos) = state.todos.iter().position(|t| t.id == updated.id) {
-                state.selected = pos;
+        if let Some(pane) = self.todos_pane_mut() {
+            Self::resort_todos(&mut pane.todos);
+            if let Some(pos) = pane.todos.iter().position(|t| t.id == updated.id) {
+                pane.selected = pos;
             }
         }
         Ok(())
@@ -533,34 +743,34 @@ impl App {
     }
 
     /// Move the selected TODO up (`delta = -1`) or down (`delta = 1`) in the
-    /// display order, persisting the new `sort_order` for the whole list.
+    /// focused pane, persisting the new `sort_order` for that list.
     pub fn todos_reorder(&mut self, delta: isize) -> Result<()> {
-        let ids: Vec<String> = match &mut self.mode {
-            AppMode::Todos(state) => {
-                let len = state.todos.len();
+        let ids: Vec<String> = match self.todos_pane_mut() {
+            Some(pane) => {
+                let len = pane.todos.len();
                 if len < 2 {
                     return Ok(());
                 }
-                let cur = state.selected;
+                let cur = pane.selected;
                 let target = cur as isize + delta;
                 if target < 0 || target as usize >= len {
                     return Ok(());
                 }
                 let target = target as usize;
-                state.todos.swap(cur, target);
+                pane.todos.swap(cur, target);
                 // Renumber sort_order to the new display positions.
-                for (i, todo) in state.todos.iter_mut().enumerate() {
+                for (i, todo) in pane.todos.iter_mut().enumerate() {
                     todo.sort_order = i as i64;
                 }
-                Self::resort_todos(&mut state.todos);
+                Self::resort_todos(&mut pane.todos);
                 // Follow the moved item.
-                let moved_id = state.todos[target].id.clone();
-                if let Some(pos) = state.todos.iter().position(|t| t.id == moved_id) {
-                    state.selected = pos;
+                let moved_id = pane.todos[target].id.clone();
+                if let Some(pos) = pane.todos.iter().position(|t| t.id == moved_id) {
+                    pane.selected = pos;
                 }
-                state.todos.iter().map(|t| t.id.clone()).collect()
+                pane.todos.iter().map(|t| t.id.clone()).collect()
             }
-            _ => return Ok(()),
+            None => return Ok(()),
         };
         if let Some(db) = &self.db {
             db.reorder_todos(&ids)?;
@@ -568,33 +778,214 @@ impl App {
         Ok(())
     }
 
-    /// Update the list's scratchpad note, persisting it. (Stored in the legacy
-    /// `carry_over` column / `set_todo_carry_over` DB method.)
+    /// Update the focused list's scratchpad note, persisting it. (Stored in
+    /// the legacy `carry_over` column / `set_todo_carry_over` DB method.)
     fn todos_set_scratchpad(&mut self, note: String) -> Result<()> {
         let list_id = self.todos_ensure_list_id();
         let value = if note.is_empty() { None } else { Some(note) };
         if let (Some(db), Some(list_id)) = (&self.db, &list_id) {
             db.set_todo_carry_over(list_id, value.as_deref())?;
         }
-        if let AppMode::Todos(state) = &mut self.mode
-            && let Some(list) = &mut state.list
+        if let Some(pane) = self.todos_pane_mut()
+            && let Some(list) = &mut pane.list
         {
             list.carry_over = value;
         }
         Ok(())
     }
 
+    // ----- move / copy between scopes -------------------------------------
+
+    /// `M` / `C`: choose another scope to re-file the selected TODO into.
+    ///
+    /// Every other pane is offered, whether or not it is currently on screen:
+    /// the scopes exist for this feature regardless of what the side-pane
+    /// toggle is showing, and refusing to move an item because its destination
+    /// is hidden would be a rule the user cannot see.
+    pub fn todos_begin_scope_move(&mut self, copy: bool) {
+        let AppMode::Todos(state) = &self.mode else {
+            return;
+        };
+        let Some(todo) = state.focused().and_then(|p| p.selected_todo()) else {
+            self.push_toast_warning("No TODO selected");
+            return;
+        };
+        let (todo_id, todo_title) = (todo.id.clone(), todo.title.clone());
+        let focus = state.focus;
+        let targets: Vec<(String, usize)> = state
+            .panes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != focus)
+            .map(|(i, pane)| {
+                let label = if pane.title.is_empty() {
+                    pane.kind.label().to_string()
+                } else {
+                    format!("{} · {}", pane.kind.label(), pane.title)
+                };
+                (label, i)
+            })
+            .collect();
+
+        if targets.is_empty() {
+            self.push_toast_info("There is no other list to move this TODO to");
+            return;
+        }
+
+        if let AppMode::Todos(state) = &mut self.mode {
+            state.scope_move = Some(TodoScopeMoveState {
+                copy,
+                todo_id,
+                todo_title,
+                targets,
+                selected: 0,
+            });
+        }
+    }
+
+    pub fn todo_scope_move_cursor(&mut self, delta: isize) {
+        if let AppMode::Todos(state) = &mut self.mode
+            && let Some(step) = &mut state.scope_move
+        {
+            step.move_cursor(delta);
+        }
+    }
+
+    pub fn cancel_todo_scope_move(&mut self) {
+        if let AppMode::Todos(state) = &mut self.mode {
+            state.scope_move = None;
+        }
+    }
+
+    /// Apply the chosen move or copy.
+    ///
+    /// A **move** carries the item's links with it — it is the same work, and
+    /// the session someone started for it is still that work in flight. A
+    /// **copy** lands unstarted, so two panes never both claim one session.
+    pub fn confirm_todo_scope_move(&mut self) -> Result<()> {
+        let (copy, todo_id, todo_title, target_index, source_index) = match &self.mode {
+            AppMode::Todos(state) => match &state.scope_move {
+                Some(step) => match step.targets.get(step.selected) {
+                    Some((_, target)) => (
+                        step.copy,
+                        step.todo_id.clone(),
+                        step.todo_title.clone(),
+                        *target,
+                        state.focus,
+                    ),
+                    None => return Ok(()),
+                },
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+
+        // Re-resolve the item: the list can have changed under the prompt.
+        let Some(source_pos) = self.todos_position_in_pane(source_index, &todo_id) else {
+            self.cancel_todo_scope_move();
+            self.push_toast_warning("That TODO is no longer in the list");
+            return Ok(());
+        };
+
+        let Some(target_list_id) = self.todos_ensure_list_id_for(target_index) else {
+            self.cancel_todo_scope_move();
+            self.push_toast_error("Couldn't open the destination list");
+            return Ok(());
+        };
+
+        let target_label = match &self.mode {
+            AppMode::Todos(state) => state
+                .panes
+                .get(target_index)
+                .map(|p| p.kind.label().to_string())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+
+        let shown = Self::truncate_title(&todo_title, 40);
+        if copy {
+            let copied = match &self.db {
+                Some(db) => db.copy_todo(&todo_id, &target_list_id)?,
+                None => None,
+            };
+            let copied = copied.or_else(|| {
+                // No DB (tests): build the same unstarted duplicate in memory.
+                let source = self.todos_in_pane(source_index)?.get(source_pos)?;
+                Some(Todo {
+                    id: Uuid::new_v4().to_string(),
+                    list_id: target_list_id.clone(),
+                    title: source.title.clone(),
+                    body: source.body.clone(),
+                    priority: source.priority,
+                    done: source.done,
+                    sort_order: 0,
+                    spawned_session_id: None,
+                    linked_feature_id: None,
+                    in_progress: false,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                })
+            });
+            if let (Some(copied), AppMode::Todos(state)) = (copied, &mut self.mode)
+                && let Some(pane) = state.panes.get_mut(target_index)
+            {
+                let mut copied = copied;
+                copied.sort_order = pane
+                    .todos
+                    .iter()
+                    .map(|t| t.sort_order)
+                    .max()
+                    .map(|m| m + 1)
+                    .unwrap_or(0);
+                pane.todos.push(copied);
+                Self::resort_todos(&mut pane.todos);
+            }
+            self.push_toast_success(format!("Copied to the {target_label} list: {shown}"));
+        } else {
+            if let Some(db) = &self.db {
+                db.move_todo(&todo_id, &target_list_id)?;
+            }
+            if let AppMode::Todos(state) = &mut self.mode {
+                let mut moved = state.panes[source_index].todos.remove(source_pos);
+                let pane = &mut state.panes[source_index];
+                if pane.selected >= pane.todos.len() {
+                    pane.selected = pane.todos.len().saturating_sub(1);
+                }
+                if let Some(target) = state.panes.get_mut(target_index) {
+                    moved.list_id = target_list_id.clone();
+                    moved.sort_order = target
+                        .todos
+                        .iter()
+                        .map(|t| t.sort_order)
+                        .max()
+                        .map(|m| m + 1)
+                        .unwrap_or(0);
+                    target.todos.push(moved);
+                    Self::resort_todos(&mut target.todos);
+                }
+            }
+            self.push_toast_success(format!("Moved to the {target_label} list: {shown}"));
+        }
+
+        self.cancel_todo_scope_move();
+        Ok(())
+    }
+
+    fn todos_in_pane(&self, pane_index: usize) -> Option<&[Todo]> {
+        match &self.mode {
+            AppMode::Todos(state) => state.panes.get(pane_index).map(|p| p.todos.as_slice()),
+            _ => None,
+        }
+    }
+
+    fn todos_position_in_pane(&self, pane_index: usize, todo_id: &str) -> Option<usize> {
+        self.todos_in_pane(pane_index)?
+            .iter()
+            .position(|t| t.id == todo_id)
+    }
+
     // ----- spawn agent ---------------------------------------------------
 
-    /// Launch (or reuse) an agent session for the selected TODO, then seed the
-    /// composer with a generated prompt — editable, not submitted.
-    ///
-    /// The session is created in the list's host feature (resolved from
-    /// `list.feature_id`, falling back to the feature the TODOs session lives
-    /// under) using that feature's configured agent and mode/flags. If the TODO
-    /// already links a session that is still live, that session is reused (jumped
-    /// to and added onto) instead of spawning a second. The launched session's
-    /// id is recorded on the TODO so the list can show it as "launched".
     /// `g`/`Enter` on the selected TODO.
     ///
     /// Resolves what the key means before offering a choice, because a TODO
@@ -605,9 +996,9 @@ impl App {
     /// 3. Otherwise — open the chooser.
     ///
     /// The feature link wins when a TODO carries both. A feature is the larger
-    /// destination: the session link points at one agent inside the host
-    /// feature, while the feature link points at a whole checkout created for
-    /// this item, and that is where the work moved to.
+    /// destination: the session link points at one agent, while the feature
+    /// link points at a whole checkout created for this item, and that is
+    /// where the work moved to.
     ///
     /// A link whose target is gone is dropped rather than reported as a dead
     /// end, so the next press offers the chooser instead of failing again.
@@ -633,11 +1024,13 @@ impl App {
             }
         }
 
-        // 2. A still-live session spawned for this TODO.
+        // 2. A still-live session spawned for this TODO. Searched across every
+        //    feature, not just this list's host: a project- or global-scoped
+        //    TODO's agent lives wherever the user chose to put it.
         if let Some(session_id) = todo.spawned_session_id.as_deref()
-            && let Some(si) = self.session_index_in_feature(pi, fi, session_id)
+            && let Some((spi, sfi, si)) = self.session_indices_by_id(session_id)
         {
-            self.selection = Selection::Session(pi, fi, si);
+            self.selection = Selection::Session(spi, sfi, si);
             return self.enter_view();
         }
 
@@ -661,14 +1054,18 @@ impl App {
     /// The selected TODO plus everything acting on it needs from the overlay.
     pub(crate) fn selected_todo_context(&self) -> Option<SelectedTodoContext> {
         match &self.mode {
-            AppMode::Todos(state) => Some(SelectedTodoContext {
-                todo: state.todos.get(state.selected).cloned()?,
-                pi: state.pi,
-                fallback_fi: state.fi,
-                host_feature_id: state.list.as_ref().map(|l| l.feature_id.clone()),
-                list_id: state.list.as_ref().map(|l| l.id.clone()),
-                scratchpad: state.list.as_ref().and_then(|l| l.carry_over.clone()),
-            }),
+            AppMode::Todos(state) => {
+                let pane = state.focused()?;
+                Some(SelectedTodoContext {
+                    todo: pane.selected_todo().cloned()?,
+                    pi: state.pi,
+                    fallback_fi: state.fi,
+                    host_feature_id: pane.list.as_ref().and_then(|l| l.feature_id.clone()),
+                    list_id: pane.list.as_ref().map(|l| l.id.clone()),
+                    pane_kind: pane.kind,
+                    scratchpad: pane.list.as_ref().and_then(|l| l.carry_over.clone()),
+                })
+            }
             _ => None,
         }
     }
@@ -683,15 +1080,23 @@ impl App {
         })
     }
 
-    fn session_index_in_feature(&self, pi: usize, fi: usize, session_id: &str) -> Option<usize> {
-        self.store
-            .projects
-            .get(pi)?
-            .features
-            .get(fi)?
-            .sessions
-            .iter()
-            .position(|s| s.id == session_id)
+    /// Locate a session anywhere in the store by id.
+    ///
+    /// A TODO's session used to be guaranteed to live in the list's host
+    /// feature. It no longer is: a project- or global-scoped TODO's agent
+    /// runs in whichever feature the user picked, and a moved TODO carries its
+    /// link across scopes. Searching everywhere is what keeps "is this session
+    /// still alive?" a question about the session rather than about which list
+    /// happens to hold the row.
+    pub(crate) fn session_indices_by_id(&self, session_id: &str) -> Option<(usize, usize, usize)> {
+        self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+            p.features.iter().enumerate().find_map(|(fi, f)| {
+                f.sessions
+                    .iter()
+                    .position(|s| s.id == session_id)
+                    .map(|si| (pi, fi, si))
+            })
+        })
     }
 
     /// Select the feature a TODO was planned into and open it.
@@ -720,10 +1125,12 @@ impl App {
     /// also runs from the dashboard's "implement next", where no overlay is
     /// open and there is no in-memory row to write back.
     fn clear_todo_linked_feature(&mut self, todo_id: &str) -> Result<()> {
-        if let AppMode::Todos(state) = &mut self.mode
-            && let Some(todo) = state.todos.iter_mut().find(|t| t.id == todo_id)
-        {
-            todo.linked_feature_id = None;
+        if let AppMode::Todos(state) = &mut self.mode {
+            for pane in state.panes.iter_mut() {
+                if let Some(todo) = pane.todos.iter_mut().find(|t| t.id == todo_id) {
+                    todo.linked_feature_id = None;
+                }
+            }
         }
         if let Some(db) = &self.db {
             db.clear_todo_linked_feature_for_todo(todo_id)?;
@@ -817,11 +1224,12 @@ impl App {
     fn open_todo_plan_destination(&mut self, origin: TodoPlanOrigin) {
         let (host_feature_name, can_create_worktree) = match &self.mode {
             AppMode::Todos(state) => {
-                let fi = self.resolve_todo_host_feature(
-                    state.pi,
-                    state.list.as_ref().map(|l| l.feature_id.as_str()),
-                    state.fi,
-                );
+                let host_feature_id = state
+                    .focused()
+                    .and_then(|p| p.list.as_ref())
+                    .and_then(|l| l.feature_id.clone());
+                let fi =
+                    self.resolve_todo_host_feature(state.pi, host_feature_id.as_deref(), state.fi);
                 let project = self.store.projects.get(state.pi);
                 (
                     project
@@ -843,21 +1251,138 @@ impl App {
         }
     }
 
+    /// The chooser's *Start an agent on this TODO*: spawn in the feature the
+    /// scope names, or ask for one when the scope names none.
     pub fn todos_spawn_agent(&mut self) -> Result<()> {
-        let (todo, host_feature_id, fallback_fi, pi) = match &self.mode {
-            AppMode::Todos(state) => {
-                let Some(todo) = state.todos.get(state.selected).cloned() else {
-                    self.push_toast_warning("No TODO selected");
-                    return Ok(());
-                };
-                let host_feature_id = state.list.as_ref().map(|l| l.feature_id.clone());
-                (todo, host_feature_id, state.fi, state.pi)
-            }
-            _ => return Ok(()),
+        let Some(ctx) = self.selected_todo_context() else {
+            self.push_toast_warning("No TODO selected");
+            return Ok(());
         };
+        let fi =
+            self.resolve_todo_host_feature(ctx.pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
+        self.launch_todo_in_scope(ctx.pane_kind, ctx.pi, fi, ctx.todo, false)
+    }
 
-        let fi = self.resolve_todo_host_feature(pi, host_feature_id.as_deref(), fallback_fi);
-        self.spawn_todo_agent(pi, fi, &todo, false)
+    /// Put an agent on `todo`, deciding *where* from the scope it lives in.
+    ///
+    /// A worktree TODO belongs to exactly one checkout, so it spawns there
+    /// without asking. A project or global TODO belongs to no single checkout
+    /// — there is nothing to infer — so the user names the feature, and that
+    /// feature supplies the agent and mode as always.
+    fn launch_todo_in_scope(
+        &mut self,
+        kind: TodoPaneKind,
+        pi: usize,
+        fi: usize,
+        todo: Todo,
+        force_new: bool,
+    ) -> Result<()> {
+        match kind {
+            TodoPaneKind::Worktree => self.spawn_todo_agent(pi, fi, &todo, force_new),
+            TodoPaneKind::Project | TodoPaneKind::Global => {
+                self.open_todo_spawn_target(kind, todo, force_new, Some((pi, fi)));
+                Ok(())
+            }
+        }
+    }
+
+    /// Open the "which feature should work this?" picker for a project- or
+    /// global-scoped TODO.
+    ///
+    /// A project TODO lists that project's features; a global one lists every
+    /// project's, since a global TODO carries no project of its own. The
+    /// cursor starts on `default` — the feature the overlay was opened under —
+    /// so the common case is one keypress.
+    fn open_todo_spawn_target(
+        &mut self,
+        kind: TodoPaneKind,
+        todo: Todo,
+        force_new: bool,
+        default: Option<(usize, usize)>,
+    ) {
+        let project_filter = match kind {
+            TodoPaneKind::Global => None,
+            _ => default.map(|(pi, _)| pi),
+        };
+        let candidates: Vec<(String, usize, usize)> = self
+            .store
+            .projects
+            .iter()
+            .enumerate()
+            .filter(|(pi, _)| project_filter.is_none_or(|want| *pi == want))
+            .flat_map(|(pi, project)| {
+                project
+                    .features
+                    .iter()
+                    .enumerate()
+                    .map(move |(fi, feature)| {
+                        (format!("{} / {}", project.name, feature.name), pi, fi)
+                    })
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            self.push_toast_warning("There is no feature to put an agent on this TODO in");
+            return;
+        }
+
+        let selected = default
+            .and_then(|(dpi, dfi)| {
+                candidates
+                    .iter()
+                    .position(|(_, pi, fi)| *pi == dpi && *fi == dfi)
+            })
+            .unwrap_or(0);
+
+        let origin = std::mem::replace(&mut self.mode, AppMode::Normal);
+        self.mode = AppMode::TodoSpawnTarget(Box::new(TodoSpawnTargetState {
+            origin: Box::new(origin),
+            todo,
+            pane_kind: kind,
+            candidates,
+            selected,
+            force_new,
+        }));
+    }
+
+    pub fn todo_spawn_target_move(&mut self, delta: isize) {
+        if let AppMode::TodoSpawnTarget(state) = &mut self.mode {
+            state.move_cursor(delta);
+        }
+    }
+
+    /// `Esc`: change nothing and go back to where the key was pressed.
+    pub fn cancel_todo_spawn_target(&mut self) {
+        if let AppMode::TodoSpawnTarget(_) = &self.mode {
+            let AppMode::TodoSpawnTarget(state) =
+                std::mem::replace(&mut self.mode, AppMode::Normal)
+            else {
+                return;
+            };
+            self.mode = *state.origin;
+        }
+    }
+
+    pub fn confirm_todo_spawn_target(&mut self) -> Result<()> {
+        let AppMode::TodoSpawnTarget(_) = &self.mode else {
+            return Ok(());
+        };
+        let AppMode::TodoSpawnTarget(state) = std::mem::replace(&mut self.mode, AppMode::Normal)
+        else {
+            return Ok(());
+        };
+        let state = *state;
+        let target = state.selection();
+        // Act from the mode the key was pressed in: the overlay's in-memory
+        // panes are its source of truth, so the spawn has to see them rather
+        // than the empty Normal mode this prompt was holding.
+        self.mode = *state.origin;
+
+        let Some((pi, fi)) = target else {
+            self.push_toast_warning("No feature selected");
+            return Ok(());
+        };
+        self.spawn_todo_agent(pi, fi, &state.todo, state.force_new)
     }
 
     /// Launch an agent on `todo` in feature `(pi, fi)` and seed the composer
@@ -865,9 +1390,12 @@ impl App {
     ///
     /// A TODO that already links a live session reuses it — jumped to and added
     /// onto — rather than accumulating a second agent for the same item, unless
-    /// `force_new` says the user asked for exactly that. Either way the TODO is
-    /// marked started before the view changes, so the list can show it as
-    /// underway and "implement next" scans past it.
+    /// `force_new` says the user asked for exactly that. The reused session is
+    /// looked up store-wide rather than inside `(pi, fi)`: a project- or
+    /// global-scoped TODO's agent may be running in a different feature
+    /// entirely. Either way the TODO is marked started before the view
+    /// changes, so the list can show it as underway and "implement next" scans
+    /// past it.
     ///
     /// Takes the TODO by value rather than reading `self.mode`, because the
     /// dashboard's "implement next" spawns with no overlay open.
@@ -880,16 +1408,16 @@ impl App {
     ) -> Result<()> {
         let prompt = Self::todo_spawn_prompt(todo);
 
-        let existing_si = if force_new {
+        let existing = if force_new {
             None
         } else {
             todo.spawned_session_id
                 .as_deref()
-                .and_then(|sid| self.session_index_in_feature(pi, fi, sid))
+                .and_then(|sid| self.session_indices_by_id(sid))
         };
 
-        let si = match existing_si {
-            Some(si) => si,
+        let (pi, fi, si) = match existing {
+            Some(found) => found,
             None => {
                 let agent = self
                     .store
@@ -909,7 +1437,7 @@ impl App {
                     Some(agent),
                     StartIntent::Warn("the agent for this TODO"),
                 ) {
-                    Ok(si) => si,
+                    Ok(si) => (pi, fi, si),
                     Err(e) => {
                         self.push_toast_error(format!("Failed to launch agent: {e}"));
                         return Ok(());
@@ -930,7 +1458,7 @@ impl App {
             return Ok(());
         };
         // Record the link and the in-progress flag before we leave the overlay
-        // (still in Todos mode, so the in-memory list stays truthful too).
+        // (still in Todos mode, so the in-memory panes stay truthful too).
         self.todos_mark_started(&todo.id, &session_id)?;
 
         // Switch into the session view and seed the composer (editable). The
@@ -1035,22 +1563,19 @@ impl App {
     ///
     /// Each link is reported only when its target still exists, and says so
     /// when it does not, because a brief that names a session the user cannot
-    /// find is worse than one that says the session is gone.
-    pub(crate) fn todo_provenance(&self, pi: usize, fi: usize, todo: &Todo) -> Vec<String> {
+    /// find is worse than one that says the session is gone. The session is
+    /// looked for store-wide, since a project- or global-scoped TODO's agent
+    /// need not be in the feature the brief is being written under.
+    pub(crate) fn todo_provenance(&self, _pi: usize, _fi: usize, todo: &Todo) -> Vec<String> {
         let mut lines = Vec::new();
 
         if let Some(session_id) = todo.spawned_session_id.as_deref() {
             let found = self
-                .store
-                .projects
-                .get(pi)
-                .and_then(|project| project.features.get(fi))
-                .and_then(|feature| {
-                    feature
-                        .sessions
-                        .iter()
-                        .find(|session| session.id == session_id)
-                        .map(|session| (session.label.clone(), feature.clone()))
+                .session_indices_by_id(session_id)
+                .and_then(|(pi, fi, si)| {
+                    let feature = self.store.projects.get(pi)?.features.get(fi)?;
+                    let label = feature.sessions.get(si)?.label.clone();
+                    Some((label, feature.clone()))
                 });
             match found {
                 Some((label, feature)) => {
@@ -1119,18 +1644,21 @@ impl App {
     }
 
     /// Record that work has started on a TODO: its session link and its
-    /// in-progress flag, in memory and (with a DB) on disk.
+    /// in-progress flag, in memory (across every loaded pane) and (with a DB)
+    /// on disk.
     ///
     /// The DB writes are targeted rather than a whole-row [`update_todo`]
     /// because this is called from the dashboard's "implement next" as well,
     /// where no overlay is open and there is no in-memory row to write back —
     /// and reconstructing one would overwrite whatever else changed meanwhile.
     pub(crate) fn todos_mark_started(&mut self, todo_id: &str, session_id: &str) -> Result<()> {
-        if let AppMode::Todos(state) = &mut self.mode
-            && let Some(todo) = state.todos.iter_mut().find(|t| t.id == todo_id)
-        {
-            todo.spawned_session_id = Some(session_id.to_string());
-            todo.in_progress = true;
+        if let AppMode::Todos(state) = &mut self.mode {
+            for pane in state.panes.iter_mut() {
+                if let Some(todo) = pane.todos.iter_mut().find(|t| t.id == todo_id) {
+                    todo.spawned_session_id = Some(session_id.to_string());
+                    todo.in_progress = true;
+                }
+            }
         }
         if let Some(db) = &self.db {
             db.set_todo_spawned_session(todo_id, session_id)?;
@@ -1159,12 +1687,14 @@ impl App {
         // The overlay is not open during a deletion, but keep any loaded rows
         // truthful rather than relying on that.
         if let AppMode::Todos(state) = &mut self.mode {
-            for todo in state
-                .todos
-                .iter_mut()
-                .filter(|t| t.linked_feature_id.as_deref() == Some(feature_id))
-            {
-                todo.linked_feature_id = None;
+            for pane in state.panes.iter_mut() {
+                for todo in pane
+                    .todos
+                    .iter_mut()
+                    .filter(|t| t.linked_feature_id.as_deref() == Some(feature_id))
+                {
+                    todo.linked_feature_id = None;
+                }
             }
         }
     }
@@ -1172,9 +1702,10 @@ impl App {
     // ----- implement next ------------------------------------------------
 
     /// `I` on a TODOs session row on the dashboard: take the highest-priority
-    /// unstarted TODO and put an agent on it.
+    /// unstarted TODO from the scopes that are currently visible and put an
+    /// agent on it.
     ///
-    /// Inert on anything but a TODOs session row — a project with no list has
+    /// Inert on anything but a TODOs session row — a feature with no list has
     /// no row to press it on, which is the whole gate.
     pub fn implement_next_todo_from_dashboard(&mut self) -> Result<()> {
         let Selection::Session(pi, fi, si) = self.selection else {
@@ -1195,7 +1726,7 @@ impl App {
     }
 
     /// `I` inside the TODOs overlay. Same scan as the dashboard's, over the
-    /// list already loaded, and deliberately distinct from `g`/`Enter`, which
+    /// panes already loaded, and deliberately distinct from `g`/`Enter`, which
     /// stay on the item under the cursor.
     pub fn implement_next_todo_in_overlay(&mut self) -> Result<()> {
         let AppMode::Todos(state) = &self.mode else {
@@ -1206,62 +1737,143 @@ impl App {
         self.implement_next(ctx, Vec::new())
     }
 
-    /// Gather the list to scan: the overlay's in-memory rows when it is open
+    /// The scopes a surface counts as visible for `(pi, fi)`, in the order
+    /// ties between them resolve.
+    ///
+    /// The same rule [`TodoViewState::visible_pane_count`] draws with: the
+    /// worktree list alone until the side panes are opened, and all of them
+    /// for a feature that has no worktree list of its own.
+    pub(crate) fn visible_todo_scopes(
+        &self,
+        pi: usize,
+        fi: usize,
+        side_panes_open: bool,
+    ) -> Vec<(TodoPaneKind, TodoScope)> {
+        let mut scopes = Vec::new();
+        if let Some(scope) = self.worktree_todo_scope(pi, fi) {
+            scopes.push((TodoPaneKind::Worktree, scope));
+        }
+        if side_panes_open || scopes.is_empty() {
+            if let Some(project) = self.store.projects.get(pi) {
+                scopes.push((
+                    TodoPaneKind::Project,
+                    TodoScope::Project {
+                        project_id: project.id.clone(),
+                    },
+                ));
+            }
+            scopes.push((TodoPaneKind::Global, TodoScope::Global));
+        }
+        scopes
+    }
+
+    /// Gather the lists to scan: the overlay's visible panes when it is open
     /// (they are its source of truth, and may hold edits a DB-less run never
-    /// persisted), otherwise the project's list read from the DB.
+    /// persisted), otherwise the visible scopes read from the DB.
     fn implement_next_ctx(&mut self, pi: usize, fallback_fi: usize) -> ImplementNextCtx {
         if let AppMode::Todos(state) = &self.mode {
+            let (pi, fallback_fi) = (state.pi, state.fi);
+            let lists = state
+                .visible_panes()
+                .iter()
+                .map(|pane| ImplementNextList {
+                    kind: pane.kind,
+                    list_id: pane.list.as_ref().map(|l| l.id.clone()),
+                    host: match pane.kind {
+                        TodoPaneKind::Global => None,
+                        _ => Some((
+                            pi,
+                            self.resolve_todo_host_feature(
+                                pi,
+                                pane.list.as_ref().and_then(|l| l.feature_id.as_deref()),
+                                fallback_fi,
+                            ),
+                        )),
+                    },
+                    todos: pane.todos.clone(),
+                })
+                .collect();
             return ImplementNextCtx {
-                pi: state.pi,
-                fallback_fi: state.fi,
-                host_feature_id: state.list.as_ref().map(|l| l.feature_id.clone()),
-                todos: state.todos.clone(),
+                pi,
+                fallback_fi,
+                lists,
             };
         }
-        let project_id = match self.store.projects.get(pi) {
-            Some(project) => project.id.clone(),
-            None => {
-                return ImplementNextCtx {
+
+        let scopes = self.visible_todo_scopes(pi, fallback_fi, self.config.todo_side_panes);
+        let mut lists = Vec::new();
+        for (kind, scope) in scopes {
+            let (list, todos) = self.load_todos_for_scope(&scope);
+            let host = match kind {
+                TodoPaneKind::Global => None,
+                _ => Some((
                     pi,
-                    fallback_fi,
-                    host_feature_id: None,
-                    todos: Vec::new(),
-                };
-            }
-        };
-        let (list, todos) = self.load_todos_for_project(&project_id);
+                    self.resolve_todo_host_feature(
+                        pi,
+                        list.as_ref().and_then(|l| l.feature_id.as_deref()),
+                        fallback_fi,
+                    ),
+                )),
+            };
+            lists.push(ImplementNextList {
+                kind,
+                list_id: list.map(|l| l.id),
+                host,
+                todos,
+            });
+        }
         ImplementNextCtx {
             pi,
             fallback_fi,
-            host_feature_id: list.map(|l| l.feature_id),
-            todos,
+            lists,
         }
     }
 
     /// Run the scan and act on what it finds.
     fn implement_next(&mut self, mut ctx: ImplementNextCtx, skipped: Vec<String>) -> Result<()> {
-        let fi =
-            self.resolve_todo_host_feature(ctx.pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
-        self.todos_reconcile_dead_sessions(ctx.pi, fi, &mut ctx.todos)?;
+        for list in ctx.lists.iter_mut() {
+            self.todos_reconcile_dead_sessions(&mut list.todos)?;
+        }
 
-        match Self::next_todo_index(&ctx.todos, &skipped) {
+        let found = {
+            let slices = ctx.slices();
+            Self::next_todo_across(&slices, &skipped)
+        };
+
+        match found {
             None => {
-                self.push_toast_info(Self::no_next_todo_message(&ctx.todos, &skipped));
+                let slices = ctx.slices();
+                self.push_toast_info(Self::no_next_todo_message_across(&slices, &skipped));
                 Ok(())
             }
-            Some(NextTodo::Ready(i)) => {
-                let todo = ctx.todos[i].clone();
-                self.spawn_todo_agent(ctx.pi, fi, &todo, false)
+            Some((li, NextTodo::Ready(i))) => {
+                let list = &ctx.lists[li];
+                let todo = list.todos[i].clone();
+                let (kind, host) = (list.kind, list.host);
+                let (pi, fi) = host.unwrap_or((ctx.pi, ctx.fallback_fi));
+                self.launch_todo_in_scope(kind, pi, fi, todo, false)
             }
-            Some(NextTodo::Started(i)) => {
-                let todo = &ctx.todos[i];
+            Some((li, NextTodo::Started(i))) => {
+                let list = &ctx.lists[li];
+                let todo = &list.todos[i];
                 let (todo_id, todo_title) = (todo.id.clone(), todo.title.clone());
+                let kind = list.kind;
+                let list_id = list.list_id.clone();
+                let host_feature_id = list.host.and_then(|(pi, fi)| {
+                    self.store
+                        .projects
+                        .get(pi)
+                        .and_then(|p| p.features.get(fi))
+                        .map(|f| f.id.clone())
+                });
                 let origin = std::mem::replace(&mut self.mode, AppMode::Normal);
                 self.mode = AppMode::TodoImplementChoice(Box::new(TodoImplementChoiceState {
                     origin: Box::new(origin),
                     pi: ctx.pi,
                     fallback_fi: ctx.fallback_fi,
-                    host_feature_id: ctx.host_feature_id,
+                    host_feature_id,
+                    pane_kind: kind,
+                    list_id,
                     todo_id,
                     todo_title,
                     skipped_ids: skipped,
@@ -1272,12 +1884,24 @@ impl App {
         }
     }
 
-    /// The TODO "implement next" should act on, or `None` if there is none.
+    /// The TODO "implement next" should act on within a single list, or `None`
+    /// if there is none. The one-list form of [`Self::next_todo_across`],
+    /// which is what the scan itself calls; this exists so the per-list rules
+    /// can be pinned down on their own.
+    #[cfg(test)]
+    pub(crate) fn next_todo_index(todos: &[Todo], skipped_ids: &[String]) -> Option<NextTodo> {
+        Self::next_todo_across(&[todos], skipped_ids).map(|(_, next)| next)
+    }
+
+    /// The TODO "implement next" should act on across the visible scopes, as
+    /// `(list index, choice)`.
     ///
-    /// Priority first (High, then Med, then Low), and within a priority the
-    /// order the list is already in — the sort is stable, so a manual ordering
-    /// the user arranged is what breaks ties. Completed, in-progress, and
-    /// explicitly skipped items are passed over entirely.
+    /// Priority first (High, then Med, then Low). Within a priority the lists
+    /// are considered in the order they are given — worktree, then project,
+    /// then global — and within a list the order it is already in, because the
+    /// sort is stable: a manual ordering the user arranged is what breaks ties
+    /// inside a list, and scope is what breaks them between lists. Completed,
+    /// in-progress, and explicitly skipped items are passed over entirely.
     ///
     /// A TODO that already links a session or a planned feature is not
     /// *chosen*, it is held in reserve: an unstarted item anywhere in the scan
@@ -1285,33 +1909,51 @@ impl App {
     /// the caller to ask about — when nothing unstarted remains. That is what
     /// reconciles "skip TODOs that already have a session" with there being a
     /// prompt for exactly that case.
-    pub(crate) fn next_todo_index(todos: &[Todo], skipped_ids: &[String]) -> Option<NextTodo> {
-        let mut order: Vec<usize> = (0..todos.len()).collect();
-        order.sort_by_key(|&i| todos[i].priority.rank());
+    pub(crate) fn next_todo_across(
+        lists: &[&[Todo]],
+        skipped_ids: &[String],
+    ) -> Option<(usize, NextTodo)> {
+        let mut order: Vec<(usize, usize)> = lists
+            .iter()
+            .enumerate()
+            .flat_map(|(li, todos)| (0..todos.len()).map(move |i| (li, i)))
+            .collect();
+        order.sort_by_key(|&(li, i)| lists[li][i].priority.rank());
 
-        let mut started: Option<usize> = None;
-        for i in order {
-            let todo = &todos[i];
+        let mut started: Option<(usize, usize)> = None;
+        for (li, i) in order {
+            let todo = &lists[li][i];
             if todo.done || todo.in_progress || skipped_ids.iter().any(|id| id == &todo.id) {
                 continue;
             }
             if todo.spawned_session_id.is_none() && todo.linked_feature_id.is_none() {
-                return Some(NextTodo::Ready(i));
+                return Some((li, NextTodo::Ready(i)));
             }
             if started.is_none() {
-                started = Some(i);
+                started = Some((li, i));
             }
         }
-        started.map(NextTodo::Started)
+        started.map(|(li, i)| (li, NextTodo::Started(i)))
     }
 
     /// Why the scan came back empty, said in the terms the user can act on.
-    ///
-    /// A blanket "nothing to do" would be wrong in the case that matters: items
-    /// are there, they are just all underway, and the fix is to finish or
-    /// un-flag one rather than to add more.
+    /// The one-list form of [`Self::no_next_todo_message_across`].
+    #[cfg(test)]
     pub(crate) fn no_next_todo_message(todos: &[Todo], skipped_ids: &[String]) -> String {
-        let open = todos.iter().filter(|t| !t.done).count();
+        Self::no_next_todo_message_across(&[todos], skipped_ids)
+    }
+
+    /// Why the scan came back empty, across every list it looked at.
+    ///
+    /// A blanket "nothing to do" would be wrong in the case that matters:
+    /// items are there, they are just all underway, and the fix is to finish
+    /// or un-flag one rather than to add more.
+    pub(crate) fn no_next_todo_message_across(lists: &[&[Todo]], skipped_ids: &[String]) -> String {
+        let open = lists
+            .iter()
+            .flat_map(|todos| todos.iter())
+            .filter(|t| !t.done)
+            .count();
         if open == 0 {
             "No TODOs left to implement".to_string()
         } else if !skipped_ids.is_empty() {
@@ -1327,20 +1969,18 @@ impl App {
     /// AMF does not clear `spawned_session_id` when a session is removed — the
     /// link is checked at use time instead — so without this a TODO whose agent
     /// was closed would stay marked underway forever and never be offered
-    /// again. The flag is only cleared alongside a dead link: an item the user
-    /// marked in progress by hand has no session to lose and is left alone.
-    fn todos_reconcile_dead_sessions(
-        &mut self,
-        pi: usize,
-        fi: usize,
-        todos: &mut [Todo],
-    ) -> Result<()> {
+    /// again. A session counts as gone only when it exists in **no** feature:
+    /// a project- or global-scoped TODO's agent may be running somewhere other
+    /// than the list's host. The flag is only cleared alongside a dead link:
+    /// an item the user marked in progress by hand has no session to lose and
+    /// is left alone.
+    fn todos_reconcile_dead_sessions(&mut self, todos: &mut [Todo]) -> Result<()> {
         let dead: Vec<String> = todos
             .iter()
             .filter(|t| {
                 t.spawned_session_id
                     .as_deref()
-                    .is_some_and(|sid| self.session_index_in_feature(pi, fi, sid).is_none())
+                    .is_some_and(|sid| self.session_indices_by_id(sid).is_none())
             })
             .map(|t| t.id.clone())
             .collect();
@@ -1353,9 +1993,11 @@ impl App {
             todo.in_progress = false;
         }
         if let AppMode::Todos(state) = &mut self.mode {
-            for todo in state.todos.iter_mut().filter(|t| dead.contains(&t.id)) {
-                todo.spawned_session_id = None;
-                todo.in_progress = false;
+            for pane in state.panes.iter_mut() {
+                for todo in pane.todos.iter_mut().filter(|t| dead.contains(&t.id)) {
+                    todo.spawned_session_id = None;
+                    todo.in_progress = false;
+                }
             }
         }
         if let Some(db) = &self.db {
@@ -1370,14 +2012,16 @@ impl App {
     /// Re-read a TODO by id from whichever list is authoritative right now.
     /// Used when acting on a prompt, so the list changing underneath it is
     /// noticed rather than acted on stale.
-    fn find_todo_by_id(&self, pi: usize, todo_id: &str) -> Option<Todo> {
+    fn find_todo_by_id(&self, list_id: Option<&str>, todo_id: &str) -> Option<Todo> {
         if let AppMode::Todos(state) = &self.mode {
-            return state.todos.iter().find(|t| t.id == todo_id).cloned();
+            return state
+                .panes
+                .iter()
+                .find_map(|pane| pane.todos.iter().find(|t| t.id == todo_id))
+                .cloned();
         }
         let db = self.db.as_ref()?;
-        let project_id = self.store.projects.get(pi)?.id.clone();
-        let list = db.todo_list(&project_id).ok()??;
-        db.todos(&list.id)
+        db.todos(list_id?)
             .ok()?
             .into_iter()
             .find(|t| t.id == todo_id)
@@ -1416,8 +2060,9 @@ impl App {
         let choice = state.choice();
         let state = *state;
         // Every branch acts from the mode the key was pressed in: the overlay's
-        // in-memory list is its source of truth, so a spawn or a re-scan has to
-        // see it rather than the empty Normal mode this prompt was holding.
+        // in-memory panes are its source of truth, so a spawn or a re-scan has
+        // to see them rather than the empty Normal mode this prompt was
+        // holding.
         self.mode = *state.origin;
 
         match choice {
@@ -1429,7 +2074,8 @@ impl App {
                 self.implement_next(ctx, skipped)
             }
             TodoImplementChoice::Jump | TodoImplementChoice::SpawnNew => {
-                let Some(todo) = self.find_todo_by_id(state.pi, &state.todo_id) else {
+                let Some(todo) = self.find_todo_by_id(state.list_id.as_deref(), &state.todo_id)
+                else {
                     self.push_toast_warning("That TODO is no longer in the list");
                     return Ok(());
                 };
@@ -1439,9 +2085,9 @@ impl App {
                     state.fallback_fi,
                 );
                 if choice == TodoImplementChoice::SpawnNew {
-                    return self.spawn_todo_agent(state.pi, fi, &todo, true);
+                    return self.launch_todo_in_scope(state.pane_kind, state.pi, fi, todo, true);
                 }
-                self.jump_to_started_todo(state.pi, fi, &todo)
+                self.jump_to_started_todo(&todo)
             }
         }
     }
@@ -1451,14 +2097,14 @@ impl App {
     /// The feature link wins over the session link for the same reason
     /// [`Self::todos_launch_selected`] prefers it: a planned feature is a whole
     /// checkout made for this item, while the session link is one agent inside
-    /// the host feature.
+    /// it.
     ///
     /// A link whose feature is gone is *cleared*, exactly as `g`/`Enter` clears
     /// it, and for a sharper reason here: the link is the only thing holding
     /// the TODO back from [`NextTodo::Ready`], so leaving it would make every
     /// future "implement next" offer the same item and every jump fail the same
     /// way. Dropping it lets the next scan pick the TODO up and start it.
-    fn jump_to_started_todo(&mut self, pi: usize, fi: usize, todo: &Todo) -> Result<()> {
+    fn jump_to_started_todo(&mut self, todo: &Todo) -> Result<()> {
         let mut cleared_feature_link = false;
         if let Some(feature_id) = todo.linked_feature_id.as_deref() {
             match self.feature_indices_by_id(feature_id) {
@@ -1472,10 +2118,10 @@ impl App {
                 }
             }
         }
-        if let Some(si) = todo
+        if let Some((pi, fi, si)) = todo
             .spawned_session_id
             .as_deref()
-            .and_then(|sid| self.session_index_in_feature(pi, fi, sid))
+            .and_then(|sid| self.session_indices_by_id(sid))
         {
             self.selection = Selection::Session(pi, fi, si);
             return self.enter_view();
@@ -1490,9 +2136,8 @@ impl App {
 
     /// Ask to delete the selected TODO (awaits y/n confirmation).
     pub fn todos_request_delete(&mut self) {
-        if let AppMode::Todos(state) = &mut self.mode
-            && !state.todos.is_empty()
-        {
+        let has_items = self.todos_pane().is_some_and(|pane| !pane.todos.is_empty());
+        if has_items && let AppMode::Todos(state) = &mut self.mode {
             state.pending_delete = true;
         }
     }
@@ -1505,20 +2150,22 @@ impl App {
 
     /// Delete the selected TODO. The linked session, if any, is left untouched.
     pub fn todos_confirm_delete(&mut self) -> Result<()> {
-        let removed_id = match &mut self.mode {
-            AppMode::Todos(state) => {
-                state.pending_delete = false;
-                if state.todos.is_empty() {
+        if let AppMode::Todos(state) = &mut self.mode {
+            state.pending_delete = false;
+        }
+        let removed_id = match self.todos_pane_mut() {
+            Some(pane) => {
+                if pane.todos.is_empty() {
                     return Ok(());
                 }
-                let id = state.todos[state.selected].id.clone();
-                state.todos.remove(state.selected);
-                if state.selected >= state.todos.len() {
-                    state.selected = state.todos.len().saturating_sub(1);
+                let id = pane.todos[pane.selected].id.clone();
+                pane.todos.remove(pane.selected);
+                if pane.selected >= pane.todos.len() {
+                    pane.selected = pane.todos.len().saturating_sub(1);
                 }
                 id
             }
-            _ => return Ok(()),
+            None => return Ok(()),
         };
         if let Some(db) = &self.db {
             db.delete_todo(&removed_id)?;
@@ -1531,12 +2178,178 @@ impl App {
         todos.sort_by(|a, b| a.done.cmp(&b.done).then(a.sort_order.cmp(&b.sort_order)));
     }
 
+    // ----- feature deletion ----------------------------------------------
+
+    /// The disposition prompt a feature deletion has to answer first, if its
+    /// worktree list still holds unfinished work.
+    ///
+    /// Returns `Some(state)` when the caller must stop and ask. Deleting a
+    /// worktree is hard to reverse and takes its list with it, so the TODOs in
+    /// it are not something to decide on the user's behalf. A list with
+    /// nothing open in it — empty, or everything ticked off — is not worth a
+    /// prompt: there is no work to lose.
+    pub(crate) fn pending_todo_disposition(
+        &self,
+        project_name: &str,
+        feature_name: &str,
+    ) -> Option<crate::app::TodoDeleteDispositionState> {
+        let db = self.db.as_ref()?;
+        let project = self.store.find_project(project_name)?;
+        let feature = project.features.iter().find(|f| f.name == feature_name)?;
+        if !feature.is_worktree {
+            return None;
+        }
+        let scope = TodoScope::Worktree {
+            project_id: project.id.clone(),
+            workdir: Self::todo_workdir_key(&feature.workdir),
+        };
+        let list = db.todo_list(&scope).ok()??;
+        let unfinished = db
+            .todos(&list.id)
+            .ok()?
+            .into_iter()
+            .filter(|t| !t.done)
+            .count();
+        if unfinished == 0 {
+            return None;
+        }
+        Some(crate::app::TodoDeleteDispositionState {
+            project_name: project_name.to_string(),
+            feature_name: feature_name.to_string(),
+            feature_id: feature.id.clone(),
+            project_id: project.id.clone(),
+            workdir: Self::todo_workdir_key(&feature.workdir),
+            list_id: list.id,
+            unfinished,
+            selected: 0,
+        })
+    }
+
+    pub fn todo_delete_disposition_move(&mut self, delta: isize) {
+        if let AppMode::TodoDeleteDisposition(state) = &mut self.mode {
+            state.move_cursor(delta);
+        }
+    }
+
+    /// `Esc` is *Cancel*: nothing is deleted and the feature stays.
+    pub fn cancel_todo_delete_disposition(&mut self) {
+        if let AppMode::TodoDeleteDisposition(_) = &self.mode {
+            self.mode = AppMode::Normal;
+            self.message = Some("Deletion cancelled".to_string());
+        }
+    }
+
+    /// Apply the chosen disposition, then hand back to the delete flow.
+    ///
+    /// *Cancel* stops here with the feature and its worktree intact. The other
+    /// three settle the TODOs first and only then let the deletion run, so a
+    /// failure to re-file them never happens after the worktree is already
+    /// gone.
+    pub fn confirm_todo_delete_disposition(&mut self) -> Result<()> {
+        let AppMode::TodoDeleteDisposition(_) = &self.mode else {
+            return Ok(());
+        };
+        let AppMode::TodoDeleteDisposition(state) =
+            std::mem::replace(&mut self.mode, AppMode::Normal)
+        else {
+            return Ok(());
+        };
+        let choice = state.choice();
+
+        if choice == TodoDeleteDisposition::Cancel {
+            self.message = Some("Deletion cancelled".to_string());
+            return Ok(());
+        }
+
+        self.apply_todo_disposition(&state, choice)?;
+        self.mode = AppMode::DeletingFeature(state.project_name, state.feature_name);
+        self.delete_feature()
+    }
+
+    /// Settle the worktree list's items, then drop the list.
+    ///
+    /// Split out from [`Self::confirm_todo_delete_disposition`] so the
+    /// re-filing can be exercised on its own: the caller goes on to run a
+    /// deletion that kills tmux sessions and removes a git worktree, which is
+    /// not what this half is about.
+    pub(crate) fn apply_todo_disposition(
+        &mut self,
+        state: &crate::app::TodoDeleteDispositionState,
+        choice: TodoDeleteDisposition,
+    ) -> Result<()> {
+        let target_scope = match choice {
+            TodoDeleteDisposition::MoveToProject => Some(TodoScope::Project {
+                project_id: state.project_id.clone(),
+            }),
+            TodoDeleteDisposition::MoveToGlobal => Some(TodoScope::Global),
+            _ => None,
+        };
+
+        // The destination may not exist yet — the project list is created
+        // lazily, and so is the global one.
+        //
+        // The host must be a feature that *survives* this deletion. Hosting a
+        // freshly-created project list on the feature being deleted would hand
+        // it straight to `handle_todos_host_feature_deleted`, which either
+        // deletes the list outright (no features left — losing the items the
+        // user just chose to keep) or raises a re-home prompt for a list that
+        // was created moments ago. With no survivor the list is created
+        // hostless: `resolve_todo_host_feature` treats the host as a hint, and
+        // an unhosted list is still found by scope once the project has a
+        // feature again.
+        let host_feature_id = self
+            .store
+            .find_project(&state.project_name)
+            .and_then(|p| p.features.iter().find(|f| f.id != state.feature_id))
+            .map(|f| f.id.clone());
+
+        let mut moved: Option<(usize, &'static str)> = None;
+        if let Some(db) = self.db.as_ref() {
+            if let Some(scope) = target_scope {
+                let host = match scope {
+                    TodoScope::Global => None,
+                    _ => host_feature_id.as_deref(),
+                };
+                let target = db.load_or_create_todo_list(&scope, host)?;
+                let moving: Vec<String> = db
+                    .todos(&state.list_id)?
+                    .into_iter()
+                    .filter(|t| !t.done)
+                    .map(|t| t.id)
+                    .collect();
+                for id in &moving {
+                    db.move_todo(id, &target.id)?;
+                }
+                moved = Some((moving.len(), scope.as_db_str()));
+            }
+            // Whatever is left in the worktree list goes with the worktree:
+            // on a move that is only the completed items, on a delete it is
+            // everything.
+            db.delete_worktree_todo_list(&state.project_id, &state.workdir)?;
+        }
+        if let Some((count, scope_name)) = moved {
+            self.log_info(
+                "todos",
+                format!(
+                    "moved {count} unfinished TODO(s) from the '{}' worktree list to the \
+                     {scope_name} list",
+                    state.feature_name
+                ),
+            );
+        }
+        Ok(())
+    }
+
     /// Called after a feature is removed from a surviving project. If the
     /// deleted feature hosted the project's TODO list, decide the list's fate:
     ///
     /// - No features remain → silently delete the now-orphaned list.
     /// - Surviving features exist → open [`AppMode::TodosHostReassign`] so the
     ///   user re-homes the list onto another feature or deletes it.
+    ///
+    /// Only the *project*-scoped list is at stake: a worktree list belongs to
+    /// a checkout rather than to a host feature, and it was already settled by
+    /// the disposition prompt before the deletion ran.
     ///
     /// Returns `true` if it opened the re-home prompt (so the caller leaves the
     /// mode alone). A no-op without a DB, since todo lists only persist there.
@@ -1556,11 +2369,14 @@ impl App {
             return false;
         };
         let project_id = project.id.clone();
-        let list = match db.todo_list(&project_id) {
+        let scope = TodoScope::Project {
+            project_id: project_id.clone(),
+        };
+        let list = match db.todo_list(&scope) {
             Ok(Some(list)) => list,
             _ => return false,
         };
-        if list.feature_id != deleted_feature_id {
+        if list.feature_id.as_deref() != Some(deleted_feature_id) {
             // The deleted feature did not host the list; nothing to do.
             return false;
         }

@@ -1330,7 +1330,12 @@ mod tests {
     fn todo_quick_capture_commit_creates_todos_session_and_returns_to_view() {
         let repo = TempDir::new().unwrap();
         let mut app = app_for_viewing_repo(repo.path());
-        assert!(!app.store.projects[0].has_todos_session());
+        assert!(
+            !app.store.projects[0]
+                .features
+                .iter()
+                .any(|f| f.has_todos_session())
+        );
 
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('N')), 20).unwrap();
@@ -1343,7 +1348,12 @@ mod tests {
         assert!(matches!(&app.mode, AppMode::Viewing(_)));
         // The project gains a TODOs session, auto-created under the current
         // feature (there was none before quick-capture).
-        assert!(app.store.projects[0].has_todos_session());
+        assert!(
+            app.store.projects[0]
+                .features
+                .iter()
+                .any(|f| f.has_todos_session())
+        );
     }
 
     #[test]
@@ -1357,7 +1367,12 @@ mod tests {
         crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Esc)).unwrap();
 
         assert!(matches!(&app.mode, AppMode::Viewing(_)));
-        assert!(!app.store.projects[0].has_todos_session());
+        assert!(
+            !app.store.projects[0]
+                .features
+                .iter()
+                .any(|f| f.has_todos_session())
+        );
     }
 
     #[test]
@@ -1372,7 +1387,12 @@ mod tests {
         crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Enter)).unwrap();
 
         assert!(matches!(&app.mode, AppMode::Viewing(_)));
-        assert!(!app.store.projects[0].has_todos_session());
+        assert!(
+            !app.store.projects[0]
+                .features
+                .iter()
+                .any(|f| f.has_todos_session())
+        );
     }
 
     fn init_repo_with_branch_change() -> TempDir {

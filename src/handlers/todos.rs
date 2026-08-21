@@ -1,8 +1,10 @@
 //! Key dispatch for the native TODOs overlay (`AppMode::Todos`).
 //!
-//! Four input layers, checked in order: a pending delete confirmation, the
-//! launch chooser / destination step, an active inline edit (add / title /
-//! notes / carry-over), and the normal navigation + action keys.
+//! Five input layers, checked in order: a pending delete confirmation, the
+//! launch chooser / destination step, the move/copy scope chooser, an active
+//! inline edit (add / title / notes / scratchpad), and the normal navigation +
+//! action keys — which now also move focus between panes (`Tab`), reveal them
+//! (`\`), and re-file the selected item across scopes (`M` / `C`).
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -25,12 +27,24 @@ pub fn handle_todos_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return handle_launch_step_key(app, key.code);
     }
 
-    // Layer 3: active inline edit.
+    // Layer 3: the move/copy scope chooser.
+    if matches!(&app.mode, AppMode::Todos(state) if state.scope_move.is_some()) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => app.todo_scope_move_cursor(1),
+            KeyCode::Char('k') | KeyCode::Up => app.todo_scope_move_cursor(-1),
+            KeyCode::Enter => app.confirm_todo_scope_move()?,
+            KeyCode::Esc | KeyCode::Char('q') => app.cancel_todo_scope_move(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    // Layer 4: active inline edit.
     if matches!(&app.mode, AppMode::Todos(state) if state.editor.is_some()) {
         return handle_edit_key(app, key);
     }
 
-    // Layer 4: navigation + actions.
+    // Layer 5: navigation + actions.
     // Ctrl+Q exits, matching the embedded-view exit chord.
     if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.close_todos_view();
@@ -52,6 +66,15 @@ pub fn handle_todos_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('K') => app.todos_reorder(-1)?,
         KeyCode::Char('d') => app.todos_request_delete(),
         KeyCode::Char('g') | KeyCode::Enter => app.todos_launch_selected()?,
+        // Pane focus and the side-pane reveal. `BackTab` is what a terminal
+        // reports for Shift+Tab.
+        KeyCode::Tab => app.todos_cycle_focus(1),
+        KeyCode::BackTab => app.todos_cycle_focus(-1),
+        KeyCode::Char('\\') => app.todos_toggle_side_panes(),
+        // Re-file the selected item into another scope: `M` moves it (links
+        // and all), `C` leaves a copy behind as fresh, unstarted work.
+        KeyCode::Char('M') => app.todos_begin_scope_move(false),
+        KeyCode::Char('C') => app.todos_begin_scope_move(true),
         // Distinct from `g`/`Enter`: those act on the cursor, this picks the
         // next TODO in priority order wherever it is in the list.
         KeyCode::Char('I') => app.implement_next_todo_in_overlay()?,
@@ -147,6 +170,40 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 ed.editor.handle_key(key);
             }
         }
+    }
+    Ok(())
+}
+
+/// Key dispatch for the "which feature should work this TODO?" picker raised
+/// by a spawn from the project or global pane (`AppMode::TodoSpawnTarget`).
+///
+/// `Esc` restores the mode the key was pressed in, so declining to choose
+/// never costs the user their place in the list.
+pub fn handle_todo_spawn_target_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => app.todo_spawn_target_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.todo_spawn_target_move(-1),
+        KeyCode::Enter => app.confirm_todo_spawn_target()?,
+        KeyCode::Esc | KeyCode::Char('q') => app.cancel_todo_spawn_target(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key dispatch for the "what happens to this worktree's TODOs?" prompt raised
+/// before a feature with unfinished worktree TODOs is deleted
+/// (`AppMode::TodoDeleteDisposition`).
+///
+/// `Esc` is *Cancel*: the feature and its worktree stay. There is no `q` here —
+/// this prompt stands between the user and an irreversible delete, and a
+/// stray `q` should not be the key that dismisses it.
+pub fn handle_todo_delete_disposition_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => app.todo_delete_disposition_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.todo_delete_disposition_move(-1),
+        KeyCode::Enter => app.confirm_todo_delete_disposition()?,
+        KeyCode::Esc => app.cancel_todo_delete_disposition(),
+        _ => {}
     }
     Ok(())
 }

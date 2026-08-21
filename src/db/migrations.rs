@@ -112,6 +112,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Mark a TODO as actively being worked, apart from its session link",
             MIGRATION_024,
         ),
+        (
+            "Scope TODO lists to a worktree, a project, or the machine",
+            MIGRATION_025,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -631,6 +635,63 @@ ALTER TABLE todos
     ADD COLUMN in_progress INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Give a TODO list a **scope**: the worktree it belongs to, the project it
+/// belongs to, or nothing at all (the machine-wide global list).
+///
+/// This is a table rebuild rather than a set of `ALTER TABLE`s because two of
+/// the three changes cannot be expressed any other way in SQLite: dropping the
+/// `project_id UNIQUE` constraint (a project now owns one project-scoped list
+/// *and* one list per worktree) and relaxing `project_id` / `feature_id` to
+/// nullable (the global list has neither).
+///
+/// The rebuild runs with `foreign_keys` off, and that is load-bearing in both
+/// directions. `DROP TABLE todo_lists` with foreign keys on would fire
+/// `todos`' `ON DELETE CASCADE` and take every TODO in the database with it;
+/// and `ALTER TABLE ... RENAME TO` with them on would rewrite `todos`' own
+/// `REFERENCES todo_lists(id)` clause to point at the temporary name. With
+/// them off, neither happens and `todos` ends up referencing the rebuilt table
+/// under its original name.
+///
+/// Every existing row is backfilled to `scope = 'project'` with its
+/// `carry_over` scratchpad, host feature, and id all preserved — an upgrade
+/// leaves the lists people already have exactly where they were, and the new
+/// worktree lists start empty.
+///
+/// The three partial unique indexes are what the old single UNIQUE used to be:
+/// one project-scoped list per project, one worktree list per
+/// (project, workdir), and exactly one global list on the machine.
+const MIGRATION_025: &str = "
+PRAGMA foreign_keys=OFF;
+
+CREATE TABLE todo_lists_new (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT,
+    feature_id  TEXT,
+    scope       TEXT NOT NULL DEFAULT 'project',
+    workdir     TEXT,
+    carry_over  TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+INSERT INTO todo_lists_new
+    (id, project_id, feature_id, scope, workdir, carry_over, created_at, updated_at)
+SELECT id, project_id, feature_id, 'project', NULL, carry_over, created_at, updated_at
+FROM todo_lists;
+
+DROP TABLE todo_lists;
+ALTER TABLE todo_lists_new RENAME TO todo_lists;
+
+CREATE UNIQUE INDEX idx_todo_lists_project
+    ON todo_lists(project_id) WHERE scope = 'project';
+CREATE UNIQUE INDEX idx_todo_lists_worktree
+    ON todo_lists(project_id, workdir) WHERE scope = 'worktree';
+CREATE UNIQUE INDEX idx_todo_lists_global
+    ON todo_lists(scope) WHERE scope = 'global';
+
+PRAGMA foreign_keys=ON;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -667,7 +728,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -762,7 +823,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
     }
 
     /// Migration 023 adds `linked_feature_id` to TODOs written before it
@@ -894,7 +955,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 24);
+        assert_eq!(rows, 25);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

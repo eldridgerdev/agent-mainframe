@@ -302,17 +302,19 @@ impl App {
             }
         }
 
-        // The TODO list is keyed by project id with no FK to `projects` (it
-        // would be wiped by the store's full-replace save otherwise), so its
-        // rows must be cleaned up explicitly when a project is deleted.
+        // TODO lists are keyed by project id with no FK to `projects` (they
+        // would be wiped by the store's full-replace save otherwise), so their
+        // rows must be cleaned up explicitly when a project is deleted. This
+        // takes the project-scoped list *and* every worktree list under it;
+        // the global list belongs to no project and survives.
         let cleanup_err = match (&self.db, &project_id) {
-            (Some(db), Some(pid)) => db.delete_todo_list_for_project(pid).err(),
+            (Some(db), Some(pid)) => db.delete_todo_lists_for_project(pid).err(),
             _ => None,
         };
         if let (Some(e), Some(pid)) = (cleanup_err, &project_id) {
             self.log_warn(
                 "todos",
-                format!("failed to delete todo list for project {pid}: {e}"),
+                format!("failed to delete todo lists for project {pid}: {e}"),
             );
         }
 

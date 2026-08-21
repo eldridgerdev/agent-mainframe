@@ -63,6 +63,7 @@ pub use session::{
 };
 pub use theme::draw_theme_picker;
 pub use todos::{
-    draw_todo_implement_choice_dialog, draw_todo_quick_capture_dialog,
-    draw_todos_host_reassign_dialog, draw_todos_view,
+    draw_todo_delete_disposition_dialog, draw_todo_implement_choice_dialog,
+    draw_todo_quick_capture_dialog, draw_todo_spawn_target_dialog, draw_todos_host_reassign_dialog,
+    draw_todos_view,
 };

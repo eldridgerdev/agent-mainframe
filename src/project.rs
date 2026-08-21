@@ -447,6 +447,20 @@ impl<'de> Deserialize<'de> for Feature {
 }
 
 impl Feature {
+    /// The feature's TODOs session, if it has one.
+    ///
+    /// One per **feature**, not one per project: each checkout has its own
+    /// worktree list to open, and the editor reaches the project and global
+    /// lists as side panes from there.
+    pub fn todos_session(&self) -> Option<&FeatureSession> {
+        self.sessions.iter().find(|s| s.kind == SessionKind::Todos)
+    }
+
+    /// Whether this feature already has a TODOs session.
+    pub fn has_todos_session(&self) -> bool {
+        self.todos_session().is_some()
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[allow(dead_code)] // exercised only by unit tests
     pub fn new(
@@ -697,23 +711,6 @@ pub struct Project {
 }
 
 impl Project {
-    /// The project's TODOs session (and its host feature), if one exists.
-    /// At most one TODOs session is allowed per project, across all features.
-    pub fn todos_session(&self) -> Option<(&Feature, &FeatureSession)> {
-        self.features.iter().find_map(|feature| {
-            feature
-                .sessions
-                .iter()
-                .find(|s| s.kind == SessionKind::Todos)
-                .map(|s| (feature, s))
-        })
-    }
-
-    /// Whether the project already has a TODOs session.
-    pub fn has_todos_session(&self) -> bool {
-        self.todos_session().is_some()
-    }
-
     pub fn new(name: String, repo: PathBuf, is_git: bool, preferred_agent: AgentKind) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),

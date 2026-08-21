@@ -470,8 +470,14 @@ impl App {
             },
         ]);
 
-        // At most one TODOs session per project; only offer it when none exists.
-        if !project.has_todos_session() {
+        // One TODOs session per feature; only offer it when this feature has
+        // none. Its editor opens on the feature's own worktree list, with the
+        // project and global lists reachable as side panes.
+        if !project
+            .features
+            .get(fi)
+            .is_some_and(|feature| feature.has_todos_session())
+        {
             builtin_sessions.push(BuiltinSessionOption {
                 kind: SessionKind::Todos,
                 label: "TODOs".to_string(),
@@ -576,8 +582,14 @@ impl App {
             },
         ]);
 
-        // At most one TODOs session per project; only offer it when none exists.
-        if !project.has_todos_session() {
+        // One TODOs session per feature; only offer it when this feature has
+        // none. Its editor opens on the feature's own worktree list, with the
+        // project and global lists reachable as side panes.
+        if !project
+            .features
+            .get(fi)
+            .is_some_and(|feature| feature.has_todos_session())
+        {
             builtin_sessions.push(BuiltinSessionOption {
                 kind: SessionKind::Todos,
                 label: "TODOs".to_string(),
@@ -758,8 +770,9 @@ impl App {
     }
 
     /// Add a native TODOs session under the given feature and create the
-    /// project's `todo_lists` row. Enforces one TODOs session per project.
-    /// No tmux window is created.
+    /// `todo_lists` row its editor opens on — the feature's worktree list, or
+    /// the project list when the feature sits on the repo root. Enforces one
+    /// TODOs session per feature. No tmux window is created.
     pub(crate) fn add_todos_session_for_picker(
         &mut self,
         pi: usize,
@@ -770,8 +783,12 @@ impl App {
             Some(p) => p,
             None => anyhow::bail!("project not found"),
         };
-        if project.has_todos_session() {
-            self.message = Some("This project already has a TODOs session".into());
+        if project
+            .features
+            .get(fi)
+            .is_some_and(|feature| feature.has_todos_session())
+        {
+            self.message = Some("This feature already has a TODOs session".into());
             return Ok(());
         }
         let project_id = project.id.clone();
@@ -793,11 +810,15 @@ impl App {
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;
 
-        // Create the per-project todo list hosted by this feature. (The
-        // `feature` borrow above has ended, so `self.db` is free to access.)
-        let list_err = match &self.db {
-            Some(db) => db.load_or_create_todo_list(&project_id, &feature_id).err(),
-            None => None,
+        // Create the list this feature's editor opens on — its own worktree
+        // list, or the project's at the repo root. (The `feature` borrow above
+        // has ended, so `self.db` is free to access.)
+        let scope = self.default_todo_scope(pi, fi);
+        let list_err = match (&self.db, &scope) {
+            (Some(db), Some(scope)) => db
+                .load_or_create_todo_list(scope, Some(feature_id.as_str()))
+                .err(),
+            _ => None,
         };
         if let Some(e) = list_err {
             self.log_warn(

@@ -10,6 +10,51 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **TODO lists are scoped to the work they belong to.** A feature's TODO editor
+  now opens on that worktree's own list rather than one shared list per
+  project, and every feature can have its own `TODOs` session instead of the
+  first one claiming it for the whole project.
+
+  Two other scopes sit beside it. Press `\` in the editor to reveal the
+  **project** list — the one that existed before — and a new **global** list
+  that belongs to no project and is shared across every repo AMF knows about.
+  The three panes each keep their own cursor, scroll, and scratchpad; `Tab` /
+  `Shift+Tab` move between them, and the reveal is remembered between sessions.
+  The global list has no entry point of its own — it is reachable as a side
+  pane of any TODO editor.
+
+  `M` moves the selected TODO to another scope and `C` copies it. A move
+  carries the item's session and planned-feature links with it, because it is
+  the same work; a copy deliberately lands unstarted, so two panes never both
+  claim the same agent.
+
+  `I` (implement next) now scans whichever lists are showing: the worktree list
+  alone with the side panes closed, all three with them open. Priority still
+  comes first, and at equal priority the narrower scope wins — worktree, then
+  project, then global.
+
+  A worktree TODO is still worked in the feature that owns the checkout. A
+  project or global TODO belongs to no one checkout, so `g`, `Enter`, and `I`
+  now ask which feature should work it; that feature supplies the agent and
+  permission mode exactly as before.
+
+  `Ctrl+Space` `N` quick-capture writes to the session feature's worktree list
+  (the project's when the feature sits on the repo root), and the capture box
+  names the list it is writing to.
+
+  Deleting a feature deletes its worktree list along with the checkout, so if
+  that list still holds unfinished items AMF asks first: move them to the
+  project list, move them to the global list, delete them with the worktree, or
+  cancel. Nothing is killed or removed until you answer.
+
+  **Migration:** existing TODO lists are untouched. They stay project-scoped,
+  keep their host feature, their scratchpad, and their session links, and
+  appear in the project pane. New worktree lists start empty. Deleting a
+  project still removes its lists — now its worktree lists as well as its
+  project list — and never the global one.
+
 ### Fixed
 
 - **AMF no longer exhausts your GitHub API budget refreshing PR badges.** The

@@ -172,6 +172,7 @@ on an existing feature to run the interview again.
 | `r` / `d` | Rename / delete the selected item |
 | `/` | Search and jump |
 | `i` | Show agents needing attention: questions first, then finished work |
+| `I` | On a TODOs session row: start an agent on the next TODO in priority order |
 | `z` | Show dormant features: idle and unattended |
 | `G` | Open GitHub PR triage |
 | `W` | Run AMF's AI review of a PR diff |
@@ -345,6 +346,16 @@ A TODO planned into a new feature stays open on the list, marked as linked, and
 later deleted the TODO survives, the link is dropped, and `g` offers the choice
 again. An interrupted interview is saved as a draft and offered back the next
 time you press `g` on that TODO.
+
+Press `I` to work the list rather than a particular item: AMF takes the
+highest-priority TODO nobody has started, opens an agent on it in the list's
+feature, and marks the item in progress (`[~]`) so the next `I` moves on. It
+works on the list itself and on the `TODOs` row on the dashboard, and the
+composer is seeded but unsent, exactly as `g` leaves it. Press `i` on a TODO to
+set or clear that in-progress mark by hand — useful when you abandoned a session
+without closing it. When every remaining TODO is already underway, AMF offers
+the next one anyway and asks whether to go to the work already started, start a
+second agent, skip it, or cancel.
 
 ### See which agents need you
 

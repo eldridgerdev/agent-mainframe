@@ -1509,6 +1509,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_todos_host_reassign_dialog(frame, state, &app.theme);
     }
 
+    // Drawn the same way from either surface: `draw_modal_overlay` clears the
+    // viewport, so what the key was pressed in never shows through.
+    if let AppMode::TodoImplementChoice(state) = &app.mode {
+        super::dialogs::draw_todo_implement_choice_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::RenamingSession(state) = &app.mode {
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
     }

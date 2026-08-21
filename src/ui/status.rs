@@ -363,6 +363,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::TodoImplementChoice(_) => Line::from(vec![
+            Span::styled("j/k", key_style()),
+            Span::raw(" choose  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" confirm  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::TodosHostReassign(_) => Line::from(vec![
             Span::styled("j/k", key_style()),
             Span::raw(" choose  "),

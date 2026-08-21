@@ -252,6 +252,12 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('/') => {
             app.start_search();
         }
+        // Only on a TODOs session row: the key means "take the next item off
+        // *this* list", and a project without a list has no row to press it on.
+        // Inert everywhere else rather than guessing which list was meant.
+        KeyCode::Char('I') => {
+            app.implement_next_todo_from_dashboard()?;
+        }
         KeyCode::Char('i') => {
             if app.attention_rows().is_empty() {
                 app.push_toast_warning("Nothing needs attention");

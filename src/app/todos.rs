@@ -9,8 +9,9 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::app::{
-    App, AppMode, Selection, StartIntent, TodoLaunchAction, TodoLaunchStep, TodoPlanDestination,
-    TodoPlanOrigin, TodoViewState, TodosHostReassignState,
+    App, AppMode, Selection, StartIntent, TodoImplementChoice, TodoImplementChoiceState,
+    TodoLaunchAction, TodoLaunchStep, TodoPlanDestination, TodoPlanOrigin, TodoViewState,
+    TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority};
 
@@ -26,6 +27,27 @@ pub(crate) struct SelectedTodoContext {
     pub list_id: Option<String>,
     /// The list-level scratchpad note (`todo_lists.carry_over`).
     pub scratchpad: Option<String>,
+}
+
+/// What [`App::next_todo_index`] settled on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NextTodo {
+    /// Nothing has been started for it yet: put an agent on it without asking.
+    Ready(usize),
+    /// The best remaining candidate already links a session or a planned
+    /// feature. Returned for the caller to ask about, never acted on silently.
+    Started(usize),
+}
+
+/// The list "implement next" scans and the indices it acts under, gathered from
+/// whichever surface invoked it.
+pub(crate) struct ImplementNextCtx {
+    pub pi: usize,
+    /// The feature the TODOs *session* lives under, used when the list's own
+    /// host feature can no longer be resolved.
+    pub fallback_fi: usize,
+    pub host_feature_id: Option<String>,
+    pub todos: Vec<Todo>,
 }
 
 impl App {
@@ -430,6 +452,7 @@ impl App {
                 sort_order: next_order,
                 spawned_session_id: None,
                 linked_feature_id: None,
+                in_progress: false,
                 created_at: String::new(),
                 updated_at: String::new(),
             },
@@ -471,9 +494,31 @@ impl App {
         Ok(())
     }
 
-    /// Toggle the selected TODO's done flag.
+    /// Toggle the selected TODO's done flag. Completing an item ends whatever
+    /// was underway on it, so the in-progress flag goes with it.
     pub fn todos_toggle_done(&mut self) -> Result<()> {
-        self.todos_update_selected(|t| t.done = !t.done)
+        self.todos_update_selected(|t| {
+            t.done = !t.done;
+            if t.done {
+                t.in_progress = false;
+            }
+        })
+    }
+
+    /// Toggle the selected TODO's in-progress flag by hand.
+    ///
+    /// The flag is set automatically when an agent is launched, but it has to
+    /// be clearable: a session the user abandoned without closing would
+    /// otherwise keep the item out of "implement next" for good. Marking an
+    /// item underway also un-completes it — the two states contradict each
+    /// other, and the one just asked for is the one that wins.
+    pub fn todos_toggle_in_progress(&mut self) -> Result<()> {
+        self.todos_update_selected(|t| {
+            t.in_progress = !t.in_progress;
+            if t.in_progress {
+                t.done = false;
+            }
+        })
     }
 
     /// Cycle the selected TODO's priority High → Med → Low → High.
@@ -669,16 +714,19 @@ impl App {
     }
 
     /// Drop a TODO's dead feature link, in memory and (with a DB) on disk.
+    ///
+    /// The DB write is targeted by id rather than an `update_todo` of the
+    /// overlay row, for the same reason [`Self::todos_mark_started`] is: this
+    /// also runs from the dashboard's "implement next", where no overlay is
+    /// open and there is no in-memory row to write back.
     fn clear_todo_linked_feature(&mut self, todo_id: &str) -> Result<()> {
-        let updated = match &mut self.mode {
-            AppMode::Todos(state) => state.todos.iter_mut().find(|t| t.id == todo_id).map(|t| {
-                t.linked_feature_id = None;
-                t.clone()
-            }),
-            _ => None,
-        };
-        if let (Some(db), Some(todo)) = (&self.db, &updated) {
-            db.update_todo(todo)?;
+        if let AppMode::Todos(state) = &mut self.mode
+            && let Some(todo) = state.todos.iter_mut().find(|t| t.id == todo_id)
+        {
+            todo.linked_feature_id = None;
+        }
+        if let Some(db) = &self.db {
+            db.clear_todo_linked_feature_for_todo(todo_id)?;
         }
         Ok(())
     }
@@ -809,16 +857,36 @@ impl App {
         };
 
         let fi = self.resolve_todo_host_feature(pi, host_feature_id.as_deref(), fallback_fi);
-        let prompt = Self::todo_spawn_prompt(&todo);
+        self.spawn_todo_agent(pi, fi, &todo, false)
+    }
 
-        // Reuse a still-live linked session if the TODO already has one.
-        let existing_si = todo.spawned_session_id.as_ref().and_then(|sid| {
-            self.store
-                .projects
-                .get(pi)
-                .and_then(|p| p.features.get(fi))
-                .and_then(|f| f.sessions.iter().position(|s| &s.id == sid))
-        });
+    /// Launch an agent on `todo` in feature `(pi, fi)` and seed the composer
+    /// with it, editable and unsent.
+    ///
+    /// A TODO that already links a live session reuses it — jumped to and added
+    /// onto — rather than accumulating a second agent for the same item, unless
+    /// `force_new` says the user asked for exactly that. Either way the TODO is
+    /// marked started before the view changes, so the list can show it as
+    /// underway and "implement next" scans past it.
+    ///
+    /// Takes the TODO by value rather than reading `self.mode`, because the
+    /// dashboard's "implement next" spawns with no overlay open.
+    fn spawn_todo_agent(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        todo: &Todo,
+        force_new: bool,
+    ) -> Result<()> {
+        let prompt = Self::todo_spawn_prompt(todo);
+
+        let existing_si = if force_new {
+            None
+        } else {
+            todo.spawned_session_id
+                .as_deref()
+                .and_then(|sid| self.session_index_in_feature(pi, fi, sid))
+        };
 
         let si = match existing_si {
             Some(si) => si,
@@ -834,7 +902,7 @@ impl App {
                 // The link back to the TODO is recorded from inside the
                 // Todos overlay, which the confirmation dialog would replace,
                 // so this start warns instead of parking.
-                let si = match self.create_agent_session_labeled(
+                match self.create_agent_session_labeled(
                     pi,
                     fi,
                     &label,
@@ -846,13 +914,24 @@ impl App {
                         self.push_toast_error(format!("Failed to launch agent: {e}"));
                         return Ok(());
                     }
-                };
-                let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
-                // Record the link before we leave the overlay (still in Todos mode).
-                self.todos_record_spawned_session(&todo.id, &session_id)?;
-                si
+                }
             }
         };
+
+        let Some(session_id) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .and_then(|f| f.sessions.get(si))
+            .map(|s| s.id.clone())
+        else {
+            self.push_toast_error("The session for this TODO vanished as it was created");
+            return Ok(());
+        };
+        // Record the link and the in-progress flag before we leave the overlay
+        // (still in Todos mode, so the in-memory list stays truthful too).
+        self.todos_mark_started(&todo.id, &session_id)?;
 
         // Switch into the session view and seed the composer (editable). The
         // seed is not submitted, so the user reviews it before sending.
@@ -1039,22 +1118,23 @@ impl App {
         }
     }
 
-    /// Record the spawned session id on the TODO, in memory and (with a DB) on
-    /// disk.
-    pub(crate) fn todos_record_spawned_session(
-        &mut self,
-        todo_id: &str,
-        session_id: &str,
-    ) -> Result<()> {
-        let updated = match &mut self.mode {
-            AppMode::Todos(state) => state.todos.iter_mut().find(|t| t.id == todo_id).map(|t| {
-                t.spawned_session_id = Some(session_id.to_string());
-                t.clone()
-            }),
-            _ => None,
-        };
-        if let (Some(db), Some(todo)) = (&self.db, &updated) {
-            db.update_todo(todo)?;
+    /// Record that work has started on a TODO: its session link and its
+    /// in-progress flag, in memory and (with a DB) on disk.
+    ///
+    /// The DB writes are targeted rather than a whole-row [`update_todo`]
+    /// because this is called from the dashboard's "implement next" as well,
+    /// where no overlay is open and there is no in-memory row to write back —
+    /// and reconstructing one would overwrite whatever else changed meanwhile.
+    pub(crate) fn todos_mark_started(&mut self, todo_id: &str, session_id: &str) -> Result<()> {
+        if let AppMode::Todos(state) = &mut self.mode
+            && let Some(todo) = state.todos.iter_mut().find(|t| t.id == todo_id)
+        {
+            todo.spawned_session_id = Some(session_id.to_string());
+            todo.in_progress = true;
+        }
+        if let Some(db) = &self.db {
+            db.set_todo_spawned_session(todo_id, session_id)?;
+            db.set_todo_in_progress(todo_id, true)?;
         }
         Ok(())
     }
@@ -1087,6 +1167,323 @@ impl App {
                 todo.linked_feature_id = None;
             }
         }
+    }
+
+    // ----- implement next ------------------------------------------------
+
+    /// `I` on a TODOs session row on the dashboard: take the highest-priority
+    /// unstarted TODO and put an agent on it.
+    ///
+    /// Inert on anything but a TODOs session row — a project with no list has
+    /// no row to press it on, which is the whole gate.
+    pub fn implement_next_todo_from_dashboard(&mut self) -> Result<()> {
+        let Selection::Session(pi, fi, si) = self.selection else {
+            return Ok(());
+        };
+        let is_todos_session = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .and_then(|f| f.sessions.get(si))
+            .is_some_and(|s| s.kind == crate::project::SessionKind::Todos);
+        if !is_todos_session {
+            return Ok(());
+        }
+        let ctx = self.implement_next_ctx(pi, fi);
+        self.implement_next(ctx, Vec::new())
+    }
+
+    /// `I` inside the TODOs overlay. Same scan as the dashboard's, over the
+    /// list already loaded, and deliberately distinct from `g`/`Enter`, which
+    /// stay on the item under the cursor.
+    pub fn implement_next_todo_in_overlay(&mut self) -> Result<()> {
+        let AppMode::Todos(state) = &self.mode else {
+            return Ok(());
+        };
+        let (pi, fi) = (state.pi, state.fi);
+        let ctx = self.implement_next_ctx(pi, fi);
+        self.implement_next(ctx, Vec::new())
+    }
+
+    /// Gather the list to scan: the overlay's in-memory rows when it is open
+    /// (they are its source of truth, and may hold edits a DB-less run never
+    /// persisted), otherwise the project's list read from the DB.
+    fn implement_next_ctx(&mut self, pi: usize, fallback_fi: usize) -> ImplementNextCtx {
+        if let AppMode::Todos(state) = &self.mode {
+            return ImplementNextCtx {
+                pi: state.pi,
+                fallback_fi: state.fi,
+                host_feature_id: state.list.as_ref().map(|l| l.feature_id.clone()),
+                todos: state.todos.clone(),
+            };
+        }
+        let project_id = match self.store.projects.get(pi) {
+            Some(project) => project.id.clone(),
+            None => {
+                return ImplementNextCtx {
+                    pi,
+                    fallback_fi,
+                    host_feature_id: None,
+                    todos: Vec::new(),
+                };
+            }
+        };
+        let (list, todos) = self.load_todos_for_project(&project_id);
+        ImplementNextCtx {
+            pi,
+            fallback_fi,
+            host_feature_id: list.map(|l| l.feature_id),
+            todos,
+        }
+    }
+
+    /// Run the scan and act on what it finds.
+    fn implement_next(&mut self, mut ctx: ImplementNextCtx, skipped: Vec<String>) -> Result<()> {
+        let fi =
+            self.resolve_todo_host_feature(ctx.pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
+        self.todos_reconcile_dead_sessions(ctx.pi, fi, &mut ctx.todos)?;
+
+        match Self::next_todo_index(&ctx.todos, &skipped) {
+            None => {
+                self.push_toast_info(Self::no_next_todo_message(&ctx.todos, &skipped));
+                Ok(())
+            }
+            Some(NextTodo::Ready(i)) => {
+                let todo = ctx.todos[i].clone();
+                self.spawn_todo_agent(ctx.pi, fi, &todo, false)
+            }
+            Some(NextTodo::Started(i)) => {
+                let todo = &ctx.todos[i];
+                let (todo_id, todo_title) = (todo.id.clone(), todo.title.clone());
+                let origin = std::mem::replace(&mut self.mode, AppMode::Normal);
+                self.mode = AppMode::TodoImplementChoice(Box::new(TodoImplementChoiceState {
+                    origin: Box::new(origin),
+                    pi: ctx.pi,
+                    fallback_fi: ctx.fallback_fi,
+                    host_feature_id: ctx.host_feature_id,
+                    todo_id,
+                    todo_title,
+                    skipped_ids: skipped,
+                    selected: 0,
+                }));
+                Ok(())
+            }
+        }
+    }
+
+    /// The TODO "implement next" should act on, or `None` if there is none.
+    ///
+    /// Priority first (High, then Med, then Low), and within a priority the
+    /// order the list is already in — the sort is stable, so a manual ordering
+    /// the user arranged is what breaks ties. Completed, in-progress, and
+    /// explicitly skipped items are passed over entirely.
+    ///
+    /// A TODO that already links a session or a planned feature is not
+    /// *chosen*, it is held in reserve: an unstarted item anywhere in the scan
+    /// wins over it, and it is only returned — as [`NextTodo::Started`], for
+    /// the caller to ask about — when nothing unstarted remains. That is what
+    /// reconciles "skip TODOs that already have a session" with there being a
+    /// prompt for exactly that case.
+    pub(crate) fn next_todo_index(todos: &[Todo], skipped_ids: &[String]) -> Option<NextTodo> {
+        let mut order: Vec<usize> = (0..todos.len()).collect();
+        order.sort_by_key(|&i| todos[i].priority.rank());
+
+        let mut started: Option<usize> = None;
+        for i in order {
+            let todo = &todos[i];
+            if todo.done || todo.in_progress || skipped_ids.iter().any(|id| id == &todo.id) {
+                continue;
+            }
+            if todo.spawned_session_id.is_none() && todo.linked_feature_id.is_none() {
+                return Some(NextTodo::Ready(i));
+            }
+            if started.is_none() {
+                started = Some(i);
+            }
+        }
+        started.map(NextTodo::Started)
+    }
+
+    /// Why the scan came back empty, said in the terms the user can act on.
+    ///
+    /// A blanket "nothing to do" would be wrong in the case that matters: items
+    /// are there, they are just all underway, and the fix is to finish or
+    /// un-flag one rather than to add more.
+    pub(crate) fn no_next_todo_message(todos: &[Todo], skipped_ids: &[String]) -> String {
+        let open = todos.iter().filter(|t| !t.done).count();
+        if open == 0 {
+            "No TODOs left to implement".to_string()
+        } else if !skipped_ids.is_empty() {
+            "No other TODOs left to implement".to_string()
+        } else {
+            "All remaining TODOs are already in progress".to_string()
+        }
+    }
+
+    /// Drop session links whose session is gone, and the in-progress flag they
+    /// were the evidence for.
+    ///
+    /// AMF does not clear `spawned_session_id` when a session is removed — the
+    /// link is checked at use time instead — so without this a TODO whose agent
+    /// was closed would stay marked underway forever and never be offered
+    /// again. The flag is only cleared alongside a dead link: an item the user
+    /// marked in progress by hand has no session to lose and is left alone.
+    fn todos_reconcile_dead_sessions(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        todos: &mut [Todo],
+    ) -> Result<()> {
+        let dead: Vec<String> = todos
+            .iter()
+            .filter(|t| {
+                t.spawned_session_id
+                    .as_deref()
+                    .is_some_and(|sid| self.session_index_in_feature(pi, fi, sid).is_none())
+            })
+            .map(|t| t.id.clone())
+            .collect();
+        if dead.is_empty() {
+            return Ok(());
+        }
+
+        for todo in todos.iter_mut().filter(|t| dead.contains(&t.id)) {
+            todo.spawned_session_id = None;
+            todo.in_progress = false;
+        }
+        if let AppMode::Todos(state) = &mut self.mode {
+            for todo in state.todos.iter_mut().filter(|t| dead.contains(&t.id)) {
+                todo.spawned_session_id = None;
+                todo.in_progress = false;
+            }
+        }
+        if let Some(db) = &self.db {
+            for id in &dead {
+                db.clear_todo_spawned_session(id)?;
+                db.set_todo_in_progress(id, false)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-read a TODO by id from whichever list is authoritative right now.
+    /// Used when acting on a prompt, so the list changing underneath it is
+    /// noticed rather than acted on stale.
+    fn find_todo_by_id(&self, pi: usize, todo_id: &str) -> Option<Todo> {
+        if let AppMode::Todos(state) = &self.mode {
+            return state.todos.iter().find(|t| t.id == todo_id).cloned();
+        }
+        let db = self.db.as_ref()?;
+        let project_id = self.store.projects.get(pi)?.id.clone();
+        let list = db.todo_list(&project_id).ok()??;
+        db.todos(&list.id)
+            .ok()?
+            .into_iter()
+            .find(|t| t.id == todo_id)
+    }
+
+    // ----- already-started prompt -----------------------------------------
+
+    pub fn todo_implement_choice_move(&mut self, delta: isize) {
+        if let AppMode::TodoImplementChoice(state) = &mut self.mode {
+            state.move_cursor(delta);
+        }
+    }
+
+    /// `Esc`, and the *Cancel* option: change nothing and go back to where the
+    /// key was pressed.
+    pub fn cancel_todo_implement_choice(&mut self) {
+        if let AppMode::TodoImplementChoice(_) = &self.mode {
+            let AppMode::TodoImplementChoice(state) =
+                std::mem::replace(&mut self.mode, AppMode::Normal)
+            else {
+                return;
+            };
+            self.mode = *state.origin;
+        }
+    }
+
+    pub fn confirm_todo_implement_choice(&mut self) -> Result<()> {
+        let AppMode::TodoImplementChoice(_) = &self.mode else {
+            return Ok(());
+        };
+        let AppMode::TodoImplementChoice(state) =
+            std::mem::replace(&mut self.mode, AppMode::Normal)
+        else {
+            return Ok(());
+        };
+        let choice = state.choice();
+        let state = *state;
+        // Every branch acts from the mode the key was pressed in: the overlay's
+        // in-memory list is its source of truth, so a spawn or a re-scan has to
+        // see it rather than the empty Normal mode this prompt was holding.
+        self.mode = *state.origin;
+
+        match choice {
+            TodoImplementChoice::Cancel => Ok(()),
+            TodoImplementChoice::SkipToNext => {
+                let mut skipped = state.skipped_ids;
+                skipped.push(state.todo_id);
+                let ctx = self.implement_next_ctx(state.pi, state.fallback_fi);
+                self.implement_next(ctx, skipped)
+            }
+            TodoImplementChoice::Jump | TodoImplementChoice::SpawnNew => {
+                let Some(todo) = self.find_todo_by_id(state.pi, &state.todo_id) else {
+                    self.push_toast_warning("That TODO is no longer in the list");
+                    return Ok(());
+                };
+                let fi = self.resolve_todo_host_feature(
+                    state.pi,
+                    state.host_feature_id.as_deref(),
+                    state.fallback_fi,
+                );
+                if choice == TodoImplementChoice::SpawnNew {
+                    return self.spawn_todo_agent(state.pi, fi, &todo, true);
+                }
+                self.jump_to_started_todo(state.pi, fi, &todo)
+            }
+        }
+    }
+
+    /// Go to whatever an earlier run created for this TODO.
+    ///
+    /// The feature link wins over the session link for the same reason
+    /// [`Self::todos_launch_selected`] prefers it: a planned feature is a whole
+    /// checkout made for this item, while the session link is one agent inside
+    /// the host feature.
+    ///
+    /// A link whose feature is gone is *cleared*, exactly as `g`/`Enter` clears
+    /// it, and for a sharper reason here: the link is the only thing holding
+    /// the TODO back from [`NextTodo::Ready`], so leaving it would make every
+    /// future "implement next" offer the same item and every jump fail the same
+    /// way. Dropping it lets the next scan pick the TODO up and start it.
+    fn jump_to_started_todo(&mut self, pi: usize, fi: usize, todo: &Todo) -> Result<()> {
+        let mut cleared_feature_link = false;
+        if let Some(feature_id) = todo.linked_feature_id.as_deref() {
+            match self.feature_indices_by_id(feature_id) {
+                Some((fpi, ffi)) => return self.jump_to_linked_feature(fpi, ffi),
+                None => {
+                    self.clear_todo_linked_feature(&todo.id)?;
+                    cleared_feature_link = true;
+                    self.push_toast_warning(
+                        "The feature planned for this TODO no longer exists; the link was cleared",
+                    );
+                }
+            }
+        }
+        if let Some(si) = todo
+            .spawned_session_id
+            .as_deref()
+            .and_then(|sid| self.session_index_in_feature(pi, fi, sid))
+        {
+            self.selection = Selection::Session(pi, fi, si);
+            return self.enter_view();
+        }
+        if !cleared_feature_link {
+            self.push_toast_warning("The work started for this TODO is gone");
+        }
+        Ok(())
     }
 
     // ----- delete --------------------------------------------------------

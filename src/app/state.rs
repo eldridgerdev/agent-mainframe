@@ -3104,6 +3104,93 @@ impl TodoPlanDestination {
     ];
 }
 
+/// The four answers to "this TODO already has work started for it".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoImplementChoice {
+    /// Go to the feature or session the earlier run created.
+    Jump,
+    /// Start a second agent on it anyway, in the host feature.
+    SpawnNew,
+    /// Leave this one alone and scan on for the next candidate.
+    SkipToNext,
+    /// Change nothing and return to where the key was pressed.
+    Cancel,
+}
+
+impl TodoImplementChoice {
+    pub const ALL: [TodoImplementChoice; 4] = [
+        TodoImplementChoice::Jump,
+        TodoImplementChoice::SpawnNew,
+        TodoImplementChoice::SkipToNext,
+        TodoImplementChoice::Cancel,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TodoImplementChoice::Jump => "Go to the work already started",
+            TodoImplementChoice::SpawnNew => "Start another agent on it",
+            TodoImplementChoice::SkipToNext => "Skip it and take the next TODO",
+            TodoImplementChoice::Cancel => "Cancel",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            TodoImplementChoice::Jump => {
+                "Opens the feature or session this TODO was launched into."
+            }
+            TodoImplementChoice::SpawnNew => {
+                "Opens a second session in the host feature, composer seeded and unsent."
+            }
+            TodoImplementChoice::SkipToNext => {
+                "Leaves this one as it is and scans on for the next candidate."
+            }
+            TodoImplementChoice::Cancel => "Changes nothing.",
+        }
+    }
+}
+
+/// "Implement next" found that its best candidate already has work started for
+/// it (`AppMode::TodoImplementChoice`).
+///
+/// Reached from two surfaces — a TODOs session row on the dashboard and the
+/// TODOs overlay — so it is an [`AppMode`] of its own rather than a step
+/// layered inside [`TodoViewState`], which only one of the two has. `origin`
+/// is the mode the key was pressed in, restored verbatim on every exit: from
+/// the overlay that returns the list with its cursor, scroll, and any unsaved
+/// in-memory rows intact.
+pub struct TodoImplementChoiceState {
+    /// The mode to return to. Boxed because it may be a `Todos` overlay, whose
+    /// state is large and (holding a `TextEditor`) not clonable.
+    pub origin: Box<AppMode>,
+    /// Project and fallback feature indices the scan ran under.
+    pub pi: usize,
+    pub fallback_fi: usize,
+    /// The list's host feature id, when the list could be loaded.
+    pub host_feature_id: Option<String>,
+    /// The candidate: its id, so it is re-resolved on confirm rather than
+    /// trusted (the list can change while this prompt is open), and its title
+    /// for display.
+    pub todo_id: String,
+    pub todo_title: String,
+    /// TODOs already passed over by *Skip to next*, carried so a resumed scan
+    /// does not offer the same item again. Ids, not indices: the list may be
+    /// reordered underneath.
+    pub skipped_ids: Vec<String>,
+    pub selected: usize,
+}
+
+impl TodoImplementChoiceState {
+    pub fn move_cursor(&mut self, delta: isize) {
+        let last = TodoImplementChoice::ALL.len().saturating_sub(1) as isize;
+        self.selected = ((self.selected as isize) + delta).clamp(0, last) as usize;
+    }
+
+    pub fn choice(&self) -> TodoImplementChoice {
+        TodoImplementChoice::ALL[self.selected.min(TodoImplementChoice::ALL.len() - 1)]
+    }
+}
+
 /// A modal step layered over the TODO list, the way `pending_delete` and
 /// `editor` are: the list, cursor, and scroll stay intact underneath, so `Esc`
 /// returns to exactly what the user was looking at.
@@ -4047,6 +4134,8 @@ pub enum AppMode {
     TodoQuickCapture(TodoQuickCaptureState),
     /// Re-home or delete a project's TODO list after its host feature is deleted.
     TodosHostReassign(TodosHostReassignState),
+    /// "Implement next" landed on a TODO that already has work started for it.
+    TodoImplementChoice(Box<TodoImplementChoiceState>),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.

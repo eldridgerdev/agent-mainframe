@@ -8,8 +8,8 @@ use ratatui::{
 
 use super::super::dashboard::centered_rect;
 use crate::app::{
-    TodoEditTarget, TodoEditor, TodoLaunchAction, TodoLaunchStep, TodoQuickCaptureState,
-    TodoViewState, TodosHostReassignState,
+    TodoEditTarget, TodoEditor, TodoImplementChoice, TodoImplementChoiceState, TodoLaunchAction,
+    TodoLaunchStep, TodoQuickCaptureState, TodoViewState, TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority};
 use crate::theme::Theme;
@@ -233,6 +233,18 @@ pub fn draw_todos_view(frame: &mut Frame, state: &TodoViewState, theme: &Theme, 
 fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme) {
     let open = state.todos.iter().filter(|t| !t.done).count();
     let done = state.todos.len().saturating_sub(open);
+    let in_progress = state
+        .todos
+        .iter()
+        .filter(|t| !t.done && t.in_progress)
+        .count();
+    // Only shown when there is something underway: a permanent "0 in progress"
+    // is noise on a list nobody has started.
+    let progress_label = if in_progress > 0 {
+        format!(", {in_progress} in progress")
+    } else {
+        String::new()
+    };
     let line = Line::from(vec![
         Span::raw("  "),
         Span::styled(
@@ -246,7 +258,7 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &The
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled(
-            format!("   {open} open, {done} done"),
+            format!("   {open} open{progress_label}, {done} done"),
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ]);
@@ -478,6 +490,76 @@ fn draw_launch_step(
     frame.render_widget(para, inner);
 }
 
+/// "Implement next" landed on a TODO that already has work started for it.
+///
+/// Drawn over whichever surface asked — the dashboard or the TODOs list — so
+/// the four options are the only thing that moves.
+pub fn draw_todo_implement_choice_dialog(
+    frame: &mut Frame,
+    state: &TodoImplementChoiceState,
+    theme: &Theme,
+) {
+    let area = centered_rect(64, 60, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Work has already started on this TODO ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.warning.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                state.todo_title.clone(),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "It is the next TODO in line, and every other one is done or underway.",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    for (i, choice) in TodoImplementChoice::ALL.iter().enumerate() {
+        lines.push(option_line(
+            choice.label().to_string(),
+            i == state.selected,
+            theme.primary.to_color(),
+            theme,
+        ));
+        lines.extend(detail_lines(choice.detail(), inner.width, theme));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " choose  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " confirm  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
 fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool) -> Line<'a> {
     let (prio_marker, prio_color) = match todo.priority {
         TodoPriority::High => ("!", theme.danger.to_color()),
@@ -485,13 +567,30 @@ fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool)
         TodoPriority::Low => (" ", theme.text_muted.to_color()),
     };
 
-    let checkbox = if todo.done { "[x]" } else { "[ ]" };
+    // Three states, not two: an item being worked reads differently from one
+    // nobody has picked up, which is what makes "implement next" skipping it
+    // legible rather than arbitrary.
+    let checkbox = if todo.done {
+        "[x]"
+    } else if todo.in_progress {
+        "[~]"
+    } else {
+        "[ ]"
+    };
     let cursor = if selected { "› " } else { "  " };
 
     let title_style = if todo.done {
         Style::default()
             .fg(theme.text_muted.to_color())
             .add_modifier(Modifier::CROSSED_OUT)
+    } else if todo.in_progress {
+        Style::default()
+            .fg(theme.warning.to_color())
+            .add_modifier(if selected {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            })
     } else if selected {
         Style::default()
             .fg(theme.text.to_color())
@@ -536,6 +635,8 @@ fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool)
             format!("{checkbox} "),
             Style::default().fg(if todo.done {
                 theme.success.to_color()
+            } else if todo.in_progress {
+                theme.warning.to_color()
             } else {
                 theme.text_muted.to_color()
             }),
@@ -565,7 +666,7 @@ fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool)
 
 fn draw_hint(frame: &mut Frame, area: Rect, theme: &Theme) {
     let hint = Line::from(vec![Span::styled(
-        "  j/k move  a add  e title  o notes  space done  p prio  J/K reorder  g start/plan  b scratch  d del  Esc/q close",
+        "  j/k move  a add  e title  o notes  space done  i wip  p prio  J/K reorder  g start/plan  I next  b scratch  d del  Esc/q close",
         Style::default().fg(theme.text_muted.to_color()),
     )]);
     frame.render_widget(Paragraph::new(hint), area);

@@ -41,6 +41,29 @@ are tagged.
 
 ### Added
 
+- **`I` starts the next TODO on the list.** Working a TODO list meant picking
+  an item, pressing `g`, and remembering where you were — so a list that is
+  already in priority order still had to be read before it could be worked.
+  `I` takes the highest-priority TODO nobody has started, opens an agent on it
+  in the list's feature with the composer seeded and unsent (exactly as `g`
+  leaves it), and marks the item **in progress** so the next `I` moves on.
+  Priority decides the order; within one priority, the order you arranged the
+  list in breaks the tie.
+
+  It works from two places: inside the TODOs list, and on the `TODOs` row on
+  the dashboard, so you can start the next piece of work without opening the
+  list at all. On any other row the key does nothing — it means "take the next
+  item off *this* list", and there is no list to guess at.
+
+  In-progress items show as `[~]` and are skipped by the scan. `i` on a TODO
+  sets or clears that mark by hand, for when you closed a session's window
+  rather than the session; completing an item clears it too, and a TODO whose
+  agent session has since been removed is picked up again automatically rather
+  than staying marked forever. When every remaining TODO is already underway,
+  AMF offers the next one anyway and asks whether to go to the work already
+  started, start a second agent on it, skip it, or cancel — rather than
+  reporting an empty list that is not empty.
+
 - **A TODO can start a plan interview, in place or in a new worktree.** `g`
   (or `Enter`) on a TODO now asks whether to start an agent on it — the
   previous behavior — or to plan it first. Choosing to plan asks where the

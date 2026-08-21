@@ -62,4 +62,7 @@ pub use session::{
     draw_rename_session_dialog, draw_session_config_dialog, draw_stopped_session_dialog,
 };
 pub use theme::draw_theme_picker;
-pub use todos::{draw_todo_quick_capture_dialog, draw_todos_host_reassign_dialog, draw_todos_view};
+pub use todos::{
+    draw_todo_implement_choice_dialog, draw_todo_quick_capture_dialog,
+    draw_todos_host_reassign_dialog, draw_todos_view,
+};

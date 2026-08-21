@@ -1,0 +1,128 @@
+# todo-scopes: the three-scope TODO editor. A feature's editor opens on
+# its own worktree list; `\` reveals the project and global lists beside
+# it; `M` re-files an item across scopes; a project/global TODO has no
+# checkout to infer, so starting one asks which feature; and deleting a
+# feature whose worktree list still holds open work asks what happens to
+# it before anything destructive runs.
+#
+# Needs a seeded project and TWO features so the "which feature?" picker
+# has something to choose between:
+#   ./amf-capture.sh --scenario scenarios/todo-scopes.txt \
+#       --seed <project.json> --seed-feature <feature1.json> \
+#       --geometry 140x40
+# with $TODO_SHOT_FEATURE2 pointing at a second create-feature payload.
+
+# A second feature, so the spawn-target picker lists more than one.
+run:$AMF_BIN automation create-feature --file "$TODO_SHOT_FEATURE2"
+wait:1500
+shot:dashboard
+
+# Onto the first feature and add a TODOs session to it. One per feature
+# now, not one per project: the picker offers TODOs on every feature.
+key:j
+wait:400
+key:s
+wait:800
+shot:session-picker-offers-todos
+
+key:j
+key:j
+key:j
+key:j
+wait:400
+key:Enter
+wait:1200
+shot:todos-session-added
+
+# Enter opens the editor. It opens on this feature's worktree list
+# alone -- the side panes start closed.
+key:Enter
+wait:1200
+shot:worktree-pane-only
+
+# Two items in the worktree list.
+key:a
+wait:400
+text:rewrite the README intro
+wait:300
+key:Enter
+wait:600
+key:a
+wait:400
+text:document the new --scope flag
+wait:300
+key:Enter
+wait:800
+shot:worktree-list-filled
+
+# `\` reveals the project and global lists beside the worktree one.
+key:\
+wait:800
+shot:three-panes
+
+# Tab moves focus between them; each pane keeps its own cursor.
+key:Tab
+wait:600
+shot:focus-on-project-pane
+
+key:BTab
+wait:600
+
+# `M` re-files the selected item into another scope. The chooser offers
+# every pane but the one it is already in.
+key:M
+wait:700
+shot:move-scope-chooser
+
+# Down to Global, and confirm: the item moves with its links intact.
+key:j
+wait:300
+key:Enter
+wait:1000
+shot:moved-to-global
+
+# Mark the remaining worktree item as underway by hand, so the only
+# unstarted TODO left anywhere is the global one.
+key:i
+wait:700
+shot:worktree-item-in-progress
+
+# `I` takes the next unstarted TODO across the visible scopes. It lands
+# on the global one -- which belongs to no checkout, so it asks which
+# feature should work it rather than guessing.
+key:I
+wait:2000
+shot:which-feature-picker
+
+# Escape rather than confirm: this frame is the point, and confirming
+# would launch a real agent.
+key:Escape
+wait:1200
+shot:picker-cancelled
+
+# Out of the editor, back to the dashboard. Escape rather than `q`:
+# both close the overlay, but `q` on the dashboard underneath quits AMF
+# if the Escape has not landed yet.
+key:Escape
+wait:1500
+shot:back-on-dashboard
+
+# Deleting the feature deletes its worktree list, so the open item in it
+# is asked about first. Back up past the agent session onto the feature
+# row itself -- `d` on a session row would delete the session instead.
+key:k
+wait:300
+key:k
+wait:500
+shot:feature-row-selected
+key:d
+wait:800
+shot:delete-confirm
+key:y
+wait:1200
+shot:todo-disposition-prompt
+
+# Escape is Cancel: nothing is deleted, the feature and worktree stay.
+key:Escape
+wait:1200
+shot:cancelled-nothing-deleted

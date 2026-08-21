@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.38.0] - 2026-08-21
+
 ### Added
 
 - **TODO lists are scoped to the work they belong to.** A feature's TODO editor
@@ -54,37 +58,6 @@ are tagged.
   appear in the project pane. New worktree lists start empty. Deleting a
   project still removes its lists — now its worktree lists as well as its
   project list — and never the global one.
-
-### Fixed
-
-- **AMF no longer exhausts your GitHub API budget refreshing PR badges.** The
-  dashboard's pull-request badge was refreshed every 30 seconds, and each sweep
-  made a GitHub API call for *every* feature you have — not just the ones with
-  open pull requests. On a workspace with ~34 features that is around 8,500
-  points an hour against GitHub's 5,000-point hourly GraphQL budget, so simply
-  leaving AMF open drained the whole allowance in about 35 minutes. The first
-  visible symptom was usually PR Triage failing with a rate-limit error — the
-  one workflow that had not caused it.
-
-  Two changes fix it. The sweep now makes **one request per repository** rather
-  than one per feature: a single query returns every open PR in a repo with its
-  unresolved-thread count, and each feature's branch is matched against that
-  locally. A project with thirty worktrees now costs the same as one with a
-  single feature. Badges also refresh every 5 minutes instead of every 30
-  seconds, which is far inside a PR badge's useful freshness.
-
-  When GitHub does report an exhausted budget, AMF now says so and pauses badge
-  refresh for 15 minutes rather than retrying into an empty allowance, and
-  features it did not get to keep their existing badge instead of blanking.
-
-  Two smaller behavior changes come with the batching: a repository with no
-  GitHub remote is now treated as "no pull requests" instead of reporting an
-  error per feature, and a feature is matched by the branch AMF has recorded for
-  it rather than by whatever branch its worktree currently has checked out. Note
-  that a worktree whose `origin` is a **fork**, with its PR on the upstream
-  repository, no longer shows a badge.
-
-### Added
 
 - **`I` starts the next TODO on the list.** Working a TODO list meant picking
   an item, pressing `g`, and remembering where you were — so a list that is
@@ -180,6 +153,35 @@ are tagged.
   readable as fallbacks.
 
 ### Fixed
+
+- **AMF no longer exhausts your GitHub API budget refreshing PR badges.** The
+  dashboard's pull-request badge was refreshed every 30 seconds, and each sweep
+  made a GitHub API call for *every* feature you have — not just the ones with
+  open pull requests. On a workspace with ~34 features that is around 8,500
+  points an hour against GitHub's 5,000-point hourly GraphQL budget, so simply
+  leaving AMF open drained the whole allowance in about 35 minutes. The first
+  visible symptom was usually PR Triage failing with a rate-limit error — the
+  one workflow that had not caused it.
+
+  Two changes fix it. The sweep now makes **one request per repository** rather
+  than one per feature: a single query returns every open PR in a repo with its
+  unresolved-thread count, and each feature's branch is matched against that
+  locally. A project with thirty worktrees now costs the same as one with a
+  single feature. Badges also refresh every 5 minutes instead of every 30
+  seconds, which is far inside a PR badge's useful freshness. The longer
+  interval governs how often badges refresh, not how long you wait to see one:
+  the first sweep still runs a few seconds after launch.
+
+  When GitHub does report an exhausted budget, AMF now says so and pauses badge
+  refresh for 15 minutes rather than retrying into an empty allowance, and
+  features it did not get to keep their existing badge instead of blanking.
+
+  Two smaller behavior changes come with the batching: a repository with no
+  GitHub remote is now treated as "no pull requests" instead of reporting an
+  error per feature, and a feature is matched by the branch AMF has recorded for
+  it rather than by whatever branch its worktree currently has checked out. Note
+  that a worktree whose `origin` is a **fork**, with its PR on the upstream
+  repository, no longer shows a badge.
 
 - **A waiting session is one entry in the needs-attention list, not hundreds.**
   Harnesses re-report a stop freely — Claude's Stop hook fires at every turn

@@ -267,6 +267,37 @@ native (non-tmux) overlay:
   auto-submitted. The new session id is stored in
   `todos.spawned_session_id`; pressing `g` again jumps back to
   the linked live session instead of spawning a second.
+- **Implement next (`I`):** picks the highest-priority TODO nobody has
+  started and spawns on it, from the overlay
+  (`implement_next_todo_in_overlay`) or from a highlighted `SessionKind::Todos`
+  row on the dashboard (`implement_next_todo_from_dashboard`, inert on every
+  other row). `next_todo_index` is pure over `&[Todo]`: a **stable** sort by
+  `TodoPriority::rank`, so the manual `sort_order` breaks ties, skipping
+  `done` / `in_progress` / explicitly-skipped ids. A TODO that already links a
+  session or a planned feature is **held in reserve, not skipped** — any
+  unstarted item outranks it, and it is only returned (as `NextTodo::Started`,
+  never acted on silently) when nothing unstarted remains, which is what
+  reconciles the eligibility filter with there being a prompt for exactly that
+  case. Both surfaces share `spawn_todo_agent`, which takes the TODO by value
+  precisely because the dashboard path has no overlay open.
+- **In-progress (`todos.in_progress`, `MIGRATION_024`):** a stored state, not
+  a derivation of `spawned_session_id` — a session link survives abandonment
+  and is absent for work started by hand. Set by a spawn
+  (`todos_mark_started`, targeted DB writes so it works with no overlay open),
+  cleared by completing the item, by hand with `i`, and by
+  `todos_reconcile_dead_sessions` — which drops a link whose session is gone
+  **and only then** the flag, so a hand-marked TODO with no session is left
+  alone. Stopping the host feature clears nothing: stopped work is still in
+  progress.
+- **The already-started prompt** is `AppMode::TodoImplementChoice`, not a
+  `TodoLaunchStep`, because only one of its two surfaces has a
+  `TodoViewState`. It stashes the mode it was opened from as
+  `Box<AppMode>` and restores it verbatim on every exit, so `Esc` from the
+  overlay costs nothing — cursor, scroll, and any DB-less in-memory rows are
+  the same objects, not a reload. (Nothing shows *through* it: like every
+  modal here, `draw_modal_overlay` clears the viewport first.) *Skip to next*
+  accumulates **ids**, not indices, and re-derives the list each round, so the
+  prompt survives the list changing underneath it.
 - **Quick-capture:** `AppMode::TodoQuickCapture`, reached from an
   embedded session view via leader → `N`, appends a one-line TODO
   to the project's list, auto-creating the list + session under

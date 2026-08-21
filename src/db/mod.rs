@@ -426,6 +426,14 @@ impl AmfDb {
         todos::set_spawned_session(&self.conn, todo_id, session_id)
     }
 
+    pub fn clear_todo_spawned_session(&self, todo_id: &str) -> Result<()> {
+        todos::clear_spawned_session(&self.conn, todo_id)
+    }
+
+    pub fn set_todo_in_progress(&self, todo_id: &str, in_progress: bool) -> Result<()> {
+        todos::set_in_progress(&self.conn, todo_id, in_progress)
+    }
+
     pub fn reorder_todos(&self, ordered_ids: &[String]) -> Result<()> {
         todos::reorder_todos(&self.conn, ordered_ids)
     }

@@ -17994,6 +17994,7 @@ fn sample_todo(title: &str, done: bool) -> crate::db::todos::Todo {
         sort_order: 0,
         spawned_session_id: None,
         linked_feature_id: None,
+        in_progress: false,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -18574,21 +18575,386 @@ fn resolve_todo_host_feature_prefers_list_feature_id() {
     assert_eq!(app.resolve_todo_host_feature(0, None, 5), 5);
 }
 
+// ----- implement next --------------------------------------------------
+
+/// A live agent session pushed straight into the store: `add_builtin_session`
+/// talks to tmux, and these tests only need the row to exist so a TODO's link
+/// resolves.
+fn push_agent_session(app: &mut App, id: &str) -> String {
+    app.store.projects[0].features[0]
+        .sessions
+        .push(FeatureSession {
+            id: id.to_string(),
+            kind: SessionKind::Claude,
+            label: "Claude".to_string(),
+            tmux_window: "claude".to_string(),
+            claude_session_id: None,
+            token_usage_source: None,
+            token_usage_source_match: None,
+            created_at: Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+            token_usage: None,
+        });
+    id.to_string()
+}
+
+/// A TODO with an explicit priority and sort position, for the selector tests.
+fn prio_todo(
+    id: &str,
+    priority: crate::db::todos::TodoPriority,
+    order: i64,
+) -> crate::db::todos::Todo {
+    let mut todo = sample_todo(id, false);
+    todo.id = id.to_string();
+    todo.priority = priority;
+    todo.sort_order = order;
+    todo
+}
+
 #[test]
-fn todos_record_spawned_session_updates_in_memory() {
+fn next_todo_index_takes_the_highest_priority_first() {
+    use crate::db::todos::TodoPriority::{High, Low, Med};
+    let todos = vec![
+        prio_todo("a", Low, 0),
+        prio_todo("b", High, 1),
+        prio_todo("c", Med, 2),
+    ];
+    assert_eq!(
+        App::next_todo_index(&todos, &[]),
+        Some(crate::app::todos::NextTodo::Ready(1))
+    );
+}
+
+#[test]
+fn next_todo_index_breaks_ties_by_list_order() {
+    use crate::db::todos::TodoPriority::High;
+    // Same priority throughout: the order the user arranged decides, so the
+    // sort has to be stable rather than merely correct about priority.
+    let todos = vec![
+        prio_todo("first", High, 0),
+        prio_todo("second", High, 1),
+        prio_todo("third", High, 2),
+    ];
+    assert_eq!(
+        App::next_todo_index(&todos, &[]),
+        Some(crate::app::todos::NextTodo::Ready(0))
+    );
+}
+
+#[test]
+fn next_todo_index_skips_each_exclusion() {
+    use crate::app::todos::NextTodo;
+    use crate::db::todos::TodoPriority::High;
+
+    // Done.
+    let mut todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
+    todos[0].done = true;
+    assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
+
+    // In progress.
+    let mut todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
+    todos[0].in_progress = true;
+    assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
+
+    // Explicitly skipped by a previous "skip to next".
+    let todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
+    assert_eq!(
+        App::next_todo_index(&todos, &["a".to_string()]),
+        Some(NextTodo::Ready(1))
+    );
+
+    // Already linked to a session: held in reserve, not chosen, while an
+    // unstarted item remains — even a lower-priority one further down.
+    let mut todos = vec![
+        prio_todo("a", High, 0),
+        prio_todo("b", crate::db::todos::TodoPriority::Low, 1),
+    ];
+    todos[0].spawned_session_id = Some("sess-1".to_string());
+    assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
+
+    // Same for a TODO planned into its own feature: the work moved elsewhere.
+    let mut todos = vec![
+        prio_todo("a", High, 0),
+        prio_todo("b", crate::db::todos::TodoPriority::Low, 1),
+    ];
+    todos[0].linked_feature_id = Some("feat-9".to_string());
+    assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
+}
+
+#[test]
+fn next_todo_index_falls_back_to_a_started_todo() {
+    use crate::app::todos::NextTodo;
+    use crate::db::todos::TodoPriority::{High, Med};
+    // Nothing unstarted is left, so the highest-priority started item is
+    // offered for the caller to ask about rather than silently reported as
+    // "nothing to do".
+    let mut todos = vec![prio_todo("a", Med, 0), prio_todo("b", High, 1)];
+    todos[0].spawned_session_id = Some("sess-1".to_string());
+    todos[1].spawned_session_id = Some("sess-2".to_string());
+    assert_eq!(
+        App::next_todo_index(&todos, &[]),
+        Some(NextTodo::Started(1))
+    );
+}
+
+#[test]
+fn next_todo_index_returns_nothing_when_there_is_nothing() {
+    use crate::db::todos::TodoPriority::High;
+    assert_eq!(App::next_todo_index(&[], &[]), None);
+
+    // Every item ineligible: done, in progress, and skipped in turn.
+    let mut todos = vec![
+        prio_todo("a", High, 0),
+        prio_todo("b", High, 1),
+        prio_todo("c", High, 2),
+    ];
+    todos[0].done = true;
+    todos[1].in_progress = true;
+    assert_eq!(App::next_todo_index(&todos, &["c".to_string()]), None);
+}
+
+#[test]
+fn no_next_todo_message_names_the_reason() {
+    use crate::db::todos::TodoPriority::High;
+    assert_eq!(
+        App::no_next_todo_message(&[], &[]),
+        "No TODOs left to implement"
+    );
+
+    let mut done = vec![prio_todo("a", High, 0)];
+    done[0].done = true;
+    assert_eq!(
+        App::no_next_todo_message(&done, &[]),
+        "No TODOs left to implement"
+    );
+
+    // Open items exist, they are just all underway — a different problem with a
+    // different fix, so it gets different words.
+    let mut busy = vec![prio_todo("a", High, 0)];
+    busy[0].in_progress = true;
+    assert_eq!(
+        App::no_next_todo_message(&busy, &[]),
+        "All remaining TODOs are already in progress"
+    );
+
+    let skipped = vec![prio_todo("a", High, 0)];
+    assert_eq!(
+        App::no_next_todo_message(&skipped, &["a".to_string()]),
+        "No other TODOs left to implement"
+    );
+}
+
+#[test]
+fn implement_next_toasts_when_nothing_is_eligible() {
+    let mut app = todos_app();
+    if let AppMode::Todos(state) = &mut app.mode {
+        let mut todo = sample_todo("a", false);
+        todo.in_progress = true;
+        state.todos = vec![todo];
+    }
+    app.implement_next_todo_in_overlay().unwrap();
+    // Still the list, and the refusal says why rather than doing nothing.
+    assert!(matches!(app.mode, AppMode::Todos(_)));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.message.contains("already in progress")),
+        "expected an in-progress toast, got {:?}",
+        app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn implement_next_prompts_when_the_only_candidate_is_started() {
+    let mut app = todos_app();
+    // The linked session has to exist, or reconciliation clears the link and
+    // the TODO comes back as an ordinary unstarted candidate.
+    let session_id = push_agent_session(&mut app, "sess-1");
+    if let AppMode::Todos(state) = &mut app.mode {
+        let mut todo = sample_todo("a", false);
+        todo.spawned_session_id = Some(session_id);
+        state.todos = vec![todo];
+    }
+
+    app.implement_next_todo_in_overlay().unwrap();
+    match &app.mode {
+        AppMode::TodoImplementChoice(state) => {
+            assert_eq!(state.todo_id, "todo-a");
+            // The list is stashed, not thrown away.
+            assert!(matches!(state.origin.as_ref(), AppMode::Todos(_)));
+        }
+        _ => panic!("expected the already-started prompt"),
+    }
+
+    // Esc restores exactly what the key was pressed in.
+    app.cancel_todo_implement_choice();
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(state.todos.len(), 1),
+        _ => panic!("expected the list back"),
+    }
+}
+
+#[test]
+fn implement_next_skip_moves_on_to_the_next_todo() {
+    let mut app = todos_app();
+    let session_id = push_agent_session(&mut app, "sess-1");
+    if let AppMode::Todos(state) = &mut app.mode {
+        let mut first = sample_todo("a", false);
+        first.spawned_session_id = Some(session_id.clone());
+        let mut second = sample_todo("b", false);
+        second.spawned_session_id = Some(session_id);
+        state.todos = vec![first, second];
+    }
+
+    app.implement_next_todo_in_overlay().unwrap();
+    match &app.mode {
+        AppMode::TodoImplementChoice(state) => assert_eq!(state.todo_id, "todo-a"),
+        _ => panic!("expected the already-started prompt"),
+    }
+
+    // Skip to next: the scan resumes past the item just passed over.
+    if let AppMode::TodoImplementChoice(state) = &mut app.mode {
+        state.selected = 2;
+    }
+    app.confirm_todo_implement_choice().unwrap();
+    match &app.mode {
+        AppMode::TodoImplementChoice(state) => {
+            assert_eq!(state.todo_id, "todo-b");
+            assert_eq!(state.skipped_ids, vec!["todo-a".to_string()]);
+        }
+        _ => panic!("expected the prompt on the second TODO"),
+    }
+
+    // Nothing else is left, so the next skip reports it instead of looping.
+    if let AppMode::TodoImplementChoice(state) = &mut app.mode {
+        state.selected = 2;
+    }
+    app.confirm_todo_implement_choice().unwrap();
+    assert!(matches!(app.mode, AppMode::Todos(_)));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.message.contains("No other TODOs left")),
+        "expected a nothing-left toast"
+    );
+}
+
+#[test]
+fn implement_next_clears_the_flag_only_where_the_session_is_gone() {
+    let mut app = todos_app();
+    if let AppMode::Todos(state) = &mut app.mode {
+        // Marked underway by an earlier launch whose session has since been
+        // removed. Also done, so the scan stops at the toast rather than going
+        // on to spawn: what is under test is the reconciliation, which runs
+        // over the whole list rather than just the candidate.
+        let mut stale = sample_todo("a", true);
+        stale.spawned_session_id = Some("sess-gone".to_string());
+        stale.in_progress = true;
+        // Marked underway by hand: no session to lose, so nothing to clear.
+        let mut manual = sample_todo("b", false);
+        manual.in_progress = true;
+        state.todos = vec![stale, manual];
+    }
+
+    app.implement_next_todo_in_overlay().unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.todos[0].spawned_session_id.is_none());
+            assert!(!state.todos[0].in_progress, "a dead link stops counting");
+            assert!(
+                state.todos[1].in_progress,
+                "a hand-marked TODO has no link to lose and is left alone"
+            );
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn implement_next_is_inert_off_a_todos_session_row() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    push_agent_session(&mut app, "sess-1");
+
+    for selection in [
+        Selection::Project(0),
+        Selection::Feature(0, 0),
+        Selection::Session(0, 0, 0),
+    ] {
+        app.selection = selection;
+        app.toasts.clear();
+        app.implement_next_todo_from_dashboard().unwrap();
+        assert!(matches!(app.mode, AppMode::Normal), "mode must not change");
+        assert!(app.toasts.is_empty(), "no toast on a row the key isn't for");
+    }
+}
+
+#[test]
+fn completing_a_todo_ends_its_in_progress_state() {
+    let mut app = todos_app();
+    if let AppMode::Todos(state) = &mut app.mode {
+        let mut todo = sample_todo("a", false);
+        todo.in_progress = true;
+        state.todos = vec![todo];
+    }
+    app.todos_toggle_done().unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.todos[0].done);
+            assert!(!state.todos[0].in_progress);
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn toggling_in_progress_by_hand_uncompletes_the_todo() {
+    let mut app = todos_app();
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.todos = vec![sample_todo("a", true)];
+    }
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('i'))).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.todos[0].in_progress);
+            // The two states contradict each other; the one just asked for wins.
+            assert!(!state.todos[0].done);
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('i'))).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => assert!(!state.todos[0].in_progress),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_mark_started_updates_in_memory() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
         state.todos = vec![sample_todo("a", false), sample_todo("b", false)];
     }
-    app.todos_record_spawned_session("todo-b", "sess-42")
-        .unwrap();
+    app.todos_mark_started("todo-b", "sess-42").unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
             assert!(state.todos[0].spawned_session_id.is_none());
+            assert!(!state.todos[0].in_progress);
             assert_eq!(
                 state.todos[1].spawned_session_id.as_deref(),
                 Some("sess-42")
             );
+            // The session link and the in-progress flag are written together:
+            // the flag is what keeps "implement next" off this item.
+            assert!(state.todos[1].in_progress);
         }
         _ => panic!("expected Todos overlay"),
     }

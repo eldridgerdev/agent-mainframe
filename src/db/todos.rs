@@ -84,6 +84,11 @@ pub struct Todo {
     /// different destination from [`Self::spawned_session_id`], and a TODO can
     /// carry both.
     pub linked_feature_id: Option<String>,
+    /// Set while this item is actively being worked, so "implement next" skips
+    /// it. Written when a session is spawned for it and cleared when the item
+    /// is completed, when its session goes away, or by hand — none of which
+    /// `spawned_session_id` alone can express.
+    pub in_progress: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -176,13 +181,15 @@ pub fn delete_list_for_project(conn: &Connection, project_id: &str) -> Result<()
 pub fn list_todos(conn: &Connection, list_id: &str) -> Result<Vec<Todo>> {
     let mut stmt = conn.prepare(
         "SELECT id, list_id, title, body, priority, done, sort_order,
-                spawned_session_id, linked_feature_id, created_at, updated_at
+                spawned_session_id, linked_feature_id, in_progress,
+                created_at, updated_at
          FROM todos WHERE list_id = ?1
          ORDER BY done ASC, sort_order ASC",
     )?;
     let rows = stmt.query_map(params![list_id], |row| {
         let priority: String = row.get(4)?;
         let done: i64 = row.get(5)?;
+        let in_progress: i64 = row.get(9)?;
         Ok(Todo {
             id: row.get(0)?,
             list_id: row.get(1)?,
@@ -193,8 +200,9 @@ pub fn list_todos(conn: &Connection, list_id: &str) -> Result<Vec<Todo>> {
             sort_order: row.get(6)?,
             spawned_session_id: row.get(7)?,
             linked_feature_id: row.get(8)?,
-            created_at: row.get(9)?,
-            updated_at: row.get(10)?,
+            in_progress: in_progress != 0,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
         })
     })?;
 
@@ -223,8 +231,9 @@ pub fn add_todo(
     conn.execute(
         "INSERT INTO todos
             (id, list_id, title, body, priority, done, sort_order,
-             spawned_session_id, linked_feature_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, NULL, NULL,
+             spawned_session_id, linked_feature_id, in_progress,
+             created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, NULL, NULL, 0,
                  datetime('now'), datetime('now'))",
         params![id, list_id, title, body, priority.as_db_str(), next_order],
     )?;
@@ -238,6 +247,7 @@ pub fn add_todo(
         sort_order: next_order,
         spawned_session_id: None,
         linked_feature_id: None,
+        in_progress: false,
         created_at: String::new(),
         updated_at: String::new(),
     })
@@ -250,7 +260,7 @@ pub fn update_todo(conn: &Connection, todo: &Todo) -> Result<()> {
         "UPDATE todos SET
             list_id = ?2, title = ?3, body = ?4, priority = ?5, done = ?6,
             sort_order = ?7, spawned_session_id = ?8, linked_feature_id = ?9,
-            updated_at = datetime('now')
+            in_progress = ?10, updated_at = datetime('now')
          WHERE id = ?1",
         params![
             todo.id,
@@ -262,6 +272,7 @@ pub fn update_todo(conn: &Connection, todo: &Todo) -> Result<()> {
             todo.sort_order,
             todo.spawned_session_id,
             todo.linked_feature_id,
+            todo.in_progress as i64,
         ],
     )?;
     Ok(())
@@ -295,6 +306,31 @@ pub fn set_spawned_session(conn: &Connection, todo_id: &str, session_id: &str) -
         "UPDATE todos SET spawned_session_id = ?2, updated_at = datetime('now')
          WHERE id = ?1",
         params![todo_id, session_id],
+    )?;
+    Ok(())
+}
+
+/// Set or clear a TODO's in-progress flag.
+///
+/// Targeted for the same reason as [`set_spawned_session`], and for one more:
+/// the flag is written from surfaces where the TODOs overlay is not open (the
+/// dashboard's "implement next"), so there is no in-memory row to write back
+/// through [`update_todo`].
+pub fn set_in_progress(conn: &Connection, todo_id: &str, in_progress: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE todos SET in_progress = ?2, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![todo_id, in_progress as i64],
+    )?;
+    Ok(())
+}
+
+/// Drop a TODO's link to the session spawned for it, when that session is gone.
+pub fn clear_spawned_session(conn: &Connection, todo_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE todos SET spawned_session_id = NULL, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![todo_id],
     )?;
     Ok(())
 }
@@ -411,6 +447,37 @@ mod tests {
         let b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         let c = db.add_todo(&list.id, "c", None, TodoPriority::Med).unwrap();
         assert_eq!((a.sort_order, b.sort_order, c.sort_order), (0, 1, 2));
+    }
+
+    /// The in-progress flag round-trips, and the two targeted writers can set
+    /// and clear it without going through a whole-row update.
+    #[test]
+    fn in_progress_roundtrips_and_has_targeted_writers() {
+        let (_tmp, db) = open_temp_db();
+        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let mut todo = db
+            .add_todo(&list.id, "Ship it", None, TodoPriority::High)
+            .unwrap();
+        // A new TODO is nobody's work in progress.
+        assert!(!todo.in_progress);
+        assert!(!db.todos(&list.id).unwrap()[0].in_progress);
+
+        todo.in_progress = true;
+        db.update_todo(&todo).unwrap();
+        assert!(db.todos(&list.id).unwrap()[0].in_progress);
+
+        db.set_todo_in_progress(&todo.id, false).unwrap();
+        assert!(!db.todos(&list.id).unwrap()[0].in_progress);
+
+        // Clearing a dead session link is its own write, leaving everything
+        // else on the row alone.
+        db.set_todo_spawned_session(&todo.id, "sess-1").unwrap();
+        db.set_todo_in_progress(&todo.id, true).unwrap();
+        db.clear_todo_spawned_session(&todo.id).unwrap();
+        let loaded = db.todos(&list.id).unwrap();
+        assert!(loaded[0].spawned_session_id.is_none());
+        assert_eq!(loaded[0].title, "Ship it");
+        assert!(loaded[0].in_progress);
     }
 
     #[test]

@@ -108,6 +108,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Link a TODO to the feature a plan-mode run created for it",
             MIGRATION_023,
         ),
+        (
+            "Mark a TODO as actively being worked, apart from its session link",
+            MIGRATION_024,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -610,6 +614,23 @@ ALTER TABLE todos
     ADD COLUMN linked_feature_id TEXT;
 ";
 
+/// A TODO that is actively being worked, recorded rather than derived.
+///
+/// `spawned_session_id` cannot stand in for it: a session link survives the
+/// work being abandoned, is absent for a TODO the user started by hand, and
+/// points at a session that may be reused for something else. "Implement next"
+/// needs to skip what is already underway *and* be told when it is no longer
+/// underway, so the state has to be writable on its own.
+///
+/// Existing rows default to 0. "Not started" is the safe reading: the worst it
+/// costs is offering a TODO whose work is already in flight, which the
+/// already-linked prompt then catches, whereas defaulting to 1 would hide every
+/// pre-existing TODO from the scan with no way to discover why.
+const MIGRATION_024: &str = "
+ALTER TABLE todos
+    ADD COLUMN in_progress INTEGER NOT NULL DEFAULT 0;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -646,7 +667,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -741,7 +762,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     /// Migration 023 adds `linked_feature_id` to TODOs written before it
@@ -784,6 +805,47 @@ mod tests {
             Some("sess-1"),
             "the older link survives"
         );
+    }
+
+    /// Migration 024 adds `in_progress` to TODOs written before it existed.
+    /// They come back false — "nobody has started this" — which keeps every
+    /// pre-024 TODO eligible for "implement next" rather than hiding it.
+    #[test]
+    fn migration_024_leaves_existing_todos_not_in_progress() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_011).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (23, datetime('now'), 'seed');",
+        )
+        .unwrap();
+        // The row has to look like a pre-024 row, which 023 already reached.
+        conn.execute_batch(super::MIGRATION_023).unwrap();
+        conn.execute_batch(
+            "INSERT INTO todo_lists (id, project_id, feature_id, created_at, updated_at)
+             VALUES ('l1', 'p1', 'f1', datetime('now'), datetime('now'));
+             INSERT INTO todos
+                (id, list_id, title, done, spawned_session_id, created_at, updated_at)
+             VALUES ('t1', 'l1', 'ship it', 0, 'sess-1',
+                     datetime('now'), datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let (in_progress, session): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT in_progress, spawned_session_id FROM todos WHERE id = 't1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(in_progress, 0);
+        // The older link is untouched: a pre-existing session is still the
+        // TODO's session, it just isn't evidence that work is underway.
+        assert_eq!(session.as_deref(), Some("sess-1"));
     }
 
     /// Migration 022 adds `provenance` to reply drafts written before it
@@ -832,7 +894,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 23);
+        assert_eq!(rows, 24);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

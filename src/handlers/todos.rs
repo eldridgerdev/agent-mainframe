@@ -46,11 +46,15 @@ pub fn handle_todos_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('o') => app.todos_begin_edit_notes(),
         KeyCode::Char('b') => app.todos_begin_edit_scratchpad(),
         KeyCode::Char(' ') | KeyCode::Char('x') => app.todos_toggle_done()?,
+        KeyCode::Char('i') => app.todos_toggle_in_progress()?,
         KeyCode::Char('p') => app.todos_cycle_priority()?,
         KeyCode::Char('J') => app.todos_reorder(1)?,
         KeyCode::Char('K') => app.todos_reorder(-1)?,
         KeyCode::Char('d') => app.todos_request_delete(),
         KeyCode::Char('g') | KeyCode::Enter => app.todos_launch_selected()?,
+        // Distinct from `g`/`Enter`: those act on the cursor, this picks the
+        // next TODO in priority order wherever it is in the list.
+        KeyCode::Char('I') => app.implement_next_todo_in_overlay()?,
         _ => {}
     }
     Ok(())
@@ -85,6 +89,22 @@ pub fn handle_todos_host_reassign_key(app: &mut App, key: KeyCode) -> Result<()>
         KeyCode::Enter => app.confirm_todos_host_reassign()?,
         // Esc keeps the list by re-homing onto the first surviving feature.
         KeyCode::Esc => app.cancel_todos_host_reassign()?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key dispatch for the "work has already started on this TODO" prompt raised
+/// by `I` (`AppMode::TodoImplementChoice`).
+///
+/// `Esc` is *Cancel*: it restores the mode the key was pressed in, so the
+/// prompt never costs the user their place in the list.
+pub fn handle_todo_implement_choice_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => app.todo_implement_choice_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.todo_implement_choice_move(-1),
+        KeyCode::Enter => app.confirm_todo_implement_choice()?,
+        KeyCode::Esc | KeyCode::Char('q') => app.cancel_todo_implement_choice(),
         _ => {}
     }
     Ok(())

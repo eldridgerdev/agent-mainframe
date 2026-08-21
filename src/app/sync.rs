@@ -37,6 +37,40 @@ pub(crate) enum ActivePrLookup {
     Skipped,
 }
 
+/// What one sweep actually resolved, summarised for the debug log.
+///
+/// The sweep used to log only failures, which is how a totally broken query
+/// stayed invisible for fourteen hours: every call failed, every badge kept its
+/// previous value, and the only trace was a `DEBUG` line per feature that
+/// nothing aggregated. A line that reports what a sweep *found* makes "0 badged,
+/// 9 failed" as legible as an error, and a healthy sweep self-documents its
+/// cost.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ActivePrSweepOutcome {
+    pub found: usize,
+    pub no_pr: usize,
+    pub failed: usize,
+    pub skipped: usize,
+}
+
+impl ActivePrSweepOutcome {
+    pub fn count(&mut self, lookup: &ActivePrLookup) {
+        match lookup {
+            ActivePrLookup::Found(_) => self.found += 1,
+            ActivePrLookup::NoPr => self.no_pr += 1,
+            ActivePrLookup::Failed(_) => self.failed += 1,
+            ActivePrLookup::Skipped => self.skipped += 1,
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "PR sweep: {} badged, {} without a PR, {} failed, {} skipped",
+            self.found, self.no_pr, self.failed, self.skipped
+        )
+    }
+}
+
 /// One completed pass of the dashboard PR refresh.
 #[derive(Debug)]
 pub(crate) struct ActivePrSweep {
@@ -574,7 +608,9 @@ impl App {
 
     pub(crate) fn apply_active_pr_updates(&mut self, updates: Vec<ActivePrUpdate>) -> bool {
         let mut changed = false;
+        let mut outcome = ActivePrSweepOutcome::default();
         for update in updates {
+            outcome.count(&update.lookup);
             let branch_is_current = self.store.projects.iter().any(|project| {
                 project.features.iter().any(|feature| {
                     feature.id == update.feature_id && feature.branch == update.branch
@@ -627,6 +663,7 @@ impl App {
                 }
             }
         }
+        self.log_debug("github", outcome.summary());
         changed
     }
 

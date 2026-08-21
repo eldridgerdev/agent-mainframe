@@ -233,7 +233,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("m", "Markdown file picker/viewer"),
         ("b", "Show/hide sidebar"),
         ("v", "Expand/collapse todos"),
-        ("N", "Quick-capture a TODO for this project"),
+        ("N", "Quick-capture a TODO for this worktree"),
         ("t / T", "Cycle next/prev session"),
         ("w", "Session switcher"),
         ("h", "Bookmark picker popup"),
@@ -281,8 +281,13 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("p", "Cycle priority (High/Med/Low)"),
         ("J / K", "Reorder up/down"),
         ("d", "Delete TODO (y/n confirm)"),
+        ("i", "Toggle in-progress by hand"),
+        ("I", "Start the next TODO in the visible lists"),
         ("g / Enter", "Start work: agent now, or plan it first"),
         ("", "  (jumps straight to a linked session or feature)"),
+        ("\\", "Show/hide the project + global lists"),
+        ("Tab / Shift+Tab", "Move between the lists on screen"),
+        ("M / C", "Move / copy the TODO to another list"),
         ("q / Esc / Ctrl+Q", "Exit TODOs view"),
     ];
 

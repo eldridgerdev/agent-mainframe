@@ -2982,29 +2982,48 @@ impl App {
     /// Open the TODOs overlay with `todo_id` under the cursor. `false` when the
     /// item can't be found, which is the caller's cue that the link is stale.
     fn learning_jump_to_todo(&mut self, todo_id: &str) -> bool {
-        let (pi, fi, project_id) = match &self.mode {
-            AppMode::Learning(state) => (state.pi, state.fi, state.project_id.clone()),
+        let (pi, fi) = match &self.mode {
+            AppMode::Learning(state) => (state.pi, state.fi),
             _ => return false,
         };
-        let Some(db) = self.db.as_ref() else {
-            return false;
-        };
-        let Ok(Some(list)) = db.todo_list(&project_id) else {
-            return false;
-        };
-        let Ok(todos) = db.todos(&list.id) else {
-            return false;
-        };
-        let Some(index) = todos.iter().position(|t| t.id == todo_id) else {
-            return false;
-        };
-
-        if let Err(e) = self.open_todos_view(pi, fi) {
-            self.log_warn("learning", format!("couldn't open the TODO list: {e}"));
+        if self.db.is_none() {
             return false;
         }
+
+        // Open the editor first and look for the item across every pane it
+        // loaded, rather than guessing which scope the note was kept in: an
+        // older keep landed in the project list, a new one in the worktree
+        // list, and a moved one could be in either.
+        let restore = std::mem::replace(&mut self.mode, AppMode::Normal);
+        if let Err(e) = self.open_todos_view(pi, fi) {
+            self.log_warn("learning", format!("couldn't open the TODO list: {e}"));
+            self.mode = restore;
+            return false;
+        }
+        let found = match &mut self.mode {
+            AppMode::Todos(state) => state.panes.iter().enumerate().find_map(|(p, pane)| {
+                pane.todos
+                    .iter()
+                    .position(|t| t.id == todo_id)
+                    .map(|i| (p, i))
+            }),
+            _ => None,
+        };
+        let Some((pane_index, index)) = found else {
+            // The link is stale: put the reader back where they were rather
+            // than dropping them into a list that does not hold the item.
+            self.mode = restore;
+            return false;
+        };
         if let AppMode::Todos(state) = &mut self.mode {
-            state.selected = index;
+            state.focus = pane_index;
+            // A kept note in a side pane is only reachable with them open.
+            if pane_index >= state.visible_pane_count() {
+                state.side_panes_open = true;
+            }
+            if let Some(pane) = state.panes.get_mut(pane_index) {
+                pane.selected = index;
+            }
         }
         // The screen has just changed out from under a keypress that looked
         // like it would add something, so it has to say why it didn't.
@@ -3058,7 +3077,8 @@ impl App {
             .store
             .projects
             .get(pi)
-            .is_some_and(|p| p.has_todos_session());
+            .and_then(|p| p.features.get(fi))
+            .is_some_and(|f| f.has_todos_session());
         if !has_session && let Err(e) = self.add_todos_session_for_picker(pi, fi, None) {
             self.log_error("learning", format!("couldn't create a TODOs session: {e}"));
             self.learning_cancel_action();
@@ -3068,16 +3088,15 @@ impl App {
             return None;
         }
 
+        // The same target quick-capture uses: the feature's own worktree list,
+        // or the project's when it sits on the repo root. A note kept while
+        // reading a checkout belongs to that checkout's work.
+        let scope = self.default_todo_scope(pi, fi)?;
         let project = self.store.projects.get(pi)?;
-        let project_id = project.id.clone();
-        let feature_id = project
-            .features
-            .get(fi)
-            .map(|f| f.id.clone())
-            .unwrap_or_default();
+        let feature_id = project.features.get(fi).map(|f| f.id.clone());
 
         let written = self.db.as_ref().map(|db| {
-            db.load_or_create_todo_list(&project_id, &feature_id)
+            db.load_or_create_todo_list(&scope, feature_id.as_deref())
                 .and_then(|list| {
                     db.add_todo(
                         &list.id,
@@ -7586,7 +7605,9 @@ pub(crate) mod tests {
     /// whatever the overlay believes.
     fn stored_todos(app: &App) -> Vec<crate::db::todos::Todo> {
         let db = app.db.as_ref().expect("db");
-        match db.todo_list("proj-1").unwrap() {
+        match db.todo_list(&crate::db::todos::TodoScope::Project {
+            project_id: "proj-1".to_string(),
+        }).unwrap() {
             Some(list) => db.todos(&list.id).unwrap(),
             None => Vec::new(),
         }
@@ -7664,7 +7685,7 @@ pub(crate) mod tests {
     fn keeping_an_answer_makes_the_list_reachable_from_the_dashboard() {
         let (_repo, _db, mut app, _id) = app_with_an_answer();
         assert!(
-            !app.store.projects[0].has_todos_session(),
+            !app.store.projects[0].features.iter().any(|f| f.has_todos_session()),
             "no list to start with"
         );
 
@@ -7672,7 +7693,7 @@ pub(crate) mod tests {
         app.learning_confirm_action().unwrap();
 
         assert!(
-            app.store.projects[0].has_todos_session(),
+            app.store.projects[0].features.iter().any(|f| f.has_todos_session()),
             "the project now has a TODOs session to open the list from"
         );
     }
@@ -7731,7 +7752,10 @@ pub(crate) mod tests {
             panic!("expected the TODOs overlay, got another mode");
         };
         assert_eq!(
-            state.todos.get(state.selected).map(|t| t.id.as_str()),
+            state
+                .focused()
+                .and_then(|pane| pane.selected_todo())
+                .map(|t| t.id.as_str()),
             Some(todo_id.as_str()),
             "with the cursor on the item this answer produced"
         );

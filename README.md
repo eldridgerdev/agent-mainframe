@@ -24,7 +24,7 @@ reviewed.
   review workflows.
 - Explains code you didn't write: browse a repository read-only and ask an
   agent about any file, hunk, or line range, with the answers kept per project.
-- Provides reusable prompts, project TODO lists, themes, lifecycle hooks, and
+- Provides reusable prompts, scoped TODO lists, themes, lifecycle hooks, and
   workspace presets.
 - Supports ordinary directories as well as git repositories.
 
@@ -172,7 +172,7 @@ on an existing feature to run the interview again.
 | `r` / `d` | Rename / delete the selected item |
 | `/` | Search and jump |
 | `i` | Show agents needing attention: questions first, then finished work |
-| `I` | On a TODOs session row: start an agent on the next TODO in priority order |
+| `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
 | `z` | Show dormant features: idle and unattended |
 | `G` | Open GitHub PR triage |
 | `W` | Run AMF's AI review of a PR diff |
@@ -195,7 +195,7 @@ Most keys go directly to the active session. These controls belong to AMF:
 | `Ctrl+Space`, then `i` | Jump to an agent needing attention |
 | `Ctrl+Space`, then `f` | Start final diff review |
 | `Ctrl+Space`, then `p` | Open the prompt library |
-| `Ctrl+Space`, then `N` | Add a project TODO |
+| `Ctrl+Space`, then `N` | Add a TODO to this worktree's list |
 | `Ctrl+Space`, then `?` | Show all leader commands |
 
 ## User workflows
@@ -255,7 +255,7 @@ Once an answer is on screen, five keys act on it:
 | `F` | Ask a follow-up; the agent keeps the question and answer you just read |
 | `D` | Ask again with the repository readable — slower, but it checks (except on Codex, see below) |
 | `i` | Re-file the entry as the other kind; the answer text is left alone |
-| `a` | Keep the answer as a to-do on the project's TODO list |
+| `a` | Keep the answer as a to-do on this feature's TODO list |
 | `S` | Hand it to a live agent session, with the prompt filled in and unsent |
 
 `D` is worth knowing about: an ordinary answer only sees the code on screen, so
@@ -318,15 +318,37 @@ Press `L` to manage reusable prompt templates, or open them from a session with
 `Ctrl+Space`, then `p`. Templates may include `{{placeholder}}` fields that AMF
 asks you to fill before injection.
 
-Add a `TODOs` session with `s` to maintain a project-wide checklist. From any
-session, press `Ctrl+Space`, then `N` to capture a TODO without leaving your
-current work.
+Add a `TODOs` session with `s` to open a checklist — one per feature. The
+editor shows up to three lists side by side:
+
+| List | What it holds |
+| --- | --- |
+| **Worktree** | Work belonging to this feature's own checkout. Features on the repo root have no worktree list. |
+| **Project** | Work belonging to the project as a whole, whichever checkout you are in. |
+| **Global** | Work belonging to no project at all, shared across every repo AMF knows about. |
+
+Only the worktree list is on screen until you press `\`, which reveals the
+project and global lists beside it and remembers the choice. `Tab` /
+`Shift+Tab` move between the lists on screen; each keeps its own cursor,
+scroll, and scratchpad. `M` moves the selected TODO to another list and `C`
+copies it — a move carries whatever was already started for the item, a copy
+lands as fresh, unstarted work. The global list has no entry point of its own:
+you reach it as a side pane here.
+
+From any session, press `Ctrl+Space`, then `N` to capture a TODO without
+leaving your current work. It lands in that feature's worktree list (the
+project's if the feature sits on the repo root), and the capture box names the
+list it is writing to.
+
+Existing TODO lists are unchanged by the upgrade: they stay project-scoped,
+keep their host feature and their links, and show up in the project pane. New
+worktree lists start empty.
 
 Press `g` (or `Enter`) on a TODO to start work on it. AMF asks how:
 
 | Choice | What happens |
 | --- | --- |
-| **Start an agent on this TODO** | Opens a session in this feature with the TODO in the composer, unsent. |
+| **Start an agent on this TODO** | Opens a session with the TODO in the composer, unsent — in this feature for a worktree TODO, or in a feature you pick for a project or global one. |
 | **Plan this TODO first** | Runs the guided plan interview, with the TODO's title, notes, and the list scratchpad already filled in as the feature brief — editable before the first question. |
 
 If you choose to plan it, AMF then asks where the plan should land: **here**, in
@@ -348,14 +370,27 @@ again. An interrupted interview is saved as a draft and offered back the next
 time you press `g` on that TODO.
 
 Press `I` to work the list rather than a particular item: AMF takes the
-highest-priority TODO nobody has started, opens an agent on it in the list's
-feature, and marks the item in progress (`[~]`) so the next `I` moves on. It
-works on the list itself and on the `TODOs` row on the dashboard, and the
-composer is seeded but unsent, exactly as `g` leaves it. Press `i` on a TODO to
+highest-priority TODO nobody has started, opens an agent on it, and marks the
+item in progress (`[~]`) so the next `I` moves on. It considers whichever
+lists are currently showing — the worktree list alone with the side panes
+closed, all three with them open — and at equal priority prefers the narrower
+scope: worktree, then project, then global. It works on the list itself and on
+the `TODOs` row on the dashboard, and the composer is seeded but unsent,
+exactly as `g` leaves it.
+
+A worktree TODO is worked in the feature that owns the checkout. A project or
+global TODO belongs to no one checkout, so `g`, `Enter`, and `I` ask which
+feature should work it; the feature you pick supplies the agent and permission
+mode exactly as a worktree TODO's own feature would. Press `i` on a TODO to
 set or clear that in-progress mark by hand — useful when you abandoned a session
 without closing it. When every remaining TODO is already underway, AMF offers
 the next one anyway and asks whether to go to the work already started, start a
 second agent, skip it, or cancel.
+
+Deleting a feature deletes its worktree list along with the checkout, so if
+that list still has unfinished items AMF asks first: move them to the project
+list, move them to the global list, delete them with the worktree, or cancel
+the deletion. Nothing is killed or removed until you answer.
 
 ### See which agents need you
 

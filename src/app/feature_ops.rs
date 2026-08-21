@@ -1277,6 +1277,15 @@ impl App {
             return Ok(());
         }
 
+        // Deleting the worktree takes its TODO list with it, so unfinished
+        // work in that list is settled before anything destructive runs. The
+        // prompt is blocking: nothing is killed or removed until it is
+        // answered, and cancelling leaves the feature intact.
+        if let Some(disposition) = self.pending_todo_disposition(&project_name, &feature_name) {
+            self.mode = AppMode::TodoDeleteDisposition(disposition);
+            return Ok(());
+        }
+
         let (tmux_session, is_worktree, repo, workdir, agent, audit_details) = if let Some(project) =
             self.store.find_project(&project_name)
             && let Some(feature) = project.features.iter().find(|f| f.name == feature_name)

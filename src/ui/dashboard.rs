@@ -1515,6 +1515,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_todo_implement_choice_dialog(frame, state, &app.theme);
     }
 
+    if let AppMode::TodoSpawnTarget(state) = &app.mode {
+        super::dialogs::draw_todo_spawn_target_dialog(frame, state, &app.theme);
+    }
+
+    if let AppMode::TodoDeleteDisposition(state) = &app.mode {
+        super::dialogs::draw_todo_delete_disposition_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::RenamingSession(state) = &app.mode {
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
     }

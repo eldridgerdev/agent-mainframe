@@ -537,6 +537,13 @@ pub struct AppConfig {
     /// [`Self::low_memory_warn_mb`].
     #[serde(default = "default_waiting_stale_minutes")]
     pub waiting_stale_minutes: u64,
+    /// Whether the TODO editor reveals the project and global panes beside the
+    /// worktree one. App-level rather than per-overlay on purpose: the
+    /// dashboard's "implement next" runs with no overlay open and still has to
+    /// know which scopes count as visible, so the toggle has to live somewhere
+    /// both surfaces can read. Default closed — the worktree list alone.
+    #[serde(default)]
+    pub todo_side_panes: bool,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -671,6 +678,7 @@ impl Default for AppConfig {
             dormant_idle_minutes: default_dormant_idle_minutes(),
             dormant_last_accessed_hours: default_dormant_last_accessed_hours(),
             waiting_stale_minutes: default_waiting_stale_minutes(),
+            todo_side_panes: false,
         }
     }
 }

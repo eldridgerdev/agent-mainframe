@@ -2970,43 +2970,179 @@ pub struct TodoEditor {
     pub editor: TextEditor,
 }
 
-/// State for the native TODOs overlay (`AppMode::Todos`). Holds the loaded
-/// per-project list and its items plus the cursor and any in-progress edit.
-pub struct TodoViewState {
-    /// Project that owns the list (and whose `S` picker created the session).
-    pub project_id: String,
-    /// Project / host-feature indices the TODOs session lives under, used to
-    /// resolve the session for selection on close and to host the list.
-    pub pi: usize,
-    pub fi: usize,
-    /// Display labels for the header.
-    pub project_name: String,
-    pub feature_name: String,
-    /// The loaded list (carry-over note, id). `None` when no DB is available
-    /// (e.g. tests) — the overlay then shows an empty list.
+/// Which scope a pane of the TODOs overlay shows. The variants are in the
+/// order the panes are laid out and the order ties between them resolve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoPaneKind {
+    /// This feature's own checkout. Absent for a feature sitting on the repo
+    /// root, which has no worktree of its own to scope a list to.
+    Worktree,
+    /// The project's list — the only scope that existed before scoping.
+    Project,
+    /// The machine-wide list, belonging to no project.
+    Global,
+}
+
+impl TodoPaneKind {
+    /// The pane header, and the noun used when a message has to name a scope.
+    pub fn label(self) -> &'static str {
+        match self {
+            TodoPaneKind::Worktree => "Worktree",
+            TodoPaneKind::Project => "Project",
+            TodoPaneKind::Global => "Global",
+        }
+    }
+}
+
+/// One scope's list within the TODOs overlay: its own items, cursor, scroll,
+/// and scratchpad, so switching focus never disturbs the pane being left.
+pub struct TodoPane {
+    pub kind: TodoPaneKind,
+    /// The scope this pane reads and writes. Carries the project id and
+    /// workdir, so it is the whole key to the pane's list.
+    pub scope: crate::db::todos::TodoScope,
+    /// Name shown in the pane header beside the scope label (the worktree's
+    /// feature name, the project name, or nothing for global).
+    pub title: String,
+    /// The loaded list (scratchpad note, id). `None` until the list exists —
+    /// with no DB (tests) it is synthesized on first write, and with one it is
+    /// created lazily, so an untouched scope leaves no row behind.
     pub list: Option<crate::db::todos::TodoList>,
     /// Items in display order (open first, then by sort_order).
     pub todos: Vec<crate::db::todos::Todo>,
     /// Cursor into `todos`.
     pub selected: usize,
-    /// Vertical scroll offset into the list area.
+    /// Vertical scroll offset into this pane's list area.
     pub scroll_offset: usize,
-    /// Active inline edit, if any (add/edit title/notes/carry-over).
+}
+
+impl TodoPane {
+    pub fn selected_todo(&self) -> Option<&crate::db::todos::Todo> {
+        self.todos.get(self.selected)
+    }
+
+    /// The list's free-form scratchpad note (stored in the legacy
+    /// `carry_over` column), when it is not blank.
+    pub fn scratchpad(&self) -> Option<&str> {
+        self.list
+            .as_ref()
+            .and_then(|l| l.carry_over.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// State for the native TODOs overlay (`AppMode::Todos`): up to three scoped
+/// panes, which one has focus, and any in-progress edit or prompt layered over
+/// them.
+pub struct TodoViewState {
+    /// Project / feature indices the TODOs session lives under, used to
+    /// resolve the session for selection on close and to host new lists.
+    pub pi: usize,
+    pub fi: usize,
+    /// Display labels for the header.
+    pub project_name: String,
+    pub feature_name: String,
+    /// The scoped panes, always ordered worktree → project → global. The
+    /// worktree pane is absent for a feature on the repo root, which is the
+    /// only way this is shorter than three.
+    pub panes: Vec<TodoPane>,
+    /// Index into `panes` of the pane that owns the cursor. Always within
+    /// [`Self::visible_panes`].
+    pub focus: usize,
+    /// Whether the project and global panes are revealed. Seeded from
+    /// `AppConfig::todo_side_panes` and written back when toggled, so a
+    /// dashboard `I` — which runs with no overlay open — reads the same
+    /// setting the overlay would.
+    pub side_panes_open: bool,
+    /// Active inline edit, if any (add/edit title/notes/scratchpad).
     pub editor: Option<TodoEditor>,
     /// Set when a delete is awaiting y/n confirmation.
     pub pending_delete: bool,
     /// Active launch step (chooser / destination), layered over the list.
     pub launch: Option<TodoLaunchStep>,
+    /// Active move/copy scope chooser (`M` / `C`), layered the same way.
+    pub scope_move: Option<TodoScopeMoveState>,
+}
+
+impl TodoViewState {
+    /// How many panes are on screen: just the worktree pane when the side
+    /// panes are closed, otherwise all of them.
+    ///
+    /// A feature with no worktree pane always shows all of them — closing the
+    /// side panes there would leave nothing at all, and the project and global
+    /// lists are that feature's only lists.
+    pub fn visible_pane_count(&self) -> usize {
+        if self.side_panes_open || self.panes.is_empty() {
+            return self.panes.len();
+        }
+        match self.panes[0].kind {
+            TodoPaneKind::Worktree => 1,
+            _ => self.panes.len(),
+        }
+    }
+
+    /// The panes on screen, in layout order.
+    pub fn visible_panes(&self) -> &[TodoPane] {
+        &self.panes[..self.visible_pane_count()]
+    }
+
+    pub fn focused(&self) -> Option<&TodoPane> {
+        self.panes.get(self.focus)
+    }
+
+    pub fn focused_mut(&mut self) -> Option<&mut TodoPane> {
+        self.panes.get_mut(self.focus)
+    }
+
+    /// Pull focus back into view — used after the side panes are closed, which
+    /// can leave the cursor on a pane that is no longer drawn.
+    pub fn clamp_focus(&mut self) {
+        if self.focus >= self.visible_pane_count() {
+            self.focus = 0;
+        }
+    }
+}
+
+/// The scope chooser raised by `M` (move) and `C` (copy) over the selected
+/// TODO. Targets are pane indices rather than scopes so the in-memory pane and
+/// the persisted list are updated from one lookup.
+pub struct TodoScopeMoveState {
+    /// `true` for a copy (leaves the original in place, unstarted), `false`
+    /// for a move (re-files the same item, links and all).
+    pub copy: bool,
+    /// The item being re-filed, by id, so the list changing underneath the
+    /// prompt is noticed rather than acted on stale.
+    pub todo_id: String,
+    pub todo_title: String,
+    /// Candidate destinations as `(label, pane index)` — every pane but the
+    /// one the item is already in.
+    pub targets: Vec<(String, usize)>,
+    pub selected: usize,
+}
+
+impl TodoScopeMoveState {
+    pub fn move_cursor(&mut self, delta: isize) {
+        if self.targets.is_empty() {
+            return;
+        }
+        let last = self.targets.len() as isize - 1;
+        self.selected = ((self.selected as isize) + delta).clamp(0, last) as usize;
+    }
 }
 
 /// Single-line quick-capture of a TODO from inside a session view. The typed
-/// title is appended to the current project's list, auto-creating the list (and
-/// a TODOs session under the current feature) when the project has none yet.
-/// `view` is the session view to return to on commit/cancel.
+/// title is appended to the session feature's own worktree list — falling back
+/// to the project list when that feature sits on the repo root — auto-creating
+/// the list (and a TODOs session under the current feature) when there is none
+/// yet. `view` is the session view to return to on commit/cancel.
 pub struct TodoQuickCaptureState {
     pub view: ViewState,
     /// Name of the project the TODO will be added to (shown in the dialog).
     pub project_name: String,
+    /// Which list this capture will land in, named in the overlay so the
+    /// target is never a guess (e.g. `"Worktree · add-login"`).
+    pub list_label: String,
     /// The title being typed.
     pub input: String,
 }
@@ -3168,6 +3304,13 @@ pub struct TodoImplementChoiceState {
     pub fallback_fi: usize,
     /// The list's host feature id, when the list could be loaded.
     pub host_feature_id: Option<String>,
+    /// Which scope the candidate came from, and the id of the list it is in.
+    /// The scope decides whether *Start another agent on it* can spawn
+    /// straight away (worktree) or has to ask which feature to spawn in
+    /// (project / global); the list id is how the item is re-resolved on
+    /// confirm when no overlay is open to read it from.
+    pub pane_kind: TodoPaneKind,
+    pub list_id: Option<String>,
     /// The candidate: its id, so it is re-resolved on confirm rather than
     /// trusted (the list can change while this prompt is open), and its title
     /// for display.
@@ -3188,6 +3331,114 @@ impl TodoImplementChoiceState {
 
     pub fn choice(&self) -> TodoImplementChoice {
         TodoImplementChoice::ALL[self.selected.min(TodoImplementChoice::ALL.len() - 1)]
+    }
+}
+
+/// A feature to put an agent on a project- or global-scoped TODO in
+/// (`AppMode::TodoSpawnTarget`).
+///
+/// A whole [`AppMode`] rather than a step inside [`TodoViewState`] for the
+/// same reason [`TodoImplementChoiceState`] is one: the dashboard's "implement
+/// next" reaches it with no overlay open. `origin` is the mode the key was
+/// pressed in, restored verbatim on cancel, so the prompt never costs the user
+/// their place in the list.
+pub struct TodoSpawnTargetState {
+    pub origin: Box<AppMode>,
+    /// The item to spawn on, carried by value: the overlay it came from may
+    /// not be open, and a global TODO's list is not reachable from `pi`.
+    pub todo: crate::db::todos::Todo,
+    /// Which scope the TODO came from, shown so the user knows why they are
+    /// being asked.
+    pub pane_kind: TodoPaneKind,
+    /// Candidates as `(label, pi, fi)`. A project-scoped TODO lists that
+    /// project's features; a global one lists every project's.
+    pub candidates: Vec<(String, usize, usize)>,
+    pub selected: usize,
+    /// Set when the user explicitly asked for a second agent on an item that
+    /// already has one, so the spawn does not reuse the existing session.
+    pub force_new: bool,
+}
+
+impl TodoSpawnTargetState {
+    pub fn move_cursor(&mut self, delta: isize) {
+        if self.candidates.is_empty() {
+            return;
+        }
+        let last = self.candidates.len() as isize - 1;
+        self.selected = ((self.selected as isize) + delta).clamp(0, last) as usize;
+    }
+
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.candidates.get(self.selected).map(|(_, pi, fi)| (*pi, *fi))
+    }
+}
+
+/// What to do with the unfinished TODOs in a worktree list whose feature is
+/// being deleted (`AppMode::TodoDeleteDisposition`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoDeleteDisposition {
+    MoveToProject,
+    MoveToGlobal,
+    Delete,
+    Cancel,
+}
+
+impl TodoDeleteDisposition {
+    pub const ALL: [TodoDeleteDisposition; 4] = [
+        TodoDeleteDisposition::MoveToProject,
+        TodoDeleteDisposition::MoveToGlobal,
+        TodoDeleteDisposition::Delete,
+        TodoDeleteDisposition::Cancel,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TodoDeleteDisposition::MoveToProject => "Move them to the project list",
+            TodoDeleteDisposition::MoveToGlobal => "Move them to the global list",
+            TodoDeleteDisposition::Delete => "Delete them with the worktree",
+            TodoDeleteDisposition::Cancel => "Cancel — keep the feature",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            TodoDeleteDisposition::MoveToProject => {
+                "They stay with the project and show up in its pane."
+            }
+            TodoDeleteDisposition::MoveToGlobal => {
+                "They leave the project for the machine-wide list."
+            }
+            TodoDeleteDisposition::Delete => "The items go away for good, with the list.",
+            TodoDeleteDisposition::Cancel => "Nothing is deleted — the feature and its worktree stay.",
+        }
+    }
+}
+
+/// The prompt raised before a feature is deleted while its worktree list still
+/// has unfinished items. Deleting a worktree is hard to reverse, so this is a
+/// blocking prompt: nothing is killed or removed until a choice is made, and
+/// *Cancel* returns to the dashboard with the feature intact.
+pub struct TodoDeleteDispositionState {
+    pub project_name: String,
+    pub feature_name: String,
+    /// The worktree list and where it lives, so the disposition can be applied
+    /// without re-deriving it from indices that the deletion will invalidate.
+    pub project_id: String,
+    pub workdir: String,
+    pub list_id: String,
+    /// How many items are still open, stated in the prompt.
+    pub unfinished: usize,
+    pub selected: usize,
+}
+
+impl TodoDeleteDispositionState {
+    pub fn move_cursor(&mut self, delta: isize) {
+        let last = TodoDeleteDisposition::ALL.len() as isize - 1;
+        self.selected = ((self.selected as isize) + delta).clamp(0, last) as usize;
+    }
+
+    pub fn choice(&self) -> TodoDeleteDisposition {
+        TodoDeleteDisposition::ALL[self.selected.min(TodoDeleteDisposition::ALL.len() - 1)]
     }
 }
 
@@ -4136,6 +4387,14 @@ pub enum AppMode {
     TodosHostReassign(TodosHostReassignState),
     /// "Implement next" landed on a TODO that already has work started for it.
     TodoImplementChoice(Box<TodoImplementChoiceState>),
+    /// Pick the feature to put an agent on a project- or global-scoped TODO
+    /// in. Those lists are not tied to one checkout, so there is no feature to
+    /// infer — the user names one, and it supplies the agent and mode.
+    TodoSpawnTarget(Box<TodoSpawnTargetState>),
+    /// A feature is about to be deleted and its worktree list still has
+    /// unfinished TODOs: move them to the project list, move them to the
+    /// global list, delete them, or cancel the deletion outright.
+    TodoDeleteDisposition(TodoDeleteDispositionState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.

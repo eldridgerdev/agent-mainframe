@@ -8,8 +8,10 @@ use ratatui::{
 
 use super::super::dashboard::centered_rect;
 use crate::app::{
-    TodoEditTarget, TodoEditor, TodoImplementChoice, TodoImplementChoiceState, TodoLaunchAction,
-    TodoLaunchStep, TodoQuickCaptureState, TodoViewState, TodosHostReassignState,
+    TodoDeleteDisposition, TodoDeleteDispositionState, TodoEditTarget, TodoEditor,
+    TodoImplementChoice, TodoImplementChoiceState, TodoLaunchAction, TodoLaunchStep, TodoPane,
+    TodoPaneKind, TodoQuickCaptureState, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
+    TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority};
 use crate::theme::Theme;
@@ -44,11 +46,24 @@ pub fn draw_todo_quick_capture_dialog(
         ])
         .split(inner);
 
-    let input = Paragraph::new(Line::from(vec![
-        Span::styled(" Title: ", Style::default().fg(theme.primary.to_color())),
-        Span::styled(&state.input, Style::default().fg(theme.text.to_color())),
-        Span::styled(CURSOR, Style::default().fg(theme.primary.to_color())),
-    ]));
+    // Name the list this will land in. Quick capture writes to the session
+    // feature's own worktree list, which is not the same list the project's
+    // other features see — so it says which one rather than leaving it to be
+    // inferred from the title bar.
+    let input = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(" Title: ", Style::default().fg(theme.primary.to_color())),
+            Span::styled(&state.input, Style::default().fg(theme.text.to_color())),
+            Span::styled(CURSOR, Style::default().fg(theme.primary.to_color())),
+        ]),
+        Line::from(vec![
+            Span::styled(" Adding to: ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                &state.list_label,
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]),
+    ]);
     frame.render_widget(input, chunks[0]);
 
     let hint = Paragraph::new(Line::from(vec![
@@ -187,53 +202,135 @@ pub fn draw_todos_view(frame: &mut Frame, state: &TodoViewState, theme: &Theme, 
         area,
     );
 
-    let scratchpad = state
-        .list
-        .as_ref()
-        .and_then(|l| l.carry_over.as_deref())
-        .filter(|s| !s.trim().is_empty());
-
-    // Header (1) + optional scratchpad banner (3) + list (min) + hint (1).
-    let mut constraints = vec![Constraint::Length(1)];
-    if scratchpad.is_some() {
-        constraints.push(Constraint::Length(3));
-    }
-    constraints.push(Constraint::Min(1));
-    constraints.push(Constraint::Length(1));
+    // Header (1) + panes (min) + hint (1).
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
         .split(area);
 
-    let mut idx = 0;
-    draw_header(frame, chunks[idx], state, theme);
-    idx += 1;
-    if let Some(note) = scratchpad {
-        draw_scratchpad(frame, chunks[idx], note, theme);
-        idx += 1;
-    }
-    let list_area = chunks[idx];
-    idx += 1;
-    let hint_area = chunks[idx];
+    draw_header(frame, chunks[0], state, theme);
+    draw_panes(frame, chunks[1], state, theme, nerd_font);
+    draw_hint(frame, chunks[2], state, theme);
 
-    draw_list(frame, list_area, state, theme, nerd_font);
-    draw_hint(frame, hint_area, theme);
-
-    // Overlays on top of the list, in the same precedence the key handler
-    // uses: delete confirmation, then the launch step, then an inline edit.
+    // Overlays on top of the panes, in the same precedence the key handler
+    // uses: delete confirmation, the launch step, the scope chooser, then an
+    // inline edit.
     if state.pending_delete {
         draw_delete_confirm(frame, state, theme);
     } else if let Some(step) = &state.launch {
         draw_launch_step(frame, state, step, theme);
+    } else if let Some(step) = &state.scope_move {
+        draw_scope_move(frame, step, theme);
     } else if let Some(editor) = &state.editor {
         draw_editor(frame, editor, theme);
     }
 }
 
-fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme) {
-    let open = state.todos.iter().filter(|t| !t.done).count();
-    let done = state.todos.len().saturating_sub(open);
-    let in_progress = state
+/// How many panes fit side by side at this width.
+///
+/// The thresholds are about legibility, not arithmetic: a pane narrower than
+/// roughly forty columns cannot show a priority marker, a checkbox, and a
+/// useful amount of title, so a third pane that would push the others under
+/// that is not drawn at all — focus cycling reaches it instead.
+fn pane_capacity(width: u16) -> usize {
+    if width >= 120 {
+        3
+    } else if width >= 72 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Which panes get a slot, in draw order.
+///
+/// Two rules, in this order: the focused pane is *always* drawn — hiding the
+/// pane that owns the cursor would leave the user typing into nothing — and
+/// the worktree pane keeps its slot whenever there is room for a second, since
+/// it is the list this feature's work actually belongs to.
+fn pane_slots(state: &TodoViewState, width: u16) -> Vec<usize> {
+    let visible = state.visible_pane_count();
+    if visible == 0 {
+        return Vec::new();
+    }
+    let slots = pane_capacity(width).min(visible);
+
+    let mut chosen = vec![state.focus.min(visible - 1)];
+    let has_worktree = state
+        .panes
+        .first()
+        .is_some_and(|p| p.kind == TodoPaneKind::Worktree);
+    if has_worktree && chosen.len() < slots && !chosen.contains(&0) {
+        chosen.push(0);
+    }
+    for i in 0..visible {
+        if chosen.len() >= slots {
+            break;
+        }
+        if !chosen.contains(&i) {
+            chosen.push(i);
+        }
+    }
+    chosen.truncate(slots);
+    chosen.sort_unstable();
+    chosen
+}
+
+fn draw_panes(
+    frame: &mut Frame,
+    area: Rect,
+    state: &TodoViewState,
+    theme: &Theme,
+    nerd_font: bool,
+) {
+    let slots = pane_slots(state, area.width);
+    if slots.is_empty() {
+        return;
+    }
+    let constraints: Vec<Constraint> = slots
+        .iter()
+        .map(|_| Constraint::Ratio(1, slots.len() as u32))
+        .collect();
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    for (column, &pane_index) in columns.iter().zip(slots.iter()) {
+        if let Some(pane) = state.panes.get(pane_index) {
+            draw_pane(
+                frame,
+                *column,
+                pane,
+                pane_index == state.focus,
+                theme,
+                nerd_font,
+            );
+        }
+    }
+}
+
+/// One scope's pane: a bordered block titled with the scope, its scratchpad
+/// banner when it has one, and its items.
+///
+/// The focused pane gets the accent border and a visible cursor; an unfocused
+/// pane still shows where its cursor is, dimmed, so switching back lands
+/// somewhere predictable.
+fn draw_pane(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &TodoPane,
+    focused: bool,
+    theme: &Theme,
+    nerd_font: bool,
+) {
+    let open = pane.todos.iter().filter(|t| !t.done).count();
+    let done = pane.todos.len().saturating_sub(open);
+    let in_progress = pane
         .todos
         .iter()
         .filter(|t| !t.done && t.in_progress)
@@ -241,9 +338,65 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &The
     // Only shown when there is something underway: a permanent "0 in progress"
     // is noise on a list nobody has started.
     let progress_label = if in_progress > 0 {
-        format!(", {in_progress} in progress")
+        format!(", {in_progress} wip")
     } else {
         String::new()
+    };
+    let name = if pane.title.is_empty() {
+        pane.kind.label().to_string()
+    } else {
+        format!("{} · {}", pane.kind.label(), pane.title)
+    };
+
+    let border_color = if focused {
+        theme.primary.to_color()
+    } else {
+        theme.text_muted.to_color()
+    };
+    let mut title_style = Style::default().fg(border_color);
+    if focused {
+        title_style = title_style.add_modifier(Modifier::BOLD);
+    }
+    let block = Block::default()
+        .title(Span::styled(format!(" {name} "), title_style))
+        .title_bottom(Span::styled(
+            format!(" {open} open{progress_label}, {done} done "),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let scratchpad = pane.scratchpad();
+    let mut constraints = Vec::new();
+    if scratchpad.is_some() {
+        constraints.push(Constraint::Length(2));
+    }
+    constraints.push(Constraint::Min(1));
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+
+    let mut idx = 0;
+    if let Some(note) = scratchpad {
+        draw_scratchpad(frame, rows[idx], note, theme);
+        idx += 1;
+    }
+    draw_list(frame, rows[idx], pane, focused, theme, nerd_font);
+}
+
+fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme) {
+    // The panes carry their own counts; the header says where you are and
+    // whether the side panes are showing.
+    let panes_label = if state.visible_pane_count() > 1 {
+        "  \\ hide side panes"
+    } else {
+        "  \\ show project + global"
     };
     let line = Line::from(vec![
         Span::raw("  "),
@@ -258,7 +411,7 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &The
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled(
-            format!("   {open} open{progress_label}, {done} done"),
+            panes_label,
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ]);
@@ -266,23 +419,28 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &The
 }
 
 fn draw_scratchpad(frame: &mut Frame, area: Rect, note: &str, theme: &Theme) {
-    let block = Block::default()
-        .title(" Scratchpad ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.warning.to_color()));
-    let paragraph = Paragraph::new(Span::styled(
-        note,
-        Style::default().fg(theme.text.to_color()),
-    ))
-    .block(block)
+    let paragraph = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "scratch ",
+            Style::default().fg(theme.warning.to_color()),
+        ),
+        Span::styled(note, Style::default().fg(theme.text.to_color())),
+    ]))
     .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
 }
 
-fn draw_list(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme, nerd_font: bool) {
-    if state.todos.is_empty() {
+fn draw_list(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &TodoPane,
+    focused: bool,
+    theme: &Theme,
+    nerd_font: bool,
+) {
+    if pane.todos.is_empty() {
         let empty = Paragraph::new(Span::styled(
-            "  No TODOs yet.",
+            " No TODOs yet.",
             Style::default().fg(theme.text_muted.to_color()),
         ));
         frame.render_widget(empty, area);
@@ -291,35 +449,100 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme
 
     let visible = area.height as usize;
     // Keep the selected row in view.
-    let scroll = if state.selected >= state.scroll_offset + visible {
-        state.selected + 1 - visible
-    } else if state.selected < state.scroll_offset {
-        state.selected
+    let scroll = if pane.selected >= pane.scroll_offset + visible {
+        pane.selected + 1 - visible
+    } else if pane.selected < pane.scroll_offset {
+        pane.selected
     } else {
-        state.scroll_offset
+        pane.scroll_offset
     };
 
-    let lines: Vec<Line> = state
+    let lines: Vec<Line> = pane
         .todos
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible)
-        .map(|(i, todo)| todo_line(todo, i == state.selected, theme, nerd_font))
+        .map(|(i, todo)| todo_line(todo, i == pane.selected, focused, theme, nerd_font))
         .collect();
 
     frame.render_widget(Paragraph::new(lines), area);
 
-    if state.todos.len() > visible {
+    if pane.todos.len() > visible {
         let scrollbar = Scrollbar::default()
             .orientation(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
-        let mut scrollbar_state = ScrollbarState::new(state.todos.len())
+        let mut scrollbar_state = ScrollbarState::new(pane.todos.len())
             .position(scroll)
             .viewport_content_length(visible);
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
+}
+
+/// The move/copy scope chooser layered over the panes.
+fn draw_scope_move(frame: &mut Frame, step: &TodoScopeMoveState, theme: &Theme) {
+    let rows = (step.targets.len() as u16).min(6);
+    let area = centered_rect(60, (34 + rows * 6).min(70), frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let (verb, detail) = if step.copy {
+        (
+            "Copy TODO to",
+            "The original stays where it is. The copy starts unstarted — no session, no planned feature.",
+        )
+    } else {
+        (
+            "Move TODO to",
+            "The item is re-filed as it is, keeping any session or feature already started for it.",
+        )
+    };
+
+    let block = Block::default()
+        .title(format!(" {verb} "))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                step.todo_title.clone(),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
+    for (i, (label, _)) in step.targets.iter().enumerate() {
+        lines.push(option_line(
+            label.clone(),
+            i == step.selected,
+            theme.primary.to_color(),
+            theme,
+        ));
+    }
+    lines.push(Line::from(""));
+    lines.extend(detail_lines(detail, inner.width, theme));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" choose  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" confirm  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " back to list",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// Wrap `detail` into pre-indented lines that hang under an option's label.
@@ -560,7 +783,19 @@ pub fn draw_todo_implement_choice_dialog(
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
-fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool) -> Line<'a> {
+/// One item's row. `selected` is the pane's own cursor; `focused` says whether
+/// that pane owns the keyboard — an unfocused pane still shows where its
+/// cursor sits, dimmed, so returning to it lands somewhere predictable.
+fn todo_line<'a>(
+    todo: &'a Todo,
+    selected: bool,
+    focused: bool,
+    theme: &Theme,
+    nerd_font: bool,
+) -> Line<'a> {
+    // The cursor row of the pane that owns the keyboard reads as the cursor;
+    // the same row in a side pane is only a bookmark.
+    let active = selected && focused;
     let (prio_marker, prio_color) = match todo.priority {
         TodoPriority::High => ("!", theme.danger.to_color()),
         TodoPriority::Med => ("·", theme.warning.to_color()),
@@ -578,6 +813,11 @@ fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool)
         "[ ]"
     };
     let cursor = if selected { "› " } else { "  " };
+    let cursor_color = if active {
+        theme.primary.to_color()
+    } else {
+        theme.text_muted.to_color()
+    };
 
     let title_style = if todo.done {
         Style::default()
@@ -586,12 +826,12 @@ fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool)
     } else if todo.in_progress {
         Style::default()
             .fg(theme.warning.to_color())
-            .add_modifier(if selected {
+            .add_modifier(if active {
                 Modifier::BOLD
             } else {
                 Modifier::empty()
             })
-    } else if selected {
+    } else if active {
         Style::default()
             .fg(theme.text.to_color())
             .add_modifier(Modifier::BOLD)
@@ -626,7 +866,7 @@ fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool)
     };
 
     let mut spans = vec![
-        Span::styled(cursor, Style::default().fg(theme.primary.to_color())),
+        Span::styled(cursor, Style::default().fg(cursor_color)),
         Span::styled(
             format!("{prio_marker} "),
             Style::default().fg(prio_color).add_modifier(Modifier::BOLD),
@@ -664,9 +904,18 @@ fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool)
     Line::from(spans)
 }
 
-fn draw_hint(frame: &mut Frame, area: Rect, theme: &Theme) {
+/// The key hint bar. It names the pane keys only when there is more than one
+/// pane to move between, so a single-pane view does not advertise a `Tab` that
+/// would do nothing.
+fn draw_hint(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme) {
+    let base = "  j/k move  a add  e title  o notes  space done  i wip  p prio  J/K reorder  g start/plan  I next  b scratch  M/C move/copy  d del  Esc/q close";
+    let text = if state.visible_pane_count() > 1 {
+        format!("  Tab pane{base}")
+    } else {
+        base.to_string()
+    };
     let hint = Line::from(vec![Span::styled(
-        "  j/k move  a add  e title  o notes  space done  i wip  p prio  J/K reorder  g start/plan  I next  b scratch  d del  Esc/q close",
+        text,
         Style::default().fg(theme.text_muted.to_color()),
     )]);
     frame.render_widget(Paragraph::new(hint), area);
@@ -754,8 +1003,8 @@ fn draw_delete_confirm(frame: &mut Frame, state: &TodoViewState, theme: &Theme) 
     frame.render_widget(block, area);
 
     let title = state
-        .todos
-        .get(state.selected)
+        .focused()
+        .and_then(|pane| pane.selected_todo())
         .map(|t| t.title.as_str())
         .unwrap_or("");
     let lines = vec![
@@ -769,4 +1018,159 @@ fn draw_delete_confirm(frame: &mut Frame, state: &TodoViewState, theme: &Theme) 
         )),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+/// "Which feature should work this TODO?" — raised by a spawn from the project
+/// or global pane, where nothing in the list names a checkout.
+pub fn draw_todo_spawn_target_dialog(
+    frame: &mut Frame,
+    state: &TodoSpawnTargetState,
+    theme: &Theme,
+) {
+    let rows = (state.candidates.len() as u16).min(8);
+    let area = centered_rect(64, (34 + rows * 5).min(80), frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Where should this TODO be worked? ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let scope = match state.pane_kind {
+        TodoPaneKind::Global => "the global list",
+        _ => "the project list",
+    };
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                state.todo.title.clone(),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("lives in {scope}, which belongs to no one checkout."),
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    // A long candidate list scrolls with the cursor rather than overflowing.
+    let visible = (inner.height as usize).saturating_sub(8).max(1);
+    let start = state.selected.saturating_sub(visible.saturating_sub(1));
+    for (i, (label, _, _)) in state
+        .candidates
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible)
+    {
+        lines.push(option_line(
+            label.clone(),
+            i == state.selected,
+            theme.primary.to_color(),
+            theme,
+        ));
+    }
+
+    lines.push(Line::from(""));
+    lines.extend(detail_lines(
+        "The feature you pick supplies the agent and mode, exactly as a worktree TODO's own feature would.",
+        inner.width,
+        theme,
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" choose  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" start  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// "What happens to this worktree's unfinished TODOs?" — the blocking prompt
+/// before a feature whose worktree list still holds open work is deleted.
+pub fn draw_todo_delete_disposition_dialog(
+    frame: &mut Frame,
+    state: &TodoDeleteDispositionState,
+    theme: &Theme,
+) {
+    let area = centered_rect(64, 62, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" This worktree still has TODOs ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.warning.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let items = if state.unfinished == 1 { "TODO" } else { "TODOs" };
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Feature "),
+            Span::styled(
+                state.feature_name.as_str(),
+                Style::default()
+                    .fg(theme.danger.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" has "),
+            Span::styled(
+                format!("{} unfinished {items}", state.unfinished),
+                Style::default().fg(theme.text.to_color()),
+            ),
+            Span::raw(" in its worktree list."),
+        ]),
+        Line::from(vec![Span::styled(
+            " Deleting the feature deletes that list, so they need somewhere to go:",
+            Style::default().fg(theme.text_muted.to_color()),
+        )]),
+        Line::from(""),
+    ];
+
+    for (i, choice) in TodoDeleteDisposition::ALL.iter().enumerate() {
+        let accent = match choice {
+            TodoDeleteDisposition::Delete => theme.danger.to_color(),
+            TodoDeleteDisposition::Cancel => theme.text_muted.to_color(),
+            _ => theme.primary.to_color(),
+        };
+        lines.push(option_line(
+            choice.label().to_string(),
+            i == state.selected,
+            accent,
+            theme,
+        ));
+        lines.extend(detail_lines(choice.detail(), inner.width, theme));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" choose  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" confirm  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " cancel the deletion",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

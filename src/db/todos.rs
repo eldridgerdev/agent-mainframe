@@ -1,9 +1,12 @@
-//! SQLite persistence for per-project TODO lists.
+//! SQLite persistence for scoped TODO lists.
 //!
-//! Each project has at most one [`TodoList`] (enforced by a UNIQUE constraint
-//! on `project_id`). The list is hosted by one of the project's features
-//! (`feature_id`) and owns an ordered set of [`Todo`] items. See
-//! `docs/backlog/feature-todos-plan.md`.
+//! A [`TodoList`] belongs to one [`TodoScope`]: a **worktree** (keyed by the
+//! workdir path a feature checks out), a **project**, or the machine-wide
+//! **global** list that belongs to no project at all. Three partial unique
+//! indexes (see `MIGRATION_025`) keep each of those a singleton within its
+//! scope. A worktree- or project-scoped list also records a host feature
+//! (`feature_id`); the global list has none. Each list owns an ordered set of
+//! [`Todo`] items. See `docs/backlog/feature-todos-plan.md`.
 //!
 //! Unlike most domain data, todo lists live *outside* the `ProjectStore` JSON
 //! blob and the store's full-replace save path, so they survive ordinary store
@@ -55,13 +58,91 @@ impl TodoPriority {
     }
 }
 
-/// A per-project TODO list, hosted by one feature.
+/// Which list a [`TodoList`] is: the worktree it belongs to, the project it
+/// belongs to, or the machine-wide list that belongs to neither.
+///
+/// The variants are ordered the way ties between them resolve — narrowest
+/// first — and [`Self::rank`] is that order made explicit for sorting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TodoScope {
+    /// One list per checkout. Keyed by **workdir path** rather than feature id
+    /// so the list belongs to the working tree the TODOs were written about,
+    /// not to whichever feature row happens to point at it.
+    Worktree { project_id: String, workdir: String },
+    /// One list per project — the only scope that existed before
+    /// `MIGRATION_025`, and the scope every pre-existing list keeps.
+    Project { project_id: String },
+    /// A single list for the whole machine, belonging to no project.
+    Global,
+}
+
+impl TodoScope {
+    /// The `todo_lists.scope` token.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            TodoScope::Worktree { .. } => "worktree",
+            TodoScope::Project { .. } => "project",
+            TodoScope::Global => "global",
+        }
+    }
+
+    pub fn project_id(&self) -> Option<&str> {
+        match self {
+            TodoScope::Worktree { project_id, .. } | TodoScope::Project { project_id } => {
+                Some(project_id)
+            }
+            TodoScope::Global => None,
+        }
+    }
+
+    pub fn workdir(&self) -> Option<&str> {
+        match self {
+            TodoScope::Worktree { workdir, .. } => Some(workdir),
+            _ => None,
+        }
+    }
+
+    /// Tie-break order across scopes: worktree (0) beats project (1) beats
+    /// global (2) at equal priority.
+    pub fn rank(&self) -> u8 {
+        match self {
+            TodoScope::Worktree { .. } => 0,
+            TodoScope::Project { .. } => 1,
+            TodoScope::Global => 2,
+        }
+    }
+
+    /// Rebuild a scope from the three stored columns. An unrecognized token
+    /// reads as `project` — the scope every row had before `MIGRATION_025`,
+    /// and the only one that stays meaningful when the other columns are
+    /// missing.
+    fn from_row(scope: &str, project_id: Option<String>, workdir: Option<String>) -> Self {
+        match (scope, project_id, workdir) {
+            ("worktree", Some(project_id), Some(workdir)) => {
+                TodoScope::Worktree { project_id, workdir }
+            }
+            ("global", _, _) => TodoScope::Global,
+            (_, Some(project_id), _) => TodoScope::Project { project_id },
+            // A project-scoped row with no project is not addressable by any
+            // scope; treating it as global is the only reading that keeps it
+            // loadable rather than silently dropping the user's items.
+            (_, None, _) => TodoScope::Global,
+        }
+    }
+}
+
+/// A TODO list within one [`TodoScope`], hosted by one feature.
 #[derive(Debug, Clone)]
 pub struct TodoList {
     pub id: String,
-    pub project_id: String,
-    pub feature_id: String,
-    /// "Left off here" carry-over banner note.
+    /// What this list is a list *for*. Carries the project id and workdir, so
+    /// it is the whole key: nothing else on the row identifies the list.
+    pub scope: TodoScope,
+    /// The feature that hosts the list. `None` for the global list, which
+    /// belongs to no project and so to no feature.
+    pub feature_id: Option<String>,
+    /// "Left off here" carry-over banner note. Presented as the list's
+    /// free-form *scratchpad*; the column keeps its original name.
     pub carry_over: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -93,51 +174,113 @@ pub struct Todo {
     pub updated_at: String,
 }
 
-/// Load the TODO list for `project_id`, or `None` if the project has none.
-pub fn load_list(conn: &Connection, project_id: &str) -> Result<Option<TodoList>> {
+const LIST_COLUMNS: &str =
+    "id, project_id, feature_id, scope, workdir, carry_over, created_at, updated_at";
+
+fn row_to_list(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoList> {
+    let project_id: Option<String> = row.get(1)?;
+    let scope: String = row.get(3)?;
+    let workdir: Option<String> = row.get(4)?;
+    Ok(TodoList {
+        id: row.get(0)?,
+        scope: TodoScope::from_row(&scope, project_id, workdir),
+        feature_id: row.get(2)?,
+        carry_over: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+/// Load the TODO list for `scope`, or `None` if that scope has none yet.
+///
+/// Each branch matches on exactly the columns its partial unique index covers,
+/// so the lookup and the constraint that makes it a singleton stay the same
+/// question asked twice.
+pub fn load_list(conn: &Connection, scope: &TodoScope) -> Result<Option<TodoList>> {
+    let row = match scope {
+        TodoScope::Worktree {
+            project_id,
+            workdir,
+        } => conn
+            .query_row(
+                &format!(
+                    "SELECT {LIST_COLUMNS} FROM todo_lists
+                     WHERE scope = 'worktree' AND project_id = ?1 AND workdir = ?2"
+                ),
+                params![project_id, workdir],
+                row_to_list,
+            )
+            .optional()?,
+        TodoScope::Project { project_id } => conn
+            .query_row(
+                &format!(
+                    "SELECT {LIST_COLUMNS} FROM todo_lists
+                     WHERE scope = 'project' AND project_id = ?1"
+                ),
+                params![project_id],
+                row_to_list,
+            )
+            .optional()?,
+        TodoScope::Global => conn
+            .query_row(
+                &format!("SELECT {LIST_COLUMNS} FROM todo_lists WHERE scope = 'global'"),
+                [],
+                row_to_list,
+            )
+            .optional()?,
+    };
+    Ok(row)
+}
+
+/// Load a list by its own id, whatever scope it is in. Used when acting on a
+/// list the caller already has a handle to (a move target, a re-home).
+pub fn load_list_by_id(conn: &Connection, list_id: &str) -> Result<Option<TodoList>> {
     let row = conn
         .query_row(
-            "SELECT id, project_id, feature_id, carry_over, created_at, updated_at
-             FROM todo_lists WHERE project_id = ?1",
-            params![project_id],
-            |row| {
-                Ok(TodoList {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    feature_id: row.get(2)?,
-                    carry_over: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                })
-            },
+            &format!("SELECT {LIST_COLUMNS} FROM todo_lists WHERE id = ?1"),
+            params![list_id],
+            row_to_list,
         )
         .optional()?;
     Ok(row)
 }
 
-/// Create the project's TODO list under `feature_id`, returning it. Fails if a
-/// list already exists for the project (one-list-per-project constraint).
-pub fn create_list(conn: &Connection, project_id: &str, feature_id: &str) -> Result<TodoList> {
+/// Create the TODO list for `scope`, hosted by `feature_id`, and return it.
+/// Fails if a list already exists in that scope — the partial unique indexes
+/// from `MIGRATION_025` are what reject it.
+pub fn create_list(
+    conn: &Connection,
+    scope: &TodoScope,
+    feature_id: Option<&str>,
+) -> Result<TodoList> {
     let id = Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO todo_lists (id, project_id, feature_id, carry_over, created_at, updated_at)
-         VALUES (?1, ?2, ?3, NULL, datetime('now'), datetime('now'))",
-        params![id, project_id, feature_id],
+        "INSERT INTO todo_lists
+            (id, project_id, feature_id, scope, workdir, carry_over, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, datetime('now'), datetime('now'))",
+        params![
+            id,
+            scope.project_id(),
+            feature_id,
+            scope.as_db_str(),
+            scope.workdir(),
+        ],
     )?;
-    load_list(conn, project_id)?
+    load_list(conn, scope)?
         .ok_or_else(|| anyhow::anyhow!("todo list vanished immediately after insert"))
 }
 
-/// Return the project's existing TODO list, creating one under `feature_id` if
-/// none exists yet.
+/// Return the scope's existing TODO list, creating one under `feature_id` if
+/// none exists yet. This is the lazy creation a worktree pane does on first
+/// open and the global pane does on first reveal.
 pub fn load_or_create_list(
     conn: &Connection,
-    project_id: &str,
-    feature_id: &str,
+    scope: &TodoScope,
+    feature_id: Option<&str>,
 ) -> Result<TodoList> {
-    match load_list(conn, project_id)? {
+    match load_list(conn, scope)? {
         Some(list) => Ok(list),
-        None => create_list(conn, project_id, feature_id),
+        None => create_list(conn, scope, feature_id),
     }
 }
 
@@ -166,12 +309,25 @@ pub fn delete_list(conn: &Connection, list_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Delete the TODO list (and its items) for `project_id`, if any. Called when a
-/// project is deleted, since there is no FK cascade from `projects`.
-pub fn delete_list_for_project(conn: &Connection, project_id: &str) -> Result<()> {
+/// Delete **every** list belonging to `project_id` — its project-scoped list
+/// and each of its worktree lists — along with their items. Called when a
+/// project is deleted, since there is no FK cascade from `projects`. The
+/// global list belongs to no project and is never touched here.
+pub fn delete_lists_for_project(conn: &Connection, project_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM todo_lists WHERE project_id = ?1",
         params![project_id],
+    )?;
+    Ok(())
+}
+
+/// Delete the worktree-scoped list at `workdir`, if any. Called after a
+/// feature's TODOs have been dispositioned on delete.
+pub fn delete_worktree_list(conn: &Connection, project_id: &str, workdir: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM todo_lists
+         WHERE scope = 'worktree' AND project_id = ?1 AND workdir = ?2",
+        params![project_id, workdir],
     )?;
     Ok(())
 }
@@ -222,11 +378,7 @@ pub fn add_todo(
     body: Option<&str>,
     priority: TodoPriority,
 ) -> Result<Todo> {
-    let next_order: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM todos WHERE list_id = ?1",
-        params![list_id],
-        |row| row.get(0),
-    )?;
+    let next_order = next_sort_order(conn, list_id)?;
     let id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO todos
@@ -366,6 +518,96 @@ pub fn clear_linked_feature(conn: &Connection, feature_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The `sort_order` a new item appended to `list_id` should take.
+fn next_sort_order(conn: &Connection, list_id: &str) -> Result<i64> {
+    let next: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM todos WHERE list_id = ?1",
+        params![list_id],
+        |row| row.get(0),
+    )?;
+    Ok(next)
+}
+
+/// Move a TODO into another list, appending it at the destination's end.
+///
+/// Both links ride along: it is the same item of work, and the session or
+/// feature someone already started for it is still the work in flight. What
+/// changes is only which list it is filed under, so `sort_order` is
+/// recomputed against the destination — keeping the source's number would drop
+/// the item into the middle of a list it has never been in.
+pub fn move_todo(conn: &Connection, todo_id: &str, target_list_id: &str) -> Result<()> {
+    let next_order = next_sort_order(conn, target_list_id)?;
+    conn.execute(
+        "UPDATE todos SET list_id = ?2, sort_order = ?3, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![todo_id, target_list_id, next_order],
+    )?;
+    Ok(())
+}
+
+/// Copy a TODO into another list, appending it at the destination's end, and
+/// return the new item.
+///
+/// The copy is deliberately *unstarted*: `spawned_session_id`, the feature
+/// link, and `in_progress` are all dropped. Carrying them would leave two rows
+/// in two panes each claiming the same session, and "implement next" would
+/// then hold both in reserve for work only one of them describes.
+pub fn copy_todo(conn: &Connection, todo_id: &str, target_list_id: &str) -> Result<Option<Todo>> {
+    let source = conn
+        .query_row(
+            "SELECT title, body, priority, done FROM todos WHERE id = ?1",
+            params![todo_id],
+            |row| {
+                let priority: String = row.get(2)?;
+                let done: i64 = row.get(3)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    TodoPriority::from_db_str(&priority),
+                    done != 0,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((title, body, priority, done)) = source else {
+        return Ok(None);
+    };
+
+    let next_order = next_sort_order(conn, target_list_id)?;
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO todos
+            (id, list_id, title, body, priority, done, sort_order,
+             spawned_session_id, linked_feature_id, in_progress,
+             created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, 0,
+                 datetime('now'), datetime('now'))",
+        params![
+            id,
+            target_list_id,
+            title,
+            body,
+            priority.as_db_str(),
+            done as i64,
+            next_order
+        ],
+    )?;
+    Ok(Some(Todo {
+        id,
+        list_id: target_list_id.to_string(),
+        title,
+        body,
+        priority,
+        done,
+        sort_order: next_order,
+        spawned_session_id: None,
+        linked_feature_id: None,
+        in_progress: false,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }))
+}
+
 /// Persist a manual ordering: `ordered_ids` are written back as `sort_order`
 /// 0, 1, 2, … in the given sequence.
 pub fn reorder_todos(conn: &Connection, ordered_ids: &[String]) -> Result<()> {
@@ -390,43 +632,97 @@ mod tests {
         (tmp, db)
     }
 
+    fn project(id: &str) -> TodoScope {
+        TodoScope::Project {
+            project_id: id.to_string(),
+        }
+    }
+
+    fn worktree(id: &str, workdir: &str) -> TodoScope {
+        TodoScope::Worktree {
+            project_id: id.to_string(),
+            workdir: workdir.to_string(),
+        }
+    }
+
     #[test]
     fn create_and_load_list() {
         let (_tmp, db) = open_temp_db();
 
-        assert!(db.todo_list("proj-1").unwrap().is_none());
+        assert!(db.todo_list(&project("proj-1")).unwrap().is_none());
 
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
-        assert_eq!(list.project_id, "proj-1");
-        assert_eq!(list.feature_id, "feat-1");
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        assert_eq!(list.scope, project("proj-1"));
+        assert_eq!(list.feature_id.as_deref(), Some("feat-1"));
         assert!(list.carry_over.is_none());
 
-        let loaded = db.todo_list("proj-1").unwrap().unwrap();
+        let loaded = db.todo_list(&project("proj-1")).unwrap().unwrap();
         assert_eq!(loaded.id, list.id);
     }
 
     #[test]
     fn one_list_per_project() {
         let (_tmp, db) = open_temp_db();
-        db.create_todo_list("proj-1", "feat-1").unwrap();
-        // UNIQUE(project_id) must reject a second list.
-        assert!(db.create_todo_list("proj-1", "feat-2").is_err());
+        db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        // The partial unique index must reject a second project-scoped list.
+        assert!(db.create_todo_list(&project("proj-1"), Some("feat-2")).is_err());
+    }
+
+    /// The three scopes are three different lists, and the worktree scope is a
+    /// singleton per workdir rather than per project.
+    #[test]
+    fn scopes_are_independent_singletons() {
+        let (_tmp, db) = open_temp_db();
+
+        let proj = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let wt_a = db
+            .create_todo_list(&worktree("proj-1", "/repo/.worktrees/a"), Some("feat-a"))
+            .unwrap();
+        let wt_b = db
+            .create_todo_list(&worktree("proj-1", "/repo/.worktrees/b"), Some("feat-b"))
+            .unwrap();
+        let global = db.create_todo_list(&TodoScope::Global, None).unwrap();
+
+        let ids = [&proj.id, &wt_a.id, &wt_b.id, &global.id];
+        for (i, a) in ids.iter().enumerate() {
+            for b in ids.iter().skip(i + 1) {
+                assert_ne!(a, b, "each scope gets its own list");
+            }
+        }
+        assert!(global.feature_id.is_none(), "the global list has no host");
+
+        // Second list in the same scope is rejected in every scope.
+        assert!(
+            db.create_todo_list(&worktree("proj-1", "/repo/.worktrees/a"), Some("feat-a"))
+                .is_err()
+        );
+        assert!(db.create_todo_list(&TodoScope::Global, None).is_err());
+
+        // Another project's worktree at a different path is fine.
+        assert!(
+            db.create_todo_list(&worktree("proj-2", "/other/.worktrees/a"), Some("feat-z"))
+                .is_ok()
+        );
     }
 
     #[test]
     fn load_or_create_is_idempotent() {
         let (_tmp, db) = open_temp_db();
-        let a = db.load_or_create_todo_list("proj-1", "feat-1").unwrap();
-        let b = db.load_or_create_todo_list("proj-1", "feat-9").unwrap();
+        let a = db
+            .load_or_create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
+        let b = db
+            .load_or_create_todo_list(&project("proj-1"), Some("feat-9"))
+            .unwrap();
         assert_eq!(a.id, b.id);
         // Host feature is preserved from the first create, not overwritten.
-        assert_eq!(b.feature_id, "feat-1");
+        assert_eq!(b.feature_id.as_deref(), Some("feat-1"));
     }
 
     #[test]
     fn todo_crud_roundtrip() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
 
         let mut todo = db
             .add_todo(
@@ -458,11 +754,89 @@ mod tests {
     #[test]
     fn add_todo_increments_sort_order() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
         let a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         let c = db.add_todo(&list.id, "c", None, TodoPriority::Med).unwrap();
         assert_eq!((a.sort_order, b.sort_order, c.sort_order), (0, 1, 2));
+    }
+
+    /// A move re-files the same work: it lands at the end of the destination
+    /// and keeps whatever was already started for it.
+    #[test]
+    fn move_appends_to_the_destination_and_keeps_the_links() {
+        let (_tmp, db) = open_temp_db();
+        let src = db
+            .create_todo_list(&worktree("proj-1", "/wt/a"), Some("feat-1"))
+            .unwrap();
+        let dst = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        db.add_todo(&dst.id, "already here", None, TodoPriority::Med)
+            .unwrap();
+
+        let mut moving = db
+            .add_todo(&src.id, "port me", Some("notes"), TodoPriority::High)
+            .unwrap();
+        moving.spawned_session_id = Some("sess-1".to_string());
+        moving.linked_feature_id = Some("feat-planned".to_string());
+        moving.in_progress = true;
+        db.update_todo(&moving).unwrap();
+
+        db.move_todo(&moving.id, &dst.id).unwrap();
+
+        assert!(db.todos(&src.id).unwrap().is_empty(), "it left the source");
+        let landed = db.todos(&dst.id).unwrap();
+        assert_eq!(landed.len(), 2);
+        let moved = landed.iter().find(|t| t.title == "port me").unwrap();
+        assert_eq!(moved.sort_order, 1, "appended, not overlapping the sitting item");
+        assert_eq!(moved.spawned_session_id.as_deref(), Some("sess-1"));
+        assert_eq!(moved.linked_feature_id.as_deref(), Some("feat-planned"));
+        assert!(moved.in_progress);
+        assert_eq!(moved.body.as_deref(), Some("notes"));
+        assert_eq!(moved.priority, TodoPriority::High);
+    }
+
+    /// A copy is a second, *unstarted* item: two panes must never both claim
+    /// the same session.
+    #[test]
+    fn copy_leaves_the_original_and_clears_what_was_started() {
+        let (_tmp, db) = open_temp_db();
+        let src = db
+            .create_todo_list(&worktree("proj-1", "/wt/a"), Some("feat-1"))
+            .unwrap();
+        let dst = db.create_todo_list(&TodoScope::Global, None).unwrap();
+
+        let mut original = db
+            .add_todo(&src.id, "share me", Some("why"), TodoPriority::Low)
+            .unwrap();
+        original.spawned_session_id = Some("sess-1".to_string());
+        original.linked_feature_id = Some("feat-planned".to_string());
+        original.in_progress = true;
+        db.update_todo(&original).unwrap();
+
+        let copy = db.copy_todo(&original.id, &dst.id).unwrap().unwrap();
+
+        // The original is untouched, links and all.
+        let kept = &db.todos(&src.id).unwrap()[0];
+        assert_eq!(kept.id, original.id);
+        assert_eq!(kept.spawned_session_id.as_deref(), Some("sess-1"));
+        assert!(kept.in_progress);
+
+        assert_ne!(copy.id, original.id);
+        let landed = &db.todos(&dst.id).unwrap()[0];
+        assert_eq!(landed.title, "share me");
+        assert_eq!(landed.body.as_deref(), Some("why"));
+        assert_eq!(landed.priority, TodoPriority::Low);
+        assert!(landed.spawned_session_id.is_none());
+        assert!(landed.linked_feature_id.is_none());
+        assert!(!landed.in_progress);
+    }
+
+    #[test]
+    fn copying_a_todo_that_is_gone_reports_it_rather_than_inventing_one() {
+        let (_tmp, db) = open_temp_db();
+        let dst = db.create_todo_list(&TodoScope::Global, None).unwrap();
+        assert!(db.copy_todo("no-such-todo", &dst.id).unwrap().is_none());
+        assert!(db.todos(&dst.id).unwrap().is_empty());
     }
 
     /// The in-progress flag round-trips, and the two targeted writers can set
@@ -470,7 +844,7 @@ mod tests {
     #[test]
     fn in_progress_roundtrips_and_has_targeted_writers() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
         let mut todo = db
             .add_todo(&list.id, "Ship it", None, TodoPriority::High)
             .unwrap();
@@ -499,7 +873,7 @@ mod tests {
     #[test]
     fn reorder_persists_new_order() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
         let a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         let c = db.add_todo(&list.id, "c", None, TodoPriority::Med).unwrap();
@@ -519,7 +893,7 @@ mod tests {
     #[test]
     fn open_items_sort_before_done() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
         let mut a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let _b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         a.done = true;
@@ -538,21 +912,21 @@ mod tests {
     #[test]
     fn carry_over_and_host_feature_update() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
 
         db.set_todo_carry_over(&list.id, Some("finishing the parser"))
             .unwrap();
         db.set_todo_list_host_feature(&list.id, "feat-2").unwrap();
 
-        let loaded = db.todo_list("proj-1").unwrap().unwrap();
+        let loaded = db.todo_list(&project("proj-1")).unwrap().unwrap();
         assert_eq!(loaded.carry_over.as_deref(), Some("finishing the parser"));
-        assert_eq!(loaded.feature_id, "feat-2");
+        assert_eq!(loaded.feature_id.as_deref(), Some("feat-2"));
     }
 
     #[test]
     fn linked_feature_survives_a_roundtrip_and_is_independent_of_the_session_link() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
         let mut todo = db
             .add_todo(&list.id, "plan it", None, TodoPriority::Med)
             .unwrap();
@@ -571,7 +945,7 @@ mod tests {
     #[test]
     fn clearing_a_deleted_features_link_keeps_the_todo_and_its_session_link() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
         let mut a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let mut b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         a.linked_feature_id = Some("feat-gone".to_string());
@@ -595,12 +969,48 @@ mod tests {
     #[test]
     fn delete_list_cascades_to_todos() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
         db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
 
-        db.delete_todo_list_for_project("proj-1").unwrap();
-        assert!(db.todo_list("proj-1").unwrap().is_none());
+        db.delete_todo_lists_for_project("proj-1").unwrap();
+        assert!(db.todo_list(&project("proj-1")).unwrap().is_none());
         // Cascade removed the items too.
         assert!(db.todos(&list.id).unwrap().is_empty());
+    }
+
+    /// Deleting a project takes its worktree lists with it and leaves the
+    /// machine-wide list — which belongs to no project — alone.
+    #[test]
+    fn deleting_a_project_takes_its_worktree_lists_but_not_the_global_one() {
+        let (_tmp, db) = open_temp_db();
+        let proj = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let wt = db
+            .create_todo_list(&worktree("proj-1", "/wt/a"), Some("feat-a"))
+            .unwrap();
+        let global = db.create_todo_list(&TodoScope::Global, None).unwrap();
+        db.add_todo(&global.id, "keep me", None, TodoPriority::Med)
+            .unwrap();
+
+        db.delete_todo_lists_for_project("proj-1").unwrap();
+
+        assert!(db.todo_list_by_id(&proj.id).unwrap().is_none());
+        assert!(db.todo_list_by_id(&wt.id).unwrap().is_none());
+        assert!(db.todo_list(&TodoScope::Global).unwrap().is_some());
+        assert_eq!(db.todos(&global.id).unwrap().len(), 1);
+    }
+
+    /// The worktree list can be dropped on its own once its items have been
+    /// dispositioned, without disturbing the project's own list.
+    #[test]
+    fn deleting_one_worktree_list_leaves_the_project_list() {
+        let (_tmp, db) = open_temp_db();
+        let proj = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        db.create_todo_list(&worktree("proj-1", "/wt/a"), Some("feat-a"))
+            .unwrap();
+
+        db.delete_worktree_todo_list("proj-1", "/wt/a").unwrap();
+
+        assert!(db.todo_list(&worktree("proj-1", "/wt/a")).unwrap().is_none());
+        assert!(db.todo_list_by_id(&proj.id).unwrap().is_some());
     }
 }

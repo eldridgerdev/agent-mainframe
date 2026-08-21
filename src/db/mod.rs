@@ -351,28 +351,46 @@ impl AmfDb {
     }
 }
 
-/// Per-project TODO list persistence. Wired into the UI in later epics (see
-/// `docs/backlog/feature-todos-plan.md`), so unused until then.
+/// Scoped TODO list persistence (worktree / project / global).
 #[allow(dead_code)]
 impl AmfDb {
-    /// The project's TODO list, or `None` if it has no list yet.
-    pub fn todo_list(&self, project_id: &str) -> Result<Option<todos::TodoList>> {
-        todos::load_list(&self.conn, project_id)
+    /// The TODO list for `scope`, or `None` if that scope has no list yet.
+    pub fn todo_list(&self, scope: &todos::TodoScope) -> Result<Option<todos::TodoList>> {
+        todos::load_list(&self.conn, scope)
     }
 
-    /// Return the project's TODO list, creating one hosted by `feature_id` if
+    /// A TODO list by its own id, whatever scope it is in.
+    pub fn todo_list_by_id(&self, list_id: &str) -> Result<Option<todos::TodoList>> {
+        todos::load_list_by_id(&self.conn, list_id)
+    }
+
+    /// Return the scope's TODO list, creating one hosted by `feature_id` if
     /// none exists.
     pub fn load_or_create_todo_list(
         &self,
-        project_id: &str,
-        feature_id: &str,
+        scope: &todos::TodoScope,
+        feature_id: Option<&str>,
     ) -> Result<todos::TodoList> {
-        todos::load_or_create_list(&self.conn, project_id, feature_id)
+        todos::load_or_create_list(&self.conn, scope, feature_id)
     }
 
-    /// Create the project's TODO list under `feature_id`; errors if one exists.
-    pub fn create_todo_list(&self, project_id: &str, feature_id: &str) -> Result<todos::TodoList> {
-        todos::create_list(&self.conn, project_id, feature_id)
+    /// Create the scope's TODO list under `feature_id`; errors if one exists.
+    pub fn create_todo_list(
+        &self,
+        scope: &todos::TodoScope,
+        feature_id: Option<&str>,
+    ) -> Result<todos::TodoList> {
+        todos::create_list(&self.conn, scope, feature_id)
+    }
+
+    /// Move a TODO into another list, appending it there and keeping its links.
+    pub fn move_todo(&self, todo_id: &str, target_list_id: &str) -> Result<()> {
+        todos::move_todo(&self.conn, todo_id, target_list_id)
+    }
+
+    /// Copy a TODO into another list as an unstarted item.
+    pub fn copy_todo(&self, todo_id: &str, target_list_id: &str) -> Result<Option<todos::Todo>> {
+        todos::copy_todo(&self.conn, todo_id, target_list_id)
     }
 
     pub fn set_todo_carry_over(&self, list_id: &str, carry_over: Option<&str>) -> Result<()> {
@@ -387,9 +405,15 @@ impl AmfDb {
         todos::delete_list(&self.conn, list_id)
     }
 
-    /// Delete the project's TODO list (and items) when the project is deleted.
-    pub fn delete_todo_list_for_project(&self, project_id: &str) -> Result<()> {
-        todos::delete_list_for_project(&self.conn, project_id)
+    /// Delete every list belonging to a project — its project-scoped list and
+    /// each of its worktree lists — when the project is deleted.
+    pub fn delete_todo_lists_for_project(&self, project_id: &str) -> Result<()> {
+        todos::delete_lists_for_project(&self.conn, project_id)
+    }
+
+    /// Delete the worktree-scoped list at `workdir`, if any.
+    pub fn delete_worktree_todo_list(&self, project_id: &str, workdir: &str) -> Result<()> {
+        todos::delete_worktree_list(&self.conn, project_id, workdir)
     }
 
     pub fn todos(&self, list_id: &str) -> Result<Vec<todos::Todo>> {

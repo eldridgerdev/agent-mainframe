@@ -18874,6 +18874,60 @@ fn implement_next_clears_the_flag_only_where_the_session_is_gone() {
     }
 }
 
+/// A dead feature link is the one thing "implement next" cannot skip past on
+/// its own: the item is held in reserve, so the prompt returns to it forever
+/// unless the failed jump drops the link — which is exactly what `g` does.
+#[test]
+fn implement_next_jump_clears_a_dead_feature_link_and_frees_the_todo() {
+    use crate::app::todos::NextTodo;
+
+    let mut app = todos_app();
+    if let AppMode::Todos(state) = &mut app.mode {
+        let mut todo = sample_todo("a", false);
+        // Planned into a feature that has since been deleted, and with no
+        // session of its own to fall back to.
+        todo.linked_feature_id = Some("feat-that-is-gone".to_string());
+        state.todos = vec![todo];
+    }
+
+    app.implement_next_todo_in_overlay().unwrap();
+    match &app.mode {
+        AppMode::TodoImplementChoice(state) => {
+            assert_eq!(state.todo_id, "todo-a");
+            assert_eq!(
+                state.choice(),
+                crate::app::TodoImplementChoice::Jump,
+                "Jump is the default answer, so it is the one that must self-heal"
+            );
+        }
+        _ => panic!("expected the already-started prompt"),
+    }
+
+    app.confirm_todo_implement_choice().unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(
+                state.todos[0].linked_feature_id.is_none(),
+                "the dead link is dropped by the failed jump"
+            );
+            assert_eq!(
+                App::next_todo_index(&state.todos, &[]),
+                Some(NextTodo::Ready(0)),
+                "so the next scan starts the TODO instead of re-offering it"
+            );
+        }
+        _ => panic!("expected the list back"),
+    }
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.message.contains("the link was cleared")),
+        "the user is told the link went away, got {:?}",
+        app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn implement_next_is_inert_off_a_todos_session_row() {
     let mut app = App::new_for_test(

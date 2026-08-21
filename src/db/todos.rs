@@ -335,6 +335,22 @@ pub fn clear_spawned_session(conn: &Connection, todo_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Drop one TODO's link to the feature planned for it, when that feature is
+/// gone.
+///
+/// The by-`todo_id` counterpart to [`clear_linked_feature`], and targeted for
+/// the same reason as [`clear_spawned_session`]: the self-healing jump runs
+/// from the dashboard too, where the TODOs overlay is not open and there is no
+/// in-memory row to write back through [`update_todo`].
+pub fn clear_linked_feature_for_todo(conn: &Connection, todo_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE todos SET linked_feature_id = NULL, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![todo_id],
+    )?;
+    Ok(())
+}
+
 /// Drop any TODO's link to `feature_id`, across every list.
 ///
 /// Called when a feature is deleted: `linked_feature_id` has no FK (see

@@ -714,16 +714,19 @@ impl App {
     }
 
     /// Drop a TODO's dead feature link, in memory and (with a DB) on disk.
+    ///
+    /// The DB write is targeted by id rather than an `update_todo` of the
+    /// overlay row, for the same reason [`Self::todos_mark_started`] is: this
+    /// also runs from the dashboard's "implement next", where no overlay is
+    /// open and there is no in-memory row to write back.
     fn clear_todo_linked_feature(&mut self, todo_id: &str) -> Result<()> {
-        let updated = match &mut self.mode {
-            AppMode::Todos(state) => state.todos.iter_mut().find(|t| t.id == todo_id).map(|t| {
-                t.linked_feature_id = None;
-                t.clone()
-            }),
-            _ => None,
-        };
-        if let (Some(db), Some(todo)) = (&self.db, &updated) {
-            db.update_todo(todo)?;
+        if let AppMode::Todos(state) = &mut self.mode
+            && let Some(todo) = state.todos.iter_mut().find(|t| t.id == todo_id)
+        {
+            todo.linked_feature_id = None;
+        }
+        if let Some(db) = &self.db {
+            db.clear_todo_linked_feature_for_todo(todo_id)?;
         }
         Ok(())
     }
@@ -1449,12 +1452,23 @@ impl App {
     /// [`Self::todos_launch_selected`] prefers it: a planned feature is a whole
     /// checkout made for this item, while the session link is one agent inside
     /// the host feature.
+    ///
+    /// A link whose feature is gone is *cleared*, exactly as `g`/`Enter` clears
+    /// it, and for a sharper reason here: the link is the only thing holding
+    /// the TODO back from [`NextTodo::Ready`], so leaving it would make every
+    /// future "implement next" offer the same item and every jump fail the same
+    /// way. Dropping it lets the next scan pick the TODO up and start it.
     fn jump_to_started_todo(&mut self, pi: usize, fi: usize, todo: &Todo) -> Result<()> {
+        let mut cleared_feature_link = false;
         if let Some(feature_id) = todo.linked_feature_id.as_deref() {
             match self.feature_indices_by_id(feature_id) {
                 Some((fpi, ffi)) => return self.jump_to_linked_feature(fpi, ffi),
                 None => {
-                    self.push_toast_warning("The feature planned for this TODO no longer exists");
+                    self.clear_todo_linked_feature(&todo.id)?;
+                    cleared_feature_link = true;
+                    self.push_toast_warning(
+                        "The feature planned for this TODO no longer exists; the link was cleared",
+                    );
                 }
             }
         }
@@ -1466,7 +1480,9 @@ impl App {
             self.selection = Selection::Session(pi, fi, si);
             return self.enter_view();
         }
-        self.push_toast_warning("The work started for this TODO is gone");
+        if !cleared_feature_link {
+            self.push_toast_warning("The work started for this TODO is gone");
+        }
         Ok(())
     }
 

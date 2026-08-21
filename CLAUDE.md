@@ -291,7 +291,10 @@ native (non-tmux) overlay:
   progress.
 - **The already-started prompt** is `AppMode::TodoImplementChoice`, not a
   `TodoLaunchStep`, because only one of its two surfaces has a
-  `TodoViewState`. It stashes the mode it was opened from as
+  `TodoViewState`. Its *Go to the work already started* self-heals like
+  `g`/`Enter` does: a `linked_feature_id` whose feature is gone is cleared, or
+  the link — the only thing holding the item back from `Ready` — would make
+  every later `I` re-offer it. It stashes the mode it was opened from as
   `Box<AppMode>` and restores it verbatim on every exit, so `Esc` from the
   overlay costs nothing — cursor, scroll, and any DB-less in-memory rows are
   the same objects, not a reload. (Nothing shows *through* it: like every

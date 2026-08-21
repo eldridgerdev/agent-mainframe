@@ -3369,7 +3369,9 @@ impl TodoSpawnTargetState {
     }
 
     pub fn selection(&self) -> Option<(usize, usize)> {
-        self.candidates.get(self.selected).map(|(_, pi, fi)| (*pi, *fi))
+        self.candidates
+            .get(self.selected)
+            .map(|(_, pi, fi)| (*pi, *fi))
     }
 }
 
@@ -3409,7 +3411,9 @@ impl TodoDeleteDisposition {
                 "They leave the project for the machine-wide list."
             }
             TodoDeleteDisposition::Delete => "The items go away for good, with the list.",
-            TodoDeleteDisposition::Cancel => "Nothing is deleted — the feature and its worktree stay.",
+            TodoDeleteDisposition::Cancel => {
+                "Nothing is deleted — the feature and its worktree stay."
+            }
         }
     }
 }

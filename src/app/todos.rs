@@ -508,7 +508,9 @@ impl App {
 
     /// Start editing the focused list's free-form scratchpad note.
     pub fn todos_begin_edit_scratchpad(&mut self) {
-        let Some(pane) = self.todos_pane() else { return };
+        let Some(pane) = self.todos_pane() else {
+            return;
+        };
         let initial = pane
             .list
             .as_ref()
@@ -1226,11 +1228,8 @@ impl App {
                     .focused()
                     .and_then(|p| p.list.as_ref())
                     .and_then(|l| l.feature_id.clone());
-                let fi = self.resolve_todo_host_feature(
-                    state.pi,
-                    host_feature_id.as_deref(),
-                    state.fi,
-                );
+                let fi =
+                    self.resolve_todo_host_feature(state.pi, host_feature_id.as_deref(), state.fi);
                 let project = self.store.projects.get(state.pi);
                 (
                     project
@@ -1571,11 +1570,13 @@ impl App {
         let mut lines = Vec::new();
 
         if let Some(session_id) = todo.spawned_session_id.as_deref() {
-            let found = self.session_indices_by_id(session_id).and_then(|(pi, fi, si)| {
-                let feature = self.store.projects.get(pi)?.features.get(fi)?;
-                let label = feature.sessions.get(si)?.label.clone();
-                Some((label, feature.clone()))
-            });
+            let found = self
+                .session_indices_by_id(session_id)
+                .and_then(|(pi, fi, si)| {
+                    let feature = self.store.projects.get(pi)?.features.get(fi)?;
+                    let label = feature.sessions.get(si)?.label.clone();
+                    Some((label, feature.clone()))
+                });
             match found {
                 Some((label, feature)) => {
                     let live = feature.status != crate::project::ProjectStatus::Stopped
@@ -1947,10 +1948,7 @@ impl App {
     /// A blanket "nothing to do" would be wrong in the case that matters:
     /// items are there, they are just all underway, and the fix is to finish
     /// or un-flag one rather than to add more.
-    pub(crate) fn no_next_todo_message_across(
-        lists: &[&[Todo]],
-        skipped_ids: &[String],
-    ) -> String {
+    pub(crate) fn no_next_todo_message_across(lists: &[&[Todo]], skipped_ids: &[String]) -> String {
         let open = lists
             .iter()
             .flat_map(|todos| todos.iter())
@@ -2138,9 +2136,7 @@ impl App {
 
     /// Ask to delete the selected TODO (awaits y/n confirmation).
     pub fn todos_request_delete(&mut self) {
-        let has_items = self
-            .todos_pane()
-            .is_some_and(|pane| !pane.todos.is_empty());
+        let has_items = self.todos_pane().is_some_and(|pane| !pane.todos.is_empty());
         if has_items && let AppMode::Todos(state) = &mut self.mode {
             state.pending_delete = true;
         }

@@ -57,7 +57,10 @@ pub fn draw_todo_quick_capture_dialog(
             Span::styled(CURSOR, Style::default().fg(theme.primary.to_color())),
         ]),
         Line::from(vec![
-            Span::styled(" Adding to: ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                " Adding to: ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
             Span::styled(
                 &state.list_label,
                 Style::default().fg(theme.text_muted.to_color()),
@@ -420,10 +423,7 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &The
 
 fn draw_scratchpad(frame: &mut Frame, area: Rect, note: &str, theme: &Theme) {
     let paragraph = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "scratch ",
-            Style::default().fg(theme.warning.to_color()),
-        ),
+        Span::styled("scratch ", Style::default().fg(theme.warning.to_color())),
         Span::styled(note, Style::default().fg(theme.text.to_color())),
     ]))
     .wrap(Wrap { trim: true });
@@ -532,9 +532,15 @@ fn draw_scope_move(frame: &mut Frame, step: &TodoScopeMoveState, theme: &Theme) 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" choose  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " choose  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" confirm  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " confirm  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(
             " back to list",
@@ -1091,7 +1097,10 @@ pub fn draw_todo_spawn_target_dialog(
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" choose  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " choose  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::styled(" start  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
@@ -1119,7 +1128,11 @@ pub fn draw_todo_delete_disposition_dialog(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let items = if state.unfinished == 1 { "TODO" } else { "TODOs" };
+    let items = if state.unfinished == 1 {
+        "TODO"
+    } else {
+        "TODOs"
+    };
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
@@ -1162,9 +1175,15 @@ pub fn draw_todo_delete_disposition_dialog(
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" choose  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " choose  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" confirm  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " confirm  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(
             " cancel the deletion",

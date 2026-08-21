@@ -1047,4 +1047,3 @@ mod tests {
         assert!(dup.is_err(), "PK should now be (pr_number, comment_id)");
     }
 }
-

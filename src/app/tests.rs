@@ -17835,7 +17835,12 @@ fn add_builtin_session_blocks_second_todos_per_project() {
     app.selection = Selection::Feature(0, 0);
 
     app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
-    assert!(app.store.projects[0].features.iter().any(|f| f.has_todos_session()));
+    assert!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .any(|f| f.has_todos_session())
+    );
     let todos_count = |app: &App| {
         app.store.projects[0]
             .features
@@ -17898,7 +17903,9 @@ fn app_with_todo_host_deleted(remove_all_features: bool) -> App {
     let db_path = db_dir.keep().join("amf.db");
     let db = crate::db::AmfDb::open(&db_path).unwrap();
     db.save_store(&store).unwrap();
-    let list = db.create_todo_list(&test_project_scope("proj-1"), Some("feat-1")).unwrap();
+    let list = db
+        .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+        .unwrap();
     db.add_todo(
         &list.id,
         "do a thing",
@@ -18218,7 +18225,11 @@ fn type_str(app: &mut App, s: &str) {
 
 fn todo_titles(app: &App) -> Vec<String> {
     match &app.mode {
-        AppMode::Todos(state) => state.panes[0].todos.iter().map(|t| t.title.clone()).collect(),
+        AppMode::Todos(state) => state.panes[0]
+            .todos
+            .iter()
+            .map(|t| t.title.clone())
+            .collect(),
         _ => panic!("expected Todos overlay"),
     }
 }
@@ -18530,7 +18541,9 @@ fn todos_reorder_moves_item() {
 
     assert_eq!(todo_titles(&app), vec!["b", "a", "c"]);
     match &app.mode {
-        AppMode::Todos(state) => assert_eq!(state.panes[0].selected, 1, "cursor follows moved item"),
+        AppMode::Todos(state) => {
+            assert_eq!(state.panes[0].selected, 1, "cursor follows moved item")
+        }
         _ => panic!("expected Todos overlay"),
     }
 }
@@ -18564,7 +18577,10 @@ fn todos_edit_scratchpad_banner() {
     match &app.mode {
         AppMode::Todos(state) => {
             assert_eq!(
-                state.panes[0].list.as_ref().and_then(|l| l.carry_over.as_deref()),
+                state.panes[0]
+                    .list
+                    .as_ref()
+                    .and_then(|l| l.carry_over.as_deref()),
                 Some("finishing the parser")
             );
         }
@@ -18912,7 +18928,10 @@ fn implement_next_clears_the_flag_only_where_the_session_is_gone() {
     match &app.mode {
         AppMode::Todos(state) => {
             assert!(state.panes[0].todos[0].spawned_session_id.is_none());
-            assert!(!state.panes[0].todos[0].in_progress, "a dead link stops counting");
+            assert!(
+                !state.panes[0].todos[0].in_progress,
+                "a dead link stops counting"
+            );
             assert!(
                 state.panes[0].todos[1].in_progress,
                 "a hand-marked TODO has no link to lose and is left alone"
@@ -19103,7 +19122,11 @@ fn three_pane_view(
             worktree,
         ),
         todo_pane(TodoPaneKind::Project, test_project_scope("proj-1"), project),
-        todo_pane(TodoPaneKind::Global, crate::db::todos::TodoScope::Global, global),
+        todo_pane(
+            TodoPaneKind::Global,
+            crate::db::todos::TodoScope::Global,
+            global,
+        ),
     ];
     state.side_panes_open = true;
     state
@@ -19473,7 +19496,10 @@ fn copying_a_todo_to_another_scope_leaves_it_unstarted() {
             assert_eq!(original.spawned_session_id.as_deref(), Some("sess-1"));
             assert!(original.in_progress, "the original is untouched");
 
-            assert!(state.panes[1].todos.is_empty(), "the project pane is not a target here");
+            assert!(
+                state.panes[1].todos.is_empty(),
+                "the project pane is not a target here"
+            );
             let copy = &state.panes[2].todos[0];
             assert_eq!(copy.title, "share me");
             assert_ne!(copy.id, original.id);
@@ -19492,7 +19518,9 @@ fn move_with_nothing_selected_says_so() {
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('M'))).unwrap();
     assert!(matches!(&app.mode, AppMode::Todos(s) if s.scope_move.is_none()));
     assert!(
-        app.toasts.iter().any(|t| t.message.contains("No TODO selected")),
+        app.toasts
+            .iter()
+            .any(|t| t.message.contains("No TODO selected")),
         "got {:?}",
         app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
     );
@@ -19632,12 +19660,16 @@ fn deleting_a_feature_with_unfinished_worktree_todos_asks_first() {
 #[test]
 fn a_worktree_list_with_no_open_work_does_not_prompt() {
     let (app, _) = app_with_worktree_todos(0, 3);
-    assert!(app.pending_todo_disposition("my-project", "my-feat").is_none());
+    assert!(
+        app.pending_todo_disposition("my-project", "my-feat")
+            .is_none()
+    );
 
     let (mut app, _) = app_with_worktree_todos(2, 0);
     app.store.projects[0].features[0].is_worktree = false;
     assert!(
-        app.pending_todo_disposition("my-project", "my-feat").is_none(),
+        app.pending_todo_disposition("my-project", "my-feat")
+            .is_none(),
         "a repo-root feature has no worktree list to disposition"
     );
 }
@@ -19662,7 +19694,10 @@ fn disposition_move_to_project_relocates_the_open_todos_and_drops_the_list() {
             .is_none()
     );
     // The open ones landed in the project list, which was created for them.
-    let project_list = db.todo_list(&test_project_scope("proj-1")).unwrap().unwrap();
+    let project_list = db
+        .todo_list(&test_project_scope("proj-1"))
+        .unwrap()
+        .unwrap();
     let titles: Vec<String> = db
         .todos(&project_list.id)
         .unwrap()
@@ -19689,7 +19724,10 @@ fn disposition_move_to_project_does_not_host_the_list_on_the_doomed_feature() {
 
     let project_list = {
         let db = app.db.as_ref().unwrap();
-        let list = db.todo_list(&test_project_scope("proj-1")).unwrap().unwrap();
+        let list = db
+            .todo_list(&test_project_scope("proj-1"))
+            .unwrap()
+            .unwrap();
         assert_ne!(
             list.feature_id.as_deref(),
             Some("feat-1"),
@@ -19736,7 +19774,10 @@ fn disposition_move_to_project_hosts_the_list_on_a_surviving_feature() {
 
     let list_id = {
         let db = app.db.as_ref().unwrap();
-        let list = db.todo_list(&test_project_scope("proj-1")).unwrap().unwrap();
+        let list = db
+            .todo_list(&test_project_scope("proj-1"))
+            .unwrap()
+            .unwrap();
         assert_eq!(list.feature_id.as_deref(), Some("feat-2"));
         list.id
     };
@@ -19768,7 +19809,9 @@ fn disposition_move_to_global_takes_them_out_of_the_project() {
     assert!(global.feature_id.is_none(), "the global list has no host");
     assert_eq!(db.todos(&global.id).unwrap().len(), 1);
     assert!(
-        db.todo_list(&test_project_scope("proj-1")).unwrap().is_none(),
+        db.todo_list(&test_project_scope("proj-1"))
+            .unwrap()
+            .is_none(),
         "the project list is not created for a move that went past it"
     );
 }
@@ -19787,7 +19830,11 @@ fn disposition_delete_removes_the_list_and_its_items() {
     let db = app.db.as_ref().unwrap();
     assert!(db.todo_list_by_id(&list_id).unwrap().is_none());
     assert!(db.todos(&list_id).unwrap().is_empty());
-    assert!(db.todo_list(&test_project_scope("proj-1")).unwrap().is_none());
+    assert!(
+        db.todo_list(&test_project_scope("proj-1"))
+            .unwrap()
+            .is_none()
+    );
     assert!(
         db.todo_list(&crate::db::todos::TodoScope::Global)
             .unwrap()
@@ -19816,7 +19863,6 @@ fn disposition_cancel_leaves_the_feature_and_its_todos_intact() {
     assert!(db.todo_list_by_id(&list_id).unwrap().is_some());
     assert_eq!(db.todos(&list_id).unwrap().len(), 2);
 }
-
 
 #[test]
 fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {

@@ -118,9 +118,10 @@ impl TodoScope {
     /// missing.
     fn from_row(scope: &str, project_id: Option<String>, workdir: Option<String>) -> Self {
         match (scope, project_id, workdir) {
-            ("worktree", Some(project_id), Some(workdir)) => {
-                TodoScope::Worktree { project_id, workdir }
-            }
+            ("worktree", Some(project_id), Some(workdir)) => TodoScope::Worktree {
+                project_id,
+                workdir,
+            },
             ("global", _, _) => TodoScope::Global,
             (_, Some(project_id), _) => TodoScope::Project { project_id },
             // A project-scoped row with no project is not addressable by any
@@ -651,7 +652,9 @@ mod tests {
 
         assert!(db.todo_list(&project("proj-1")).unwrap().is_none());
 
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         assert_eq!(list.scope, project("proj-1"));
         assert_eq!(list.feature_id.as_deref(), Some("feat-1"));
         assert!(list.carry_over.is_none());
@@ -663,9 +666,13 @@ mod tests {
     #[test]
     fn one_list_per_project() {
         let (_tmp, db) = open_temp_db();
-        db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        db.create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         // The partial unique index must reject a second project-scoped list.
-        assert!(db.create_todo_list(&project("proj-1"), Some("feat-2")).is_err());
+        assert!(
+            db.create_todo_list(&project("proj-1"), Some("feat-2"))
+                .is_err()
+        );
     }
 
     /// The three scopes are three different lists, and the worktree scope is a
@@ -674,7 +681,9 @@ mod tests {
     fn scopes_are_independent_singletons() {
         let (_tmp, db) = open_temp_db();
 
-        let proj = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let proj = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         let wt_a = db
             .create_todo_list(&worktree("proj-1", "/repo/.worktrees/a"), Some("feat-a"))
             .unwrap();
@@ -722,7 +731,9 @@ mod tests {
     #[test]
     fn todo_crud_roundtrip() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
 
         let mut todo = db
             .add_todo(
@@ -754,7 +765,9 @@ mod tests {
     #[test]
     fn add_todo_increments_sort_order() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         let a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         let c = db.add_todo(&list.id, "c", None, TodoPriority::Med).unwrap();
@@ -769,7 +782,9 @@ mod tests {
         let src = db
             .create_todo_list(&worktree("proj-1", "/wt/a"), Some("feat-1"))
             .unwrap();
-        let dst = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let dst = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         db.add_todo(&dst.id, "already here", None, TodoPriority::Med)
             .unwrap();
 
@@ -787,7 +802,10 @@ mod tests {
         let landed = db.todos(&dst.id).unwrap();
         assert_eq!(landed.len(), 2);
         let moved = landed.iter().find(|t| t.title == "port me").unwrap();
-        assert_eq!(moved.sort_order, 1, "appended, not overlapping the sitting item");
+        assert_eq!(
+            moved.sort_order, 1,
+            "appended, not overlapping the sitting item"
+        );
         assert_eq!(moved.spawned_session_id.as_deref(), Some("sess-1"));
         assert_eq!(moved.linked_feature_id.as_deref(), Some("feat-planned"));
         assert!(moved.in_progress);
@@ -844,7 +862,9 @@ mod tests {
     #[test]
     fn in_progress_roundtrips_and_has_targeted_writers() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         let mut todo = db
             .add_todo(&list.id, "Ship it", None, TodoPriority::High)
             .unwrap();
@@ -873,7 +893,9 @@ mod tests {
     #[test]
     fn reorder_persists_new_order() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         let a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         let c = db.add_todo(&list.id, "c", None, TodoPriority::Med).unwrap();
@@ -893,7 +915,9 @@ mod tests {
     #[test]
     fn open_items_sort_before_done() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         let mut a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let _b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         a.done = true;
@@ -912,7 +936,9 @@ mod tests {
     #[test]
     fn carry_over_and_host_feature_update() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
 
         db.set_todo_carry_over(&list.id, Some("finishing the parser"))
             .unwrap();
@@ -926,7 +952,9 @@ mod tests {
     #[test]
     fn linked_feature_survives_a_roundtrip_and_is_independent_of_the_session_link() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         let mut todo = db
             .add_todo(&list.id, "plan it", None, TodoPriority::Med)
             .unwrap();
@@ -945,7 +973,9 @@ mod tests {
     #[test]
     fn clearing_a_deleted_features_link_keeps_the_todo_and_its_session_link() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         let mut a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let mut b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         a.linked_feature_id = Some("feat-gone".to_string());
@@ -969,7 +999,9 @@ mod tests {
     #[test]
     fn delete_list_cascades_to_todos() {
         let (_tmp, db) = open_temp_db();
-        let list = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let list = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
 
         db.delete_todo_lists_for_project("proj-1").unwrap();
@@ -983,7 +1015,9 @@ mod tests {
     #[test]
     fn deleting_a_project_takes_its_worktree_lists_but_not_the_global_one() {
         let (_tmp, db) = open_temp_db();
-        let proj = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let proj = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         let wt = db
             .create_todo_list(&worktree("proj-1", "/wt/a"), Some("feat-a"))
             .unwrap();
@@ -1004,13 +1038,19 @@ mod tests {
     #[test]
     fn deleting_one_worktree_list_leaves_the_project_list() {
         let (_tmp, db) = open_temp_db();
-        let proj = db.create_todo_list(&project("proj-1"), Some("feat-1")).unwrap();
+        let proj = db
+            .create_todo_list(&project("proj-1"), Some("feat-1"))
+            .unwrap();
         db.create_todo_list(&worktree("proj-1", "/wt/a"), Some("feat-a"))
             .unwrap();
 
         db.delete_worktree_todo_list("proj-1", "/wt/a").unwrap();
 
-        assert!(db.todo_list(&worktree("proj-1", "/wt/a")).unwrap().is_none());
+        assert!(
+            db.todo_list(&worktree("proj-1", "/wt/a"))
+                .unwrap()
+                .is_none()
+        );
         assert!(db.todo_list_by_id(&proj.id).unwrap().is_some());
     }
 }

@@ -7605,9 +7605,12 @@ pub(crate) mod tests {
     /// whatever the overlay believes.
     fn stored_todos(app: &App) -> Vec<crate::db::todos::Todo> {
         let db = app.db.as_ref().expect("db");
-        match db.todo_list(&crate::db::todos::TodoScope::Project {
-            project_id: "proj-1".to_string(),
-        }).unwrap() {
+        match db
+            .todo_list(&crate::db::todos::TodoScope::Project {
+                project_id: "proj-1".to_string(),
+            })
+            .unwrap()
+        {
             Some(list) => db.todos(&list.id).unwrap(),
             None => Vec::new(),
         }
@@ -7685,7 +7688,10 @@ pub(crate) mod tests {
     fn keeping_an_answer_makes_the_list_reachable_from_the_dashboard() {
         let (_repo, _db, mut app, _id) = app_with_an_answer();
         assert!(
-            !app.store.projects[0].features.iter().any(|f| f.has_todos_session()),
+            !app.store.projects[0]
+                .features
+                .iter()
+                .any(|f| f.has_todos_session()),
             "no list to start with"
         );
 
@@ -7693,7 +7699,10 @@ pub(crate) mod tests {
         app.learning_confirm_action().unwrap();
 
         assert!(
-            app.store.projects[0].features.iter().any(|f| f.has_todos_session()),
+            app.store.projects[0]
+                .features
+                .iter()
+                .any(|f| f.has_todos_session()),
             "the project now has a TODOs session to open the list from"
         );
     }

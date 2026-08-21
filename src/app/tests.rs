@@ -1854,6 +1854,31 @@ fn a_repeated_rate_limit_extends_the_pause_without_re_announcing_it() {
     assert!(app.gh_graphql_backoff_remaining().is_some());
 }
 
+/// The line has to distinguish a healthy quiet sweep from a broken one. Both
+/// badge nothing; only one of them failed, and for fourteen hours nothing said
+/// which was happening.
+#[test]
+fn the_sweep_summary_tells_a_quiet_sweep_apart_from_a_broken_one() {
+    use super::sync::ActivePrSweepOutcome;
+
+    let mut healthy = ActivePrSweepOutcome::default();
+    for _ in 0..9 {
+        healthy.count(&super::sync::ActivePrLookup::NoPr);
+    }
+    let healthy = healthy.summary();
+    assert!(healthy.contains("0 badged"));
+    assert!(healthy.contains("9 without a PR"));
+    assert!(healthy.contains("0 failed"), "{healthy}");
+
+    let mut broken = ActivePrSweepOutcome::default();
+    for _ in 0..9 {
+        broken.count(&super::sync::ActivePrLookup::Failed("bad query".into()));
+    }
+    let broken = broken.summary();
+    assert!(broken.contains("9 failed"), "{broken}");
+    assert_ne!(healthy, broken, "the two states must not read alike");
+}
+
 #[test]
 fn active_pr_updates_cache_current_branch_and_remove_confirmed_absence() {
     use super::sync::{ActivePrLookup, ActivePrUpdate};

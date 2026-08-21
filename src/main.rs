@@ -1142,7 +1142,15 @@ fn run_loop<B: Backend + io::Write>(
     // and PR Triage sidebar box are meant to stay live *while* the user is
     // inside a session, so this cadence must not be gated on being back on
     // the dashboard the way tmux status reconciliation is.
-    let mut last_active_pr_sync = std::time::Instant::now();
+    // Backdated so the first badge sweep lands seconds after launch rather
+    // than a full interval later. Lengthening the interval to 5 minutes
+    // (`ACTIVE_PR_SYNC_INTERVAL`) also, unintentionally, made a freshly opened
+    // dashboard sit blank for 5 minutes before any PR badge appeared; it used
+    // to be 30 seconds. The interval governs how often badges *refresh*, not
+    // how long the user waits to see one at all.
+    let mut last_active_pr_sync = std::time::Instant::now()
+        .checked_sub(ACTIVE_PR_SYNC_INTERVAL.saturating_sub(Duration::from_secs(5)))
+        .unwrap_or_else(std::time::Instant::now);
     let mut last_redraw_signature = app.redraw_signature();
 
     loop {

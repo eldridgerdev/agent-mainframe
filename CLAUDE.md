@@ -368,7 +368,13 @@ overlay:
   so the prompt is blocking and cancel leaves the feature intact.
   `apply_todo_disposition` is split out from the confirm handler so the
   re-filing can be tested without driving a real tmux kill and worktree
-  removal. Deleting a *project* removes its project list and every worktree
+  removal. When *move to the project list* has to create that list, its host
+  is a feature that **survives** the deletion (never the doomed one, which is
+  why the state carries `feature_id`), and none at all when there is no
+  survivor: hosting it on the feature being deleted would hand it straight to
+  `handle_todos_host_feature_deleted` below, which drops an orphaned list —
+  losing the items the user just chose to keep. Deleting a *project* removes
+  its project list and every worktree
   list under it (`delete_todo_lists_for_project`); the global list belongs to
   no project and survives.
 - **Host-feature deletion:** when the feature hosting the **project** list is

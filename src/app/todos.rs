@@ -2220,6 +2220,7 @@ impl App {
         Some(crate::app::TodoDeleteDispositionState {
             project_name: project_name.to_string(),
             feature_name: feature_name.to_string(),
+            feature_id: feature.id.clone(),
             project_id: project.id.clone(),
             workdir: Self::todo_workdir_key(&feature.workdir),
             list_id: list.id,
@@ -2290,10 +2291,20 @@ impl App {
 
         // The destination may not exist yet — the project list is created
         // lazily, and so is the global one.
+        //
+        // The host must be a feature that *survives* this deletion. Hosting a
+        // freshly-created project list on the feature being deleted would hand
+        // it straight to `handle_todos_host_feature_deleted`, which either
+        // deletes the list outright (no features left — losing the items the
+        // user just chose to keep) or raises a re-home prompt for a list that
+        // was created moments ago. With no survivor the list is created
+        // hostless: `resolve_todo_host_feature` treats the host as a hint, and
+        // an unhosted list is still found by scope once the project has a
+        // feature again.
         let host_feature_id = self
             .store
             .find_project(&state.project_name)
-            .and_then(|p| p.features.first())
+            .and_then(|p| p.features.iter().find(|f| f.id != state.feature_id))
             .map(|f| f.id.clone());
 
         let mut moved: Option<(usize, &'static str)> = None;

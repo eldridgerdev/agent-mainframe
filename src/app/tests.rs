@@ -19672,6 +19672,83 @@ fn disposition_move_to_project_relocates_the_open_todos_and_drops_the_list() {
     assert_eq!(titles, vec!["open-0", "open-1"]);
 }
 
+/// The project list created by the move must not be hosted on the feature that
+/// is about to be deleted: `handle_todos_host_feature_deleted` would then find
+/// its host gone and — with no features left — delete the very items the user
+/// just chose to keep.
+#[test]
+fn disposition_move_to_project_does_not_host_the_list_on_the_doomed_feature() {
+    use crate::app::TodoDeleteDisposition;
+    let (mut app, _) = app_with_worktree_todos(2, 0);
+    let state = app
+        .pending_todo_disposition("my-project", "my-feat")
+        .unwrap();
+
+    app.apply_todo_disposition(&state, TodoDeleteDisposition::MoveToProject)
+        .unwrap();
+
+    let project_list = {
+        let db = app.db.as_ref().unwrap();
+        let list = db.todo_list(&test_project_scope("proj-1")).unwrap().unwrap();
+        assert_ne!(
+            list.feature_id.as_deref(),
+            Some("feat-1"),
+            "the list would be orphaned the moment the deletion completes"
+        );
+        list
+    };
+
+    // Now finish the deletion the way the real flow does.
+    app.store.projects[0].features.clear();
+    app.handle_todos_host_feature_deleted("my-project", "my-feat", Some("feat-1"));
+
+    let db = app.db.as_ref().unwrap();
+    let titles: Vec<String> = db
+        .todos(&project_list.id)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.title)
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["open-0", "open-1"],
+        "the moved items survive the deletion that prompted the move"
+    );
+}
+
+/// When the project has another feature, that one hosts the new project list —
+/// the host is a hint for later lookups, so a real one beats none.
+#[test]
+fn disposition_move_to_project_hosts_the_list_on_a_surviving_feature() {
+    use crate::app::TodoDeleteDisposition;
+    let (mut app, _) = app_with_worktree_todos(1, 0);
+    let mut survivor = app.store.projects[0].features[0].clone();
+    survivor.id = "feat-2".to_string();
+    survivor.name = "other-feat".to_string();
+    survivor.workdir = PathBuf::from("/tmp/other-workdir");
+    app.store.projects[0].features.push(survivor);
+
+    let state = app
+        .pending_todo_disposition("my-project", "my-feat")
+        .unwrap();
+    app.apply_todo_disposition(&state, TodoDeleteDisposition::MoveToProject)
+        .unwrap();
+
+    let list_id = {
+        let db = app.db.as_ref().unwrap();
+        let list = db.todo_list(&test_project_scope("proj-1")).unwrap().unwrap();
+        assert_eq!(list.feature_id.as_deref(), Some("feat-2"));
+        list.id
+    };
+
+    // The host outlives the deletion, so there is no re-home prompt.
+    app.store.projects[0].features.remove(0);
+    assert!(!app.handle_todos_host_feature_deleted("my-project", "my-feat", Some("feat-1")));
+    assert!(matches!(app.mode, AppMode::Normal));
+    let db = app.db.as_ref().unwrap();
+    assert_eq!(db.todos(&list_id).unwrap().len(), 1);
+}
+
 #[test]
 fn disposition_move_to_global_takes_them_out_of_the_project() {
     use crate::app::TodoDeleteDisposition;

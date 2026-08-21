@@ -3421,6 +3421,11 @@ impl TodoDeleteDisposition {
 pub struct TodoDeleteDispositionState {
     pub project_name: String,
     pub feature_name: String,
+    /// The doomed feature's id. Carried so *Move to the project list* can host
+    /// a newly-created project list on a feature that will still be there
+    /// afterwards — hosting it on this one would hand the items straight to
+    /// the orphaned-list cleanup that runs once the deletion completes.
+    pub feature_id: String,
     /// The worktree list and where it lives, so the disposition can be applied
     /// without re-deriving it from indices that the deletion will invalidate.
     pub project_id: String,

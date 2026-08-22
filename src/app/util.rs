@@ -57,6 +57,40 @@ pub fn slugify(s: &str) -> String {
         .join("-")
 }
 
+/// `slugify`, then shortened to at most `max` characters **at a word
+/// boundary**.
+///
+/// Truncating a slug mid-word (`add-a-way-to-shorten-the-featu`) reads as
+/// damage rather than as a name, so whole words are dropped from the end until
+/// what is left fits. A single first word longer than the cap has no boundary
+/// to cut on and is truncated hard — a too-long name is worse than an ugly one.
+pub fn slugify_shortened(s: &str, max: usize) -> String {
+    let slug = slugify(s);
+    if slug.chars().count() <= max {
+        return slug;
+    }
+
+    let mut kept: Vec<&str> = Vec::new();
+    let mut len = 0usize;
+    for word in slug.split('-') {
+        let next = if kept.is_empty() {
+            word.chars().count()
+        } else {
+            len + 1 + word.chars().count()
+        };
+        if next > max {
+            break;
+        }
+        kept.push(word);
+        len = next;
+    }
+
+    if kept.is_empty() {
+        return slug.chars().take(max).collect();
+    }
+    kept.join("-")
+}
+
 pub fn latest_prompt_path(workdir: &Path) -> PathBuf {
     workdir.join(".claude").join("latest-prompt.txt")
 }

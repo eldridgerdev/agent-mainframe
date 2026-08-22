@@ -4,7 +4,9 @@ use super::setup::{
 };
 use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
-use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
+use super::util::{
+    latest_prompt_path, read_latest_prompt, shorten_path, slugify, slugify_shortened,
+};
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, FeaturePreset, HookConfig, HookPrompt, LifecycleHooks};
@@ -244,6 +246,44 @@ fn slugify_empty_input() {
 #[test]
 fn slugify_all_specials() {
     assert_eq!(slugify("!@#$%"), "");
+}
+
+#[test]
+fn slugify_shortened_cuts_on_a_word_boundary() {
+    assert_eq!(
+        slugify_shortened("add a way to shorten the feature branch title", 20),
+        "add-a-way-to-shorten"
+    );
+}
+
+#[test]
+fn slugify_shortened_leaves_a_slug_that_already_fits() {
+    assert_eq!(slugify_shortened("hello world", 20), "hello-world");
+    assert_eq!(slugify_shortened("hello world", 11), "hello-world");
+}
+
+/// No word boundary to cut on: a hard cut beats a name that is still too long.
+#[test]
+fn slugify_shortened_hard_cuts_a_single_oversized_word() {
+    assert_eq!(slugify_shortened("supercalifragilistic", 5), "super");
+}
+
+/// A cut must never leave a trailing or doubled separator behind.
+#[test]
+fn slugify_shortened_never_leaves_a_dangling_separator() {
+    for max in 1..40 {
+        let slug = slugify_shortened("alpha beta gamma delta epsilon zeta", max);
+        assert!(slug.chars().count() <= max, "max={max} got {slug}");
+        assert!(!slug.starts_with('-') && !slug.ends_with('-'), "max={max} got {slug}");
+        assert!(!slug.contains("--"), "max={max} got {slug}");
+    }
+}
+
+/// Nothing sluggable in, nothing out — the callers that need a fallback name
+/// check for the empty string.
+#[test]
+fn slugify_shortened_of_an_unsluggable_title_is_empty() {
+    assert_eq!(slugify_shortened("!!! ???", 20), "");
 }
 
 #[test]

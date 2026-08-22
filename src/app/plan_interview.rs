@@ -370,7 +370,7 @@ impl App {
             return Ok(());
         };
 
-        state.branch = crate::app::util::slugify(&todo.title);
+        state.branch = todo_branch_name(&todo.title);
         state.branch_error = None;
         state.step = crate::app::CreateFeatureStep::Branch;
         state.use_worktree = true;
@@ -2244,6 +2244,26 @@ fn write_plan_file_named(workdir: &Path, file_name: &str, contents: &str) -> Res
         .with_context(|| format!("failed to write plan file {}", plan_path.display()))
 }
 
+/// The branch (and so worktree directory, and so tmux session) a TODO's own
+/// feature is named after.
+///
+/// TODO titles are written as sentences — "Add a way to shorten the feature
+/// branch name when implementing a TODO" — and a branch named after the whole
+/// sentence is unusable everywhere it later appears: the dashboard row, the
+/// `.worktrees/` listing, `git branch`, the tmux session name. It is shortened
+/// to whole words up to `MAX_BRANCH_SLUG`, keeping the front of the title,
+/// which is where TODO titles carry their subject.
+///
+/// This is a seed, not a decision: the create-feature wizard opens on the
+/// branch field with this in it, so a name worth spelling out in full is still
+/// one keystroke away.
+fn todo_branch_name(todo_title: &str) -> String {
+    /// Long enough for four or five words, short enough to sit in a dashboard
+    /// row beside its project without pushing the status off the end.
+    const MAX_BRANCH_SLUG: usize = 32;
+    crate::app::util::slugify_shortened(todo_title, MAX_BRANCH_SLUG)
+}
+
 /// The file a TODO's plan is written to when it lands in a feature that already
 /// exists: `AMF_PLAN.todo-<slug>.md`.
 ///
@@ -2253,11 +2273,7 @@ fn write_plan_file_named(workdir: &Path, file_name: &str, contents: &str) -> Res
 /// punctuation) falls back to a fixed name rather than producing `AMF_PLAN..md`.
 fn todo_plan_file_name(todo_title: &str) -> String {
     const MAX_SLUG: usize = 40;
-    let slug: String = crate::app::util::slugify(todo_title)
-        .chars()
-        .take(MAX_SLUG)
-        .collect();
-    let slug = slug.trim_matches('-');
+    let slug = crate::app::util::slugify_shortened(todo_title, MAX_SLUG);
     if slug.is_empty() {
         "AMF_PLAN.todo.md".to_string()
     } else {
@@ -2433,6 +2449,32 @@ mod tests {
         assert!(name.starts_with("AMF_PLAN.todo-"));
         assert!(name.ends_with(".md"));
         assert!(!name.contains("-.md"), "no dangling separator: {name}");
+    }
+
+    /// A sentence-length TODO title is cut to something a branch, a
+    /// `.worktrees/` entry and a tmux session can all wear, and cut on a word
+    /// boundary so it still reads as a name.
+    #[test]
+    fn a_long_todo_title_seeds_a_short_branch_name() {
+        let branch =
+            todo_branch_name("TODO - feature title is long, we need a way to shorten it");
+        assert!(branch.chars().count() <= 32, "got {branch}");
+        assert!(
+            branch.starts_with("todo-feature-title-is-long"),
+            "keeps the front of the title: {branch}"
+        );
+        assert!(!branch.ends_with('-'), "no dangling separator: {branch}");
+        assert!(
+            !branch.split('-').any(|w| w.is_empty()),
+            "no empty segments: {branch}"
+        );
+    }
+
+    /// A title that already fits is passed through untouched — shortening is
+    /// for the titles that need it, not a house style applied to every name.
+    #[test]
+    fn a_short_todo_title_is_left_alone() {
+        assert_eq!(todo_branch_name("Wire up the chooser"), "wire-up-the-chooser");
     }
 
     /// The kickoff seed for a TODO plan must name the file it actually wrote.

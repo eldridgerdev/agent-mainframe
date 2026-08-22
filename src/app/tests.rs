@@ -274,7 +274,10 @@ fn slugify_shortened_never_leaves_a_dangling_separator() {
     for max in 1..40 {
         let slug = slugify_shortened("alpha beta gamma delta epsilon zeta", max);
         assert!(slug.chars().count() <= max, "max={max} got {slug}");
-        assert!(!slug.starts_with('-') && !slug.ends_with('-'), "max={max} got {slug}");
+        assert!(
+            !slug.starts_with('-') && !slug.ends_with('-'),
+            "max={max} got {slug}"
+        );
         assert!(!slug.contains("--"), "max={max} got {slug}");
     }
 }

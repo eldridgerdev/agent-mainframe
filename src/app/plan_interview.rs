@@ -2456,8 +2456,7 @@ mod tests {
     /// boundary so it still reads as a name.
     #[test]
     fn a_long_todo_title_seeds_a_short_branch_name() {
-        let branch =
-            todo_branch_name("TODO - feature title is long, we need a way to shorten it");
+        let branch = todo_branch_name("TODO - feature title is long, we need a way to shorten it");
         assert!(branch.chars().count() <= 32, "got {branch}");
         assert!(
             branch.starts_with("todo-feature-title-is-long"),
@@ -2474,7 +2473,10 @@ mod tests {
     /// for the titles that need it, not a house style applied to every name.
     #[test]
     fn a_short_todo_title_is_left_alone() {
-        assert_eq!(todo_branch_name("Wire up the chooser"), "wire-up-the-chooser");
+        assert_eq!(
+            todo_branch_name("Wire up the chooser"),
+            "wire-up-the-chooser"
+        );
     }
 
     /// The kickoff seed for a TODO plan must name the file it actually wrote.

@@ -116,6 +116,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Scope TODO lists to a worktree, a project, or the machine",
             MIGRATION_025,
         ),
+        (
+            "Cache a branch's terminal (merged/closed) PR state, keyed by repo + branch",
+            MIGRATION_026,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -692,6 +696,22 @@ CREATE UNIQUE INDEX idx_todo_lists_global
 PRAGMA foreign_keys=ON;
 ";
 
+/// A branch's terminal PR state never goes stale — merged and closed never
+/// revert — so it is keyed by `(repo, branch)` rather than by feature id:
+/// that identity outlives any one feature/worktree pointing at the branch,
+/// and a row is looked up again if a deleted feature's branch is ever reused.
+/// No foreign key to `todo_lists`/features on purpose, for the same reason.
+const MIGRATION_026: &str = "
+CREATE TABLE IF NOT EXISTS pr_terminal_state (
+    repo       TEXT NOT NULL,
+    branch     TEXT NOT NULL,
+    pr_number  INTEGER NOT NULL,
+    state      TEXT NOT NULL,
+    at         TEXT NOT NULL,
+    PRIMARY KEY (repo, branch)
+);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -728,7 +748,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -823,7 +843,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     /// Migration 023 adds `linked_feature_id` to TODOs written before it
@@ -955,7 +975,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 25);
+        assert_eq!(rows, 26);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

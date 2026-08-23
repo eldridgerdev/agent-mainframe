@@ -892,6 +892,13 @@ pub struct App {
     /// at zero once it starts refilling.
     pub(crate) gh_graphql_limited_at: Option<Instant>,
     pub(crate) active_prs: HashMap<String, ActivePrStatus>,
+    /// Last-known terminal (merged/closed) state per feature, keyed by feature
+    /// id like `active_prs`. Unlike `active_prs`, this is a durable fact —
+    /// merged and closed never revert — so it is seeded from
+    /// `pr_terminal_state` at startup (`load_terminal_prs_from_db`) and every
+    /// positive lookup is persisted back, rather than being purely
+    /// session-lived like the open-PR cache.
+    pub(crate) terminal_prs: HashMap<String, crate::github::TerminalPr>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
     /// Receiver for the background AI-adaptive plan-interview round (a
@@ -2343,6 +2350,7 @@ impl App {
             active_pr_bg: None,
             gh_graphql_limited_at: None,
             active_prs: HashMap::new(),
+            terminal_prs: HashMap::new(),
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
@@ -2415,6 +2423,7 @@ impl App {
             }
         }
         app.refresh_fs_watch_paths();
+        app.load_terminal_prs_from_db();
         // A version-mismatched -C client hangs without delivering any
         // events; leaving the observer unset keeps the faster 5s
         // status-sync polling instead of trusting a dead event stream.
@@ -2576,6 +2585,7 @@ impl App {
             active_pr_bg: None,
             gh_graphql_limited_at: None,
             active_prs: HashMap::new(),
+            terminal_prs: HashMap::new(),
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,

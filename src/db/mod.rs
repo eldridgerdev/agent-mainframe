@@ -6,6 +6,7 @@ mod migrations;
 pub mod plan_interviews;
 pub mod pr_comment_triage;
 mod pr_review_cache;
+mod pr_terminal_state;
 mod session_status;
 pub mod store;
 pub mod todos;
@@ -147,6 +148,27 @@ impl AmfDb {
 
     pub fn evict_stale_pr_review_cache(&self) -> Result<()> {
         pr_review_cache::evict_stale(&self.conn)
+    }
+
+    /// Every cached terminal (merged/closed) PR, keyed by `(repo, branch)`.
+    /// Loaded once at startup to seed the dashboard badge before the first
+    /// sweep runs.
+    pub fn load_all_pr_terminal_state(
+        &self,
+    ) -> Result<std::collections::HashMap<(String, String), crate::github::TerminalPr>> {
+        pr_terminal_state::load_all(&self.conn)
+    }
+
+    /// Persist one branch's terminal PR state. Called by the sweep on every
+    /// positive lookup — cheap, since it never needs to happen again for that
+    /// branch.
+    pub fn save_pr_terminal_state(
+        &self,
+        repo: &str,
+        branch: &str,
+        pr: &crate::github::TerminalPr,
+    ) -> Result<()> {
+        pr_terminal_state::save(&self.conn, repo, branch, pr)
     }
 
     /// Local triage rows for `pr_number` as `comment_id -> (state, note)`,

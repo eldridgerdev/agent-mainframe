@@ -19,6 +19,7 @@ use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -516,6 +517,59 @@ impl GhCli {
         Ok(all)
     }
 
+    /// Resolve terminal (merged/closed) PR state for a batch of branches in
+    /// one repository. Meant to be called with the branches [`open_prs`]
+    /// reported as absent — a branch already in the open set can't also be
+    /// terminal — so this is a *second*, smaller call on top of that one, not
+    /// a replacement for it.
+    ///
+    /// One GraphQL call per chunk of [`TERMINAL_PRS_CHUNK`] branches, each
+    /// aliased (`a0`, `a1`, …) to a `pullRequests(headRefName:…)` sub-query
+    /// asking only for the single most-recently-updated merged-or-closed PR.
+    /// Branch names never enter the query text — they travel as `-F`
+    /// variables (`$b0`, `$b1`, …) — so this stays batched-per-repository
+    /// (matching [`open_prs`]'s cost model) without branch text ever needing
+    /// escaping.
+    pub fn terminal_prs(
+        workdir: &Path,
+        owner: &str,
+        repo: &str,
+        branches: &[String],
+    ) -> Result<HashMap<String, TerminalPr>, GhGraphqlError> {
+        let mut out = HashMap::new();
+        for chunk in branches.chunks(TERMINAL_PRS_CHUNK) {
+            let query = build_terminal_prs_query(chunk);
+            let mut cmd = Command::new("gh");
+            cmd.args(["api", "graphql", "-f", &format!("query={query}")])
+                .args(["-F", &format!("owner={owner}")])
+                .args(["-F", &format!("repo={repo}")])
+                .current_dir(workdir);
+            for (i, branch) in chunk.iter().enumerate() {
+                cmd.args(["-F", &format!("b{i}={branch}")]);
+            }
+            let output = cmd.output().map_err(|e| {
+                GhGraphqlError::Failed(format!("failed to run `gh api graphql`: {e}"))
+            })?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_rate_limited(&stdout) || is_rate_limited(&stderr) {
+                return Err(GhGraphqlError::RateLimited);
+            }
+            if !output.status.success() {
+                return Err(GhGraphqlError::Failed(format!(
+                    "`gh api graphql` (terminal PRs) failed: {}",
+                    stderr.trim()
+                )));
+            }
+
+            let page = parse_terminal_prs_page(&output.stdout, chunk)
+                .map_err(|e| GhGraphqlError::Failed(e.to_string()))?;
+            out.extend(page);
+        }
+        Ok(out)
+    }
+
     /// Review-thread resolution state via GraphQL. REST can't report whether a
     /// thread is resolved, so this maps each member comment id to its thread.
     pub fn review_threads(
@@ -868,6 +922,55 @@ pub struct OpenPr {
     pub unresolved_threads: usize,
 }
 
+/// A pull request's *terminal* state — the two outcomes a PR never leaves.
+///
+/// GitHub's own `state` enum spells both as `CLOSED` at the REST layer and
+/// distinguishes them with a separate `merged` flag; GraphQL's
+/// `PullRequestState` is the honest one (`OPEN`/`CLOSED`/`MERGED`) and is what
+/// this reads. The distinction is the whole point of the badge: a merged
+/// branch is finished work, a closed one is abandoned work, and before this
+/// existed both rendered identically to a branch that never had a PR at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalPrState {
+    Merged,
+    /// Closed *without* being merged.
+    Closed,
+}
+
+impl TerminalPrState {
+    /// Parse GitHub's `PullRequestState` string. `OPEN` is deliberately not a
+    /// terminal state and maps to `None` rather than to a third variant — an
+    /// open PR is already the open sweep's business.
+    pub fn from_gh(state: &str) -> Option<Self> {
+        match state {
+            "MERGED" => Some(Self::Merged),
+            "CLOSED" => Some(Self::Closed),
+            _ => None,
+        }
+    }
+
+    /// The word shown in the dashboard badge.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Merged => "merged",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+/// One pull request that has reached a terminal state, as the dashboard badge
+/// needs it. Deliberately smaller than [`OpenPr`]: a finished PR has no
+/// unresolved-thread count worth chasing and no head SHA worth pinning to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalPr {
+    pub number: u32,
+    pub state: TerminalPrState,
+    /// `mergedAt` for a merged PR, `closedAt` for a closed one — an ISO-8601
+    /// timestamp as GitHub returns it, stored verbatim rather than parsed. It
+    /// is only ever persisted and shown, never compared.
+    pub at: String,
+}
+
 /// Resolve `owner/repo` from the repository's `origin` remote.
 ///
 /// Deliberately local: this is `git remote get-url`, not an API call. The
@@ -959,6 +1062,65 @@ fn parse_open_prs_page(stdout: &[u8]) -> Result<(Vec<OpenPr>, Option<String>)> {
         None
     };
     Ok((open, next))
+}
+
+/// Branches per [`GhCli::terminal_prs`] call. Each branch costs one GraphQL
+/// alias plus its own `-F` variable; kept well under GitHub's per-query node
+/// and variable ceilings and in line with [`OPEN_PRS_QUERY`]'s `first:50`.
+const TERMINAL_PRS_CHUNK: usize = 50;
+
+/// Build the alias-batch query for [`GhCli::terminal_prs`]. `branches.len()`
+/// aliased sub-queries (`a0`, `a1`, …), each taking its branch name through
+/// its own declared variable (`$b0`, `$b1`, …) — never interpolated into the
+/// query text, since a branch name is not a valid GraphQL identifier and may
+/// contain characters that would break the document if it were.
+fn build_terminal_prs_query(branches: &[String]) -> String {
+    let mut query = String::from("query($owner:String!,$repo:String!");
+    for i in 0..branches.len() {
+        query.push_str(&format!(",$b{i}:String!"));
+    }
+    query.push_str("){repository(owner:$owner,name:$repo){");
+    for i in 0..branches.len() {
+        query.push_str(&format!(
+            "a{i}:pullRequests(headRefName:$b{i},states:[MERGED,CLOSED],first:1,\
+             orderBy:{{field:UPDATED_AT,direction:DESC}}){{nodes{{number state mergedAt closedAt}}}}"
+        ));
+    }
+    query.push_str("}}");
+    query
+}
+
+/// Parse the response of [`build_terminal_prs_query`], mapping each alias
+/// back to the branch it was built for. A branch with no merged-or-closed PR
+/// (an empty `nodes` array, or the alias missing because a chunk answered
+/// short) is simply absent from the result — that's `NoPr`, not a parse
+/// failure, and the caller reads a missing entry that way.
+fn parse_terminal_prs_page(
+    stdout: &[u8],
+    branches: &[String],
+) -> Result<HashMap<String, TerminalPr>> {
+    let v: serde_json::Value =
+        serde_json::from_slice(stdout).context("Failed to parse terminal-PRs GraphQL JSON.")?;
+    let repo = &v["data"]["repository"];
+
+    let mut out = HashMap::new();
+    for (i, branch) in branches.iter().enumerate() {
+        let node = &repo[format!("a{i}")]["nodes"][0];
+        let Some(state) = node["state"].as_str().and_then(TerminalPrState::from_gh) else {
+            continue;
+        };
+        let Some(number) = node["number"].as_u64().and_then(|n| u32::try_from(n).ok()) else {
+            continue;
+        };
+        let at = match state {
+            TerminalPrState::Merged => node["mergedAt"].as_str(),
+            TerminalPrState::Closed => node["closedAt"].as_str(),
+        }
+        .unwrap_or_default()
+        .to_string();
+        out.insert(branch.clone(), TerminalPr { number, state, at });
+    }
+    Ok(out)
 }
 
 /// Why a GraphQL call failed, distinguishing the one cause worth reacting to.
@@ -1363,6 +1525,115 @@ mod tests {
             "nodes":[{"number":7,"headRefOid":"s","reviewThreads":{"nodes":[]}}]}}}}"#;
         let (prs, _) = parse_open_prs_page(json).unwrap();
         assert!(prs.is_empty());
+    }
+
+    /// Same discipline as `the_open_prs_query_names_every_field_as_its_own_token`:
+    /// the query is built by hand (aliases, variable names), so it has to be
+    /// checked as text, not trusted because its parser passes on handcrafted
+    /// JSON that a broken query would never actually produce.
+    #[test]
+    fn the_terminal_prs_query_names_every_field_as_its_own_token_and_one_alias_per_branch() {
+        let branches = vec!["feat-a".to_string(), "feat-b".to_string()];
+        let query = build_terminal_prs_query(&branches);
+
+        const EXPECTED: &[&str] = &[
+            "query",
+            "owner",
+            "String",
+            "repo",
+            "b0",
+            "b1",
+            "repository",
+            "name",
+            "a0",
+            "a1",
+            "pullRequests",
+            "headRefName",
+            "states",
+            "MERGED",
+            "CLOSED",
+            "first",
+            "orderBy",
+            "field",
+            "UPDATED_AT",
+            "direction",
+            "DESC",
+            "nodes",
+            "number",
+            "state",
+            "mergedAt",
+            "closedAt",
+        ];
+
+        let identifiers = graphql_identifiers(&query);
+        for field in [
+            "a0", "a1", "b0", "b1", "number", "state", "mergedAt", "closedAt",
+        ] {
+            assert!(
+                identifiers.iter().any(|token| token == field),
+                "`{field}` is missing or fused with a neighbour; query was:\n{query}"
+            );
+        }
+        for token in &identifiers {
+            assert!(
+                EXPECTED.contains(&token.as_str()),
+                "unexpected identifier `{token}` — two field names have probably \
+                 run together; query was:\n{query}"
+            );
+        }
+    }
+
+    /// One branch merged, one closed-without-merge, one never had a terminal
+    /// PR at all (an empty `nodes` array) — the three outcomes the sweep has
+    /// to tell apart.
+    #[test]
+    fn the_terminal_prs_parser_maps_each_alias_back_to_its_branch() {
+        let branches = vec![
+            "feat-merged".to_string(),
+            "feat-closed".to_string(),
+            "feat-none".to_string(),
+        ];
+        let json = br#"{"data":{"repository":{
+            "a0":{"nodes":[{"number":11,"state":"MERGED","mergedAt":"2026-01-01T00:00:00Z","closedAt":"2026-01-01T00:00:00Z"}]},
+            "a1":{"nodes":[{"number":12,"state":"CLOSED","mergedAt":null,"closedAt":"2026-02-02T00:00:00Z"}]},
+            "a2":{"nodes":[]}
+        }}}"#;
+
+        let result = parse_terminal_prs_page(json, &branches).unwrap();
+
+        let merged = result.get("feat-merged").unwrap();
+        assert_eq!(merged.number, 11);
+        assert_eq!(merged.state, TerminalPrState::Merged);
+        assert_eq!(merged.at, "2026-01-01T00:00:00Z");
+
+        let closed = result.get("feat-closed").unwrap();
+        assert_eq!(closed.number, 12);
+        assert_eq!(closed.state, TerminalPrState::Closed);
+        assert_eq!(closed.at, "2026-02-02T00:00:00Z");
+
+        assert!(!result.contains_key("feat-none"));
+    }
+
+    /// An open PR (or any other non-terminal state) must never surface here —
+    /// `open_prs` already owns that state, and double-reporting it would let
+    /// the two sweeps disagree about which badge to show.
+    #[test]
+    fn an_open_pr_returned_by_the_terminal_query_is_not_reported() {
+        let branches = vec!["feat-open".to_string()];
+        let json = br#"{"data":{"repository":{
+            "a0":{"nodes":[{"number":9,"state":"OPEN","mergedAt":null,"closedAt":null}]}
+        }}}"#;
+        let result = parse_terminal_prs_page(json, &branches).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// An unexpected/empty shape reads as "nothing terminal found" rather than
+    /// an error, matching `an_unexpected_shape_reads_as_no_open_prs`.
+    #[test]
+    fn an_unexpected_terminal_shape_reads_as_no_terminal_prs() {
+        let branches = vec!["feat-a".to_string()];
+        let result = parse_terminal_prs_page(b"{}", &branches).unwrap();
+        assert!(result.is_empty());
     }
 
     /// Owner/repo comes from the git remote, in either spelling, so learning it

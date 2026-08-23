@@ -44,32 +44,44 @@ fn pr_triage_badge_span(app: &App, view: &crate::app::ViewState) -> Option<Span<
         return None;
     }
     let feature = app.feature_for_view(view)?;
-    let pr = app.active_pr_for_feature(&feature.id)?;
-    let working = app
-        .dedicated_review_session_working_for_workdir(&feature.workdir)
-        .unwrap_or(false);
-    let ai_review_running = app.ai_review_running_for_workdir(&feature.workdir);
-    let mut label = match pr.unresolved_threads {
-        Some(0) => format!(" [PR #{} · 0 open", pr.number),
-        Some(count) => format!(" [PR #{} · {} open", pr.number, count),
-        None => format!(" [PR #{}", pr.number),
-    };
-    if working {
-        label.push_str(" · ● working");
+    if let Some(pr) = app.active_pr_for_feature(&feature.id) {
+        let working = app
+            .dedicated_review_session_working_for_workdir(&feature.workdir)
+            .unwrap_or(false);
+        let ai_review_running = app.ai_review_running_for_workdir(&feature.workdir);
+        let mut label = match pr.unresolved_threads {
+            Some(0) => format!(" [PR #{} · 0 open", pr.number),
+            Some(count) => format!(" [PR #{} · {} open", pr.number, count),
+            None => format!(" [PR #{}", pr.number),
+        };
+        if working {
+            label.push_str(" · ● working");
+        }
+        if ai_review_running {
+            label.push_str(" · AI review");
+        }
+        label.push_str("] ");
+        let color = if working || ai_review_running {
+            app.theme.warning.to_color()
+        } else if pr.unresolved_threads == Some(0) {
+            app.theme.success.to_color()
+        } else {
+            app.theme.info.to_color()
+        };
+        return Some(Span::styled(
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
     }
-    if ai_review_running {
-        label.push_str(" · AI review");
-    }
-    label.push_str("] ");
-    let color = if working || ai_review_running {
-        app.theme.warning.to_color()
-    } else if pr.unresolved_threads == Some(0) {
-        app.theme.success.to_color()
-    } else {
-        app.theme.info.to_color()
+    // No open PR: a merged or closed one is finished work, not "no PR" —
+    // show that instead of nothing (D3 in AMF_PLAN.md).
+    let pr = app.terminal_pr_for_feature(&feature.id)?;
+    let color = match pr.state {
+        crate::github::TerminalPrState::Merged => app.theme.pr_merged.to_color(),
+        crate::github::TerminalPrState::Closed => app.theme.pr_closed.to_color(),
     };
     Some(Span::styled(
-        label,
+        format!(" [PR #{} {}] ", pr.number, pr.state.label()),
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     ))
 }
@@ -97,21 +109,24 @@ fn draw_badge_row(frame: &mut Frame, area: Rect, badge_spans: Vec<Span<'static>>
 /// `draw()`'s `AppMode::Viewing` arm) — shown instead of the badge when the
 /// sidebar is visible, so the two never compete for the same header space.
 fn pr_triage_sidebar_text(app: &App, feature: &Feature) -> Option<String> {
-    let pr = app.active_pr_for_feature(&feature.id)?;
-    let mut lines = vec![match pr.unresolved_threads {
-        Some(count) => format!("PR: #{} · {count} open", pr.number),
-        None => format!("PR: #{}", pr.number),
-    }];
-    if app
-        .dedicated_review_session_working_for_workdir(&feature.workdir)
-        .unwrap_or(false)
-    {
-        lines.push("Status: Working".to_string());
+    if let Some(pr) = app.active_pr_for_feature(&feature.id) {
+        let mut lines = vec![match pr.unresolved_threads {
+            Some(count) => format!("PR: #{} · {count} open", pr.number),
+            None => format!("PR: #{}", pr.number),
+        }];
+        if app
+            .dedicated_review_session_working_for_workdir(&feature.workdir)
+            .unwrap_or(false)
+        {
+            lines.push("Status: Working".to_string());
+        }
+        if app.ai_review_running_for_workdir(&feature.workdir) {
+            lines.push("AI review: Running".to_string());
+        }
+        return Some(lines.join("\n"));
     }
-    if app.ai_review_running_for_workdir(&feature.workdir) {
-        lines.push("AI review: Running".to_string());
-    }
-    Some(lines.join("\n"))
+    let pr = app.terminal_pr_for_feature(&feature.id)?;
+    Some(format!("PR: #{} {}", pr.number, pr.state.label()))
 }
 
 fn build_agent_sidebar_data(

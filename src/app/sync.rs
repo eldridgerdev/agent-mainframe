@@ -75,6 +75,10 @@ impl ActivePrSweepOutcome {
 #[derive(Debug)]
 pub(crate) struct ActivePrSweep {
     pub updates: Vec<ActivePrUpdate>,
+    /// Terminal (merged/closed) lookups for branches the open query didn't
+    /// match and that weren't already known-terminal. Empty whenever nothing
+    /// needed asking about.
+    pub terminal_updates: Vec<TerminalPrUpdate>,
     /// Set when any job hit GitHub's GraphQL point budget, so the main loop can
     /// stop scheduling sweeps until the budget resets.
     pub rate_limited: bool,
@@ -85,6 +89,27 @@ pub(crate) struct ActivePrUpdate {
     pub feature_id: String,
     pub branch: String,
     pub lookup: ActivePrLookup,
+}
+
+#[derive(Debug)]
+pub(crate) enum TerminalPrLookup {
+    Found(crate::github::TerminalPr),
+    /// The repository answered and this branch has no merged/closed PR.
+    /// Deliberately *not* persisted — only a positive result is durable,
+    /// since "no terminal PR yet" can always change.
+    NoPr,
+    /// Not looked up (budget exhausted this sweep, or a prior failure in the
+    /// same repo call). Leaves any previous badge alone.
+    Skipped,
+    Failed(String),
+}
+
+#[derive(Debug)]
+pub(crate) struct TerminalPrUpdate {
+    pub feature_id: String,
+    pub repo: PathBuf,
+    pub branch: String,
+    pub lookup: TerminalPrLookup,
 }
 
 fn read_status_line(content: &str) -> Option<String> {
@@ -457,6 +482,30 @@ impl App {
             .filter(|d| !d.is_zero())
     }
 
+    /// Seed `terminal_prs` from the DB before the first sweep runs. A merged
+    /// or closed PR never reverts, so a stored hit is never stale — this is a
+    /// straight load-and-match, never a `gh` call, and is called once at
+    /// startup (see `App::new`).
+    pub(crate) fn load_terminal_prs_from_db(&mut self) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let Ok(cached) = db.load_all_pr_terminal_state() else {
+            return;
+        };
+        if cached.is_empty() {
+            return;
+        }
+        for project in &self.store.projects {
+            let repo = project.repo.to_string_lossy().to_string();
+            for feature in &project.features {
+                if let Some(pr) = cached.get(&(repo.clone(), feature.branch.clone())) {
+                    self.terminal_prs.insert(feature.id.clone(), pr.clone());
+                }
+            }
+        }
+    }
+
     /// Refresh dashboard PR badges without ever blocking rendering or input.
     /// The main loop starts this on [`ACTIVE_PR_SYNC_INTERVAL`] and refuses to
     /// overlap jobs, so a slow `gh` invocation cannot build up a queue of
@@ -505,32 +554,58 @@ impl App {
             return;
         }
 
+        // A feature already known terminal never needs asking about again —
+        // merged/closed never revert — so this sweep can skip straight past
+        // it rather than spending a GraphQL alias on a settled answer.
+        let known_terminal_ids: HashSet<String> = self.terminal_prs.keys().cloned().collect();
+
         let (tx, rx) = std::sync::mpsc::channel();
         self.active_pr_bg = Some(rx);
         std::thread::spawn(move || {
             let mut rate_limited = false;
             let mut updates = Vec::new();
+            let mut terminal_updates = Vec::new();
 
             for job in repos {
                 // One depleted budget means every remaining repository would
                 // fail the same way, so the first to see it stops the rest.
                 if rate_limited {
-                    updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
-                        feature_id: feature.feature_id,
-                        branch: feature.branch,
-                        lookup: ActivePrLookup::Skipped,
-                    }));
+                    for feature in job.features {
+                        if !known_terminal_ids.contains(&feature.feature_id) {
+                            terminal_updates.push(TerminalPrUpdate {
+                                feature_id: feature.feature_id.clone(),
+                                repo: job.repo.clone(),
+                                branch: feature.branch.clone(),
+                                lookup: TerminalPrLookup::Skipped,
+                            });
+                        }
+                        updates.push(ActivePrUpdate {
+                            feature_id: feature.feature_id,
+                            branch: feature.branch,
+                            lookup: ActivePrLookup::Skipped,
+                        });
+                    }
                     continue;
                 }
 
                 // No GitHub remote is a settled answer, not a failure: the
                 // repository simply has no PRs to badge. Costs no API call.
                 let Some((owner, repo)) = crate::github::owner_repo_from_remote(&job.repo) else {
-                    updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
-                        feature_id: feature.feature_id,
-                        branch: feature.branch,
-                        lookup: ActivePrLookup::NoPr,
-                    }));
+                    for feature in job.features {
+                        if !known_terminal_ids.contains(&feature.feature_id) {
+                            terminal_updates.push(TerminalPrUpdate {
+                                feature_id: feature.feature_id.clone(),
+                                repo: job.repo.clone(),
+                                branch: feature.branch.clone(),
+                                lookup: TerminalPrLookup::NoPr,
+                            });
+                        }
+                        updates.push(ActivePrUpdate {
+                            feature_id: feature.feature_id,
+                            branch: feature.branch,
+                            lookup: ActivePrLookup::NoPr,
+                        });
+                    }
                     continue;
                 };
 
@@ -538,27 +613,108 @@ impl App {
                     Ok(open) => open,
                     Err(GhGraphqlError::RateLimited) => {
                         rate_limited = true;
-                        updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
-                            feature_id: feature.feature_id,
-                            branch: feature.branch,
-                            lookup: ActivePrLookup::Skipped,
-                        }));
+                        for feature in job.features {
+                            if !known_terminal_ids.contains(&feature.feature_id) {
+                                terminal_updates.push(TerminalPrUpdate {
+                                    feature_id: feature.feature_id.clone(),
+                                    repo: job.repo.clone(),
+                                    branch: feature.branch.clone(),
+                                    lookup: TerminalPrLookup::Skipped,
+                                });
+                            }
+                            updates.push(ActivePrUpdate {
+                                feature_id: feature.feature_id,
+                                branch: feature.branch,
+                                lookup: ActivePrLookup::Skipped,
+                            });
+                        }
                         continue;
                     }
                     Err(GhGraphqlError::Failed(error)) => {
                         // One failed repository must not blank the badges of
                         // features in the repositories that did answer.
-                        updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
-                            feature_id: feature.feature_id,
-                            branch: feature.branch,
-                            lookup: ActivePrLookup::Failed(error.clone()),
-                        }));
+                        for feature in job.features {
+                            if !known_terminal_ids.contains(&feature.feature_id) {
+                                terminal_updates.push(TerminalPrUpdate {
+                                    feature_id: feature.feature_id.clone(),
+                                    repo: job.repo.clone(),
+                                    branch: feature.branch.clone(),
+                                    lookup: TerminalPrLookup::Failed(error.clone()),
+                                });
+                            }
+                            updates.push(ActivePrUpdate {
+                                feature_id: feature.feature_id,
+                                branch: feature.branch,
+                                lookup: ActivePrLookup::Failed(error.clone()),
+                            });
+                        }
                         continue;
                     }
                 };
 
-                updates.extend(job.features.into_iter().map(|feature| {
-                    let lookup = match open.iter().find(|pr| pr.head_ref == feature.branch) {
+                // Only branches the open query didn't match, and that aren't
+                // already known-terminal, are worth a second call — this is
+                // what keeps the terminal lookup a one-time cost per branch.
+                let mut needs_terminal: Vec<String> = Vec::new();
+                for feature in &job.features {
+                    let is_open = open.iter().any(|pr| pr.head_ref == feature.branch);
+                    if !is_open
+                        && !known_terminal_ids.contains(&feature.feature_id)
+                        && !needs_terminal.contains(&feature.branch)
+                    {
+                        needs_terminal.push(feature.branch.clone());
+                    }
+                }
+
+                enum TerminalBatchOutcome {
+                    RateLimited,
+                    Failed(String),
+                }
+
+                let (terminal_map, terminal_outcome): (
+                    HashMap<String, crate::github::TerminalPr>,
+                    Option<TerminalBatchOutcome>,
+                ) = if needs_terminal.is_empty() {
+                    (HashMap::new(), None)
+                } else {
+                    match GhCli::terminal_prs(&job.repo, &owner, &repo, &needs_terminal) {
+                        Ok(map) => (map, None),
+                        Err(GhGraphqlError::RateLimited) => {
+                            rate_limited = true;
+                            (HashMap::new(), Some(TerminalBatchOutcome::RateLimited))
+                        }
+                        Err(GhGraphqlError::Failed(error)) => {
+                            (HashMap::new(), Some(TerminalBatchOutcome::Failed(error)))
+                        }
+                    }
+                };
+
+                for feature in job.features {
+                    let matched_open = open.iter().find(|pr| pr.head_ref == feature.branch);
+                    let is_open = matched_open.is_some();
+
+                    if !is_open && !known_terminal_ids.contains(&feature.feature_id) {
+                        let lookup = match &terminal_outcome {
+                            Some(TerminalBatchOutcome::RateLimited) => TerminalPrLookup::Skipped,
+                            Some(TerminalBatchOutcome::Failed(error)) => {
+                                TerminalPrLookup::Failed(error.clone())
+                            }
+                            None => match terminal_map.get(&feature.branch) {
+                                Some(pr) => TerminalPrLookup::Found(pr.clone()),
+                                // The repository answered and this branch has
+                                // no merged/closed PR: a confirmed absence.
+                                None => TerminalPrLookup::NoPr,
+                            },
+                        };
+                        terminal_updates.push(TerminalPrUpdate {
+                            feature_id: feature.feature_id.clone(),
+                            repo: job.repo.clone(),
+                            branch: feature.branch.clone(),
+                            lookup,
+                        });
+                    }
+
+                    let lookup = match matched_open {
                         Some(pr) => ActivePrLookup::Found(ActivePrStatus {
                             branch: feature.branch.clone(),
                             head_sha: pr.head_sha.clone(),
@@ -569,16 +725,17 @@ impl App {
                         // its open PRs: a confirmed absence, not a failure.
                         None => ActivePrLookup::NoPr,
                     };
-                    ActivePrUpdate {
+                    updates.push(ActivePrUpdate {
                         feature_id: feature.feature_id,
                         branch: feature.branch,
                         lookup,
-                    }
-                }));
+                    });
+                }
             }
 
             let _ = tx.send(ActivePrSweep {
                 updates,
+                terminal_updates,
                 rate_limited,
             });
         });
@@ -596,7 +753,9 @@ impl App {
                 if sweep.rate_limited {
                     self.note_gh_graphql_rate_limited();
                 }
-                self.apply_active_pr_updates(sweep.updates)
+                let active_changed = self.apply_active_pr_updates(sweep.updates);
+                let terminal_changed = self.apply_terminal_pr_updates(sweep.terminal_updates);
+                active_changed || terminal_changed
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -669,6 +828,67 @@ impl App {
 
     pub(crate) fn active_pr_for_feature(&self, feature_id: &str) -> Option<&ActivePrStatus> {
         self.active_prs.get(feature_id)
+    }
+
+    /// Apply a completed terminal-PR sweep. Unlike `apply_active_pr_updates`,
+    /// a positive result is durable — merged/closed never revert — so
+    /// `Found` is persisted to the DB as well as cached in memory, and
+    /// nothing here ever removes an existing entry (`NoPr`, `Skipped`, and
+    /// `Failed` all leave a prior terminal badge exactly as it was).
+    pub(crate) fn apply_terminal_pr_updates(&mut self, updates: Vec<TerminalPrUpdate>) -> bool {
+        let mut changed = false;
+        for update in updates {
+            let branch_is_current = self.store.projects.iter().any(|project| {
+                project.features.iter().any(|feature| {
+                    feature.id == update.feature_id && feature.branch == update.branch
+                })
+            });
+            if !branch_is_current {
+                continue;
+            }
+
+            match update.lookup {
+                TerminalPrLookup::Found(pr) => {
+                    if self.terminal_prs.get(&update.feature_id) != Some(&pr) {
+                        if let Some(db) = self.db.as_ref() {
+                            let repo = update.repo.to_string_lossy().to_string();
+                            if let Err(error) =
+                                db.save_pr_terminal_state(&repo, &update.branch, &pr)
+                            {
+                                self.log_error(
+                                    "github",
+                                    format!(
+                                        "failed to persist terminal PR state for {} ({}): {error}",
+                                        update.feature_id, update.branch
+                                    ),
+                                );
+                            }
+                        }
+                        self.terminal_prs.insert(update.feature_id, pr);
+                        changed = true;
+                    }
+                }
+                TerminalPrLookup::NoPr => {}
+                TerminalPrLookup::Skipped => {}
+                TerminalPrLookup::Failed(error) => {
+                    self.log_debug(
+                        "github",
+                        format!(
+                            "Terminal PR lookup failed for {} ({}): {}",
+                            update.feature_id, update.branch, error
+                        ),
+                    );
+                }
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn terminal_pr_for_feature(
+        &self,
+        feature_id: &str,
+    ) -> Option<&crate::github::TerminalPr> {
+        self.terminal_prs.get(feature_id)
     }
 
     /// Kick off a background thread to do the expensive token-usage I/O.

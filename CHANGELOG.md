@@ -10,7 +10,19 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Agent session rows now show context-window pressure before the next prompt
+  runs out of room.** Claude Code, Codex, OpenCode, and Pi sessions display a
+  compact `Ctx` percentage that turns yellow with `WARNING` at 70% and red
+  with `CRITICAL` at 85%. Estimated readings are marked with `~`, stale
+  readings are labeled, and detected compaction or a new conversation clears
+  the old value until fresh usage arrives. Terminal, editor, TODO, and custom
+  rows remain unchanged.
+
+### Migration
+
+No migration is required.
 
 ## [v0.38.0] - 2026-08-21
 

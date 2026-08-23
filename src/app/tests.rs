@@ -9363,6 +9363,11 @@ fn sync_session_status_shows_agent_token_usage() {
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
+    app.context_collector = crate::context_collectors::SessionContextCollector::with_roots(
+        home.path(),
+        data.path(),
+        data.path(),
+    );
     app.sync_session_status_with_tracker(&mut tracker);
 
     assert_eq!(
@@ -9380,6 +9385,234 @@ fn sync_session_status_shows_agent_token_usage() {
         app.store.projects[0].features[0].sessions[0].token_usage_source_match,
         Some(TokenUsageSourceMatch::Exact),
     );
+    let context = app
+        .context_states
+        .get("claude-sess")
+        .and_then(|state| state.snapshot.as_ref())
+        .expect("the five-second session sync should collect context usage");
+    assert_eq!(context.used_tokens, 12);
+    assert_eq!(
+        context.provenance,
+        crate::context_tracking::ContextProvenance::Estimated
+    );
+}
+
+#[test]
+fn sync_session_status_collects_isolated_pi_context_without_a_token_usage_provider() {
+    let home = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Idle);
+    let first_created = Utc.with_ymd_and_hms(2026, 8, 23, 11, 0, 0).unwrap();
+    let second_created = Utc.with_ymd_and_hms(2026, 8, 23, 12, 0, 0).unwrap();
+    let first_session =
+        store.projects[0].features[0].add_session_named(SessionKind::Pi, "Pi".to_string());
+    first_session.created_at = first_created;
+    let first_amf_session_id = first_session.id.clone();
+    let second_session =
+        store.projects[0].features[0].add_session_named(SessionKind::Pi, "Pi 2".to_string());
+    second_session.created_at = second_created;
+    let second_amf_session_id = second_session.id.clone();
+    let session_dir = home.path().join(".pi/agent/sessions/repo");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(
+        session_dir.join("pi-1.jsonl"),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"pi-1\",\"timestamp\":\"2026-08-23T11:00:00Z\",\"cwd\":{}}}\n\
+             {{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"test\",\"model\":\"model\",\"stopReason\":\"stop\",\"usage\":{{\"input\":20000,\"output\":1000,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":21000}}}}}}\n",
+            serde_json::to_string(workdir.path().to_string_lossy().as_ref()).unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        session_dir.join("pi-2.jsonl"),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"pi-2\",\"timestamp\":\"2026-08-23T12:00:00Z\",\"cwd\":{}}}\n\
+             {{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"test\",\"model\":\"model\",\"stopReason\":\"stop\",\"usage\":{{\"input\":80000,\"output\":1000,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":81000}}}}}}\n",
+            serde_json::to_string(workdir.path().to_string_lossy().as_ref()).unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.path().join(".pi/agent")).unwrap();
+    std::fs::write(
+        home.path().join(".pi/agent/models.json"),
+        r#"{"providers":{"test":{"models":[{"id":"model","contextWindow":100000}]}}}"#,
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.context_collector = crate::context_collectors::SessionContextCollector::with_roots(
+        home.path(),
+        home.path(),
+        home.path(),
+    );
+    let mut tracker = SessionTokenTracker::new(Some(home.path().to_path_buf()), None);
+
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    let first_snapshot = app
+        .context_states
+        .get(&first_amf_session_id)
+        .and_then(|state| state.snapshot.as_ref())
+        .expect("Pi should participate in the shared five-second sync");
+    let second_snapshot = app
+        .context_states
+        .get(&second_amf_session_id)
+        .and_then(|state| state.snapshot.as_ref())
+        .expect("the second Pi session should have independent context state");
+    assert_eq!(first_snapshot.used_tokens, 21_000);
+    assert_eq!(
+        first_snapshot.reset.conversation_id.as_deref(),
+        Some("pi-1")
+    );
+    assert_eq!(second_snapshot.used_tokens, 81_000);
+    assert_eq!(
+        second_snapshot.reset.conversation_id.as_deref(),
+        Some("pi-2")
+    );
+    assert_eq!(
+        second_snapshot.band,
+        crate::context_tracking::ContextBand::Warning
+    );
+}
+
+#[test]
+fn session_status_sync_refreshes_all_context_harnesses_and_excludes_terminal() {
+    let roots = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let write = |path: PathBuf, content: String| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    };
+    let mut store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Idle);
+    let feature = &mut store.projects[0].features[0];
+    let claude = feature.add_session_named(SessionKind::Claude, "Claude".to_string());
+    claude.claude_session_id = Some("claude-all".to_string());
+    let claude_amf_id = claude.id.clone();
+    let codex = feature.add_session_named(SessionKind::Codex, "Codex".to_string());
+    codex.set_token_usage_source_exact(TokenUsageSource {
+        provider: TokenUsageProvider::Codex,
+        id: "codex-all".to_string(),
+    });
+    let codex_amf_id = codex.id.clone();
+    let opencode = feature.add_session_named(SessionKind::Opencode, "OpenCode".to_string());
+    opencode.set_token_usage_source_exact(TokenUsageSource {
+        provider: TokenUsageProvider::Opencode,
+        id: "open-all".to_string(),
+    });
+    let opencode_amf_id = opencode.id.clone();
+    let pi = feature.add_session_named(SessionKind::Pi, "Pi".to_string());
+    let pi_amf_id = pi.id.clone();
+    let terminal = feature.add_session_named(SessionKind::Terminal, "Terminal".to_string());
+    let terminal_amf_id = terminal.id.clone();
+
+    let encoded = workdir
+        .path()
+        .to_string_lossy()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    write(
+        roots
+            .path()
+            .join(".claude/projects")
+            .join(encoded)
+            .join("claude-all.jsonl"),
+        "{\"type\":\"assistant\",\"timestamp\":\"2026-08-23T12:00:00Z\",\"sessionId\":\"claude-all\",\"requestId\":\"r1\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":140000,\"output_tokens\":1}}}\n".to_string(),
+    );
+    write(
+        roots.path().join(".codex/sessions/codex-all.jsonl"),
+        format!(
+            "{{\"timestamp\":\"2026-08-23T12:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"codex-all\",\"cwd\":{}}}}}\n\
+             {{\"timestamp\":\"2026-08-23T12:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":1,\"total_tokens\":1}},\"last_token_usage\":{{\"total_tokens\":150000}},\"model_context_window\":200000}}}}}}\n",
+            serde_json::to_string(workdir.path().to_string_lossy().as_ref()).unwrap()
+        ),
+    );
+    write(
+        roots
+            .path()
+            .join("opencode/storage/session/project/open-all.json"),
+        serde_json::json!({
+            "id": "open-all",
+            "directory": workdir.path(),
+            "time": {"updated": 2_000}
+        })
+        .to_string(),
+    );
+    write(
+        roots
+            .path()
+            .join("opencode/storage/message/open-all/m1.json"),
+        serde_json::json!({
+            "id": "m1",
+            "role": "assistant",
+            "providerID": "test",
+            "modelID": "model",
+            "time": {"completed": 2_000},
+            "tokens": {"input": 80_000, "output": 0, "cache": {"read": 0, "write": 0}}
+        })
+        .to_string(),
+    );
+    write(
+        roots.path().join("opencode/models.json"),
+        r#"{"test":{"models":{"model":{"limit":{"context":100000}}}}}"#.to_string(),
+    );
+    write(
+        roots.path().join(".pi/agent/sessions/repo/pi-all.jsonl"),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"pi-all\",\"cwd\":{}}}\n\
+             {{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"test\",\"model\":\"model\",\"stopReason\":\"stop\",\"usage\":{{\"totalTokens\":90000}}}}}}\n",
+            serde_json::to_string(workdir.path().to_string_lossy().as_ref()).unwrap()
+        ),
+    );
+    write(
+        roots.path().join(".pi/agent/models.json"),
+        r#"{"providers":{"test":{"models":[{"id":"model","contextWindow":100000}]}}}"#.to_string(),
+    );
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.context_collector = crate::context_collectors::SessionContextCollector::with_roots(
+        roots.path(),
+        roots.path(),
+        roots.path(),
+    );
+    let mut tracker = SessionTokenTracker::new(
+        Some(roots.path().to_path_buf()),
+        Some(roots.path().to_path_buf()),
+    );
+
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    for (session_id, percentage) in [
+        (claude_amf_id, 70),
+        (codex_amf_id, 75),
+        (opencode_amf_id, 80),
+        (pi_amf_id, 90),
+    ] {
+        assert_eq!(
+            app.context_states[&session_id]
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .percentage
+                .get(),
+            percentage
+        );
+    }
+    assert!(!app.context_states.contains_key(&terminal_amf_id));
 }
 
 #[test]

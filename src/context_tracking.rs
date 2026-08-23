@@ -4,8 +4,6 @@
 //! application state or rendering sees it. Calculation, reset detection, and
 //! stale-sample policy are deliberately implemented in later layers.
 
-#![allow(dead_code)] // Introduced ahead of dashboard integration.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
@@ -142,8 +140,24 @@ pub struct SessionContextSnapshot {
     pub reset: ContextResetMetadata,
 }
 
+/// Transient context state for one AMF agent session.
+///
+/// Keeping this outside the persisted project model avoids turning an old
+/// sample into apparently fresh telemetry after an AMF restart. The reset
+/// metadata remains available while a post-compaction sample is pending even
+/// though there is deliberately no percentage to render.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionContextState {
+    pub snapshot: Option<SessionContextSnapshot>,
+    pub reset: ContextResetMetadata,
+    pub awaiting_post_reset: bool,
+}
+
 pub const CONTEXT_WARNING_PERCENT: u8 = 70;
 pub const CONTEXT_CRITICAL_PERCENT: u8 = 85;
+const ROLLBACK_MIN_WINDOW_PERCENT: u64 = 10;
+const ROLLBACK_MAX_RETAINED_PERCENT: u64 = 75;
+const ROLLBACK_MIN_TOKENS: u64 = 10_000;
 
 /// Normalize one collector sample using the feature's shared display policy.
 ///
@@ -178,6 +192,113 @@ pub fn calculate_context_snapshot(
         checked_at: sample.checked_at,
         reset: sample.reset,
     })
+}
+
+impl SessionContextState {
+    /// Accept a valid collector sample, applying lifecycle and conservative
+    /// rollback detection before publishing its percentage.
+    pub fn accept_sample(
+        &mut self,
+        mut sample: ContextUsageSample,
+    ) -> Result<(), ContextCalculationError> {
+        let previous = self.snapshot.as_ref();
+        let conversation_changed = self
+            .reset
+            .conversation_id
+            .as_deref()
+            .zip(sample.reset.conversation_id.as_deref())
+            .is_some_and(|(before, after)| before != after);
+        let explicit_reset = sample
+            .reset
+            .last_reset
+            .as_ref()
+            .filter(|event| self.reset.last_reset.as_ref() != Some(*event));
+        let rollback = previous.is_some_and(|previous| token_rollback(previous, &sample));
+
+        let detected_reset = if conversation_changed {
+            Some(ContextResetEvent {
+                reason: ContextResetReason::NewConversation,
+                detected_at: sample.sampled_at,
+            })
+        } else if let Some(event) = explicit_reset {
+            Some(event.clone())
+        } else if rollback {
+            Some(ContextResetEvent {
+                reason: ContextResetReason::TokenRollback,
+                detected_at: sample.sampled_at,
+            })
+        } else {
+            None
+        };
+
+        let had_prior_measurement = previous.is_some() || self.awaiting_post_reset;
+        if detected_reset.is_some() && had_prior_measurement && !self.awaiting_post_reset {
+            self.reset.generation = self.reset.generation.saturating_add(1);
+        }
+        if let Some(event) = detected_reset.or(sample.reset.last_reset.take()) {
+            self.reset.last_reset = Some(event);
+        }
+        if sample.reset.conversation_id.is_some() {
+            self.reset.conversation_id = sample.reset.conversation_id.take();
+        }
+
+        sample.reset = self.reset.clone();
+        let snapshot = calculate_context_snapshot(sample)?;
+        self.snapshot = Some(snapshot);
+        self.awaiting_post_reset = false;
+        Ok(())
+    }
+
+    /// Retain the last valid value while making it explicit that the latest
+    /// refresh failed. Its original `sampled_at` remains unchanged.
+    pub fn mark_unavailable(&mut self, checked_at: DateTime<Utc>) {
+        if let Some(snapshot) = self.snapshot.as_mut() {
+            snapshot.freshness = ContextFreshness::Stale;
+            snapshot.checked_at = checked_at;
+        }
+    }
+
+    /// Clear the displayed percentage after an explicit reset. Repeated
+    /// pending observations belong to the same generation.
+    pub fn begin_reset(&mut self, conversation_id: Option<String>, event: ContextResetEvent) {
+        let conversation_changed = self
+            .reset
+            .conversation_id
+            .as_deref()
+            .zip(conversation_id.as_deref())
+            .is_some_and(|(before, after)| before != after);
+        if !self.awaiting_post_reset && self.snapshot.is_some() {
+            self.reset.generation = self.reset.generation.saturating_add(1);
+        }
+        self.reset.last_reset = Some(if conversation_changed {
+            ContextResetEvent {
+                reason: ContextResetReason::NewConversation,
+                detected_at: event.detected_at,
+            }
+        } else {
+            event
+        });
+        if conversation_id.is_some() {
+            self.reset.conversation_id = conversation_id;
+        }
+        self.snapshot = None;
+        self.awaiting_post_reset = true;
+    }
+}
+
+fn token_rollback(previous: &SessionContextSnapshot, sample: &ContextUsageSample) -> bool {
+    if sample.used_tokens >= previous.used_tokens {
+        return false;
+    }
+    let limit = sample.context_limit.unwrap_or(previous.context_limit.get());
+    let minimum_drop = (limit / 100)
+        .saturating_mul(ROLLBACK_MIN_WINDOW_PERCENT)
+        .max(ROLLBACK_MIN_TOKENS);
+    let drop = previous.used_tokens.saturating_sub(sample.used_tokens);
+    let retained_enough_to_be_correction = u128::from(sample.used_tokens) * 100
+        > u128::from(previous.used_tokens) * u128::from(ROLLBACK_MAX_RETAINED_PERCENT);
+
+    drop >= minimum_drop && !retained_enough_to_be_correction
 }
 
 #[cfg(test)]
@@ -316,5 +437,85 @@ mod tests {
         let snapshot = calculate_context_snapshot(input).unwrap();
 
         assert_eq!(snapshot.provenance, ContextProvenance::Estimated);
+    }
+
+    #[test]
+    fn unavailable_refresh_retains_the_previous_sample_as_stale() {
+        let mut state = SessionContextState::default();
+        let input = sample(64_000, Some(100_000));
+        let sampled_at = input.sampled_at;
+        state.accept_sample(input).unwrap();
+
+        state.mark_unavailable(timestamp(3_005));
+
+        let snapshot = state.snapshot.unwrap();
+        assert_eq!(snapshot.freshness, ContextFreshness::Stale);
+        assert_eq!(snapshot.sampled_at, sampled_at);
+        assert_eq!(snapshot.checked_at, timestamp(3_005));
+    }
+
+    #[test]
+    fn changed_conversation_starts_one_new_generation() {
+        let mut state = SessionContextState::default();
+        let mut first = sample(80_000, Some(100_000));
+        first.reset.conversation_id = Some("conversation-1".to_string());
+        state.accept_sample(first).unwrap();
+
+        let mut second = sample(1_000, Some(100_000));
+        second.sampled_at = timestamp(3_010);
+        second.reset.conversation_id = Some("conversation-2".to_string());
+        state.accept_sample(second).unwrap();
+
+        assert_eq!(state.reset.generation, 1);
+        assert_eq!(
+            state.reset.last_reset.as_ref().map(|event| event.reason),
+            Some(ContextResetReason::NewConversation)
+        );
+        assert_eq!(state.snapshot.unwrap().band, ContextBand::Normal);
+    }
+
+    #[test]
+    fn pending_compaction_clears_usage_until_the_next_sample() {
+        let mut state = SessionContextState::default();
+        let mut first = sample(90_000, Some(100_000));
+        first.reset.conversation_id = Some("conversation-1".to_string());
+        state.accept_sample(first).unwrap();
+        let event = ContextResetEvent {
+            reason: ContextResetReason::Compaction,
+            detected_at: timestamp(3_010),
+        };
+
+        state.begin_reset(Some("conversation-1".to_string()), event.clone());
+        state.begin_reset(Some("conversation-1".to_string()), event.clone());
+
+        assert!(state.snapshot.is_none());
+        assert!(state.awaiting_post_reset);
+        assert_eq!(state.reset.generation, 1);
+
+        let mut after = sample(20_000, Some(100_000));
+        after.sampled_at = timestamp(3_020);
+        after.reset.conversation_id = Some("conversation-1".to_string());
+        after.reset.last_reset = Some(event);
+        state.accept_sample(after).unwrap();
+
+        assert_eq!(state.reset.generation, 1);
+        assert!(!state.awaiting_post_reset);
+        assert_eq!(state.snapshot.unwrap().band, ContextBand::Normal);
+    }
+
+    #[test]
+    fn rollback_detection_ignores_corrections_but_accepts_large_drops() {
+        let mut state = SessionContextState::default();
+        state.accept_sample(sample(80_000, Some(100_000))).unwrap();
+
+        state.accept_sample(sample(78_000, Some(100_000))).unwrap();
+        assert_eq!(state.reset.generation, 0);
+
+        state.accept_sample(sample(40_000, Some(100_000))).unwrap();
+        assert_eq!(state.reset.generation, 1);
+        assert_eq!(
+            state.reset.last_reset.as_ref().map(|event| event.reason),
+            Some(ContextResetReason::TokenRollback)
+        );
     }
 }

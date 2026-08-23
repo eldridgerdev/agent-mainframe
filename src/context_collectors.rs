@@ -1,7 +1,5 @@
 //! Harness-specific context-window telemetry collectors.
 
-#![allow(dead_code)] // Wired into the five-second sync in the next plan task.
-
 use crate::context_tracking::{
     ContextProvenance, ContextResetEvent, ContextResetMetadata, ContextResetReason,
     ContextUsageSample,
@@ -24,7 +22,6 @@ pub enum ContextUnavailableReason {
     MissingSession,
     MissingTelemetry,
     MalformedTelemetry,
-    AwaitingPostResetSample,
 }
 
 /// Collector failures are data, not status-sync errors. Callers can retain a
@@ -32,6 +29,10 @@ pub enum ContextUnavailableReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextCollectionResult {
     Collected(ContextUsageSample),
+    ResetPending {
+        conversation_id: Option<String>,
+        event: ContextResetEvent,
+    },
     Unavailable(ContextUnavailableReason),
 }
 
@@ -39,6 +40,10 @@ pub struct ContextCollectionTarget<'a> {
     pub session_kind: &'a SessionKind,
     pub workdir: &'a Path,
     pub conversation_id: Option<&'a str>,
+    /// Conversation IDs already assigned to sibling sessions of the same
+    /// harness in this feature. Used only during first-time discovery.
+    pub excluded_conversation_ids: &'a [String],
+    pub session_created_at: DateTime<Utc>,
     pub provider_id: Option<&'a str>,
     pub model_id: Option<&'a str>,
     /// Optional direct runtime JSON, such as Claude status-line input or Pi's
@@ -82,7 +87,7 @@ impl Default for SessionContextCollector {
 
 impl SessionContextCollector {
     #[cfg(test)]
-    fn with_roots(home: &Path, data: &Path, cache: &Path) -> Self {
+    pub(crate) fn with_roots(home: &Path, data: &Path, cache: &Path) -> Self {
         Self {
             home_dir: Some(home.to_path_buf()),
             data_dir: Some(data.to_path_buf()),
@@ -97,9 +102,17 @@ impl SessionContextCollector {
             match claude_runtime_sample(payload, target) {
                 Some(sample) => return ContextCollectionResult::Collected(sample),
                 None if claude_runtime_is_post_reset(payload) => {
-                    return ContextCollectionResult::Unavailable(
-                        ContextUnavailableReason::AwaitingPostResetSample,
-                    );
+                    return ContextCollectionResult::ResetPending {
+                        conversation_id: payload
+                            .get("session_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .or_else(|| target.conversation_id.map(str::to_string)),
+                        event: ContextResetEvent {
+                            reason: ContextResetReason::Compaction,
+                            detected_at: target.collected_at,
+                        },
+                    };
                 }
                 None => {}
             }
@@ -122,7 +135,7 @@ impl SessionContextCollector {
         };
 
         match parse_claude_transcript(&transcript, target) {
-            Some(sample) => ContextCollectionResult::Collected(sample),
+            Some(result) => result,
             None => self.fallback_or(
                 target,
                 FallbackFormula::Claude,
@@ -157,7 +170,7 @@ impl SessionContextCollector {
         };
 
         match parse_codex_rollout(&rollout, target) {
-            Some(sample) => ContextCollectionResult::Collected(sample),
+            Some(result) => result,
             None => self.fallback_or(
                 target,
                 FallbackFormula::Codex,
@@ -184,9 +197,15 @@ impl SessionContextCollector {
             return self.fallback(target, FallbackFormula::Opencode);
         };
         if record.awaiting_post_reset {
-            return ContextCollectionResult::Unavailable(
-                ContextUnavailableReason::AwaitingPostResetSample,
-            );
+            return ContextCollectionResult::ResetPending {
+                conversation_id: record
+                    .conversation_id
+                    .or_else(|| target.conversation_id.map(str::to_string)),
+                event: record.last_reset.unwrap_or(ContextResetEvent {
+                    reason: ContextResetReason::Compaction,
+                    detected_at: target.collected_at,
+                }),
+            };
         }
         let Some(used_tokens) = record.used_tokens else {
             return self.fallback_or(
@@ -233,9 +252,18 @@ impl SessionContextCollector {
             match pi_runtime_sample(payload, target) {
                 Some(sample) => return ContextCollectionResult::Collected(sample),
                 None if pi_runtime_is_post_reset(payload) => {
-                    return ContextCollectionResult::Unavailable(
-                        ContextUnavailableReason::AwaitingPostResetSample,
-                    );
+                    return ContextCollectionResult::ResetPending {
+                        conversation_id: payload
+                            .pointer("/data/sessionId")
+                            .or_else(|| payload.get("sessionId"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .or_else(|| target.conversation_id.map(str::to_string)),
+                        event: ContextResetEvent {
+                            reason: ContextResetReason::Compaction,
+                            detected_at: target.collected_at,
+                        },
+                    };
                 }
                 None => {}
             }
@@ -244,7 +272,13 @@ impl SessionContextCollector {
         let Some(home) = self.home_dir.as_deref() else {
             return ContextCollectionResult::Unavailable(ContextUnavailableReason::MissingSession);
         };
-        let Some(path) = find_pi_session(home, target.workdir, target.conversation_id) else {
+        let Some(path) = find_pi_session(
+            home,
+            target.workdir,
+            target.conversation_id,
+            target.excluded_conversation_ids,
+            target.session_created_at,
+        ) else {
             return ContextCollectionResult::Unavailable(ContextUnavailableReason::MissingSession);
         };
         let Some(record) = parse_pi_session(&path, target) else {
@@ -253,9 +287,15 @@ impl SessionContextCollector {
             );
         };
         if record.awaiting_post_reset {
-            return ContextCollectionResult::Unavailable(
-                ContextUnavailableReason::AwaitingPostResetSample,
-            );
+            return ContextCollectionResult::ResetPending {
+                conversation_id: record
+                    .conversation_id
+                    .or_else(|| target.conversation_id.map(str::to_string)),
+                event: record.last_reset.unwrap_or(ContextResetEvent {
+                    reason: ContextResetReason::Compaction,
+                    detected_at: target.collected_at,
+                }),
+            };
         }
         let Some(used_tokens) = record.used_tokens else {
             return ContextCollectionResult::Unavailable(
@@ -481,7 +521,7 @@ fn claude_runtime_is_post_reset(payload: &Value) -> bool {
 fn parse_claude_transcript(
     path: &Path,
     target: &ContextCollectionTarget<'_>,
-) -> Option<ContextUsageSample> {
+) -> Option<ContextCollectionResult> {
     let content = fs::read_to_string(path).ok()?;
     let mut latest: Option<(u64, DateTime<Utc>, Option<String>)> = None;
     let mut last_reset = None;
@@ -522,8 +562,20 @@ fn parse_claude_transcript(
         latest = Some((used, timestamp, conversation));
     }
 
+    if let Some(event) = last_reset.as_ref()
+        && latest
+            .as_ref()
+            .is_none_or(|(_, sampled_at, _)| *sampled_at <= event.detected_at)
+    {
+        return Some(ContextCollectionResult::ResetPending {
+            conversation_id: latest
+                .and_then(|(_, _, conversation_id)| conversation_id)
+                .or_else(|| target.conversation_id.map(str::to_string)),
+            event: event.clone(),
+        });
+    }
     let (used, sampled_at, conversation_id) = latest?;
-    Some(make_sample(
+    Some(ContextCollectionResult::Collected(make_sample(
         used,
         target
             .fallback_context_limit
@@ -533,7 +585,7 @@ fn parse_claude_transcript(
         target.collected_at,
         conversation_id.or_else(|| target.conversation_id.map(str::to_string)),
         last_reset,
-    ))
+    )))
 }
 
 fn codex_runtime_sample(
@@ -575,7 +627,7 @@ fn codex_runtime_sample(
 fn parse_codex_rollout(
     path: &Path,
     target: &ContextCollectionTarget<'_>,
-) -> Option<ContextUsageSample> {
+) -> Option<ContextCollectionResult> {
     let content = fs::read_to_string(path).ok()?;
     let mut conversation_id = target.conversation_id.map(str::to_string);
     let mut latest: Option<(u64, u64, DateTime<Utc>)> = None;
@@ -625,8 +677,18 @@ fn parse_codex_rollout(
         latest = Some((used, limit, timestamp));
     }
 
+    if let Some(event) = last_reset.as_ref()
+        && latest
+            .as_ref()
+            .is_none_or(|(_, _, sampled_at)| *sampled_at <= event.detected_at)
+    {
+        return Some(ContextCollectionResult::ResetPending {
+            conversation_id,
+            event: event.clone(),
+        });
+    }
     let (used, limit, sampled_at) = latest?;
-    Some(make_sample(
+    Some(ContextCollectionResult::Collected(make_sample(
         used,
         Some(limit),
         ContextProvenance::Direct,
@@ -634,7 +696,7 @@ fn parse_codex_rollout(
         target.collected_at,
         conversation_id,
         last_reset,
-    ))
+    )))
 }
 
 fn pi_runtime_sample(
@@ -800,25 +862,40 @@ fn read_opencode_legacy(
         ..ArtifactContextRecord::default()
     };
     let mut latest_message_id = None;
+    let mut last_usage_millis = None;
+    let mut last_reset_millis = None;
     for path in messages {
         let Ok(value) = read_json(&path) else {
             continue;
         };
-        if value.get("role").and_then(Value::as_str) != Some("assistant")
-            || value.get("summary").and_then(Value::as_bool) == Some(true)
-            || value.get("error").is_some_and(|error| !error.is_null())
-        {
+        if value.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let message_millis = value
+            .pointer("/time/completed")
+            .or_else(|| value.pointer("/time/created"))
+            .and_then(Value::as_i64)
+            .or_else(|| modified_millis(&path));
+        if value.get("summary").and_then(Value::as_bool) == Some(true) {
+            let detected_at = message_millis
+                .and_then(millis_timestamp)
+                .unwrap_or(target.collected_at);
+            last_reset_millis = message_millis;
+            record.last_reset = Some(ContextResetEvent {
+                reason: ContextResetReason::Compaction,
+                detected_at,
+            });
+            continue;
+        }
+        if value.get("error").is_some_and(|error| !error.is_null()) {
             continue;
         }
         if let Some(tokens) = value.get("tokens")
             && let Some(used) = opencode_context_tokens(tokens)
         {
             record.used_tokens = Some(used);
-            record.sampled_at = value
-                .pointer("/time/completed")
-                .or_else(|| value.pointer("/time/created"))
-                .and_then(Value::as_i64)
-                .and_then(millis_timestamp);
+            record.sampled_at = message_millis.and_then(millis_timestamp);
+            last_usage_millis = message_millis;
             record.provider_id = value
                 .get("providerID")
                 .and_then(Value::as_str)
@@ -846,10 +923,16 @@ fn read_opencode_legacy(
                 && let Some(used) = value.get("tokens").and_then(opencode_context_tokens)
             {
                 record.used_tokens = Some(used);
-                record.sampled_at = modified_millis(&path).and_then(millis_timestamp);
+                let sampled_millis = modified_millis(&path);
+                record.sampled_at = sampled_millis.and_then(millis_timestamp);
+                last_usage_millis = sampled_millis;
             }
         }
     }
+    record.awaiting_post_reset = last_reset_millis
+        .zip(last_usage_millis)
+        .is_some_and(|(reset, usage)| reset >= usage)
+        || (last_reset_millis.is_some() && last_usage_millis.is_none());
     Some(record)
 }
 
@@ -974,9 +1057,15 @@ fn parse_pi_session(
     Some(record)
 }
 
-fn find_pi_session(home: &Path, workdir: &Path, id: Option<&str>) -> Option<PathBuf> {
+fn find_pi_session(
+    home: &Path,
+    workdir: &Path,
+    id: Option<&str>,
+    excluded_ids: &[String],
+    created_at: DateTime<Utc>,
+) -> Option<PathBuf> {
     let root = home.join(".pi").join("agent").join("sessions");
-    let mut selected: Option<(PathBuf, i64)> = None;
+    let mut selected: Option<(PathBuf, u64, i64)> = None;
     for path in walk_files_with_extension(&root, "jsonl") {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
@@ -995,15 +1084,27 @@ fn find_pi_session(home: &Path, workdir: &Path, id: Option<&str>) -> Option<Path
         if id.is_some_and(|wanted| session_id != Some(wanted)) {
             continue;
         }
+        if id.is_none()
+            && session_id.is_some_and(|candidate| excluded_ids.iter().any(|id| id == candidate))
+        {
+            continue;
+        }
         let modified = modified_millis(&path).unwrap_or(0);
+        let session_millis = json_timestamp(&header, "timestamp")
+            .map(|timestamp| timestamp.timestamp_millis())
+            .unwrap_or(modified);
+        let distance = session_millis.abs_diff(created_at.timestamp_millis());
         if selected
             .as_ref()
-            .is_none_or(|(_, current)| modified > *current)
+            .is_none_or(|(_, current_distance, current_modified)| {
+                distance < *current_distance
+                    || (distance == *current_distance && modified > *current_modified)
+            })
         {
-            selected = Some((path, modified));
+            selected = Some((path, distance, modified));
         }
     }
-    selected.map(|(path, _)| path)
+    selected.map(|(path, _, _)| path)
 }
 
 fn find_codex_rollout(home: &Path, workdir: &Path, id: Option<&str>) -> Option<PathBuf> {
@@ -1231,6 +1332,8 @@ mod tests {
             session_kind: kind,
             workdir,
             conversation_id,
+            excluded_conversation_ids: &[],
+            session_created_at: now(),
             provider_id: None,
             model_id: None,
             runtime_payload: None,
@@ -1289,10 +1392,16 @@ mod tests {
         });
         let mut post_reset_target = target(&kind, &workdir, Some("claude-1"));
         post_reset_target.runtime_payload = Some(&post_reset_payload);
-        assert_eq!(
+        assert!(matches!(
             collector(&roots).collect(post_reset_target),
-            ContextCollectionResult::Unavailable(ContextUnavailableReason::AwaitingPostResetSample)
-        );
+            ContextCollectionResult::ResetPending {
+                conversation_id: Some(id),
+                event: ContextResetEvent {
+                    reason: ContextResetReason::Compaction,
+                    ..
+                },
+            } if id == "claude-1"
+        ));
 
         let transcript = roots
             .path()
@@ -1498,9 +1607,106 @@ mod tests {
             ),
         );
         let kind = SessionKind::Pi;
-        assert_eq!(
+        assert!(matches!(
             collector(&roots).collect(target(&kind, &workdir, Some("pi-1"))),
-            ContextCollectionResult::Unavailable(ContextUnavailableReason::AwaitingPostResetSample)
+            ContextCollectionResult::ResetPending {
+                conversation_id: Some(id),
+                event: ContextResetEvent {
+                    reason: ContextResetReason::Compaction,
+                    ..
+                },
+            } if id == "pi-1"
+        ));
+    }
+
+    #[test]
+    fn legacy_opencode_summary_is_an_explicit_pending_reset() {
+        let roots = TempDir::new().unwrap();
+        let workdir = roots.path().join("repo");
+        let storage = roots.path().join("opencode/storage");
+        write(
+            &storage.join("session/project/open-legacy.json"),
+            &serde_json::json!({
+                "id": "open-legacy",
+                "directory": workdir,
+                "time": {"updated": 2_000}
+            })
+            .to_string(),
         );
+        write(
+            &storage.join("message/open-legacy/m1.json"),
+            &serde_json::json!({
+                "id": "m1",
+                "role": "assistant",
+                "providerID": "test",
+                "modelID": "model",
+                "time": {"completed": 1_000},
+                "tokens": {"input": 90_000, "output": 0, "cache": {"read": 0, "write": 0}}
+            })
+            .to_string(),
+        );
+        write(
+            &storage.join("message/open-legacy/m2.json"),
+            &serde_json::json!({
+                "id": "m2",
+                "role": "assistant",
+                "summary": true,
+                "time": {"completed": 2_000}
+            })
+            .to_string(),
+        );
+
+        let kind = SessionKind::Opencode;
+        assert!(matches!(
+            collector(&roots).collect(target(
+                &kind,
+                &workdir,
+                Some("open-legacy")
+            )),
+            ContextCollectionResult::ResetPending {
+                conversation_id: Some(id),
+                event: ContextResetEvent {
+                    reason: ContextResetReason::Compaction,
+                    ..
+                },
+            } if id == "open-legacy"
+        ));
+    }
+
+    #[test]
+    fn trailing_claude_and_codex_compactions_hide_pre_reset_usage() {
+        let roots = TempDir::new().unwrap();
+        let workdir = roots.path().join("repo");
+        let claude_path = roots
+            .path()
+            .join(".claude/projects")
+            .join(encode_claude_path(&workdir))
+            .join("claude-reset.jsonl");
+        write(
+            &claude_path,
+            concat!(
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-08-23T11:00:00Z\",\"sessionId\":\"claude-reset\",\"message\":{\"usage\":{\"input_tokens\":180000}}}\n",
+                "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"timestamp\":\"2026-08-23T11:01:00Z\"}\n"
+            ),
+        );
+        assert!(matches!(
+            collector(&roots).collect(target(&SessionKind::Claude, &workdir, Some("claude-reset"))),
+            ContextCollectionResult::ResetPending { .. }
+        ));
+
+        let codex_path = roots.path().join(".codex/sessions/reset.jsonl");
+        write(
+            &codex_path,
+            &format!(
+                "{{\"timestamp\":\"2026-08-23T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"codex-reset\",\"cwd\":{}}}}}\n\
+                 {{\"timestamp\":\"2026-08-23T11:00:30Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"last_token_usage\":{{\"total_tokens\":180000}},\"model_context_window\":200000}}}}}}\n\
+                 {{\"timestamp\":\"2026-08-23T11:01:00Z\",\"type\":\"compacted\",\"payload\":{{}}}}\n",
+                serde_json::to_string(workdir.to_string_lossy().as_ref()).unwrap()
+            ),
+        );
+        assert!(matches!(
+            collector(&roots).collect(target(&SessionKind::Codex, &workdir, Some("codex-reset"))),
+            ContextCollectionResult::ResetPending { .. }
+        ));
     }
 }

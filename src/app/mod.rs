@@ -50,7 +50,7 @@ mod view;
 mod tests;
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -899,6 +899,16 @@ pub struct App {
     /// positive lookup is persisted back, rather than being purely
     /// session-lived like the open-PR cache.
     pub(crate) terminal_prs: HashMap<String, crate::github::TerminalPr>,
+    /// Feature ids the terminal sweep has already confirmed have no
+    /// merged/closed PR, keyed like `active_prs`/`terminal_prs`. Session-only
+    /// (never persisted): unlike `terminal_prs`, a `NoPr` result is not a
+    /// durable fact — the branch could still get a PR later — so this exists
+    /// purely to stop `sync_active_prs_background` from re-querying the same
+    /// settled "never had one" answer on every sweep. Cleared the moment a
+    /// branch is observed open again (`apply_active_pr_updates`), so a PR
+    /// that opens and later closes is re-checked rather than staying stuck on
+    /// a stale negative answer.
+    pub(crate) confirmed_no_terminal_pr: HashSet<String>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
     /// Receiver for the background AI-adaptive plan-interview round (a
@@ -2351,6 +2361,7 @@ impl App {
             gh_graphql_limited_at: None,
             active_prs: HashMap::new(),
             terminal_prs: HashMap::new(),
+            confirmed_no_terminal_pr: HashSet::new(),
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
@@ -2586,6 +2597,7 @@ impl App {
             gh_graphql_limited_at: None,
             active_prs: HashMap::new(),
             terminal_prs: HashMap::new(),
+            confirmed_no_terminal_pr: HashSet::new(),
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,

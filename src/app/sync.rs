@@ -95,8 +95,10 @@ pub(crate) struct ActivePrUpdate {
 pub(crate) enum TerminalPrLookup {
     Found(crate::github::TerminalPr),
     /// The repository answered and this branch has no merged/closed PR.
-    /// Deliberately *not* persisted — only a positive result is durable,
-    /// since "no terminal PR yet" can always change.
+    /// Deliberately *not* persisted to the DB — only a positive result is
+    /// durable, since "no terminal PR yet" can always change — but cached
+    /// in-memory in `App::confirmed_no_terminal_pr` so it costs one lookup
+    /// per branch per app run rather than one every sweep.
     NoPr,
     /// Not looked up (budget exhausted this sweep, or a prior failure in the
     /// same repo call). Leaves any previous badge alone.
@@ -556,8 +558,18 @@ impl App {
 
         // A feature already known terminal never needs asking about again —
         // merged/closed never revert — so this sweep can skip straight past
-        // it rather than spending a GraphQL alias on a settled answer.
-        let known_terminal_ids: HashSet<String> = self.terminal_prs.keys().cloned().collect();
+        // it rather than spending a GraphQL alias on a settled answer. A
+        // feature already confirmed to have *no* terminal PR is folded in
+        // here too: that answer isn't durable (a branch can still get a PR
+        // later), but it holds until `apply_active_pr_updates` sees the
+        // branch open again and clears it, which is what keeps a "never had
+        // one" branch from being re-queried on every single sweep.
+        let known_terminal_ids: HashSet<String> = self
+            .terminal_prs
+            .keys()
+            .cloned()
+            .chain(self.confirmed_no_terminal_pr.iter().cloned())
+            .collect();
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.active_pr_bg = Some(rx);
@@ -781,6 +793,10 @@ impl App {
 
             match update.lookup {
                 ActivePrLookup::Found(status) => {
+                    // The branch has an open PR again, so a past "no terminal
+                    // PR" answer is no longer settled — it must be re-checked
+                    // once this PR itself reaches a terminal state.
+                    self.confirmed_no_terminal_pr.remove(&update.feature_id);
                     let previous_pr_number = self
                         .active_prs
                         .get(&update.feature_id)
@@ -833,8 +849,12 @@ impl App {
     /// Apply a completed terminal-PR sweep. Unlike `apply_active_pr_updates`,
     /// a positive result is durable — merged/closed never revert — so
     /// `Found` is persisted to the DB as well as cached in memory, and
-    /// nothing here ever removes an existing entry (`NoPr`, `Skipped`, and
-    /// `Failed` all leave a prior terminal badge exactly as it was).
+    /// nothing here ever removes an existing terminal-PR entry (`Skipped` and
+    /// `Failed` leave a prior terminal badge exactly as it was). `NoPr` is
+    /// not durable and is never persisted, but it is cached in
+    /// `confirmed_no_terminal_pr` so the same settled-negative branch isn't
+    /// re-queried every sweep; that cache self-invalidates the moment the
+    /// branch is seen with an open PR again.
     pub(crate) fn apply_terminal_pr_updates(&mut self, updates: Vec<TerminalPrUpdate>) -> bool {
         let mut changed = false;
         for update in updates {
@@ -868,7 +888,14 @@ impl App {
                         changed = true;
                     }
                 }
-                TerminalPrLookup::NoPr => {}
+                TerminalPrLookup::NoPr => {
+                    // Not persisted to the DB — this isn't a durable fact —
+                    // but cached in memory so the next sweep doesn't spend a
+                    // GraphQL alias re-asking a branch that still has nothing
+                    // to report. Cleared as soon as the branch shows an open
+                    // PR again (`apply_active_pr_updates`).
+                    self.confirmed_no_terminal_pr.insert(update.feature_id);
+                }
                 TerminalPrLookup::Skipped => {}
                 TerminalPrLookup::Failed(error) => {
                     self.log_debug(

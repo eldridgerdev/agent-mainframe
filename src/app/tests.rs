@@ -2136,6 +2136,215 @@ fn unchanged_active_pr_badge_does_not_cancel_explicit_closed_pr_fetch() {
     assert!(app.pr_review_bg.is_some());
 }
 
+/// A `Found` terminal result is durable: it lands in the in-memory cache and,
+/// when a DB is attached, is persisted so a restart doesn't lose it.
+#[test]
+fn terminal_pr_found_updates_cache_and_persists_to_db() {
+    use super::sync::{TerminalPrLookup, TerminalPrUpdate};
+    use crate::db::AmfDb;
+    use crate::github::{TerminalPr, TerminalPrState};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = NamedTempFile::new().unwrap();
+    app.db = Some(AmfDb::open(db_file.path()).unwrap());
+
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let repo = app.store.projects[0].repo.clone();
+
+    let pr = TerminalPr {
+        number: 42,
+        state: TerminalPrState::Merged,
+        at: "2026-01-01T00:00:00Z".to_string(),
+    };
+
+    assert!(app.apply_terminal_pr_updates(vec![TerminalPrUpdate {
+        feature_id: feature_id.clone(),
+        repo: repo.clone(),
+        branch: branch.clone(),
+        lookup: TerminalPrLookup::Found(pr.clone()),
+    }]));
+    assert_eq!(app.terminal_pr_for_feature(&feature_id), Some(&pr));
+
+    let saved = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_all_pr_terminal_state()
+        .unwrap();
+    assert_eq!(
+        saved.get(&(repo.to_string_lossy().to_string(), branch)),
+        Some(&pr)
+    );
+}
+
+/// A result addressed to a branch the feature no longer has (it was renamed,
+/// or the update raced a branch switch) must not overwrite the current
+/// terminal badge — mirrors the same guard on `apply_active_pr_updates`.
+#[test]
+fn terminal_pr_update_for_stale_branch_does_not_overwrite_current_badge() {
+    use super::sync::{TerminalPrLookup, TerminalPrUpdate};
+    use crate::github::{TerminalPr, TerminalPrState};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let repo = app.store.projects[0].repo.clone();
+
+    let changed = app.apply_terminal_pr_updates(vec![TerminalPrUpdate {
+        feature_id: feature_id.clone(),
+        repo,
+        branch: "old-branch".to_string(),
+        lookup: TerminalPrLookup::Found(TerminalPr {
+            number: 1,
+            state: TerminalPrState::Merged,
+            at: "2026-01-01T00:00:00Z".to_string(),
+        }),
+    }]);
+
+    assert!(!changed);
+    assert!(app.terminal_pr_for_feature(&feature_id).is_none());
+}
+
+/// `Skipped` and `Failed` terminal lookups must leave a previously confirmed
+/// merged/closed badge exactly as it was — the sweep never had new evidence.
+#[test]
+fn skipped_or_failed_terminal_lookup_leaves_previous_badge_untouched() {
+    use super::sync::{TerminalPrLookup, TerminalPrUpdate};
+    use crate::github::{TerminalPr, TerminalPrState};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let repo = app.store.projects[0].repo.clone();
+    let pr = TerminalPr {
+        number: 7,
+        state: TerminalPrState::Closed,
+        at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    app.terminal_prs.insert(feature_id.clone(), pr.clone());
+
+    let changed = app.apply_terminal_pr_updates(vec![
+        TerminalPrUpdate {
+            feature_id: feature_id.clone(),
+            repo: repo.clone(),
+            branch: branch.clone(),
+            lookup: TerminalPrLookup::Skipped,
+        },
+        TerminalPrUpdate {
+            feature_id: feature_id.clone(),
+            repo,
+            branch,
+            lookup: TerminalPrLookup::Failed("network unavailable".to_string()),
+        },
+    ]);
+
+    assert!(!changed);
+    assert_eq!(app.terminal_pr_for_feature(&feature_id), Some(&pr));
+}
+
+/// The bug this pins down: without a negative cache, a branch that never has
+/// a PR would trigger a fresh `GhCli::terminal_prs` call on every sweep,
+/// forever. `NoPr` must settle into `confirmed_no_terminal_pr` so the next
+/// sweep's `needs_terminal` computation (gated on `known_terminal_ids`) skips
+/// it — and that settled answer must be cleared the moment the branch shows
+/// an open PR again, since a *new* PR on that branch can still reach a
+/// terminal state later.
+#[test]
+fn confirmed_no_terminal_pr_is_cached_and_cleared_when_branch_reopens() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate, TerminalPrLookup, TerminalPrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let repo = app.store.projects[0].repo.clone();
+
+    let changed = app.apply_terminal_pr_updates(vec![TerminalPrUpdate {
+        feature_id: feature_id.clone(),
+        repo,
+        branch: branch.clone(),
+        lookup: TerminalPrLookup::NoPr,
+    }]);
+    assert!(!changed, "a settled negative isn't a badge change");
+    assert!(app.confirmed_no_terminal_pr.contains(&feature_id));
+    assert!(app.terminal_pr_for_feature(&feature_id).is_none());
+
+    // The branch gets a PR again; the settled "never had one" answer must not
+    // survive that, or a later merge/close on this new PR would never be
+    // looked up again.
+    app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch,
+            head_sha: "abc123".to_string(),
+            number: 99,
+            unresolved_threads: Some(0),
+        }),
+    }]);
+    assert!(!app.confirmed_no_terminal_pr.contains(&feature_id));
+}
+
+/// Seeded once at startup, before the first sweep: a matching `(repo,
+/// branch)` row lands in `terminal_prs`, and a row for a repo/branch this
+/// store doesn't have is simply not applied.
+#[test]
+fn load_terminal_prs_from_db_seeds_only_matching_features() {
+    use crate::db::AmfDb;
+    use crate::github::{TerminalPr, TerminalPrState};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature_id = app.store.projects[0].features[0].id.clone();
+    let repo = app.store.projects[0].repo.to_string_lossy().to_string();
+    let branch = app.store.projects[0].features[0].branch.clone();
+
+    let db_file = NamedTempFile::new().unwrap();
+    let db = AmfDb::open(db_file.path()).unwrap();
+    let pr = TerminalPr {
+        number: 5,
+        state: TerminalPrState::Merged,
+        at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    db.save_pr_terminal_state(&repo, &branch, &pr).unwrap();
+    db.save_pr_terminal_state("/some/other/repo", "unrelated-branch", &pr)
+        .unwrap();
+    app.db = Some(db);
+
+    assert!(app.terminal_pr_for_feature(&feature_id).is_none());
+    app.load_terminal_prs_from_db();
+
+    assert_eq!(app.terminal_pr_for_feature(&feature_id), Some(&pr));
+    assert_eq!(app.terminal_prs.len(), 1, "the unrelated row isn't applied");
+}
+
 #[test]
 fn predecessor_invalidation_preserves_live_successor_ai_review() {
     let store = store_with_feature(ProjectStatus::Idle);

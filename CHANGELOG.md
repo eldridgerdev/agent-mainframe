@@ -20,9 +20,20 @@ are tagged.
   the old value until fresh usage arrives. Terminal, editor, TODO, and custom
   rows remain unchanged.
 
+- **The dashboard PR badge now shows merged and closed pull requests, not just
+  open ones.** Once a feature's PR is merged or closed without merging, its
+  badge switches to `[PR #N merged]` / `[PR #N closed]` instead of vanishing,
+  so a finished feature stays visually distinct from one that never had a PR.
+  This applies to the feature row and to the badge shown in an embedded
+  session's header/sidebar. Requires an authenticated `gh` and a GitHub
+  remote, same as the existing open-PR badge, and refreshes on the same
+  background schedule — no extra `gh` calls beyond what a branch actually
+  needs. No migration is required; the database updates itself on first
+  launch after upgrading.
+
 ### Migration
 
-No migration is required.
+No migration is required for context-window indicators.
 
 ## [v0.38.0] - 2026-08-21
 

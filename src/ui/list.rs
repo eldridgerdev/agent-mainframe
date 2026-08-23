@@ -442,6 +442,22 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             label,
                             Style::default().fg(color).add_modifier(Modifier::BOLD),
                         ));
+                    } else if let Some(pr) = app.terminal_pr_for_feature(&feature.id) {
+                        // A branch with no open PR but a merged/closed one is
+                        // finished work, not "no PR" — show that instead of
+                        // nothing (see D3 in AMF_PLAN.md).
+                        let (word, color) = match pr.state {
+                            crate::github::TerminalPrState::Merged => {
+                                (pr.state.label(), theme.pr_merged.to_color())
+                            }
+                            crate::github::TerminalPrState::Closed => {
+                                (pr.state.label(), theme.pr_closed.to_color())
+                            }
+                        };
+                        line_spans.push(Span::styled(
+                            format!(" [PR #{} {word}]", pr.number),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ));
                     }
                     if let Some(usage) = aggregate_token_usage(
                         feature

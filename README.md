@@ -44,7 +44,8 @@ non-git directories without it.
 Optional tools:
 
 - An authenticated [GitHub CLI](https://cli.github.com/) (`gh`) enables PR
-  triage, AI review, and posting final-review feedback.
+  triage, AI review, posting final-review feedback, and the dashboard's
+  open/merged/closed PR badge.
 - A [Nerd Font](https://www.nerdfonts.com/) provides the best icon rendering.
 - The `code` command enables VS Code sessions.
 - A C compiler and git are required only for installing optional tree-sitter
@@ -289,6 +290,15 @@ With an authenticated `gh` CLI, AMF can also post the feedback to the branch's
 pull request.
 
 ### Work through pull-request feedback
+
+With an authenticated `gh` and a GitHub remote, a feature whose branch has a
+pull request shows a `[PR #N · M open]` badge on its dashboard row and in an
+embedded session's header, refreshed every few minutes in the background.
+Once that PR is merged or closed without merging, the badge switches to
+`[PR #N merged]` / `[PR #N closed]` instead of disappearing, so a finished
+feature stays visually distinct from one that never had a PR. A branch
+without `gh`, without a GitHub remote, or without any PR shows no badge at
+all.
 
 Select a feature and press `G` to open PR Triage. You can inspect review
 threads, send an individual or batched fix prompt to an agent, reply, and mark

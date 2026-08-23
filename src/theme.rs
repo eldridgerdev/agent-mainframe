@@ -357,6 +357,12 @@ pub struct Theme {
     pub warning: ColorDef,
     pub danger: ColorDef,
     pub info: ColorDef,
+    /// A feature row's badge for a merged PR (D3: merged and closed-without-
+    /// merge both get a badge, distinct from each other and from the open-PR
+    /// badge's success/info/warning trio).
+    pub pr_merged: ColorDef,
+    /// A feature row's badge for a closed-without-merge PR.
+    pub pr_closed: ColorDef,
     pub border: ColorDef,
     pub border_focus: ColorDef,
     pub selection: ColorDef,
@@ -452,6 +458,8 @@ impl Theme {
             warning: ColorDef::named("yellow"),
             danger: ColorDef::named("red"),
             info: ColorDef::named("cyan"),
+            pr_merged: ColorDef::named("green"),
+            pr_closed: ColorDef::named("darkgray"),
             border: ColorDef::named("white"),
             border_focus: ColorDef::named("cyan"),
             selection: ColorDef::named("darkgray"),
@@ -496,6 +504,8 @@ impl Theme {
             warning: ColorDef::named("yellow"),
             danger: ColorDef::named("red"),
             info: ColorDef::named("cyan"),
+            pr_merged: ColorDef::named("green"),
+            pr_closed: ColorDef::named("darkgray"),
             border: ColorDef::named("white"),
             border_focus: ColorDef::named("cyan"),
             selection: ColorDef::rgb(60, 60, 80),
@@ -540,6 +550,8 @@ impl Theme {
             warning: ColorDef::rgb(255, 184, 108),
             danger: ColorDef::rgb(255, 85, 85),
             info: ColorDef::rgb(139, 233, 253),
+            pr_merged: ColorDef::rgb(80, 250, 123),
+            pr_closed: ColorDef::rgb(98, 114, 164),
             border: ColorDef::rgb(98, 114, 164),
             border_focus: ColorDef::rgb(139, 233, 253),
             selection: ColorDef::rgb(68, 71, 90),
@@ -584,6 +596,8 @@ impl Theme {
             warning: ColorDef::rgb(235, 203, 139),
             danger: ColorDef::rgb(191, 97, 106),
             info: ColorDef::rgb(136, 192, 208),
+            pr_merged: ColorDef::rgb(163, 190, 140),
+            pr_closed: ColorDef::rgb(129, 161, 193),
             border: ColorDef::rgb(129, 161, 193),
             border_focus: ColorDef::rgb(136, 192, 208),
             selection: ColorDef::rgb(94, 129, 172),
@@ -628,6 +642,8 @@ impl Theme {
             warning: ColorDef::rgb(223, 142, 29),
             danger: ColorDef::rgb(210, 15, 57),
             info: ColorDef::rgb(32, 159, 181),
+            pr_merged: ColorDef::rgb(64, 160, 43),
+            pr_closed: ColorDef::rgb(108, 111, 133),
             border: ColorDef::rgb(156, 160, 176),
             border_focus: ColorDef::rgb(114, 135, 253),
             selection: ColorDef::rgb(204, 208, 218),
@@ -672,6 +688,8 @@ impl Theme {
             warning: ColorDef::rgb(229, 200, 144),
             danger: ColorDef::rgb(231, 130, 132),
             info: ColorDef::rgb(129, 200, 190),
+            pr_merged: ColorDef::rgb(166, 218, 149),
+            pr_closed: ColorDef::rgb(165, 173, 206),
             border: ColorDef::rgb(115, 121, 148),
             border_focus: ColorDef::rgb(186, 187, 241),
             selection: ColorDef::rgb(81, 87, 109),
@@ -716,6 +734,8 @@ impl Theme {
             warning: ColorDef::rgb(238, 212, 159),
             danger: ColorDef::rgb(237, 135, 150),
             info: ColorDef::rgb(125, 196, 228),
+            pr_merged: ColorDef::rgb(166, 218, 149),
+            pr_closed: ColorDef::rgb(165, 173, 203),
             border: ColorDef::rgb(110, 115, 141),
             border_focus: ColorDef::rgb(183, 189, 248),
             selection: ColorDef::rgb(54, 58, 79),
@@ -760,6 +780,8 @@ impl Theme {
             warning: ColorDef::rgb(249, 226, 175),
             danger: ColorDef::rgb(243, 139, 168),
             info: ColorDef::rgb(116, 199, 236),
+            pr_merged: ColorDef::rgb(166, 227, 161),
+            pr_closed: ColorDef::rgb(166, 173, 200),
             border: ColorDef::rgb(108, 112, 134),
             border_focus: ColorDef::rgb(180, 190, 254),
             selection: ColorDef::rgb(49, 50, 68),
@@ -814,6 +836,8 @@ impl Theme {
             danger: ColorDef::rgb(251, 73, 52),
             // bright_aqua: #8ec07c
             info: ColorDef::rgb(142, 192, 124),
+            pr_merged: ColorDef::rgb(184, 187, 38),
+            pr_closed: ColorDef::rgb(168, 153, 132),
             // bg3: #665c54
             border: ColorDef::rgb(102, 92, 84),
             // bright_blue: #83a598
@@ -899,6 +923,8 @@ impl Theme {
             danger: ColorDef::rgb(204, 36, 29),
             // aqua: #689d6a
             info: ColorDef::rgb(104, 157, 106),
+            pr_merged: ColorDef::rgb(152, 151, 26),
+            pr_closed: ColorDef::rgb(102, 92, 84),
             // light3: #bdae93
             border: ColorDef::rgb(189, 174, 147),
             // blue: #458588
@@ -974,6 +1000,8 @@ impl Theme {
             warning: fg.yellow.color_def(),
             danger: fg.red.color_def(),
             info: fg.aqua.color_def(),
+            pr_merged: fg.green.color_def(),
+            pr_closed: fg.grey2.color_def(),
             border: bg.bg5.color_def(),
             border_focus: fg.blue.color_def(),
             selection: bg.bg_current_word.color_def(),

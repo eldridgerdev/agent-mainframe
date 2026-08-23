@@ -3,6 +3,8 @@ mod automation;
 mod claude;
 mod codex;
 mod codex_config;
+mod context_collectors;
+mod context_tracking;
 mod custom_session_icons;
 mod db;
 mod debug;

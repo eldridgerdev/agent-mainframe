@@ -31,9 +31,22 @@ are tagged.
   needs. No migration is required; the database updates itself on first
   launch after upgrading.
 
+### Fixed
+
+- **PR Triage now confirms when an AI Review completed with no findings.**
+  The header shows `[AI review: no findings (<age>)]` for the current PR
+  revision instead of looking identical to a review that never ran. Running
+  reviews and unpublished findings still take precedence, while failed reviews
+  get a separate failure badge without crowding the header with error details.
+  Same-revision results survive leaving the pane and restarting AMF; a new head
+  commit starts unreviewed as before. Empty or incomplete agent responses are
+  recorded as failures rather than clean reviews.
+
 ### Migration
 
-No migration is required for context-window indicators.
+- No migration is required for context-window indicators.
+- No migration is required. Existing same-revision AI Review cache entries
+  remain readable and expire under the existing one-week retention policy.
 
 ## [v0.38.0] - 2026-08-21
 

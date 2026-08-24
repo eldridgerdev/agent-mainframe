@@ -2408,6 +2408,10 @@ pub struct PrReviewState {
     /// publishable. Loaded from `ai_review_cache` on entry and kept in sync as
     /// the linked AI Review is generated, skipped, or posted.
     pub pending_ai_review_findings: usize,
+    /// Most recent terminal AI Review result for this exact PR/head SHA.
+    /// Kept alongside the pending count so a successful zero-finding run or a
+    /// failure remains distinguishable from a review that has never run.
+    pub ai_review_last_run: Option<crate::app::ai_review::AiReviewRun>,
 }
 
 /// Identity of the PR Triage refresh started after a successful AI Review

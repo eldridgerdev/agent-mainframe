@@ -119,17 +119,21 @@ fn format_elapsed(elapsed: std::time::Duration) -> String {
     }
 }
 
-fn ai_review_last_run_badge(run: &AiReviewRun) -> (String, bool) {
+pub(super) fn ai_review_run_badge_text(
+    run: &AiReviewRun,
+    include_error_detail: bool,
+) -> (String, bool) {
     let age = format_relative_time(run.ran_at);
     match &run.outcome {
-        AiReviewRunOutcome::Findings(0) => (format!("  no findings ({age})"), false),
+        AiReviewRunOutcome::Findings(0) => (format!("no findings ({age})"), false),
         AiReviewRunOutcome::Findings(n) => (
-            format!("  {n} finding{} ({age})", if *n == 1 { "" } else { "s" }),
+            format!("{n} finding{} ({age})", if *n == 1 { "" } else { "s" }),
             false,
         ),
-        AiReviewRunOutcome::Error(e) => {
-            (format!("  failed ({age}): {}", truncate_right(e, 60)), true)
+        AiReviewRunOutcome::Error(e) if include_error_detail => {
+            (format!("failed ({age}): {}", truncate_right(e, 60)), true)
         }
+        AiReviewRunOutcome::Error(_) => (format!("failed ({age})"), true),
     }
 }
 
@@ -366,9 +370,9 @@ pub fn draw_ai_review(
             Style::default().fg(theme.warning.to_color()),
         ));
     } else if let Some(run) = &state.last_run {
-        let (text, is_error) = ai_review_last_run_badge(run);
+        let (text, is_error) = ai_review_run_badge_text(run, true);
         header_spans.push(Span::styled(
-            text,
+            format!("  {text}"),
             Style::default().fg(if is_error {
                 theme.danger.to_color()
             } else {

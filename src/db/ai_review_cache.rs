@@ -135,4 +135,41 @@ mod tests {
         let entry: AiReviewCacheEntry = serde_json::from_value(legacy).unwrap();
         assert!(entry.summary.is_none());
     }
+
+    #[test]
+    fn legacy_zero_finding_run_without_summary_remains_readable() {
+        let legacy = serde_json::json!({
+            "findings": [],
+            "last_run": {
+                "ran_at": Local::now(),
+                "outcome": { "Findings": 0 }
+            }
+        });
+        let entry: AiReviewCacheEntry = serde_json::from_value(legacy).unwrap();
+        assert!(entry.summary.is_none());
+        assert!(matches!(
+            entry.last_run.unwrap().outcome,
+            AiReviewRunOutcome::Findings(0)
+        ));
+    }
+
+    #[test]
+    fn eviction_removes_only_rows_older_than_one_week() {
+        let (_tmp, db) = open_temp_db();
+        db.save_ai_review_cache(1, "old", &entry("old")).unwrap();
+        db.save_ai_review_cache(2, "fresh", &entry("fresh"))
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE ai_review_cache SET updated_at = datetime('now', '-8 days') \
+                 WHERE pr_number = 1",
+                [],
+            )
+            .unwrap();
+
+        db.evict_stale_ai_review_cache().unwrap();
+
+        assert!(db.load_ai_review_cache(1, "old").unwrap().is_none());
+        assert!(db.load_ai_review_cache(2, "fresh").unwrap().is_some());
+    }
 }

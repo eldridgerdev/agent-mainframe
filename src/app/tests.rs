@@ -13030,6 +13030,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -13466,6 +13467,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -15778,6 +15780,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -15853,6 +15856,7 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -16397,6 +16401,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -20412,7 +20417,13 @@ fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
         _ => panic!("expected AI Review pane"),
     }
     match app.ai_review_return_to.as_deref() {
-        Some(AppMode::PrReview(state)) => assert_eq!(state.pending_ai_review_findings, 2),
+        Some(AppMode::PrReview(state)) => {
+            assert_eq!(state.pending_ai_review_findings, 2);
+            assert!(matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Findings(2))
+            ));
+        }
         _ => panic!("expected stashed PR Triage pane"),
     }
 
@@ -20421,6 +20432,184 @@ fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
         Some(AppMode::PrReview(state)) => assert_eq!(state.pending_ai_review_findings, 1),
         _ => panic!("expected stashed PR Triage pane"),
     }
+}
+
+#[test]
+fn completed_zero_ai_review_updates_visible_triage_immediately() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => {
+            sample_ai_review_state(state.workdir.clone(), state.review.pr.clone())
+        }
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin);
+    tx.send(crate::app::ai_review::AiReviewProgress::Done(Ok(
+        crate::app::ai_review::AiReviewOutcome {
+            findings: vec![],
+            summary: Some("No actionable issues found.".to_string()),
+            raw_output: "## Summary\nNo actionable issues found.".to_string(),
+        },
+    )))
+    .unwrap();
+
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.pending_ai_review_findings, 0);
+            assert!(matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Findings(0))
+            ));
+        }
+        _ => panic!("expected visible PR Triage pane"),
+    }
+}
+
+#[test]
+fn ai_review_errors_update_visible_triage_for_agent_and_diff_failures() {
+    for detail in ["agent exited with status 1", "failed to fetch PR diff"] {
+        let store = store_with_feature(ProjectStatus::Active);
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        enter_pr_review_for_feature(&mut app, 1);
+        let origin = match &app.mode {
+            AppMode::PrReview(state) => {
+                sample_ai_review_state(state.workdir.clone(), state.review.pr.clone())
+            }
+            _ => unreachable!(),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.ai_review_bg = Some(rx);
+        app.ai_review_pending = Some(origin);
+        tx.send(crate::app::ai_review::AiReviewProgress::Done(Err(
+            anyhow::anyhow!(detail),
+        )))
+        .unwrap();
+
+        assert!(app.poll_ai_pr_review_bg());
+        match &app.mode {
+            AppMode::PrReview(state) => assert!(matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Error(message))
+                    if message == detail
+            )),
+            _ => panic!("expected visible PR Triage pane"),
+        }
+    }
+}
+
+#[test]
+fn disconnected_ai_review_worker_persists_error_and_updates_triage() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    let (workdir, pr) = match &app.mode {
+        AppMode::PrReview(state) => (state.workdir.clone(), state.review.pr.clone()),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(sample_ai_review_state(workdir, pr.clone()));
+    drop(tx);
+
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state)
+            if matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Error(message))
+                    if message.contains("disconnected")
+            )
+    ));
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_ai_review_cache(pr.number, &pr.head_sha)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        cached.last_run.unwrap().outcome,
+        crate::app::ai_review::AiReviewRunOutcome::Error(message)
+            if message.contains("disconnected")
+    ));
+}
+
+#[test]
+fn escape_keeps_ai_review_running_through_triage_return_and_completion() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    app.open_ai_review_from_triage();
+    let origin = match &app.mode {
+        AppMode::AiReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        progress: crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
+        },
+    });
+
+    app.cancel_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::AiReview(_)));
+    assert!(app.ai_review_bg.is_some());
+    app.close_ai_review();
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(matches!(
+            app.ai_review_triage_status(state),
+            crate::app::ai_review::AiReviewTriageStatus::Running
+        )),
+        _ => panic!("expected restored PR Triage pane"),
+    }
+
+    tx.send(crate::app::ai_review::AiReviewProgress::Done(Ok(
+        crate::app::ai_review::AiReviewOutcome {
+            findings: vec![],
+            summary: Some("No actionable issues found.".to_string()),
+            raw_output: "## Summary\nNo actionable issues found.".to_string(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state)
+            if matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Findings(0))
+            )
+    ));
 }
 
 #[test]
@@ -20590,7 +20779,7 @@ fn open_ai_review_for_pr_reopens_cached_findings_and_summary() {
             },
         )
         .unwrap();
-    assert_eq!(app.pending_ai_review_count(&pr), 1);
+    assert_eq!(app.ai_review_triage_snapshot(&pr).pending_findings, 1);
 
     app.open_ai_review_for_pr(PathBuf::from("/tmp/test-workdir"), pr);
 
@@ -20600,6 +20789,132 @@ fn open_ai_review_for_pr_reopens_cached_findings_and_summary() {
             assert_eq!(state.summary.as_deref(), Some("Cached review summary."));
         }
         _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
+fn pr_triage_zero_result_survives_reopen_and_restart_but_not_new_head() {
+    let db_dir = TempDir::new().unwrap();
+    let db_path = db_dir.path().join("amf.db");
+    let review = pr_review_with_comments(1);
+    let zero_run = crate::app::ai_review::AiReviewRun {
+        ran_at: chrono::Local::now(),
+        outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(0),
+    };
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(crate::db::AmfDb::open(&db_path).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_review_cache(&review)
+        .unwrap();
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_ai_review_cache(
+            review.pr.number,
+            &review.pr.head_sha,
+            &crate::app::ai_review::AiReviewCacheEntry {
+                findings: vec![],
+                last_run: Some(zero_run.clone()),
+                summary: None,
+            },
+        )
+        .unwrap();
+
+    app.enter_pr_review(PathBuf::from("/tmp/test-workdir"), review.pr.clone());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state)
+            if state.ai_review_last_run.as_ref() == Some(&zero_run)
+    ));
+    app.mode = AppMode::Normal;
+    app.enter_pr_review(PathBuf::from("/tmp/test-workdir"), review.pr.clone());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state)
+            if state.ai_review_last_run.as_ref() == Some(&zero_run)
+    ));
+    drop(app);
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut restarted = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    restarted.db = Some(crate::db::AmfDb::open(&db_path).unwrap());
+    restarted.enter_pr_review(PathBuf::from("/tmp/test-workdir"), review.pr.clone());
+    assert!(matches!(
+        &restarted.mode,
+        AppMode::PrReview(state)
+            if state.ai_review_last_run.as_ref() == Some(&zero_run)
+    ));
+
+    let mut moved = review;
+    moved.pr.head_sha = "new-head".to_string();
+    restarted
+        .db
+        .as_ref()
+        .unwrap()
+        .save_pr_review_cache(&moved)
+        .unwrap();
+    restarted.enter_pr_review(PathBuf::from("/tmp/test-workdir"), moved.pr.clone());
+    assert!(matches!(
+        &restarted.mode,
+        AppMode::PrReview(state)
+            if state.review.pr.head_sha == "new-head"
+                && state.ai_review_last_run.is_none()
+                && state.pending_ai_review_findings == 0
+    ));
+}
+
+#[test]
+fn refreshed_pr_head_clears_stale_ai_review_completion() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(0),
+        });
+    }
+    app.open_ai_review_from_triage();
+    let (workdir, old_pr) = match &app.mode {
+        AppMode::AiReview(state) => (state.workdir.clone(), state.pr.clone()),
+        _ => unreachable!(),
+    };
+    let mut moved = pr_review_with_comments(2);
+    moved.pr.head_sha = "new-head".to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_triage_refresh_bg = Some(rx);
+    app.ai_review_triage_refresh_pending = Some(crate::app::AiReviewTriageRefresh {
+        workdir,
+        pr: old_pr,
+    });
+    tx.send(Ok(moved)).unwrap();
+
+    assert!(app.poll_ai_review_triage_refresh_bg());
+    match app.ai_review_return_to.as_deref() {
+        Some(AppMode::PrReview(state)) => {
+            assert_eq!(state.review.pr.head_sha, "new-head");
+            assert!(state.ai_review_last_run.is_none());
+            assert_eq!(state.pending_ai_review_findings, 0);
+        }
+        _ => panic!("expected refreshed stashed PR Triage pane"),
     }
 }
 

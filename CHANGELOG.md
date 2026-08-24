@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **Agent sidebars now keep the feature's current plan within reach.** Claude
+  Code, Codex, OpenCode, and Pi sessions show the current plan in a dedicated
+  sidebar section; press `Ctrl+Space`, then `n` to open it in AMF's read-only
+  Markdown viewer. `AMF_PLAN.md` is selected automatically. When it is absent,
+  AMF offers Markdown files from the feature worktree and remembers the chosen
+  file for that feature. Moved or deleted selections are cleared safely, and
+  `r` refreshes a plan while it is open. Dashboard and non-agent session rows
+  remain unchanged.
+
 - **Agent session rows now show context-window pressure before the next prompt
   runs out of room.** Claude Code, Codex, OpenCode, and Pi sessions display a
   compact `Ctx` percentage that turns yellow with `WARNING` at 70% and red
@@ -44,6 +53,8 @@ are tagged.
 
 ### Migration
 
+- No migration is required for current-plan shortcuts. Existing features start
+  without a manual selection, and AMF updates its database automatically.
 - No migration is required for context-window indicators.
 - No migration is required. Existing same-revision AI Review cache entries
   remain readable and expire under the existing one-week retention policy.

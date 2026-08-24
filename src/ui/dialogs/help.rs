@@ -231,6 +231,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("e", "Toggle compose/direct input (agent sessions)"),
         ("d", "Diff viewer (all changes / commit)"),
         ("m", "Markdown file picker/viewer"),
+        ("n", "Open current plan"),
         ("b", "Show/hide sidebar"),
         ("v", "Expand/collapse todos"),
         ("N", "Quick-capture a TODO for this worktree"),

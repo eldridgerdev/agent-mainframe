@@ -139,12 +139,9 @@ impl ViewState {
             return None;
         }
 
-        match self.session_kind {
-            SessionKind::Claude | SessionKind::Codex | SessionKind::Opencode => {
-                Some(self.session_kind.clone())
-            }
-            _ => None,
-        }
+        self.session_kind
+            .is_agent_harness()
+            .then(|| self.session_kind.clone())
     }
 }
 
@@ -4805,6 +4802,7 @@ pub struct MarkdownViewerState {
     pub rendered_lines: Vec<ratatui::text::Line<'static>>,
     pub return_to_picker: Option<MarkdownFilePickerState>,
     pub from_view: Option<ViewState>,
+    pub current_plan: bool,
 }
 
 pub enum MarkdownLoadingOperation {
@@ -4814,12 +4812,17 @@ pub enum MarkdownLoadingOperation {
     DiscoverFromViewer {
         viewer: MarkdownViewerState,
     },
+    DiscoverPlan {
+        view: ViewState,
+        feature_id: String,
+    },
     ReadPath {
         path: PathBuf,
         workdir: PathBuf,
         repo_root: Option<PathBuf>,
         view: ViewState,
         return_to_picker: Option<MarkdownFilePickerState>,
+        current_plan: bool,
     },
 }
 
@@ -4837,7 +4840,14 @@ pub struct MarkdownFilePickerState {
     pub query: String,
     pub workdir: PathBuf,
     pub repo_root: Option<PathBuf>,
+    pub purpose: MarkdownFilePickerPurpose,
     pub from_view: Option<ViewState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarkdownFilePickerPurpose {
+    Browse,
+    SelectPlan { feature_id: String },
 }
 
 #[derive(Clone)]

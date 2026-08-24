@@ -231,7 +231,7 @@ fn load_prompt_templates(conn: &Connection) -> Result<Vec<PromptTemplate>> {
 /// One `features` row in SELECT column order (see `load_features`): id, name,
 /// branch, workdir, is_worktree, tmux_session, mode, review, plan_mode, agent,
 /// enable_chrome, status, summary, summary_updated_at, nickname, collapsed,
-/// created_at, last_accessed, ready.
+/// created_at, last_accessed, ready, triage_source, selected_plan_path.
 type FeatureRow = (
     String,
     String,
@@ -253,6 +253,7 @@ type FeatureRow = (
     String,
     bool,
     Option<String>,
+    Option<String>,
 );
 
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
@@ -260,7 +261,8 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         "SELECT id, name, branch, workdir, is_worktree, tmux_session,
                 mode, review, plan_mode, agent, enable_chrome, status,
                 summary, summary_updated_at, nickname, collapsed,
-                created_at, last_accessed, ready, triage_source
+                created_at, last_accessed, ready, triage_source,
+                selected_plan_path
          FROM features WHERE project_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -288,6 +290,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 row.get(17)?,
                 row.get(18)?,
                 row.get(19)?,
+                row.get(20)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -314,6 +317,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         last_accessed,
         ready,
         triage_source_json,
+        selected_plan_path,
     ) in rows
     {
         let sessions = load_sessions(conn, &feat_id)?;
@@ -340,6 +344,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
             summary,
             summary_updated_at: summary_updated_at_str.as_deref().map(dt_from_str),
             nickname,
+            selected_plan_path: selected_plan_path.map(PathBuf::from),
             // A malformed blob (hand-edited DB, or a row written by a future
             // schema) degrades to "not a triage feature" rather than failing
             // the whole store load.
@@ -490,9 +495,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                     id, project_id, name, branch, workdir, is_worktree,
                     tmux_session, mode, review, plan_mode, agent, enable_chrome,
                     status, summary, summary_updated_at, nickname, collapsed,
-                    created_at, last_accessed, ready, sort_order, triage_source
+                    created_at, last_accessed, ready, sort_order, triage_source,
+                    selected_plan_path
                 ) VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22
+                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23
                 )",
                 params![
                     feature.id,
@@ -520,6 +526,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         .triage_source
                         .as_ref()
                         .and_then(|link| serde_json::to_string(link).ok()),
+                    feature
+                        .selected_plan_path
+                        .as_ref()
+                        .map(|path| path.to_string_lossy()),
                 ],
             )?;
 
@@ -674,6 +684,9 @@ mod tests {
             summary: Some("did some stuff".to_string()),
             summary_updated_at: Some(Utc::now()),
             nickname: Some("myf".to_string()),
+            selected_plan_path: Some(PathBuf::from(
+                "/tmp/repo/.worktrees/my-feature/docs/current-plan.md",
+            )),
             // A companion PR-triage feature: the link that survives a restart
             // and lets PR Triage find and reuse this feature for the same PR.
             triage_source: Some(crate::project::TriageSource {
@@ -714,6 +727,13 @@ mod tests {
         assert!(lf.ready);
         assert_eq!(lf.summary, Some("did some stuff".to_string()));
         assert_eq!(lf.nickname, Some("myf".to_string()));
+        assert_eq!(
+            lf.selected_plan_path,
+            Some(PathBuf::from(
+                "/tmp/repo/.worktrees/my-feature/docs/current-plan.md"
+            )),
+            "the feature's manual plan selection must survive a save/load round trip"
+        );
         assert_eq!(
             lf.triage_source,
             Some(crate::project::TriageSource {
@@ -827,6 +847,7 @@ mod tests {
                     summary: None,
                     summary_updated_at: None,
                     nickname: None,
+                    selected_plan_path: None,
                     triage_source: None,
                 },
                 Feature {
@@ -852,6 +873,7 @@ mod tests {
                     summary: None,
                     summary_updated_at: None,
                     nickname: None,
+                    selected_plan_path: None,
                     triage_source: None,
                 },
             ],

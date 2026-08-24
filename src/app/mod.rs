@@ -20,6 +20,7 @@ mod navigation;
 mod notifications;
 mod opencode;
 pub(crate) mod opencode_storage;
+pub(crate) mod plan;
 mod plan_interview;
 pub(crate) mod pr_review;
 mod project_ops;

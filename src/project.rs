@@ -341,6 +341,10 @@ pub struct Feature {
     pub summary_updated_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
+    /// User-selected plan file for this feature. The effective-plan resolver
+    /// may prefer the worktree's conventional `AMF_PLAN.md` over this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_plan_path: Option<PathBuf>,
     /// Set only on a **companion triage feature**: the isolated worktree PR
     /// Triage creates when the user picks the `New feature…` fix target. Git
     /// can't check out the PR's branch in two worktrees at once, so the
@@ -408,6 +412,8 @@ struct FeatureDe {
     #[serde(default)]
     nickname: Option<String>,
     #[serde(default)]
+    selected_plan_path: Option<PathBuf>,
+    #[serde(default)]
     triage_source: Option<TriageSource>,
 }
 
@@ -441,6 +447,7 @@ impl<'de> Deserialize<'de> for Feature {
             summary: feature.summary,
             summary_updated_at: feature.summary_updated_at,
             nickname: feature.nickname,
+            selected_plan_path: feature.selected_plan_path,
             triage_source: feature.triage_source,
         })
     }
@@ -559,6 +566,7 @@ impl Feature {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         }
     }
@@ -854,6 +862,7 @@ fn merge_feature(target: &mut Feature, incoming: Feature) {
     target.summary = incoming.summary;
     target.summary_updated_at = incoming.summary_updated_at;
     target.nickname = incoming.nickname;
+    target.selected_plan_path = incoming.selected_plan_path;
 }
 
 fn merge_session_vec(
@@ -1158,6 +1167,7 @@ impl ProjectStore {
                             summary: None,
                             summary_updated_at: None,
                             nickname: None,
+                            selected_plan_path: None,
                             triage_source: None,
                         }
                     })
@@ -1392,6 +1402,7 @@ mod tests {
         });
         let feature: Feature = serde_json::from_value(json).unwrap();
         assert!(feature.triage_source.is_none());
+        assert!(feature.selected_plan_path.is_none());
     }
 
     #[test]
@@ -1468,6 +1479,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         }
     }
@@ -1528,6 +1540,7 @@ mod tests {
                     summary: None,
                     summary_updated_at: None,
                     nickname: None,
+                    selected_plan_path: None,
                     triage_source: None,
                 }],
                 created_at: Utc::now(),
@@ -1606,6 +1619,7 @@ mod tests {
                         summary: Some("summary".to_string()),
                         summary_updated_at: Some(Utc::now()),
                         nickname: Some("nick".to_string()),
+                        selected_plan_path: None,
                         triage_source: None,
                     },
                     Feature {
@@ -1631,6 +1645,7 @@ mod tests {
                         summary: None,
                         summary_updated_at: None,
                         nickname: None,
+                        selected_plan_path: None,
                         triage_source: None,
                     },
                 ],

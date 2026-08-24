@@ -434,6 +434,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('m') => {
             app.open_markdown_viewer_from_view()?;
         }
+        KeyCode::Char('n') => {
+            app.open_current_plan_from_view()?;
+        }
         KeyCode::Char('A') => {
             // Harness setup is an intermediate destination, not the end of
             // the inspection trip. Keep the interview parked so replacing the
@@ -645,6 +648,63 @@ mod tests {
 
         crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn leader_n_opens_the_default_current_plan() {
+        let repo = init_repo_with_branch_change();
+        let plan = repo.path().join("AMF_PLAN.md");
+        std::fs::write(&plan, "# Current plan\n\n- Ship it\n").unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('n')), 20).unwrap();
+        app.complete_markdown_loading();
+
+        assert!(matches!(
+            &app.mode,
+            AppMode::MarkdownViewer(state)
+                if state.source_path == plan && state.content.contains("Ship it")
+        ));
+    }
+
+    #[test]
+    fn leader_n_opens_a_worktree_markdown_picker_without_a_current_plan() {
+        let repo = init_repo_with_branch_change();
+        let notes = repo.path().join("docs/accepted.md");
+        std::fs::create_dir_all(notes.parent().unwrap()).unwrap();
+        std::fs::write(&notes, "# Accepted\n").unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('n')), 20).unwrap();
+        app.complete_markdown_loading();
+
+        assert!(matches!(
+            &app.mode,
+            AppMode::MarkdownFilePicker(state)
+                if state.files == vec![notes.canonicalize().unwrap()]
+                    && matches!(
+                        state.purpose,
+                        crate::app::MarkdownFilePickerPurpose::SelectPlan { .. }
+                    )
+        ));
+    }
+
+    #[test]
+    fn leader_n_with_no_markdown_keeps_the_agent_session_active() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('n')), 20).unwrap();
+        app.complete_markdown_loading();
+
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("No Markdown plan is available in this worktree")
+        );
     }
 
     #[test]

@@ -738,10 +738,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" page  "),
             Span::styled("/", key_style()),
             Span::raw(" files  "),
+            Span::styled("r", key_style()),
+            Span::raw(" refresh  "),
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
-        AppMode::MarkdownFilePicker(_) => Line::from(vec![
+        AppMode::MarkdownFilePicker(state) => Line::from(vec![
             Span::styled(" j/k", key_style()),
             Span::raw(" navigate  "),
             Span::styled("/", key_style()),
@@ -749,7 +751,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("p", key_style()),
             Span::raw(" plan  "),
             Span::styled("Enter", key_style()),
-            Span::raw(" open  "),
+            Span::raw(
+                if matches!(
+                    state.purpose,
+                    crate::app::MarkdownFilePickerPurpose::SelectPlan { .. }
+                ) {
+                    " select  "
+                } else {
+                    " open  "
+                },
+            ),
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),

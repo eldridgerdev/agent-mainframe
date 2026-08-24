@@ -28,6 +28,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("p", "Prompt library"),
     ("d", "Diff viewer (all changes / commit)"),
     ("m", "Markdown viewer"),
+    ("n", "Open current plan"),
     ("b", "Show / hide sidebar"),
     ("v", "Expand / collapse todos"),
     ("V", "Check pending diff review"),
@@ -61,6 +62,7 @@ pub(crate) struct AgentSidebarData {
     pub todos_text: Option<String>,
     pub summary_text: String,
     pub pr_triage_text: Option<String>,
+    pub plan_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -551,6 +553,7 @@ fn draw_agent_sidebar(
         todos_text: None,
         summary_text: String::new(),
         pr_triage_text: None,
+        plan_text: String::new(),
     };
     let data = data.unwrap_or(&fallback);
     let sections_with_content = sidebar_sections(data, inner.width);
@@ -590,6 +593,15 @@ fn draw_agent_sidebar(
                 .alignment(Alignment::Right),
             );
         }
+        if sidebar_section.title == "Plan" {
+            block = block.title_top(
+                Line::from(Span::styled(
+                    " <leader n> ",
+                    Style::default().fg(theme.text_muted.to_color()),
+                ))
+                .alignment(Alignment::Right),
+            );
+        }
         let paragraph = Paragraph::new(styled_sidebar_lines(
             sidebar_section.title,
             sidebar_section.body,
@@ -610,6 +622,19 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
             title: "Status",
             body: data.status_text.as_str(),
             constraint: Constraint::Length(status_section_height(&data.status_text, section_width)),
+        });
+    }
+
+    if !data.plan_text.trim().is_empty() {
+        sections.push(SidebarSection {
+            title: "Plan",
+            body: data.plan_text.as_str(),
+            constraint: Constraint::Length(sidebar_section_height(
+                &data.plan_text,
+                section_width,
+                1,
+                2,
+            )),
         });
     }
 
@@ -687,6 +712,7 @@ fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static
         SessionKind::Claude => ("Claude Sidebar", theme.session_icon_claude.to_color()),
         SessionKind::Codex => ("Codex Sidebar", theme.session_icon_codex.to_color()),
         SessionKind::Opencode => ("Opencode Sidebar", theme.session_icon_opencode.to_color()),
+        SessionKind::Pi => ("Pi Sidebar", theme.primary.to_color()),
         _ => ("Harness Sidebar", theme.border.to_color()),
     }
 }
@@ -699,6 +725,7 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
         "Todos" => theme.success.to_color(),
         "Summary" => theme.info.to_color(),
         "PR Triage" => theme.info.to_color(),
+        "Plan" => theme.warning.to_color(),
         _ => theme.border.to_color(),
     }
 }
@@ -1333,6 +1360,7 @@ mod tests {
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         let sections = sidebar_sections(&sidebar, 30);
@@ -1342,6 +1370,29 @@ mod tests {
             .unwrap();
 
         assert!(matches!(work.constraint, Constraint::Length(4)));
+    }
+
+    #[test]
+    fn plan_is_a_dedicated_sidebar_section() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Ready".into(),
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: "Current: docs/accepted.md".into(),
+        };
+
+        let sections = sidebar_sections(&sidebar, 30);
+        let plan = sections
+            .iter()
+            .find(|section| section.title == "Plan")
+            .expect("plan child row should be present");
+
+        assert_eq!(plan.body, "Current: docs/accepted.md");
     }
 
     #[test]
@@ -1358,6 +1409,7 @@ mod tests {
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         let sections = sidebar_sections(&sidebar, 30);
@@ -1404,6 +1456,7 @@ mod tests {
             todos_text: None,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal
@@ -1448,6 +1501,7 @@ mod tests {
             todos_text: None,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: Some("PR: #321 · 4 open\nStatus: Working".into()),
+            plan_text: String::new(),
         };
 
         terminal
@@ -1492,6 +1546,7 @@ mod tests {
             todos_text: None,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal
@@ -1532,6 +1587,7 @@ mod tests {
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal
@@ -1574,6 +1630,7 @@ mod tests {
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal
@@ -1630,6 +1687,7 @@ mod tests {
         assert!(rendered.contains("Ctrl+Space commands"));
         assert!(rendered.contains("Show / hide sidebar"));
         assert!(rendered.contains("Bookmark picker"));
+        assert!(rendered.contains("Open current plan"));
         assert!(rendered.contains("Jump to bookmark slot"));
         assert!(rendered.contains("Check pending diff revie"));
         // compose_intercept is Some(false): the menu offers the way
@@ -1694,6 +1752,7 @@ mod tests {
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal
@@ -1739,6 +1798,7 @@ mod tests {
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal
@@ -1788,6 +1848,7 @@ mod tests {
             todos_text: None,
             summary_text: "Small summary.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal
@@ -1830,6 +1891,7 @@ mod tests {
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal
@@ -1872,6 +1934,7 @@ mod tests {
             todos_text: None,
             summary_text: String::new(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal
@@ -1914,6 +1977,7 @@ mod tests {
             todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
+            plan_text: String::new(),
         };
 
         terminal

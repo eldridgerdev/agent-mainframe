@@ -241,6 +241,12 @@ app.log_error("context", format!("failed: {}", err));
 Errors from `show_error()` are automatically logged to the
 debug log with level ERROR.
 
+### Pull Request Links
+
+When returning a pull request link to the user, print the full
+`https://github.com/.../pull/...` URL as plain text on its own line.
+Do not wrap it in Markdown, angle brackets, or trailing punctuation.
+
 ### Key Design Patterns
 
 - All external tool interaction (tmux, git, claude) goes

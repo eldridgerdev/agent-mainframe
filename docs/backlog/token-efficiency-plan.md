@@ -497,10 +497,11 @@ Acceptance criteria:
 
 ### P2 — Context pressure, budgets, and rotation
 
-- [ ] Calculate provider-specific active-context estimates and record
+- [x] Calculate provider-specific active-context estimates and record
       known model context windows.
-- [ ] Render context pressure, latest-turn usage, and recent burn in the
-      session row/sidebar.
+- [x] Render context pressure in agent session rows, with direct/estimated,
+      stale, warning, critical, and reset states.
+- [ ] Render latest-turn usage and recent burn in the session row/sidebar.
 - [ ] Add configurable soft context and cumulative usage thresholds.
 - [ ] Add dashboard/sidebar warnings and deduplicate repeated alerts.
 - [ ] Introduce a capability-driven resume/compact/fresh dialog.

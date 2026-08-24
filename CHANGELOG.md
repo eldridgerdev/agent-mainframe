@@ -12,6 +12,14 @@ are tagged.
 
 ### Added
 
+- **Agent session rows now show context-window pressure before the next prompt
+  runs out of room.** Claude Code, Codex, OpenCode, and Pi sessions display a
+  compact `Ctx` percentage that turns yellow with `WARNING` at 70% and red
+  with `CRITICAL` at 85%. Estimated readings are marked with `~`, stale
+  readings are labeled, and detected compaction or a new conversation clears
+  the old value until fresh usage arrives. Terminal, editor, TODO, and custom
+  rows remain unchanged.
+
 - **The dashboard PR badge now shows merged and closed pull requests, not just
   open ones.** Once a feature's PR is merged or closed without merging, its
   badge switches to `[PR #N merged]` / `[PR #N closed]` instead of vanishing,
@@ -22,6 +30,10 @@ are tagged.
   background schedule — no extra `gh` calls beyond what a branch actually
   needs. No migration is required; the database updates itself on first
   launch after upgrading.
+
+### Migration
+
+No migration is required for context-window indicators.
 
 ## [v0.38.0] - 2026-08-21
 

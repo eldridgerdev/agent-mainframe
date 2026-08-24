@@ -64,6 +64,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
+use crate::context_collectors::SessionContextCollector;
+use crate::context_tracking::SessionContextState;
 use crate::debug::{DebugLog, LogEntry};
 use crate::extension::{
     ExtensionConfig, load_global_extension_config, merge_project_extension_config,
@@ -881,6 +883,9 @@ pub struct App {
     pending_sidebar_loads: std::collections::HashSet<String>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
+    /// Transient context-window telemetry keyed by AMF session ID.
+    pub context_states: HashMap<String, SessionContextState>,
+    pub context_collector: SessionContextCollector,
     pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
     /// Background refresh and last-known values for the dashboard's open-PR
     /// badges. Rendering only reads `active_prs`; all `gh` calls happen on the
@@ -2356,6 +2361,8 @@ impl App {
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
+            context_states: HashMap::new(),
+            context_collector: SessionContextCollector::default(),
             session_status_bg: None,
             active_pr_bg: None,
             gh_graphql_limited_at: None,
@@ -2592,6 +2599,8 @@ impl App {
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
+            context_states: HashMap::new(),
+            context_collector: SessionContextCollector::default(),
             session_status_bg: None,
             active_pr_bg: None,
             gh_graphql_limited_at: None,

@@ -1,5 +1,9 @@
 use super::GH_GRAPHQL_BACKOFF;
 use super::*;
+use crate::context_collectors::{
+    ContextCollectionResult, ContextCollectionTarget, ContextCollector, SessionContextCollector,
+};
+use crate::context_tracking::SessionContextState;
 use crate::github::{GhCli, GhGraphqlError};
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
@@ -10,7 +14,7 @@ use crate::token_tracking::{
 };
 
 use chrono::Utc;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -181,6 +185,7 @@ struct SessionStatusJob {
     #[allow(dead_code)] // set during job construction, not read yet
     existing_source_match: Option<TokenUsageSourceMatch>,
     claude_session_id: Option<String>,
+    context_conversation_id: Option<String>,
     custom_status_text: Option<String>,
 }
 
@@ -196,10 +201,13 @@ struct SessionStatusUpdate {
     source_action: SourceAction,
     status_text: Option<String>,
     token_usage: Option<SessionTokenUsage>,
+    context_result: Option<ContextCollectionResult>,
+    context_checked_at: chrono::DateTime<chrono::Utc>,
 }
 
 pub(crate) struct SessionStatusBgResult {
     tracker: SessionTokenTracker,
+    context_collector: SessionContextCollector,
     updates: Vec<SessionStatusUpdate>,
     sources_discovered: bool,
 }
@@ -207,6 +215,7 @@ pub(crate) struct SessionStatusBgResult {
 fn collect_jobs(
     store: &crate::project::ProjectStore,
     db: Option<&crate::db::AmfDb>,
+    context_states: &HashMap<String, SessionContextState>,
 ) -> Vec<SessionStatusJob> {
     store
         .projects
@@ -222,6 +231,9 @@ fn collect_jobs(
                     existing_source: session.token_usage_source.clone(),
                     existing_source_match: session.token_usage_source_match.clone(),
                     claude_session_id: session.claude_session_id.clone(),
+                    context_conversation_id: context_states
+                        .get(&session.id)
+                        .and_then(|state| state.reset.conversation_id.clone()),
                     custom_status_text: if session.kind == SessionKind::Custom {
                         read_custom_session_status(&session.id, &feature.id, &feature.workdir, db)
                     } else {
@@ -235,30 +247,67 @@ fn collect_jobs(
 
 fn run_jobs(
     mut tracker: SessionTokenTracker,
+    mut context_collector: SessionContextCollector,
     jobs: Vec<SessionStatusJob>,
     pricing: &TokenPricingConfig,
 ) -> SessionStatusBgResult {
     let mut updates = Vec::with_capacity(jobs.len());
     let mut sources_discovered = false;
     let mut reserved_sources: HashSet<(String, TokenUsageProvider, String)> = HashSet::new();
+    let mut reserved_context_ids: HashSet<(String, u8, String)> = HashSet::new();
 
     for job in jobs {
+        let context_checked_at = Utc::now();
+        let harness_key = session_kind_key(&job.kind);
+        let excluded_context_ids = reserved_context_ids
+            .iter()
+            .filter(|(feature_id, kind, _)| feature_id == &job.feature_id && *kind == harness_key)
+            .map(|(_, _, id)| id.clone())
+            .collect::<Vec<_>>();
         if job.kind == SessionKind::Custom {
             updates.push(SessionStatusUpdate {
                 session_id: job.session_id,
                 source_action: SourceAction::NoChange,
                 status_text: job.custom_status_text,
                 token_usage: None,
+                context_result: None,
+                context_checked_at,
             });
             continue;
         }
 
         let Some(expected_provider) = provider_for_session_kind(&job.kind) else {
+            let context_result = job.kind.is_agent_harness().then(|| {
+                context_collector.collect(ContextCollectionTarget {
+                    session_kind: &job.kind,
+                    workdir: &job.workdir,
+                    conversation_id: job
+                        .claude_session_id
+                        .as_deref()
+                        .or(job.context_conversation_id.as_deref()),
+                    excluded_conversation_ids: &excluded_context_ids,
+                    session_created_at: job.created_at,
+                    provider_id: None,
+                    model_id: None,
+                    runtime_payload: None,
+                    fallback_usage: None,
+                    fallback_context_limit: None,
+                    collected_at: context_checked_at,
+                })
+            });
+            reserve_context_result(
+                &mut reserved_context_ids,
+                &job.feature_id,
+                harness_key,
+                context_result.as_ref(),
+            );
             updates.push(SessionStatusUpdate {
                 session_id: job.session_id,
                 source_action: SourceAction::NoChange,
                 status_text: None,
                 token_usage: None,
+                context_result,
+                context_checked_at,
             });
             continue;
         };
@@ -352,24 +401,95 @@ fn run_jobs(
         let status_text = token_usage
             .as_ref()
             .map(|usage| format_token_usage(usage, pricing));
+        // Live signals win over the cached id: `context_conversation_id` is
+        // derived from this same collector's *previous* output, so once it
+        // drifts (a `/clear`, a new Codex/OpenCode thread) it can only
+        // self-correct if something fresher outranks it here.
+        let conversation_id = job
+            .claude_session_id
+            .as_deref()
+            .or_else(|| source.as_ref().map(|source| source.id.as_str()))
+            .or(job.context_conversation_id.as_deref());
+        let context_result = Some(context_collector.collect(ContextCollectionTarget {
+            session_kind: &job.kind,
+            workdir: &job.workdir,
+            conversation_id,
+            excluded_conversation_ids: &excluded_context_ids,
+            session_created_at: job.created_at,
+            provider_id: None,
+            model_id: None,
+            runtime_payload: None,
+            fallback_usage: token_usage.as_ref(),
+            fallback_context_limit: None,
+            collected_at: context_checked_at,
+        }));
+        reserve_context_result(
+            &mut reserved_context_ids,
+            &job.feature_id,
+            harness_key,
+            context_result.as_ref(),
+        );
 
         updates.push(SessionStatusUpdate {
             session_id: job.session_id,
             source_action: action,
             status_text,
             token_usage,
+            context_result,
+            context_checked_at,
         });
     }
 
     SessionStatusBgResult {
         tracker,
+        context_collector,
         updates,
         sources_discovered,
     }
 }
 
+fn session_kind_key(kind: &SessionKind) -> u8 {
+    match kind {
+        SessionKind::Claude => 0,
+        SessionKind::Opencode => 1,
+        SessionKind::Codex => 2,
+        SessionKind::Pi => 3,
+        SessionKind::Terminal => 4,
+        SessionKind::Nvim => 5,
+        SessionKind::Vscode => 6,
+        SessionKind::Custom => 7,
+        SessionKind::Todos => 8,
+    }
+}
+
+fn reserve_context_result(
+    reserved: &mut HashSet<(String, u8, String)>,
+    feature_id: &str,
+    kind: u8,
+    result: Option<&ContextCollectionResult>,
+) {
+    let conversation_id = match result {
+        Some(ContextCollectionResult::Collected(sample)) => sample.reset.conversation_id.as_ref(),
+        Some(ContextCollectionResult::ResetPending {
+            conversation_id, ..
+        }) => conversation_id.as_ref(),
+        _ => None,
+    };
+    if let Some(conversation_id) = conversation_id {
+        reserved.insert((feature_id.to_string(), kind, conversation_id.clone()));
+    }
+}
+
 fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
     app.token_tracker = result.tracker;
+    app.context_collector = result.context_collector;
+    let live_session_ids = result
+        .updates
+        .iter()
+        .map(|update| update.session_id.as_str())
+        .collect::<HashSet<_>>();
+    app.context_states
+        .retain(|session_id, _| live_session_ids.contains(session_id.as_str()));
 
     for update in result.updates {
         'outer: for project in &mut app.store.projects {
@@ -390,6 +510,12 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
                     }
                     session.status_text = update.status_text;
                     session.token_usage = update.token_usage;
+                    apply_context_result(
+                        &mut app.context_states,
+                        &session.id,
+                        update.context_result,
+                        update.context_checked_at,
+                    );
                     break 'outer;
                 }
             }
@@ -411,6 +537,31 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
         app.schedule_sidebar_loads_for_polling_fallback();
     }
     app.flush_token_cache_to_db();
+}
+
+fn apply_context_result(
+    states: &mut HashMap<String, SessionContextState>,
+    session_id: &str,
+    result: Option<ContextCollectionResult>,
+    checked_at: chrono::DateTime<Utc>,
+) {
+    let Some(result) = result else {
+        states.remove(session_id);
+        return;
+    };
+    let state = states.entry(session_id.to_string()).or_default();
+    match result {
+        ContextCollectionResult::Collected(sample) => {
+            if state.accept_sample(sample).is_err() {
+                state.mark_unavailable(checked_at);
+            }
+        }
+        ContextCollectionResult::ResetPending {
+            conversation_id,
+            event,
+        } => state.begin_reset(conversation_id, event),
+        ContextCollectionResult::Unavailable(_) => state.mark_unavailable(checked_at),
+    }
 }
 
 pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
@@ -923,15 +1074,16 @@ impl App {
     /// preserved; it is swapped back in when `poll_session_status_bg` applies
     /// the results.
     pub fn sync_session_status_background(&mut self) {
-        let jobs = collect_jobs(&self.store, self.db.as_ref());
+        let jobs = collect_jobs(&self.store, self.db.as_ref(), &self.context_states);
         let pricing = self.config.token_pricing.clone();
         let tracker = std::mem::take(&mut self.token_tracker);
+        let context_collector = std::mem::take(&mut self.context_collector);
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.session_status_bg = Some(rx);
 
         std::thread::spawn(move || {
-            let result = run_jobs(tracker, jobs, &pricing);
+            let result = run_jobs(tracker, context_collector, jobs, &pricing);
             let _ = tx.send(result);
         });
     }
@@ -1023,117 +1175,17 @@ impl App {
 
     #[allow(dead_code)] // exercised only by unit tests
     pub(crate) fn sync_session_status_with_tracker(&mut self, tracker: &mut SessionTokenTracker) {
+        let jobs = collect_jobs(&self.store, self.db.as_ref(), &self.context_states);
+        let owned_tracker = std::mem::take(tracker);
+        let context_collector = std::mem::take(&mut self.context_collector);
         let pricing = self.config.token_pricing.clone();
-        let mut discovered_sources = false;
-
-        for project in &mut self.store.projects {
-            for feature in &mut project.features {
-                let mut reserved_sources: HashSet<(TokenUsageProvider, String)> = HashSet::new();
-                for session in &mut feature.sessions {
-                    if session.kind == crate::project::SessionKind::Custom {
-                        session.status_text = read_custom_session_status(
-                            &session.id,
-                            &feature.id,
-                            &feature.workdir,
-                            self.db.as_ref(),
-                        );
-                        session.token_usage = None;
-                        continue;
-                    }
-
-                    let Some(expected_provider) = provider_for_session_kind(&session.kind) else {
-                        session.status_text = None;
-                        session.token_usage = None;
-                        continue;
-                    };
-
-                    if session.token_usage_source.is_none()
-                        && matches!(session.kind, SessionKind::Claude)
-                        && session.claude_session_id.is_some()
-                        && let Some(id) = session.claude_session_id.as_ref()
-                    {
-                        session.set_token_usage_source_exact(TokenUsageSource {
-                            provider: TokenUsageProvider::Claude,
-                            id: id.clone(),
-                        });
-                        discovered_sources = true;
-                    }
-
-                    if session
-                        .token_usage_source
-                        .as_ref()
-                        .is_some_and(|source| source.provider != expected_provider)
-                    {
-                        session.clear_token_usage_source();
-                        discovered_sources = true;
-                    }
-
-                    if let Some(source) = session.token_usage_source.as_ref()
-                        && session.token_usage_source_match == Some(TokenUsageSourceMatch::Inferred)
-                        && source.provider == TokenUsageProvider::Codex
-                        && tracker
-                            .source_updated_at_seconds(source, &feature.workdir)
-                            .is_some_and(|updated| updated < session.created_at.timestamp())
-                    {
-                        session.clear_token_usage_source();
-                        discovered_sources = true;
-                    }
-
-                    if let Some(source) = session.token_usage_source.as_ref() {
-                        let key = (source.provider.clone(), source.id.clone());
-                        if session.token_usage_source_match == Some(TokenUsageSourceMatch::Inferred)
-                            && reserved_sources.contains(&key)
-                        {
-                            session.clear_token_usage_source();
-                            discovered_sources = true;
-                        } else {
-                            reserved_sources.insert(key);
-                        }
-                    }
-
-                    if session.token_usage_source.is_none() {
-                        let excluded_ids = reserved_sources
-                            .iter()
-                            .filter(|(provider, _)| provider == &expected_provider)
-                            .map(|(_, id)| id.clone())
-                            .collect::<HashSet<_>>();
-                        if let Some(source) = tracker.discover_source_excluding(
-                            &session.kind,
-                            &feature.workdir,
-                            session.created_at,
-                            &excluded_ids,
-                        ) {
-                            reserved_sources.insert((source.provider.clone(), source.id.clone()));
-                            session.set_token_usage_source_inferred(source);
-                            discovered_sources = true;
-                        }
-                    }
-
-                    session.token_usage = session
-                        .token_usage_source
-                        .as_ref()
-                        .and_then(|source| tracker.read_usage(source, &feature.workdir));
-                    session.status_text = session
-                        .token_usage
-                        .as_ref()
-                        .map(|usage| format_token_usage(usage, &pricing));
-                }
-            }
-        }
-
-        if self.has_active_sidebar() {
-            self.refresh_sidebar_for_current_view();
-        } else if !matches!(self.mode, AppMode::Viewing(_)) {
-            self.schedule_sidebar_loads_for_polling_fallback();
-        }
-
-        if discovered_sources && let Err(err) = self.save() {
-            self.log_warn(
-                "usage",
-                format!("Failed to persist discovered token tracking sources: {err}"),
-            );
-        }
-        self.flush_token_cache_to_db();
+        let result = run_jobs(owned_tracker, context_collector, jobs, &pricing);
+        apply_bg_result(self, result);
+        // Clone rather than `mem::take`: `apply_bg_result` already wrote the
+        // updated tracker into `self.token_tracker`, and this caller's
+        // tracker is a separate copy — taking would leave `self.token_tracker`
+        // reset to default for anyone reading it after this call returns.
+        *tracker = self.token_tracker.clone();
     }
 
     pub fn sync_thinking_status(&mut self) -> bool {

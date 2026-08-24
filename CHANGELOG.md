@@ -33,6 +33,13 @@ are tagged.
 
 ### Fixed
 
+- **AI Review findings now stay attached to the correct side and source line
+  across multi-hunk diffs.** Review prompts label current-file (`RIGHT`) and
+  deleted base-file (`LEFT`) lines explicitly, so earlier additions or removals
+  no longer shift later findings onto a different row. Deleted-line findings
+  show `(base)`, and an ambiguous or invalid location falls back to a file-level
+  finding instead of displaying or posting a misleading line number.
+
 - **PR Triage now confirms when an AI Review completed with no findings.**
   The header shows `[AI review: no findings (<age>)]` for the current PR
   revision instead of looking identical to a review that never ran. Running
@@ -45,6 +52,9 @@ are tagged.
 ### Migration
 
 - No migration is required for context-window indicators.
+- No migration is required for AI Review line mapping. Existing cached findings
+  remain readable; entries without side information are handled conservatively
+  until the review is regenerated.
 - No migration is required. Existing same-revision AI Review cache entries
   remain readable and expire under the existing one-week retention policy.
 

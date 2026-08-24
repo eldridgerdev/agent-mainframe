@@ -33,12 +33,12 @@ use crate::github::{GhCli, PrRef, PrResolution, PrReviewComment as GhPrReviewCom
 use crate::headless::HeadlessRunner;
 
 /// The heading [`ai_review_prompt`] instructs the agent to emit per finding,
-/// e.g. `### src/app/sync.rs:42` or `### General`. [`parse_ai_findings`]
-/// parses exactly this shape back out.
+/// e.g. `### src/app/sync.rs|RIGHT|42` or `### General`.
+/// [`parse_ai_findings`] parses exactly this shape back out.
 const AI_FINDING_HEADING_PREFIX: &str = "### ";
 
 /// Lines of context kept on each side of the target line when extracting a
-/// windowed hunk for a finding ([`diff_hunk_for_line`]). Deliberately small:
+/// windowed hunk for a finding ([`diff_hunk_for_location`]). Deliberately small:
 /// unlike a human reviewer's inline comment — which GitHub anchors to a hunk
 /// that's already a few lines of context around a small change — an AI
 /// finding can point at a line inside a large contiguous block of new code,
@@ -79,12 +79,17 @@ const AI_REVIEW_PROMPT_TOKEN_WARN: usize = 40_000;
 
 /// One AI-review finding: parsed from the agent's fixed-format output
 /// ([`parse_ai_findings`]), then kept/skipped/edited in the AI Review pane
-/// before an optional `W` post. `path`/`line` are `None` for a finding with no
-/// single-line anchor (the `### General` bucket).
+/// before an optional `W` post. `path` is `None` for the `### General` bucket;
+/// `line` is `None` whenever a finding has no validated single-line anchor. An
+/// anchored finding's `line` is one-based in the source-file coordinate system named by `side`.
+/// `side == None` is accepted only while parsing legacy `path:line` output;
+/// validation either resolves it unambiguously to a side or removes the line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiReviewFinding {
     pub path: Option<String>,
     pub line: Option<u32>,
+    #[serde(default)]
+    pub side: Option<crate::diff::DiffSide>,
     /// Editable before posting (`e` in the pane).
     pub body: String,
     /// The hunk (from the PR diff) covering `path:line`, matching the shape
@@ -92,7 +97,7 @@ pub struct AiReviewFinding {
     /// header + body). Unlike a GitHub comment, nothing about *generating* a
     /// finding produces this — it's reconstructed after parsing by
     /// re-matching `path:line` back into the already-fetched PR diff
-    /// ([`diff_hunk_for_line`]). `None` when there's no anchor, or the line
+    /// ([`diff_hunk_for_location`]). `None` when there's no anchor, or the line
     /// couldn't be matched to a hunk.
     pub diff_hunk: Option<String>,
     /// Excluded from `W` (post) without discarding it — the user can un-skip.
@@ -254,19 +259,75 @@ pub fn ai_review_prompt(diff: &str, memory: &str, skill: Option<&str>) -> String
         out.push_str("\n\n");
     }
     out.push_str("Diff:\n\n");
-    out.push_str(diff.trim_end());
+    out.push_str(&annotated_diff_for_ai_review(diff));
     out.push_str(&format!(
         "\n\n---\n\nOutput ONLY the summary and findings in this exact format (no prose outside \
          it). Always include the summary, even when there are no findings. The summary must be \
          one to three useful sentences covering the main themes or risk:\n\n\
          ## Summary\n\
          <overall review summary>\n\n\
-         {AI_FINDING_HEADING_PREFIX}<path>:<line>\n\
+         {AI_FINDING_HEADING_PREFIX}<path>|<side>|<line>\n\
          <finding text, 1-3 sentences>\n\n\
          {AI_FINDING_HEADING_PREFIX}General\n\
-         <a finding with no single file:line anchor>\n"
+         <a finding with no single file:line anchor>\n\n\
+         `<side>` must be `RIGHT` for a current-file line or `LEFT` for a removed \
+         base-file line. Copy the path, side, and one-based line number exactly \
+         from that row's bracketed coordinate label; never count patch rows or \
+         infer a line number from a hunk offset.\n"
     ));
     out
+}
+
+/// Render a parsed unified diff with an explicit source coordinate on every
+/// addressable row. Context rows show both coordinates but lead with RIGHT so
+/// findings naturally target the current file; removals expose LEFT only and
+/// additions RIGHT only. If parsing fails, retain the raw diff so the review
+/// can still run, while response validation will conservatively downgrade any
+/// location that cannot be resolved.
+fn annotated_diff_for_ai_review(diff: &str) -> String {
+    use crate::diff::{DiffLineKind, DiffSide, line_locations_in_hunk};
+
+    let Ok(files) = crate::diff::parse_unified_diff(diff) else {
+        return diff.trim_end().to_string();
+    };
+    let mut out = String::new();
+    for file in files {
+        out.push_str(&format!("File: {}\n", file.path));
+        for hunk in &file.hunks {
+            out.push_str(&hunk.header);
+            out.push('\n');
+            for (line, location) in hunk.lines.iter().zip(line_locations_in_hunk(hunk)) {
+                let label = match (line.kind.clone(), location) {
+                    (DiffLineKind::Context, Some(location)) => format!(
+                        "RIGHT:{} LEFT:{}",
+                        location
+                            .line_on(DiffSide::New)
+                            .expect("context has new line"),
+                        location
+                            .line_on(DiffSide::Old)
+                            .expect("context has old line")
+                    ),
+                    (DiffLineKind::Added, Some(location)) => format!(
+                        "RIGHT:{}",
+                        location
+                            .line_on(DiffSide::New)
+                            .expect("addition has new line")
+                    ),
+                    (DiffLineKind::Removed, Some(location)) => format!(
+                        "LEFT:{}",
+                        location
+                            .line_on(DiffSide::Old)
+                            .expect("removal has old line")
+                    ),
+                    (DiffLineKind::NoNewlineMarker, None) => "MARKER".to_string(),
+                    _ => continue,
+                };
+                out.push_str(&format!("[{label}] {}\n", line.text));
+            }
+        }
+        out.push('\n');
+    }
+    out.trim_end().to_string()
 }
 
 /// If `output` is entirely wrapped in one fenced code block (a common way
@@ -311,10 +372,12 @@ fn strip_finding_heading(line: &str) -> Option<&str> {
 /// ([`strip_outer_code_fence`]), and any small markdown heading level starts a
 /// section ([`strip_finding_heading`], not just the requested `###`). A
 /// case-insensitive `Summary` section is separated from findings; a
-/// `path:line` finding heading (the line parses as `u32`) is anchored, while
-/// anything else (`General`, malformed) stays pathless. Empty sections are
-/// dropped rather than erroring, so a partially-malformed response still
-/// yields whatever content did parse.
+/// `path|RIGHT|line` / `path|LEFT|line` finding heading is explicitly anchored.
+/// Legacy `path:line` remains parseable with an unspecified side for safe
+/// migration; the validation pass must resolve it unambiguously. Anything else
+/// (`General`, malformed) stays pathless. Empty sections are dropped rather
+/// than erroring, so a partially-malformed response still yields whatever
+/// content did parse.
 fn parse_ai_review_output(output: &str) -> (Option<String>, Vec<AiReviewFinding>) {
     fn flush(
         current: Option<(&str, Vec<&str>)>,
@@ -334,16 +397,31 @@ fn parse_ai_review_output(output: &str) -> (Option<String>, Vec<AiReviewFinding>
             }
             return;
         }
-        let (path, line) = match heading.trim().rsplit_once(':') {
-            Some((p, l)) if !p.is_empty() => match l.trim().parse::<u32>() {
-                Ok(n) => (Some(p.to_string()), Some(n)),
-                Err(_) => (None, None),
+        let heading = heading.trim();
+        let explicit = heading.rsplit_once('|').and_then(|(path_and_side, line)| {
+            let (path, side) = path_and_side.rsplit_once('|')?;
+            let side = match side.trim().to_ascii_uppercase().as_str() {
+                "LEFT" => crate::diff::DiffSide::Old,
+                "RIGHT" => crate::diff::DiffSide::New,
+                _ => return None,
+            };
+            let line = line.trim().parse::<u32>().ok()?;
+            (!path.is_empty()).then(|| (path.to_string(), line, side))
+        });
+        let (path, line, side) = match explicit {
+            Some((path, line, side)) => (Some(path), Some(line), Some(side)),
+            None => match heading.rsplit_once(':') {
+                Some((path, line)) if !path.is_empty() => match line.trim().parse::<u32>() {
+                    Ok(line) => (Some(path.to_string()), Some(line), None),
+                    Err(_) => (None, None, None),
+                },
+                _ => (None, None, None),
             },
-            _ => (None, None),
         };
         out.push(AiReviewFinding {
             path,
             line,
+            side,
             body,
             diff_hunk: None,
             skipped: false,
@@ -377,25 +455,53 @@ pub fn parse_ai_findings(output: &str) -> Vec<AiReviewFinding> {
     parse_ai_review_output(output).1
 }
 
-/// Reconstruct a GitHub-style `diff_hunk` string (the `@@ ... @@` header plus
-/// a small window of body lines around the target — not the whole matched
-/// hunk, see [`AI_FINDING_HUNK_CONTEXT_LINES`]) for whichever hunk in `files`
-/// covers `path:line` on the new (current) side of the diff. An AI-review
-/// finding gets no such hunk for free — it's re-derived here by matching the
-/// model's `path:line` back into the already-fetched PR diff. `None` when the
-/// file isn't in the diff, or no hunk's new-side range covers `line` (a
-/// mismatched/hallucinated line number) — the finding still renders and
-/// injects fine without one, same as any GitHub comment whose hunk happens to
-/// be unavailable.
-fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) -> Option<String> {
-    let line = line as usize;
-    let file = files.iter().find(|f| f.path == path)?;
-    let hunk = file.hunks.iter().find(|h| {
-        let end = h.new_start + h.new_lines;
-        line >= h.new_start && line < end
-    })?;
+/// Resolve a requested source coordinate through the canonical unified-diff
+/// row map. Legacy requests without a side are accepted only when the number
+/// identifies one row unambiguously across both sides; if the same integer
+/// names different old/new rows, guessing would recreate the original bug.
+fn resolve_ai_review_location(
+    file: &crate::diff::DiffFile,
+    line: u32,
+    side: Option<crate::diff::DiffSide>,
+) -> Option<(crate::diff::DiffSide, crate::diff::DiffLineLocation)> {
+    use crate::diff::DiffSide;
 
-    super::pr_review::window_parsed_hunk(hunk, line, false, AI_FINDING_HUNK_CONTEXT_LINES)
+    let line = line as usize;
+    if let Some(side) = side {
+        return file
+            .resolve_source_line(side, line)
+            .map(|location| (side, location));
+    }
+
+    let old = file.resolve_source_line(DiffSide::Old, line);
+    let new = file.resolve_source_line(DiffSide::New, line);
+    match (old, new) {
+        (Some(old), Some(new)) if old == new => Some((DiffSide::New, new)),
+        (Some(_), Some(_)) => None,
+        (Some(old), None) => Some((DiffSide::Old, old)),
+        (None, Some(new)) => Some((DiffSide::New, new)),
+        (None, None) => None,
+    }
+}
+
+/// Reconstruct a GitHub-style `diff_hunk` string (the `@@ ... @@` header plus
+/// a small window around an already-resolved source coordinate).
+fn diff_hunk_for_location(
+    files: &[crate::diff::DiffFile],
+    path: &str,
+    side: crate::diff::DiffSide,
+    location: crate::diff::DiffLineLocation,
+) -> Option<String> {
+    let file = files.iter().find(|f| f.path == path)?;
+    let hunk = file.hunk_for_location(location)?;
+    let line = location.line_on(side)?;
+
+    super::pr_review::window_parsed_hunk(
+        hunk,
+        line,
+        side == crate::diff::DiffSide::Old,
+        AI_FINDING_HUNK_CONTEXT_LINES,
+    )
 }
 
 /// Build the `(summary, inline comments)` GitHub review payload from a set of
@@ -414,27 +520,27 @@ fn build_ai_review(
     let mut inline = Vec::new();
     let mut general = Vec::new();
     for f in findings {
-        match (&f.path, f.line) {
-            // `diff_hunk.is_some()` gates whether the model's self-reported
-            // line actually landed inside a hunk of the diff GitHub will
-            // validate the review against (`diff_hunk_for_line`, computed
-            // from the very same diff at generation time) — models count
-            // lines from the raw unified-diff text themselves and can get
-            // this wrong independent of whether the PR has since moved, so a
-            // `None` hunk here means GitHub's create-review API would reject
-            // this line too. Fold it into the summary instead of a doomed
-            // inline comment.
-            (Some(path), Some(line)) if f.diff_hunk.is_some() => inline.push(GhPrReviewComment {
-                path: path.clone(),
-                line,
-                side: "RIGHT",
-                start_line: None,
-                start_side: None,
-                body: append_ai_review_attribution(&f.body),
-            }),
-            (Some(path), Some(line)) => general.push(format!("- **{path}:{line}**: {}", f.body)),
-            (Some(path), None) => general.push(format!("- **{path}**: {}", f.body)),
-            (None, _) => general.push(format!("- {}", f.body)),
+        match (&f.path, f.side, f.line) {
+            // `diff_hunk.is_some()` proves the side-aware source coordinate
+            // resolved through the same parsed diff that produced the prompt.
+            // Legacy cache rows have no side and invalid/stale coordinates have
+            // no hunk, so both conservatively fold into the summary instead of
+            // risking a wrong or GitHub-rejected inline anchor.
+            (Some(path), Some(side), Some(line)) if f.diff_hunk.is_some() => {
+                inline.push(GhPrReviewComment {
+                    path: path.clone(),
+                    line,
+                    side: match side {
+                        crate::diff::DiffSide::Old => "LEFT",
+                        crate::diff::DiffSide::New => "RIGHT",
+                    },
+                    start_line: None,
+                    start_side: None,
+                    body: append_ai_review_attribution(&f.body),
+                })
+            }
+            (Some(path), _, _) => general.push(format!("- **{path}**: {}", f.body)),
+            (None, _, _) => general.push(format!("- {}", f.body)),
         }
     }
 
@@ -494,16 +600,31 @@ fn process_ai_review_output(output: String, diff: &str) -> Result<AiReviewOutcom
     if summary.is_none() {
         anyhow::bail!("AI review returned malformed output: missing a non-empty Summary section");
     }
-    // Attach each anchored finding's diff hunk by re-matching its
-    // `path:line` into the already-fetched PR diff — nothing about
-    // generating a finding produces one the way GitHub's API does for a
-    // fetched comment. A parse failure (malformed diff) just leaves every
-    // finding without a hunk rather than failing the whole review.
-    if let Ok(files) = crate::diff::parse_unified_diff(diff) {
-        for finding in &mut findings {
-            if let (Some(path), Some(line)) = (&finding.path, finding.line) {
-                finding.diff_hunk = diff_hunk_for_line(&files, path, line);
+    // Validate every requested coordinate against the exact parsed row map.
+    // Invalid or ambiguous requests retain their file and prose, but lose the
+    // misleading line target and are therefore rendered/posted as file-level
+    let files = crate::diff::parse_unified_diff(diff).ok();
+    for finding in &mut findings {
+        let resolved = match (&finding.path, finding.line, files.as_deref()) {
+            (Some(path), Some(line), Some(files)) => files
+                .iter()
+                .find(|file| file.path == *path)
+                .and_then(|file| resolve_ai_review_location(file, line, finding.side)),
+            _ => None,
+        };
+        if let (Some(path), Some((side, location)), Some(files)) =
+            (&finding.path, resolved, files.as_deref())
+        {
+            finding.side = Some(side);
+            finding.diff_hunk = diff_hunk_for_location(files, path, side, location);
+            if finding.diff_hunk.is_none() {
+                finding.line = None;
+                finding.side = None;
             }
+        } else if finding.path.is_some() && finding.line.is_some() {
+            finding.line = None;
+            finding.side = None;
+            finding.diff_hunk = None;
         }
     }
     Ok(AiReviewOutcome {
@@ -1925,13 +2046,120 @@ impl App {
 mod tests {
     use super::*;
 
+    const LINE_MAPPING_DIFF: &str = "diff --git a/src/multi.rs b/src/multi.rs\n\
+--- a/src/multi.rs\n\
++++ b/src/multi.rs\n\
+@@ -1,4 +1,5 @@\n\
+\x20start\n\
+-old two\n\
++new two a\n\
++new two b\n\
+\x20three\n\
+\x20four\n\
+@@ -18,4 +19,4 @@\n\
+\x20eighteen\n\
+-nineteen\n\
++nineteen revised\n\
+\x20twenty\n\
+\x20twenty-one\n\
+diff --git a/src/added.rs b/src/added.rs\n\
+new file mode 100644\n\
+--- /dev/null\n\
++++ b/src/added.rs\n\
+@@ -0,0 +1,3 @@\n\
++first\n\
++middle\n\
++last\n\
+diff --git a/src/deleted.rs b/src/deleted.rs\n\
+deleted file mode 100644\n\
+--- a/src/deleted.rs\n\
++++ /dev/null\n\
+@@ -1,3 +0,0 @@\n\
+-first\n\
+-middle\n\
+-last\n\
+diff --git a/src/boundary.rs b/src/boundary.rs\n\
+--- a/src/boundary.rs\n\
++++ b/src/boundary.rs\n\
+@@ -1,2 +1,2 @@\n\
+-first\n\
++FIRST\n\
+\x20middle\n\
+@@ -9,2 +9,2 @@\n\
+\x20penultimate\n\
+-last\n\
++LAST\n";
+
+    #[test]
+    fn line_mapping_regression_fixtures_cover_failure_prone_diff_shapes() {
+        let files = crate::diff::parse_unified_diff(LINE_MAPPING_DIFF).unwrap();
+        assert_eq!(files.len(), 4);
+
+        let multi = files
+            .iter()
+            .find(|file| file.path == "src/multi.rs")
+            .unwrap();
+        assert_eq!(multi.hunks.len(), 2);
+        assert!(
+            multi
+                .addressable_lines()
+                .iter()
+                .any(|location| { location.old_line == Some(19) && location.new_line.is_none() })
+        );
+        assert!(
+            multi
+                .addressable_lines()
+                .iter()
+                .any(|location| { location.old_line == Some(18) && location.new_line == Some(19) })
+        );
+
+        let added = files
+            .iter()
+            .find(|file| file.path == "src/added.rs")
+            .unwrap();
+        assert!(
+            added
+                .addressable_lines()
+                .iter()
+                .all(|location| location.old_line.is_none() && location.new_line.is_some())
+        );
+
+        let deleted = files
+            .iter()
+            .find(|file| file.path == "src/deleted.rs")
+            .unwrap();
+        assert!(
+            deleted
+                .addressable_lines()
+                .iter()
+                .all(|location| location.old_line.is_some() && location.new_line.is_none())
+        );
+
+        let boundary = files
+            .iter()
+            .find(|file| file.path == "src/boundary.rs")
+            .unwrap();
+        let locations = boundary.addressable_lines();
+        assert!(
+            locations
+                .iter()
+                .any(|location| location.new_line == Some(1))
+        );
+        assert!(
+            locations
+                .iter()
+                .any(|location| location.new_line == Some(10))
+        );
+    }
+
     #[test]
     fn parse_ai_findings_parses_path_line_and_general_headings() {
-        let output = "### src/app/sync.rs:42\nGuard this with the lock.\n\n### General\nConsider adding integration tests.\n";
+        let output = "### src/app/sync.rs|RIGHT|42\nGuard this with the lock.\n\n### General\nConsider adding integration tests.\n";
         let findings = parse_ai_findings(output);
         assert_eq!(findings.len(), 2);
         assert_eq!(findings[0].path.as_deref(), Some("src/app/sync.rs"));
         assert_eq!(findings[0].line, Some(42));
+        assert_eq!(findings[0].side, Some(crate::diff::DiffSide::New));
         assert_eq!(findings[0].body, "Guard this with the lock.");
         assert!(!findings[0].skipped);
         assert!(!findings[0].published);
@@ -1941,7 +2169,7 @@ mod tests {
 
     #[test]
     fn parse_ai_review_output_separates_summary_from_findings() {
-        let output = "## Summary\nThe patch has one concurrency risk.\n\n### src/app/sync.rs:42\nGuard this with the lock.\n";
+        let output = "## Summary\nThe patch has one concurrency risk.\n\n### src/app/sync.rs|LEFT|42\nGuard this with the lock.\n";
         let (summary, findings) = parse_ai_review_output(output);
         assert_eq!(
             summary.as_deref(),
@@ -1949,6 +2177,7 @@ mod tests {
         );
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].path.as_deref(), Some("src/app/sync.rs"));
+        assert_eq!(findings[0].side, Some(crate::diff::DiffSide::Old));
     }
 
     #[test]
@@ -1980,6 +2209,21 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.findings.len(), 1);
         assert_eq!(outcome.findings[0].body, "Add a regression test.");
+    }
+
+    #[test]
+    fn untyped_line_that_names_different_old_and_new_rows_is_not_mapped_to_the_wrong_line() {
+        let outcome = process_ai_review_output(
+            "## Summary\nOne risk.\n\n### src/multi.rs:19\nThe removed behavior is required.\n"
+                .to_string(),
+            LINE_MAPPING_DIFF,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.findings[0].path.as_deref(), Some("src/multi.rs"));
+        assert_eq!(outcome.findings[0].line, None);
+        assert_eq!(outcome.findings[0].diff_hunk, None);
     }
 
     #[test]
@@ -2051,6 +2295,75 @@ mod tests {
     }
 
     #[test]
+    fn ai_review_prompt_labels_old_and_new_source_coordinates_across_fixtures() {
+        let prompt = ai_review_prompt(LINE_MAPPING_DIFF, "", None);
+
+        // The earlier insertion shifts the second hunk: old 18 is new 19,
+        // while removed old 19 and replacement new 20 are distinct rows.
+        assert!(prompt.contains("[RIGHT:19 LEFT:18]  eighteen"));
+        assert!(prompt.contains("[LEFT:19] -nineteen"));
+        assert!(prompt.contains("[RIGHT:20] +nineteen revised"));
+
+        // Added-only / deleted-only files expose only their valid side.
+        assert!(prompt.contains("[RIGHT:1] +first"));
+        assert!(prompt.contains("[RIGHT:3] +last"));
+        assert!(prompt.contains("[LEFT:1] -first"));
+        assert!(prompt.contains("[LEFT:3] -last"));
+
+        // First and last changed lines remain source coordinates, not rows.
+        assert!(prompt.contains("File: src/boundary.rs"));
+        assert!(prompt.contains("[RIGHT:1] +FIRST"));
+        assert!(prompt.contains("[RIGHT:10] +LAST"));
+        assert!(prompt.contains("<path>|<side>|<line>"));
+    }
+
+    #[test]
+    fn canonical_mapping_covers_hunks_sides_replacements_context_and_boundaries() {
+        use crate::diff::{DiffLineLocation, DiffSide};
+
+        let files = crate::diff::parse_unified_diff(LINE_MAPPING_DIFF).unwrap();
+        let cases = [
+            ("src/multi.rs", DiffSide::Old, 19, Some(19), None),
+            ("src/multi.rs", DiffSide::New, 19, Some(18), Some(19)),
+            ("src/multi.rs", DiffSide::New, 20, None, Some(20)),
+            ("src/multi.rs", DiffSide::New, 21, Some(20), Some(21)),
+            ("src/added.rs", DiffSide::New, 1, None, Some(1)),
+            ("src/added.rs", DiffSide::New, 3, None, Some(3)),
+            ("src/deleted.rs", DiffSide::Old, 1, Some(1), None),
+            ("src/deleted.rs", DiffSide::Old, 3, Some(3), None),
+            ("src/boundary.rs", DiffSide::New, 1, None, Some(1)),
+            ("src/boundary.rs", DiffSide::New, 10, None, Some(10)),
+        ];
+
+        for (path, side, line, old_line, new_line) in cases {
+            let file = files.iter().find(|file| file.path == path).unwrap();
+            assert_eq!(
+                resolve_ai_review_location(file, line, Some(side)),
+                Some((side, DiffLineLocation { old_line, new_line })),
+                "{path} {side:?}:{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_old_and_new_findings_post_to_their_requested_github_sides() {
+        let outcome = process_ai_review_output(
+            "## Summary\nTwo risks.\n\n\
+             ### src/multi.rs|LEFT|19\nRemoved behavior is required.\n\n\
+             ### src/multi.rs|RIGHT|19\nThe context call is now unsafe.\n"
+                .to_string(),
+            LINE_MAPPING_DIFF,
+        )
+        .unwrap();
+        let refs: Vec<&AiReviewFinding> = outcome.findings.iter().collect();
+        let (_, inline) = build_ai_review(&refs, outcome.summary.as_deref());
+
+        assert_eq!(inline.len(), 2);
+        assert_eq!((inline[0].side, inline[0].line), ("LEFT", 19));
+        assert_eq!((inline[1].side, inline[1].line), ("RIGHT", 19));
+    }
+
+    #[test]
     fn ai_review_prompt_leads_with_skill_directive_when_configured() {
         let prompt = ai_review_prompt("diff", "", Some("review"));
         assert!(prompt.starts_with("First, use the /review skill/command"));
@@ -2095,6 +2408,7 @@ mod tests {
         AiReviewFinding {
             path: path.map(String::from),
             line,
+            side: line.map(|_| crate::diff::DiffSide::New),
             body: body.to_string(),
             diff_hunk: hunk.map(String::from),
             skipped: false,
@@ -2233,17 +2547,28 @@ mod tests {
     }
 
     #[test]
-    fn diff_hunk_for_line_matches_the_covering_hunk() {
+    fn diff_hunk_for_location_matches_the_covering_hunk() {
         let files = sample_diff_files();
-        let hunk = diff_hunk_for_line(&files, "src/lib.rs", 2);
+        let file = &files[0];
+        let (_, location) =
+            resolve_ai_review_location(file, 2, Some(crate::diff::DiffSide::New)).unwrap();
+        let hunk =
+            diff_hunk_for_location(&files, "src/lib.rs", crate::diff::DiffSide::New, location);
         assert!(hunk.is_some());
         assert!(hunk.unwrap().contains("new line"));
     }
 
     #[test]
-    fn diff_hunk_for_line_is_none_outside_the_hunk_or_file() {
+    fn source_location_is_none_outside_the_hunk_or_file() {
         let files = sample_diff_files();
-        assert!(diff_hunk_for_line(&files, "src/lib.rs", 9999).is_none());
-        assert!(diff_hunk_for_line(&files, "src/other.rs", 1).is_none());
+        assert!(
+            resolve_ai_review_location(&files[0], 9999, Some(crate::diff::DiffSide::New)).is_none()
+        );
+        assert!(
+            files
+                .iter()
+                .find(|file| file.path == "src/other.rs")
+                .is_none()
+        );
     }
 }

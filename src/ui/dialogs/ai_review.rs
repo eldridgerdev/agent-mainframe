@@ -167,10 +167,15 @@ fn truncate_right(s: &str, max: usize) -> String {
 }
 
 fn finding_location(f: &AiReviewFinding) -> String {
-    match (&f.path, f.line) {
-        (Some(path), Some(line)) => format!("{path}:{line}"),
-        (Some(path), None) => path.clone(),
-        (None, _) => "General".to_string(),
+    match (&f.path, f.side, f.line) {
+        (Some(path), Some(crate::diff::DiffSide::Old), Some(line)) => {
+            format!("{path}:{line} (base)")
+        }
+        (Some(path), Some(crate::diff::DiffSide::New), Some(line)) => {
+            format!("{path}:{line}")
+        }
+        (Some(path), _, _) => path.clone(),
+        (None, _, _) => "General".to_string(),
     }
 }
 
@@ -675,7 +680,7 @@ mod tests {
 
     use ratatui::{Terminal, backend::TestBackend};
 
-    use super::{draw_ai_review, draw_ai_review_running, format_elapsed};
+    use super::{draw_ai_review, draw_ai_review_running, finding_location, format_elapsed};
     use crate::{
         app::{AiReviewRunState, AiReviewState},
         project::AgentKind,
@@ -688,6 +693,33 @@ mod tests {
         assert_eq!(
             format_elapsed(std::time::Duration::from_secs(125)),
             "2m 05s"
+        );
+    }
+
+    #[test]
+    fn finding_location_renders_only_validated_side_aware_coordinates() {
+        let finding = |side, line| crate::app::ai_review::AiReviewFinding {
+            path: Some("src/lib.rs".to_string()),
+            line,
+            side,
+            body: "finding".to_string(),
+            diff_hunk: None,
+            skipped: false,
+            published: false,
+        };
+
+        assert_eq!(
+            finding_location(&finding(Some(crate::diff::DiffSide::New), Some(12))),
+            "src/lib.rs:12"
+        );
+        assert_eq!(
+            finding_location(&finding(Some(crate::diff::DiffSide::Old), Some(9))),
+            "src/lib.rs:9 (base)"
+        );
+        assert_eq!(
+            finding_location(&finding(None, None)),
+            "src/lib.rs",
+            "an unmapped finding must not display its rejected line number"
         );
     }
 

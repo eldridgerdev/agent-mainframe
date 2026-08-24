@@ -282,9 +282,9 @@ fn run_jobs(
                     session_kind: &job.kind,
                     workdir: &job.workdir,
                     conversation_id: job
-                        .context_conversation_id
+                        .claude_session_id
                         .as_deref()
-                        .or(job.claude_session_id.as_deref()),
+                        .or(job.context_conversation_id.as_deref()),
                     excluded_conversation_ids: &excluded_context_ids,
                     session_created_at: job.created_at,
                     provider_id: None,
@@ -401,11 +401,15 @@ fn run_jobs(
         let status_text = token_usage
             .as_ref()
             .map(|usage| format_token_usage(usage, pricing));
+        // Live signals win over the cached id: `context_conversation_id` is
+        // derived from this same collector's *previous* output, so once it
+        // drifts (a `/clear`, a new Codex/OpenCode thread) it can only
+        // self-correct if something fresher outranks it here.
         let conversation_id = job
-            .context_conversation_id
+            .claude_session_id
             .as_deref()
-            .or(job.claude_session_id.as_deref())
-            .or_else(|| source.as_ref().map(|source| source.id.as_str()));
+            .or_else(|| source.as_ref().map(|source| source.id.as_str()))
+            .or(job.context_conversation_id.as_deref());
         let context_result = Some(context_collector.collect(ContextCollectionTarget {
             session_kind: &job.kind,
             workdir: &job.workdir,
@@ -1177,7 +1181,11 @@ impl App {
         let pricing = self.config.token_pricing.clone();
         let result = run_jobs(owned_tracker, context_collector, jobs, &pricing);
         apply_bg_result(self, result);
-        *tracker = std::mem::take(&mut self.token_tracker);
+        // Clone rather than `mem::take`: `apply_bg_result` already wrote the
+        // updated tracker into `self.token_tracker`, and this caller's
+        // tracker is a separate copy — taking would leave `self.token_tracker`
+        // reset to default for anyone reading it after this call returns.
+        *tracker = self.token_tracker.clone();
     }
 
     pub fn sync_thinking_status(&mut self) -> bool {

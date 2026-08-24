@@ -4292,6 +4292,7 @@ pub(crate) mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         ProjectStore {

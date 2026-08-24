@@ -120,6 +120,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Cache a branch's terminal (merged/closed) PR state, keyed by repo + branch",
             MIGRATION_026,
         ),
+        (
+            "Persist a manually selected plan path per feature",
+            MIGRATION_027,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -712,6 +716,10 @@ CREATE TABLE IF NOT EXISTS pr_terminal_state (
 );
 ";
 
+const MIGRATION_027: &str = "
+ALTER TABLE features ADD COLUMN selected_plan_path TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -748,7 +756,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -843,7 +851,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
     }
 
     /// Migration 023 adds `linked_feature_id` to TODOs written before it
@@ -975,7 +983,50 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 26);
+        assert_eq!(rows, 27);
+    }
+
+    /// Features written before selected-plan persistence existed acquire a
+    /// nullable column. Their meaning is unchanged: no manual plan has been
+    /// selected yet.
+    #[test]
+    fn migration_027_leaves_existing_features_without_a_selected_plan() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_015).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (26, datetime('now'), 'seed');
+             INSERT INTO projects
+                (id, name, repo, created_at)
+             VALUES ('proj-1', 'project', '/tmp/project', datetime('now'));
+             INSERT INTO features
+                (id, project_id, name, branch, workdir, status,
+                 created_at, last_accessed)
+             VALUES ('feat-1', 'proj-1', 'feature', 'feature/plan',
+                     '/tmp/project/.worktrees/feature', 'stopped',
+                     datetime('now'), datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let selected_plan_path: Option<String> = conn
+            .query_row(
+                "SELECT selected_plan_path FROM features WHERE id = 'feat-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(selected_plan_path, None);
+
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 27);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

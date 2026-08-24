@@ -263,6 +263,9 @@ pub fn handle_markdown_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('/') => {
             app.open_markdown_file_picker_from_viewer()?;
         }
+        KeyCode::Char('r') => {
+            app.refresh_markdown_viewer()?;
+        }
         KeyCode::Esc | KeyCode::Char('q') => {
             let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::MarkdownViewer(state) => state.from_view,
@@ -1025,6 +1028,7 @@ mod tests {
             query: String::new(),
             workdir: PathBuf::from("/tmp/demo"),
             repo_root: Some(PathBuf::from("/tmp/demo-repo")),
+            purpose: crate::app::MarkdownFilePickerPurpose::Browse,
             from_view: Some(view.clone()),
         };
         app.mode = AppMode::MarkdownViewer(MarkdownViewerState {
@@ -1036,6 +1040,7 @@ mod tests {
             rendered_lines: Vec::new(),
             return_to_picker: Some(picker),
             from_view: Some(view),
+            current_plan: false,
         });
 
         handle_markdown_viewer_key(
@@ -1066,6 +1071,7 @@ mod tests {
             rendered_lines: Vec::new(),
             return_to_picker: None,
             from_view: Some(view),
+            current_plan: false,
         });
 
         handle_markdown_viewer_key(
@@ -1095,6 +1101,7 @@ mod tests {
             rendered_lines: Vec::new(),
             return_to_picker: None,
             from_view: Some(view),
+            current_plan: false,
         });
 
         handle_markdown_viewer_key(
@@ -1129,6 +1136,7 @@ mod tests {
             rendered_lines: Vec::new(),
             return_to_picker: None,
             from_view: Some(view),
+            current_plan: false,
         });
 
         handle_markdown_viewer_key(
@@ -1158,6 +1166,7 @@ mod tests {
             rendered_lines: Vec::new(),
             return_to_picker: None,
             from_view: Some(view),
+            current_plan: false,
         });
 
         handle_markdown_viewer_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL))
@@ -1169,6 +1178,80 @@ mod tests {
             }
             _ => panic!("expected markdown viewer to stay open"),
         }
+    }
+
+    #[test]
+    fn current_plan_viewer_refreshes_edits_in_place() {
+        let workdir = TempDir::new().unwrap();
+        let path = workdir.path().join("AMF_PLAN.md");
+        std::fs::write(&path, "# Before\n").unwrap();
+        let mut app = markdown_app_with_feature(workdir.path(), workdir.path());
+        app.mode = AppMode::MarkdownViewer(MarkdownViewerState {
+            title: "AMF_PLAN.md".into(),
+            source_path: path.clone(),
+            content: "# Before\n".into(),
+            scroll_offset: 0,
+            rendered_width: 80,
+            rendered_lines: vec![ratatui::text::Line::from("stale")],
+            return_to_picker: None,
+            from_view: Some(markdown_view()),
+            current_plan: true,
+        });
+        std::fs::write(&path, "# After\n").unwrap();
+
+        handle_markdown_viewer_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &app.mode,
+            AppMode::MarkdownViewer(state)
+                if state.content == "# After\n"
+                    && state.rendered_width == 0
+                    && state.rendered_lines.is_empty()
+        ));
+    }
+
+    #[test]
+    fn deleted_selected_plan_is_invalidated_and_returns_to_agent_view() {
+        let workdir = TempDir::new().unwrap();
+        let path = workdir.path().join("accepted.md");
+        std::fs::write(&path, "# Accepted\n").unwrap();
+        let canonical = path.canonicalize().unwrap();
+        let mut app = markdown_app_with_feature(workdir.path(), workdir.path());
+        app.store.projects[0].features[0].selected_plan_path = Some(canonical.clone());
+        app.mode = AppMode::MarkdownViewer(MarkdownViewerState {
+            title: "accepted.md".into(),
+            source_path: canonical,
+            content: "# Accepted\n".into(),
+            scroll_offset: 0,
+            rendered_width: 0,
+            rendered_lines: Vec::new(),
+            return_to_picker: None,
+            from_view: Some(markdown_view()),
+            current_plan: true,
+        });
+        std::fs::remove_file(path).unwrap();
+
+        handle_markdown_viewer_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert!(
+            app.store.projects[0].features[0]
+                .selected_plan_path
+                .is_none()
+        );
+        assert!(app.toasts.last().is_some_and(|toast| {
+            toast
+                .message
+                .starts_with("Current plan is no longer available")
+        }));
     }
 
     #[test]

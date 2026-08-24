@@ -129,6 +129,19 @@ fn pr_triage_sidebar_text(app: &App, feature: &Feature) -> Option<String> {
     Some(format!("PR: #{} {}", pr.number, pr.state.label()))
 }
 
+/// Reads the sidebar's plan status line from the background-loaded cache
+/// (`App::sidebar_effective_plan_cache`) rather than resolving it here.
+/// Resolution touches the filesystem (`is_file`, and `canonicalize` for a
+/// manually selected plan) and this is called from `build_agent_sidebar_data`
+/// on every `draw()` of the pane view — up to ~20x/sec while in Viewing
+/// mode — so it must stay off the render thread.
+fn plan_sidebar_text(app: &App, feature: &Feature) -> String {
+    app.sidebar_effective_plan_cache
+        .get(&feature.tmux_session)
+        .cloned()
+        .unwrap_or_else(|| "No plan selected".to_string())
+}
+
 fn build_agent_sidebar_data(
     app: &App,
     view: &crate::app::ViewState,
@@ -190,6 +203,7 @@ fn build_agent_sidebar_data(
         SessionKind::Codex => {
             build_codex_sidebar_data(app, project, feature, session, view, status_line)
         }
+        SessionKind::Pi => build_pi_sidebar_data(app, project, feature, session, view, status_line),
         _ => None,
     }
 }
@@ -249,6 +263,7 @@ fn build_opencode_sidebar_data(
         todos_text,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
+        plan_text: plan_sidebar_text(app, feature),
     })
 }
 
@@ -293,6 +308,7 @@ fn build_claude_sidebar_data(
         todos_text,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
+        plan_text: plan_sidebar_text(app, feature),
     })
 }
 
@@ -346,6 +362,43 @@ fn build_codex_sidebar_data(
         todos_text: None,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
+        plan_text: plan_sidebar_text(app, feature),
+    })
+}
+
+fn build_pi_sidebar_data(
+    app: &App,
+    project: &Project,
+    feature: &Feature,
+    session: Option<&FeatureSession>,
+    view: &crate::app::ViewState,
+    status_line: String,
+) -> Option<super::pane::AgentSidebarData> {
+    let usage_line = session
+        .and_then(|session| session.status_text.as_deref())
+        .map(format_sidebar_usage);
+    let prompt_text =
+        sidebar_prompt_text(None, app.latest_prompt_for_session(&feature.tmux_session));
+    let work_text = pending_diff_review_work_text(app, project, feature)
+        .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
+    let summary_text = compose_sidebar_summary_text(None, feature.summary.clone());
+    let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
+    let model_text = app.sidebar_model_cache.get(&feature.tmux_session).cloned();
+    let status_text = append_model_status_line(
+        compose_sidebar_status_text(activity_line, usage_line, None),
+        model_text.as_deref(),
+    );
+
+    Some(super::pane::AgentSidebarData {
+        agent_kind: SessionKind::Pi,
+        status_text,
+        model_text,
+        prompt_text,
+        work_text,
+        todos_text: None,
+        summary_text,
+        pr_triage_text: pr_triage_sidebar_text(app, feature),
+        plan_text: plan_sidebar_text(app, feature),
     })
 }
 
@@ -2000,6 +2053,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         App::new_for_test(
@@ -2159,6 +2213,57 @@ mod tests {
     }
 
     #[test]
+    fn plan_sidebar_data_is_available_only_for_agent_harness_views() {
+        for kind in [
+            SessionKind::Claude,
+            SessionKind::Codex,
+            SessionKind::Opencode,
+            SessionKind::Pi,
+        ] {
+            let app = sidebar_usage_app(kind.clone());
+            let sidebar =
+                build_agent_sidebar_data(&app, &sidebar_usage_view(kind, "agent-1", "Agent 1"))
+                    .expect("agent harness should have sidebar data");
+            assert_eq!(sidebar.plan_text, "No plan selected");
+        }
+
+        for kind in [
+            SessionKind::Terminal,
+            SessionKind::Nvim,
+            SessionKind::Vscode,
+            SessionKind::Todos,
+            SessionKind::Custom,
+        ] {
+            let app = sidebar_usage_app(kind.clone());
+            assert!(
+                build_agent_sidebar_data(&app, &sidebar_usage_view(kind, "agent-1", "Agent 1"))
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn plan_sidebar_label_reflects_the_background_loaded_effective_plan() {
+        // The effective plan is resolved off the render thread by the
+        // sidebar-load pipeline (see `App::sidebar_effective_plan_cache`),
+        // not by `build_agent_sidebar_data` itself — populate the cache the
+        // way `poll_sidebar_load_results` would to exercise that plumbing.
+        let mut app = sidebar_usage_app(SessionKind::Codex);
+        app.sidebar_effective_plan_cache.insert(
+            "amf-feature".to_string(),
+            "Current: AMF_PLAN.md".to_string(),
+        );
+
+        let sidebar = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-1", "Agent 1"),
+        )
+        .unwrap();
+
+        assert_eq!(sidebar.plan_text, "Current: AMF_PLAN.md");
+    }
+
+    #[test]
     fn format_codex_usage_source_confidence_uses_inferred_match_label() {
         let mut session = codex_feature_session("sess-current");
         session.token_usage_source_match = Some(TokenUsageSourceMatch::Inferred);
@@ -2194,6 +2299,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         feature.add_session_named(SessionKind::Claude, "Claude 1".to_string());
@@ -2774,6 +2880,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {
@@ -2879,6 +2986,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {
@@ -2987,6 +3095,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {
@@ -3095,6 +3204,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {
@@ -3189,6 +3299,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {

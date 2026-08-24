@@ -20,6 +20,7 @@ mod navigation;
 mod notifications;
 mod opencode;
 pub(crate) mod opencode_storage;
+pub(crate) mod plan;
 mod plan_interview;
 pub(crate) mod pr_review;
 mod project_ops;
@@ -859,6 +860,13 @@ pub struct App {
     pub latest_prompt_cache: HashMap<String, String>,
     pub sidebar_model_cache: HashMap<String, String>,
     pub sidebar_plan_cache: HashMap<String, String>,
+    /// The sidebar's "Current: <path>" line for each feature's effective
+    /// plan (see `app::plan::resolve_effective_plan`). Populated by the
+    /// background sidebar-load pipeline, never resolved on the render
+    /// thread — the resolution touches the filesystem (an `is_file` check
+    /// and, for a manual selection, a `canonicalize`), and `draw()` runs
+    /// up to ~20x/sec while a pane is in view.
+    pub sidebar_effective_plan_cache: HashMap<String, String>,
     pub codex_session_title_cache: HashMap<String, Option<String>>,
     pub codex_session_prompt_cache: HashMap<String, Option<String>>,
     pub codex_session_model_cache: HashMap<String, Option<String>>,
@@ -1096,6 +1104,7 @@ struct SidebarLoadResult {
     latest_prompt: Option<String>,
     model_text: Option<String>,
     opencode_sidebar: Option<opencode_storage::OpencodeSidebarData>,
+    plan_text: String,
 }
 
 type SidebarLoadTask = Box<dyn FnOnce() + Send + 'static>;
@@ -2343,6 +2352,7 @@ impl App {
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,
+            sidebar_effective_plan_cache: HashMap::new(),
             codex_session_title_cache: HashMap::new(),
             codex_session_prompt_cache: HashMap::new(),
             codex_session_model_cache: HashMap::new(),
@@ -2581,6 +2591,7 @@ impl App {
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,
+            sidebar_effective_plan_cache: HashMap::new(),
             codex_session_title_cache: HashMap::new(),
             codex_session_prompt_cache: HashMap::new(),
             codex_session_model_cache: HashMap::new(),
@@ -2854,6 +2865,9 @@ impl App {
                 self.sidebar_model_cache.remove(&result.tmux_session);
             }
 
+            self.sidebar_effective_plan_cache
+                .insert(result.tmux_session.clone(), result.plan_text);
+
             if let Some(data) = result.opencode_sidebar {
                 self.opencode_sidebar_cache
                     .insert(result.tmux_session, data);
@@ -2870,6 +2884,7 @@ impl App {
         self.latest_prompt_cache.remove(tmux_session);
         self.sidebar_model_cache.remove(tmux_session);
         self.sidebar_plan_cache.remove(tmux_session);
+        self.sidebar_effective_plan_cache.remove(tmux_session);
         self.codex_live_threads.remove(tmux_session);
         self.opencode_sidebar_cache.remove(tmux_session);
         self.prune_codex_sidebar_caches();
@@ -3531,6 +3546,7 @@ struct SidebarLoadRequest {
     workdir: PathBuf,
     preferred_session_kind: Option<SessionKind>,
     preferred_session_id: Option<String>,
+    selected_plan_path: Option<PathBuf>,
 }
 
 impl SidebarLoadRequest {
@@ -3573,6 +3589,7 @@ impl SidebarLoadRequest {
             workdir: feature.workdir.clone(),
             preferred_session_kind,
             preferred_session_id,
+            selected_plan_path: feature.selected_plan_path.clone(),
         }
     }
 
@@ -3587,6 +3604,7 @@ impl SidebarLoadRequest {
             workdir: feature.workdir.clone(),
             preferred_session_kind: Some(SessionKind::Opencode),
             preferred_session_id,
+            selected_plan_path: feature.selected_plan_path.clone(),
         }
     }
 
@@ -3596,6 +3614,8 @@ impl SidebarLoadRequest {
         self.preferred_session_id.hash(&mut hasher);
         session_kind_signature(self.preferred_session_kind.as_ref()).hash(&mut hasher);
         sidebar_prompt_input_signature(&self.workdir).hash(&mut hasher);
+        sidebar_plan_input_signature(&self.workdir, self.selected_plan_path.as_deref())
+            .hash(&mut hasher);
 
         if self.preferred_session_kind == Some(SessionKind::Opencode) {
             opencode_storage::sidebar_input_signature(
@@ -3637,6 +3657,7 @@ impl SidebarLoadRequest {
                 latest_prompt: None,
                 model_text: None,
                 opencode_sidebar: None,
+                plan_text: String::new(),
             };
         }
 
@@ -3666,6 +3687,10 @@ impl SidebarLoadRequest {
             }
             _ => None,
         };
+        let plan_text = crate::app::plan::plan_sidebar_display_text(
+            &self.workdir,
+            self.selected_plan_path.as_deref(),
+        );
 
         SidebarLoadResult {
             tmux_session: self.tmux_session,
@@ -3674,6 +3699,7 @@ impl SidebarLoadRequest {
             latest_prompt,
             model_text,
             opencode_sidebar,
+            plan_text,
         }
     }
 }
@@ -3711,6 +3737,24 @@ fn sidebar_prompt_input_signature(workdir: &Path) -> u64 {
         &mut hasher,
         workdir.join(".codex").join("latest-prompt.txt"),
     );
+    hasher.finish()
+}
+
+fn sidebar_plan_input_signature(workdir: &Path, selected_plan_path: Option<&Path>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_path_metadata(
+        &mut hasher,
+        workdir.join(crate::app::plan::DEFAULT_PLAN_FILE),
+    );
+    selected_plan_path.hash(&mut hasher);
+    if let Some(selected) = selected_plan_path {
+        let candidate = if selected.is_absolute() {
+            selected.to_path_buf()
+        } else {
+            workdir.join(selected)
+        };
+        hash_path_metadata(&mut hasher, candidate);
+    }
     hasher.finish()
 }
 

@@ -129,13 +129,17 @@ fn pr_triage_sidebar_text(app: &App, feature: &Feature) -> Option<String> {
     Some(format!("PR: #{} {}", pr.number, pr.state.label()))
 }
 
-fn plan_sidebar_text(feature: &Feature) -> String {
-    let Some(plan) = crate::app::plan::resolve_effective_plan(feature) else {
-        return "No plan selected".to_string();
-    };
-    let path = plan.path();
-    let label = path.strip_prefix(&feature.workdir).unwrap_or(path);
-    format!("Current: {}", label.display())
+/// Reads the sidebar's plan status line from the background-loaded cache
+/// (`App::sidebar_effective_plan_cache`) rather than resolving it here.
+/// Resolution touches the filesystem (`is_file`, and `canonicalize` for a
+/// manually selected plan) and this is called from `build_agent_sidebar_data`
+/// on every `draw()` of the pane view — up to ~20x/sec while in Viewing
+/// mode — so it must stay off the render thread.
+fn plan_sidebar_text(app: &App, feature: &Feature) -> String {
+    app.sidebar_effective_plan_cache
+        .get(&feature.tmux_session)
+        .cloned()
+        .unwrap_or_else(|| "No plan selected".to_string())
 }
 
 fn build_agent_sidebar_data(
@@ -259,7 +263,7 @@ fn build_opencode_sidebar_data(
         todos_text,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
-        plan_text: plan_sidebar_text(feature),
+        plan_text: plan_sidebar_text(app, feature),
     })
 }
 
@@ -304,7 +308,7 @@ fn build_claude_sidebar_data(
         todos_text,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
-        plan_text: plan_sidebar_text(feature),
+        plan_text: plan_sidebar_text(app, feature),
     })
 }
 
@@ -358,7 +362,7 @@ fn build_codex_sidebar_data(
         todos_text: None,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
-        plan_text: plan_sidebar_text(feature),
+        plan_text: plan_sidebar_text(app, feature),
     })
 }
 
@@ -394,7 +398,7 @@ fn build_pi_sidebar_data(
         todos_text: None,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
-        plan_text: plan_sidebar_text(feature),
+        plan_text: plan_sidebar_text(app, feature),
     })
 }
 
@@ -2239,11 +2243,16 @@ mod tests {
     }
 
     #[test]
-    fn plan_sidebar_label_is_derived_from_the_effective_worktree_plan() {
-        let workdir = tempfile::TempDir::new().unwrap();
-        std::fs::write(workdir.path().join("AMF_PLAN.md"), "# Current\n").unwrap();
+    fn plan_sidebar_label_reflects_the_background_loaded_effective_plan() {
+        // The effective plan is resolved off the render thread by the
+        // sidebar-load pipeline (see `App::sidebar_effective_plan_cache`),
+        // not by `build_agent_sidebar_data` itself — populate the cache the
+        // way `poll_sidebar_load_results` would to exercise that plumbing.
         let mut app = sidebar_usage_app(SessionKind::Codex);
-        app.store.projects[0].features[0].workdir = workdir.path().to_path_buf();
+        app.sidebar_effective_plan_cache.insert(
+            "amf-feature".to_string(),
+            "Current: AMF_PLAN.md".to_string(),
+        );
 
         let sidebar = build_agent_sidebar_data(
             &app,

@@ -32,13 +32,25 @@ pub(crate) enum SelectedPlanPathError {
 /// effective while it continues to satisfy the same worktree and file-type
 /// boundary enforced when the picker persists it.
 pub(crate) fn resolve_effective_plan(feature: &Feature) -> Option<EffectivePlan> {
-    let default = feature.workdir.join(DEFAULT_PLAN_FILE);
+    resolve_effective_plan_for(&feature.workdir, feature.selected_plan_path.as_deref())
+}
+
+/// Same resolution as [`resolve_effective_plan`], taking the feature's
+/// worktree and manually-selected path directly. This touches the
+/// filesystem (`is_file`, and `canonicalize` for a manual selection) — call
+/// it off the render thread; see the background sidebar-load pipeline in
+/// `app/mod.rs`.
+pub(crate) fn resolve_effective_plan_for(
+    workdir: &Path,
+    selected_plan_path: Option<&Path>,
+) -> Option<EffectivePlan> {
+    let default = workdir.join(DEFAULT_PLAN_FILE);
     if default.is_file() {
         return Some(EffectivePlan::Default(default));
     }
 
-    let selected = feature.selected_plan_path.as_deref()?;
-    validate_selected_plan_path(&feature.workdir, selected)
+    let selected = selected_plan_path?;
+    validate_selected_plan_path(workdir, selected)
         .ok()
         .map(EffectivePlan::Selected)
 }
@@ -76,6 +88,21 @@ pub(crate) fn validate_selected_plan_path(
     }
 
     Ok(candidate)
+}
+
+/// The sidebar's "Current: <path>" line for a feature's effective plan, or
+/// "No plan selected" when none resolves. Shares the same filesystem-I/O
+/// caveat as [`resolve_effective_plan_for`].
+pub(crate) fn plan_sidebar_display_text(
+    workdir: &Path,
+    selected_plan_path: Option<&Path>,
+) -> String {
+    let Some(plan) = resolve_effective_plan_for(workdir, selected_plan_path) else {
+        return "No plan selected".to_string();
+    };
+    let path = plan.path();
+    let label = path.strip_prefix(workdir).unwrap_or(path);
+    format!("Current: {}", label.display())
 }
 
 pub(crate) fn is_markdown_path(path: &Path) -> bool {
@@ -177,6 +204,26 @@ mod tests {
         assert_eq!(
             validate_selected_plan_path(&workdir, &text),
             Err(SelectedPlanPathError::NotMarkdown)
+        );
+    }
+
+    #[test]
+    fn plan_sidebar_display_text_reports_no_plan_when_none_resolves() {
+        let workdir = TempDir::new().unwrap();
+        assert_eq!(
+            plan_sidebar_display_text(workdir.path(), None),
+            "No plan selected"
+        );
+    }
+
+    #[test]
+    fn plan_sidebar_display_text_labels_the_effective_plan_relative_to_the_worktree() {
+        let workdir = TempDir::new().unwrap();
+        fs::write(workdir.path().join(DEFAULT_PLAN_FILE), "# Current\n").unwrap();
+
+        assert_eq!(
+            plan_sidebar_display_text(workdir.path(), None),
+            "Current: AMF_PLAN.md"
         );
     }
 

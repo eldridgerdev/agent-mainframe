@@ -334,6 +334,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
                 deletions: Some(1),
                 files: Some(1),
             }),
+            plan_text: "Current: AMF_PLAN.md".to_string(),
         })
         .unwrap();
 
@@ -342,6 +343,12 @@ fn poll_sidebar_load_results_updates_feature_caches() {
     assert_eq!(
         app.latest_prompt_for_session("amf-my-feat"),
         Some("lazy prompt")
+    );
+    assert_eq!(
+        app.sidebar_effective_plan_cache
+            .get("amf-my-feat")
+            .map(String::as_str),
+        Some("Current: AMF_PLAN.md")
     );
     assert_eq!(
         app.opencode_sidebar_cache
@@ -2441,6 +2448,7 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
                 deletions: None,
                 files: None,
             }),
+            plan_text: "No plan selected".to_string(),
         })
         .unwrap();
 

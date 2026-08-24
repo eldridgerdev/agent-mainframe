@@ -743,27 +743,31 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
-        AppMode::MarkdownFilePicker(state) => Line::from(vec![
-            Span::styled(" j/k", key_style()),
-            Span::raw(" navigate  "),
-            Span::styled("/", key_style()),
-            Span::raw(" search  "),
-            Span::styled("p", key_style()),
-            Span::raw(" plan  "),
-            Span::styled("Enter", key_style()),
-            Span::raw(
-                if matches!(
-                    state.purpose,
-                    crate::app::MarkdownFilePickerPurpose::SelectPlan { .. }
-                ) {
-                    " select  "
-                } else {
-                    " open  "
-                },
-            ),
-            Span::styled("Esc", key_style()),
-            Span::raw(" cancel"),
-        ]),
+        AppMode::MarkdownFilePicker(state) => {
+            let selecting_plan = matches!(
+                state.purpose,
+                crate::app::MarkdownFilePickerPurpose::SelectPlan { .. }
+            );
+            let mut spans = vec![
+                Span::styled(" j/k", key_style()),
+                Span::raw(" navigate  "),
+                Span::styled("/", key_style()),
+                Span::raw(" search  "),
+            ];
+            if !selecting_plan {
+                spans.push(Span::styled("p", key_style()));
+                spans.push(Span::raw(" plan  "));
+            }
+            spans.push(Span::styled("Enter", key_style()));
+            spans.push(Span::raw(if selecting_plan {
+                " select  "
+            } else {
+                " open  "
+            }));
+            spans.push(Span::styled("Esc", key_style()));
+            spans.push(Span::raw(" cancel"));
+            Line::from(spans)
+        }
         AppMode::ForkingFeature(_) => Line::from(vec![
             Span::styled(" Enter", key_style()),
             Span::raw(" confirm  "),

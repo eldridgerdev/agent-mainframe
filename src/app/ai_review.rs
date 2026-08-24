@@ -129,11 +129,12 @@ pub enum AiReviewProgress {
 /// model that doesn't follow the fixed-format instruction produces zero
 /// parsed findings with no other visible signal that anything went wrong (vs.
 /// a genuinely clean diff, which also parses to zero findings).
+#[derive(Debug)]
 pub struct AiReviewOutcome {
     pub findings: Vec<AiReviewFinding>,
     /// One-to-three sentence overview produced in the same agent pass as the
-    /// findings. `None` when an older/malformed response omitted the summary;
-    /// posting falls back to the legacy placeholder instead of blocking.
+    /// findings. New runs require this to be `Some`; `None` remains supported
+    /// for legacy cache entries created before summary validation.
     pub summary: Option<String>,
     pub raw_output: String,
 }
@@ -154,6 +155,27 @@ pub struct AiReviewRun {
 pub enum AiReviewRunOutcome {
     Findings(usize),
     Error(String),
+}
+
+/// Presentation status for the AI Review badge in PR Triage. The running
+/// variant comes from the live worker; terminal variants come from the exact
+/// PR-number/head-SHA cache entry retained on [`PrReviewState`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum AiReviewTriageStatus {
+    NotRun,
+    Running,
+    Pending(usize),
+    NoFindings(AiReviewRun),
+    Failed(AiReviewRun),
+    /// A successful run found findings, but none remain publishable (for
+    /// example because they were skipped or posted). PR Triage shows no badge.
+    CompletedWithFindings,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AiReviewTriageSnapshot {
+    pub(crate) pending_findings: usize,
+    pub(crate) last_run: Option<AiReviewRun>,
 }
 
 /// Stage of the AI PR review's full-screen running view. Mirrors the
@@ -464,6 +486,33 @@ fn model_for_ai_review_run(
     }
 }
 
+/// Validate and enrich a successful harness response. A non-empty Summary is
+/// the explicit proof that the model completed the requested response shape;
+/// without it, zero parsed findings cannot safely mean a clean review.
+fn process_ai_review_output(output: String, diff: &str) -> Result<AiReviewOutcome> {
+    let (summary, mut findings) = parse_ai_review_output(&output);
+    if summary.is_none() {
+        anyhow::bail!("AI review returned malformed output: missing a non-empty Summary section");
+    }
+    // Attach each anchored finding's diff hunk by re-matching its
+    // `path:line` into the already-fetched PR diff — nothing about
+    // generating a finding produces one the way GitHub's API does for a
+    // fetched comment. A parse failure (malformed diff) just leaves every
+    // finding without a hunk rather than failing the whole review.
+    if let Ok(files) = crate::diff::parse_unified_diff(diff) {
+        for finding in &mut findings {
+            if let (Some(path), Some(line)) = (&finding.path, finding.line) {
+                finding.diff_hunk = diff_hunk_for_line(&files, path, line);
+            }
+        }
+    }
+    Ok(AiReviewOutcome {
+        findings,
+        summary,
+        raw_output: output,
+    })
+}
+
 /// Background body of the AI PR review (`A`): assemble the prompt from
 /// `diff` + `memory` (+ optional `skill`), report a token estimate, then make
 /// **one** headless agent pass and parse its response into findings. Runs off
@@ -507,26 +556,7 @@ fn run_ai_pr_review(
             let _ = progress_tx.send(progress);
         },
     )
-    .map(|output| {
-        let (summary, mut findings) = parse_ai_review_output(&output);
-        // Attach each anchored finding's diff hunk by re-matching its
-        // `path:line` into the already-fetched PR diff — nothing about
-        // generating a finding produces one the way GitHub's API does for a
-        // fetched comment. A parse failure (malformed diff) just leaves every
-        // finding without a hunk rather than failing the whole review.
-        if let Ok(files) = crate::diff::parse_unified_diff(&diff) {
-            for finding in &mut findings {
-                if let (Some(path), Some(line)) = (&finding.path, finding.line) {
-                    finding.diff_hunk = diff_hunk_for_line(&files, path, line);
-                }
-            }
-        }
-        AiReviewOutcome {
-            findings,
-            summary,
-            raw_output: output,
-        }
-    });
+    .and_then(|output| process_ai_review_output(output, &diff));
     let _ = tx.send(AiReviewProgress::Done(result));
 }
 
@@ -542,12 +572,14 @@ fn apply_refreshed_pr_review_state(
     state: &mut PrReviewState,
     review: crate::app::pr_review::PrReview,
     pending_ai_review_findings: usize,
+    ai_review_last_run: Option<AiReviewRun>,
     checked_out_branch: Option<String>,
 ) {
     let selected_id = state.selected_comment().map(|comment| comment.id);
     let old_selected = state.selected;
     state.review = review;
     state.pending_ai_review_findings = pending_ai_review_findings;
+    state.ai_review_last_run = ai_review_last_run;
     state.checked_out_branch = checked_out_branch;
     state.marked.retain(|id| {
         state
@@ -735,10 +767,11 @@ impl App {
             }
             None => false,
         };
-        self.update_pending_ai_review_count(
+        self.update_ai_review_triage_snapshot(
             &state.workdir,
             &state.pr,
             entry.publishable_finding_count(),
+            entry.last_run.clone(),
         );
         saved
     }
@@ -746,7 +779,7 @@ impl App {
     /// Publishable cached findings for the exact PR/head SHA. This is read
     /// when PR Triage opens so the pending badge survives pane changes and
     /// process restarts rather than depending on a live background job.
-    pub(crate) fn pending_ai_review_count(&self, pr: &PrRef) -> usize {
+    pub(crate) fn ai_review_triage_snapshot(&self, pr: &PrRef) -> AiReviewTriageSnapshot {
         self.db
             .as_ref()
             .and_then(|db| {
@@ -754,13 +787,52 @@ impl App {
                     .ok()
                     .flatten()
             })
-            .map_or(0, |entry| entry.publishable_finding_count())
+            .map_or_else(AiReviewTriageSnapshot::default, |entry| {
+                AiReviewTriageSnapshot {
+                    pending_findings: entry.publishable_finding_count(),
+                    last_run: entry.last_run,
+                }
+            })
+    }
+
+    /// Derive the PR Triage badge state with live work taking precedence over
+    /// the exact cached terminal result retained by the pane.
+    pub(crate) fn ai_review_triage_status(&self, state: &PrReviewState) -> AiReviewTriageStatus {
+        let pr = &state.review.pr;
+        let running = self.ai_review_bg.is_some()
+            && self.ai_review_pending.as_ref().is_some_and(|pending| {
+                pending.workdir == state.workdir
+                    && pending.pr.number == pr.number
+                    && pending.pr.head_sha == pr.head_sha
+            });
+        if running {
+            return AiReviewTriageStatus::Running;
+        }
+        if state.pending_ai_review_findings > 0 {
+            return AiReviewTriageStatus::Pending(state.pending_ai_review_findings);
+        }
+        match state.ai_review_last_run.clone() {
+            Some(run) if matches!(run.outcome, AiReviewRunOutcome::Findings(0)) => {
+                AiReviewTriageStatus::NoFindings(run)
+            }
+            Some(run) if matches!(run.outcome, AiReviewRunOutcome::Error(_)) => {
+                AiReviewTriageStatus::Failed(run)
+            }
+            Some(_) => AiReviewTriageStatus::CompletedWithFindings,
+            None => AiReviewTriageStatus::NotRun,
+        }
     }
 
     /// Keep every in-memory copy of the matching PR Triage pane in sync with
     /// the durable cache. The pane may currently be visible, stashed under AI
     /// Review, or stashed while the user watches a fix session.
-    fn update_pending_ai_review_count(&mut self, workdir: &Path, pr: &PrRef, count: usize) {
+    fn update_ai_review_triage_snapshot(
+        &mut self,
+        workdir: &Path,
+        pr: &PrRef,
+        count: usize,
+        last_run: Option<AiReviewRun>,
+    ) {
         let matches = |state: &PrReviewState| {
             state.workdir == workdir
                 && state.review.pr.number == pr.number
@@ -770,17 +842,20 @@ impl App {
             && matches(state)
         {
             state.pending_ai_review_findings = count;
+            state.ai_review_last_run = last_run.clone();
         }
         if let Some(return_to) = self.ai_review_return_to.as_deref_mut()
             && let AppMode::PrReview(state) = return_to
             && matches(state)
         {
             state.pending_ai_review_findings = count;
+            state.ai_review_last_run = last_run.clone();
         }
         if let Some(stash) = &mut self.pr_review_return
             && matches(&stash.state)
         {
             stash.state.pending_ai_review_findings = count;
+            stash.state.ai_review_last_run = last_run;
         }
     }
 
@@ -1338,11 +1413,16 @@ impl App {
                         Pane(Box<AiReviewState>),
                         Elsewhere,
                     }
+                    let matches_pending = |state: &AiReviewState| {
+                        state.workdir == pending.workdir
+                            && state.pr.number == pending.pr.number
+                            && state.pr.head_sha == pending.pr.head_sha
+                    };
                     let target = match &self.mode {
-                        AppMode::AiReviewRunning(state) if state.origin.pr.number == pr_number => {
+                        AppMode::AiReviewRunning(state) if matches_pending(&state.origin) => {
                             Target::Running
                         }
-                        AppMode::AiReview(state) if state.pr.number == pr_number => {
+                        AppMode::AiReview(state) if matches_pending(state) => {
                             Target::Pane(Box::new(state.clone()))
                         }
                         _ => Target::Elsewhere,
@@ -1352,30 +1432,15 @@ impl App {
                     match result {
                         Ok(outcome) => {
                             let count = outcome.findings.len();
-                            let parse_suspect = count == 0
-                                && outcome.summary.is_none()
-                                && !outcome.raw_output.trim().is_empty();
-                            if parse_suspect {
-                                self.log_warn(
-                                    "pr_review",
-                                    format!(
-                                        "AI review of PR #{pr_number} parsed 0 findings from a \
-                                         non-empty response ({} chars) — raw output:\n{}",
-                                        outcome.raw_output.len(),
-                                        outcome.raw_output
-                                    ),
-                                );
-                            } else {
-                                self.log_debug(
-                                    "pr_review",
-                                    format!(
-                                        "AI review of PR #{pr_number} parsed {count} finding{} \
-                                         from {} chars of output",
-                                        if count == 1 { "" } else { "s" },
-                                        outcome.raw_output.len()
-                                    ),
-                                );
-                            }
+                            self.log_debug(
+                                "pr_review",
+                                format!(
+                                    "AI review of PR #{pr_number} parsed {count} finding{} \
+                                     from {} chars of output",
+                                    if count == 1 { "" } else { "s" },
+                                    outcome.raw_output.len()
+                                ),
+                            );
 
                             let mut base = match &target {
                                 Target::Running => {
@@ -1412,16 +1477,9 @@ impl App {
                                 String::new()
                             };
                             if count == 0 {
-                                if parse_suspect {
-                                    self.push_toast_warning(format!(
-                                        "AI review found 0 findings{note} — press D to check the \
-                                         debug log"
-                                    ));
-                                } else {
-                                    self.push_toast_success(format!(
-                                        "AI review found no findings{note}"
-                                    ));
-                                }
+                                self.push_toast_success(format!(
+                                    "AI review found no findings{note}"
+                                ));
                             } else {
                                 self.push_toast_success(format!(
                                     "AI review found {count} finding{}{note}",
@@ -1472,25 +1530,44 @@ impl App {
                     self.ai_review_bg = None;
                     self.ai_review_progress = None;
                     let pending = self.ai_review_pending.take();
+                    let detail = "AI review worker disconnected unexpectedly";
                     let pr_number = pending.as_ref().map(|p| p.pr.number);
-                    let detail = pr_number.map_or_else(
-                        || "AI review failed unexpectedly".to_string(),
-                        |number| format!("AI review of PR #{number} failed unexpectedly"),
-                    );
-                    self.log_error("pr_review", detail);
-                    self.push_toast_error("AI review failed unexpectedly");
-                    match &self.mode {
-                        AppMode::AiReviewRunning(state)
-                            if Some(state.origin.pr.number) == pr_number =>
-                        {
-                            self.mode = AppMode::AiReview(state.origin.clone());
-                            changed = true;
+                    if let Some(pending) = pending {
+                        let matches_pending = |state: &AiReviewState| {
+                            state.workdir == pending.workdir
+                                && state.pr.number == pending.pr.number
+                                && state.pr.head_sha == pending.pr.head_sha
+                        };
+                        let visible = match &self.mode {
+                            AppMode::AiReviewRunning(state) => matches_pending(&state.origin),
+                            AppMode::AiReview(state) => matches_pending(state),
+                            _ => false,
+                        };
+                        let mut base = match &self.mode {
+                            AppMode::AiReviewRunning(state) if matches_pending(&state.origin) => {
+                                state.origin.clone()
+                            }
+                            AppMode::AiReview(state) if matches_pending(state) => state.clone(),
+                            _ => pending,
+                        };
+                        base.last_run = Some(AiReviewRun {
+                            ran_at: Local::now(),
+                            outcome: AiReviewRunOutcome::Error(detail.to_string()),
+                        });
+                        self.cache_ai_review(&base);
+                        if visible {
+                            self.mode = AppMode::AiReview(base);
                         }
-                        AppMode::AiReview(state) if Some(state.pr.number) == pr_number => {
-                            changed = true;
-                        }
-                        _ => {}
                     }
+                    self.log_error(
+                        "pr_review",
+                        pr_number.map_or_else(
+                            || detail.to_string(),
+                            |number| format!("AI review of PR #{number}: {detail}"),
+                        ),
+                    );
+                    self.push_toast_error("AI review failed unexpectedly");
+                    changed = true;
                     break;
                 }
             }
@@ -1736,7 +1813,7 @@ impl App {
             Ok(mut review) => {
                 self.cache_pr_review(&review);
                 self.apply_persisted_triage(&mut review);
-                let pending_count = self.pending_ai_review_count(&review.pr);
+                let ai_review = self.ai_review_triage_snapshot(&review.pr);
                 let checked_out_branch =
                     crate::worktree::WorktreeManager::current_branch(&pending.workdir)
                         .unwrap_or(None);
@@ -1750,7 +1827,8 @@ impl App {
                     apply_refreshed_pr_review_state(
                         state,
                         review.clone(),
-                        pending_count,
+                        ai_review.pending_findings,
+                        ai_review.last_run.clone(),
                         checked_out_branch.clone(),
                     );
                 }
@@ -1761,7 +1839,8 @@ impl App {
                     apply_refreshed_pr_review_state(
                         state,
                         review.clone(),
-                        pending_count,
+                        ai_review.pending_findings,
+                        ai_review.last_run.clone(),
                         checked_out_branch.clone(),
                     );
                 }
@@ -1771,7 +1850,8 @@ impl App {
                     apply_refreshed_pr_review_state(
                         &mut stash.state,
                         review.clone(),
-                        pending_count,
+                        ai_review.pending_findings,
+                        ai_review.last_run,
                         checked_out_branch,
                     );
                 }
@@ -1877,6 +1957,43 @@ mod tests {
             parse_ai_review_output("## Summary\nNo actionable issues found.\n");
         assert_eq!(summary.as_deref(), Some("No actionable issues found."));
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn process_ai_review_output_accepts_summary_only_zero_result() {
+        let outcome =
+            process_ai_review_output("## Summary\nNo actionable issues found.\n".to_string(), "")
+                .unwrap();
+        assert!(outcome.findings.is_empty());
+        assert_eq!(
+            outcome.summary.as_deref(),
+            Some("No actionable issues found.")
+        );
+    }
+
+    #[test]
+    fn process_ai_review_output_accepts_summary_with_findings() {
+        let outcome = process_ai_review_output(
+            "## Summary\nOne risk.\n\n### General\nAdd a regression test.\n".to_string(),
+            "",
+        )
+        .unwrap();
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.findings[0].body, "Add a regression test.");
+    }
+
+    #[test]
+    fn process_ai_review_output_rejects_missing_summary() {
+        let error =
+            process_ai_review_output("### General\nAdd a regression test.\n".to_string(), "")
+                .unwrap_err();
+        assert!(error.to_string().contains("missing a non-empty Summary"));
+    }
+
+    #[test]
+    fn process_ai_review_output_rejects_empty_output() {
+        let error = process_ai_review_output(String::new(), "").unwrap_err();
+        assert!(error.to_string().contains("missing a non-empty Summary"));
     }
 
     #[test]

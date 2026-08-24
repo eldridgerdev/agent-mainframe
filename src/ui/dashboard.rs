@@ -1034,9 +1034,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // Resolved here, before the `&mut app.mode` borrow: the companion
         // feature's name/harness/mode live on the store, not the pane state.
         let triage_feature_summary = app.pr_review_triage_feature_summary();
-        let ai_review_running = match &app.mode {
-            AppMode::PrReview(state) => app.ai_review_running_for_workdir(&state.workdir),
-            _ => false,
+        let ai_review_status = match &app.mode {
+            AppMode::PrReview(state) => app.ai_review_triage_status(state),
+            _ => crate::app::ai_review::AiReviewTriageStatus::NotRun,
         };
         // Same pattern: resolved off `app` before the `&mut app.mode` borrow —
         // but only while the "add to memory" dialog is actually open, since
@@ -1059,7 +1059,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     pricing: &app.config.token_pricing,
                 },
                 dedicated_session_working,
-                ai_review_running,
+                &ai_review_status,
                 triage_feature_summary.as_deref(),
                 memory_paths.as_ref(),
             );
@@ -2435,6 +2435,7 @@ mod tests {
             pending_batch: false,
             checked_out_branch: Some(checked_out.to_string()),
             pending_ai_review_findings: 0,
+            ai_review_last_run: None,
         }
     }
 
@@ -2446,7 +2447,12 @@ mod tests {
             Box::new(MockTmuxOps::new()),
             Box::new(MockWorktreeOps::new()),
         );
-        let state = pr_review_state_with_branches("main", "main");
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.pending_ai_review_findings = 3;
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Error("cached failure".to_string()),
+        });
         let workdir = state.workdir.clone();
         app.mode = crate::app::AppMode::PrReview(state);
 
@@ -2491,6 +2497,8 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("AI review running"));
+        assert!(!rendered.contains("AI review pending"));
+        assert!(!rendered.contains("AI review failed"));
     }
 
     #[test]
@@ -2542,6 +2550,98 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("AI review pending: 3"));
+    }
+
+    #[test]
+    fn pr_review_pane_shows_completed_zero_finding_result() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(0),
+        });
+        app.mode = crate::app::AppMode::PrReview(state);
+
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("[AI review: no findings (now)]"));
+    }
+
+    #[test]
+    fn pr_review_pane_shows_failed_result_without_error_details() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Error(
+                "sensitive worker detail".to_string(),
+            ),
+        });
+        app.mode = crate::app::AppMode::PrReview(state);
+
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("[AI review failed (now)]"));
+        assert!(!rendered.contains("sensitive worker detail"));
+    }
+
+    #[test]
+    fn pending_findings_take_precedence_over_cached_zero_result() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.pending_ai_review_findings = 2;
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(0),
+        });
+        app.mode = crate::app::AppMode::PrReview(state);
+
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("AI review pending: 2"));
+        assert!(!rendered.contains("no findings"));
     }
 
     #[test]

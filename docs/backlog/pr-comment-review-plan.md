@@ -2589,6 +2589,34 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/ui/dialogs/ai_review.rs`, `src/ui/dialogs/pr_review.rs`,
       `src/app/tests.rs`, `CHANGELOG.md`.
 
+      **Follow-up, 2026-08-24 — distinguish a clean review from no review.**
+      The pending badge deliberately disappeared for zero-finding and failed
+      reviews, but that left PR Triage unable to tell a genuinely clean run
+      from one that had never started. PR Triage now retains the exact cached
+      `AiReviewRun` for its current PR/head SHA and derives one status with this
+      precedence: running, positive pending count, completed with no findings,
+      failed, then no indicator. Clean runs render
+      `[AI review: no findings (<age>)]`; failures render
+      `[AI review failed (<age>)]` without putting error details in the
+      single-line header. The shared badge formatter keeps wording and age
+      formatting aligned with the standalone AI Review pane.
+
+      New successful agent output must contain a non-empty summary, including
+      summary-only clean reviews. Missing-summary and empty output, agent/diff
+      failures, and disconnected workers persist an error outcome instead of
+      becoming `Findings(0)` or apparently unreviewed. Legacy cached
+      `Findings(0)` entries remain readable because their raw output cannot be
+      revalidated retroactively. Exact-head cache loading, refresh invalidation,
+      visible and stashed pane synchronization, restart survival, one-week
+      eviction, `Esc` background continuation, and rendering precedence are
+      regression-tested. Full suite green (2,207 tests); strict Clippy,
+      formatting, and isolated 120×40 visual verification clean. →
+      `src/app/ai_review.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/db/ai_review_cache.rs`, `src/ui/dashboard.rs`,
+      `src/ui/dialogs/ai_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/app/tests.rs`, `docs/screenshots/pr-triage-ai-review-outcomes/`,
+      `CHANGELOG.md`.
+
 - [x] **BUG — the AI Review model picker cannot go back to change the
       harness.** In the `A` generation flow, choosing Claude/Codex/Opencode/etc.
       immediately advances to the model picker. `Esc` from that model list

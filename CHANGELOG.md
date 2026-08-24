@@ -18,7 +18,11 @@ are tagged.
   with `CRITICAL` at 85%. Estimated readings are marked with `~`, stale
   readings are labeled, and detected compaction or a new conversation clears
   the old value until fresh usage arrives. Terminal, editor, TODO, and custom
-  rows remain unchanged.
+  rows remain unchanged. When viewing a Claude Code, Codex, or OpenCode
+  session, the same session-specific reading now appears in a dedicated
+  `Context` sidebar section, so context pressure stays visible while working
+  inside the agent. Pi remains dashboard-only because it does not yet have an
+  embedded sidebar.
 
 - **The dashboard PR badge now shows merged and closed pull requests, not just
   open ones.** Once a feature's PR is merged or closed without merging, its

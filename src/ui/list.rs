@@ -12,7 +12,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Selection, VisibleItem};
 use crate::context_display::{ContextIndicator, format_context_indicator};
-use crate::context_tracking::ContextBand;
 use crate::custom_session_icons::resolve_custom_session_icon;
 use crate::project::{ProjectStatus, SessionKind, VibeMode};
 use crate::theme::Theme;
@@ -111,20 +110,6 @@ fn fit_session_label(
         return (label.to_string(), false);
     }
     (truncate_right_to_width(label, row_width - reserved), true)
-}
-
-fn context_indicator_style(indicator: &ContextIndicator, theme: &Theme) -> Style {
-    let color = match indicator.band {
-        ContextBand::Normal => theme.success.to_color(),
-        ContextBand::Warning => theme.warning.to_color(),
-        ContextBand::Critical => theme.danger.to_color(),
-    };
-    let modifier = if indicator.band == ContextBand::Normal {
-        Modifier::empty()
-    } else {
-        Modifier::BOLD
-    };
-    Style::default().fg(color).add_modifier(modifier)
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -693,7 +678,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         Span::styled(display_label, name_style),
                     ];
                     if show_context_indicator && let Some(indicator) = context_indicator {
-                        let style = context_indicator_style(&indicator, &theme);
+                        let style = super::context_indicator_style(&indicator, &theme);
                         main_spans.push(Span::raw("  "));
                         main_spans.push(Span::styled(indicator.text, style));
                     }
@@ -751,6 +736,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::context_indicator_style;
     use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -760,7 +746,7 @@ mod tests {
 
     use crate::app::App;
     use crate::context_tracking::{
-        ContextFreshness, ContextPercentage, ContextProvenance, ContextResetMetadata,
+        ContextBand, ContextFreshness, ContextPercentage, ContextProvenance, ContextResetMetadata,
         SessionContextSnapshot, SessionContextState,
     };
     use crate::project::{AgentKind, Feature, FeatureSession, Project, ProjectStore};

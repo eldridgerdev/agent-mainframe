@@ -151,10 +151,11 @@ doc always says exactly what remains.
   have shipped for Claude, Codex, and opencode; feature-row aggregation
   remains. Pi remains unsupported until it exposes usable per-session
   usage metadata.
-- [Token-efficient agent sessions](token-efficiency-plan.md) — _Backlog._
+- [Token-efficient agent sessions](token-efficiency-plan.md) — _Partial._
   Move AMF from cumulative usage accounting to active usage management:
   provider/model-aware costs, Economy/Balanced/Deep session profiles,
-  context-pressure warnings and soft budgets, deliberate
+  context-pressure warnings in agent rows and supported session sidebars
+  have shipped; soft budgets, deliberate
   resume/compact/fresh rotation, bounded cross-provider handoffs,
   token-aware utility inference and caching, removal of the per-edit
   Review Mode note tax, prompt/instruction/output hygiene, and a

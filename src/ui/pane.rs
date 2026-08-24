@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::{TextSelection, ViewState};
+use crate::context_display::ContextIndicator;
 use crate::project::{SessionKind, VibeMode};
 use crate::theme::Theme;
 
@@ -54,6 +55,7 @@ pub(crate) const SCROLLBAR_WIDTH: u16 = 1;
 pub(crate) struct AgentSidebarData {
     pub agent_kind: SessionKind,
     pub status_text: String,
+    pub context_indicator: Option<ContextIndicator>,
     #[allow(dead_code)] // populated but not rendered yet
     pub model_text: Option<String>,
     pub prompt_text: String,
@@ -545,6 +547,7 @@ fn draw_agent_sidebar(
     let fallback = AgentSidebarData {
         agent_kind,
         status_text: String::new(),
+        context_indicator: None,
         model_text: None,
         prompt_text: String::new(),
         work_text: None,
@@ -554,9 +557,28 @@ fn draw_agent_sidebar(
     };
     let data = data.unwrap_or(&fallback);
     let sections_with_content = sidebar_sections(data, inner.width);
+    let requested_height = sections_with_content
+        .iter()
+        .filter_map(|section| match section.constraint {
+            Constraint::Length(height) => Some(height),
+            _ => None,
+        })
+        .sum::<u16>();
     let constraints = sections_with_content
         .iter()
-        .map(|section| section.constraint)
+        .map(|section| {
+            // Fixed-length sections normally retain the existing layout. If
+            // the sidebar is too short for all content, promote Context to a
+            // minimum so Ratatui shrinks lower-priority sections first and a
+            // warning never degrades into an empty bordered box.
+            if requested_height > inner.height
+                && section.title == "Context"
+                && let Constraint::Length(height) = section.constraint
+            {
+                return Constraint::Min(height);
+            }
+            section.constraint
+        })
         .collect::<Vec<_>>();
 
     let sections = Layout::default()
@@ -593,6 +615,7 @@ fn draw_agent_sidebar(
         let paragraph = Paragraph::new(styled_sidebar_lines(
             sidebar_section.title,
             sidebar_section.body,
+            data.context_indicator.as_ref(),
             theme,
         ))
         .wrap(Wrap { trim: false })
@@ -610,6 +633,19 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
             title: "Status",
             body: data.status_text.as_str(),
             constraint: Constraint::Length(status_section_height(&data.status_text, section_width)),
+        });
+    }
+
+    if let Some(indicator) = data.context_indicator.as_ref() {
+        sections.push(SidebarSection {
+            title: "Context",
+            body: indicator.text.as_str(),
+            constraint: Constraint::Length(sidebar_section_height(
+                &indicator.text,
+                section_width,
+                1,
+                2,
+            )),
         });
     }
 
@@ -694,6 +730,7 @@ fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
         "Status" => theme.warning.to_color(),
+        "Context" => theme.info.to_color(),
         "Prompt" => theme.secondary.to_color(),
         "Work" => theme.primary.to_color(),
         "Todos" => theme.success.to_color(),
@@ -732,9 +769,22 @@ fn summary_section_height(body: &str, section_width: u16) -> u16 {
     sidebar_section_height(body, section_width, 1, 4)
 }
 
-fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
+fn styled_sidebar_lines<'a>(
+    title: &str,
+    body: &'a str,
+    context_indicator: Option<&ContextIndicator>,
+    theme: &Theme,
+) -> Vec<Line<'a>> {
     body.lines()
         .map(|line| {
+            if title == "Context"
+                && let Some(indicator) = context_indicator
+            {
+                return Line::from(Span::styled(
+                    line.to_string(),
+                    super::context_indicator_style(indicator, theme),
+                ));
+            }
             // Progress bar: "████░░░░ 2/5"
             if title == "Todos" && (line.starts_with('█') || line.starts_with('░')) {
                 let split = line.find('░').unwrap_or(line.len());
@@ -1250,6 +1300,7 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Option<ratatui::style::Color> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_tracking::ContextBand;
     use ratatui::{Terminal, backend::TestBackend};
 
     fn sample_view(session_kind: crate::project::SessionKind) -> ViewState {
@@ -1327,6 +1378,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
@@ -1349,6 +1401,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some(
@@ -1390,6 +1443,104 @@ mod tests {
     }
 
     #[test]
+    fn context_section_follows_status_and_is_omitted_without_a_snapshot() {
+        let mut sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Activity: Ready".into(),
+            context_indicator: Some(ContextIndicator {
+                text: "Ctx ~72% WARNING".into(),
+                band: ContextBand::Warning,
+                stale: false,
+            }),
+            model_text: None,
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: None,
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
+        };
+
+        let titles = sidebar_sections(&sidebar, 30)
+            .iter()
+            .map(|section| section.title)
+            .collect::<Vec<_>>();
+        assert_eq!(&titles[..2], &["Status", "Context"]);
+
+        sidebar.context_indicator = None;
+        assert!(
+            sidebar_sections(&sidebar, 30)
+                .iter()
+                .all(|section| section.title != "Context")
+        );
+    }
+
+    #[test]
+    fn context_section_uses_shared_band_style() {
+        let theme = Theme::default();
+        let indicator = ContextIndicator {
+            text: "Ctx ~91% CRITICAL STALE".into(),
+            band: ContextBand::Critical,
+            stale: true,
+        };
+
+        let lines = styled_sidebar_lines("Context", &indicator.text, Some(&indicator), &theme);
+        let style = lines[0].spans[0].style;
+
+        assert_eq!(style.fg, Some(theme.danger.to_color()));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn critical_context_label_survives_a_short_sidebar() {
+        let backend = TestBackend::new(120, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Activity: Thinking".into(),
+            context_indicator: Some(ContextIndicator {
+                text: "Ctx ~91% CRITICAL STALE".into(),
+                band: ContextBand::Critical,
+                stale: true,
+            }),
+            model_text: None,
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
+            pr_triage_text: None,
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    None,
+                    (None, None),
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Context"));
+        assert!(rendered.contains("Ctx ~91% CRITICAL STALE"));
+    }
+
+    #[test]
     fn claude_sidebar_shell_renders_in_view() {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1398,6 +1549,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
@@ -1442,6 +1594,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Waiting for input".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
@@ -1486,6 +1639,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Waiting for input".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
@@ -1526,6 +1680,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nInput: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: None,
@@ -1568,6 +1723,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
@@ -1688,6 +1844,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
@@ -1733,6 +1890,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
@@ -1779,6 +1937,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some(
@@ -1824,6 +1983,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: String::new(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
@@ -1866,6 +2026,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Input: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
@@ -1908,6 +2069,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Input: 1.2K tokens".into(),
+            context_indicator: None,
             model_text: None,
             prompt_text: String::new(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),

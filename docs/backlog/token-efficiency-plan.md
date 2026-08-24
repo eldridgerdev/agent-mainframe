@@ -1,6 +1,6 @@
 # Token-efficient agent sessions
 
-- **Status:** Backlog
+- **Status:** Partial
 - **Owner:** unassigned
 - **Relates to:** [per-session agent usage](per-session-usage-plan.md),
   [plan-mode interview](plan-mode-interview-plan.md),
@@ -168,7 +168,9 @@ behavior.
 Add a compact context indicator to session rows and the selected-session
 sidebar. Prefer a percentage when AMF knows the observed model's context
 window; otherwise show the estimated active token count and an
-"estimated" marker. The expanded view should include:
+"estimated" marker. This indicator has shipped for every agent row and for
+the Claude, Codex, and opencode sidebars; Pi remains row-only until it has an
+embedded sidebar. The expanded view should include:
 
 - Latest-turn input, output, reasoning, and cache tokens.
 - Recent burn rate over a small turn/time window.
@@ -499,8 +501,9 @@ Acceptance criteria:
 
 - [x] Calculate provider-specific active-context estimates and record
       known model context windows.
-- [x] Render context pressure in agent session rows, with direct/estimated,
-      stale, warning, critical, and reset states.
+- [x] Render context pressure in agent session rows and the selected Claude,
+      Codex, or opencode sidebar, with direct/estimated, stale, warning,
+      critical, and reset states. Pi remains row-only until it has a sidebar.
 - [ ] Render latest-turn usage and recent burn in the session row/sidebar.
 - [ ] Add configurable soft context and cumulative usage thresholds.
 - [ ] Add dashboard/sidebar warnings and deduplicate repeated alerts.

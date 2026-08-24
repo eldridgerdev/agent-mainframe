@@ -9,6 +9,7 @@ use ratatui::{
 use crate::app::attention::AttentionState;
 use crate::app::util::{ClaudeTaskState, read_claude_task_state};
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
+use crate::context_display::format_context_indicator;
 use crate::project::{
     Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch, VibeMode,
 };
@@ -143,16 +144,22 @@ fn build_agent_sidebar_data(
             .map(|feature| (project, feature))
     })?;
 
-    let session = feature
+    let viewed_session = feature
         .sessions
         .iter()
-        .find(|session| session.tmux_window == view.window)
-        .or_else(|| {
-            feature
-                .sessions
-                .iter()
-                .find(|session| session.kind == sidebar_kind)
-        });
+        .find(|session| session.tmux_window == view.window);
+    let session = viewed_session.or_else(|| {
+        feature
+            .sessions
+            .iter()
+            .find(|session| session.kind == sidebar_kind)
+    });
+    let context_indicator = viewed_session.and_then(|session| {
+        app.context_states
+            .get(&session.id)
+            .and_then(|state| state.snapshot.as_ref())
+            .map(format_context_indicator)
+    });
 
     let waiting_count = app
         .pending_inputs
@@ -180,7 +187,7 @@ fn build_agent_sidebar_data(
         },
     };
 
-    match sidebar_kind {
+    let mut data = match sidebar_kind {
         SessionKind::Opencode => {
             build_opencode_sidebar_data(app, project, feature, session, view, status_line)
         }
@@ -191,7 +198,9 @@ fn build_agent_sidebar_data(
             build_codex_sidebar_data(app, project, feature, session, view, status_line)
         }
         _ => None,
-    }
+    }?;
+    data.context_indicator = context_indicator;
+    Some(data)
 }
 
 fn build_opencode_sidebar_data(
@@ -241,6 +250,7 @@ fn build_opencode_sidebar_data(
             opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
             model_text.as_deref(),
         ),
+        context_indicator: None,
         model_text,
         prompt_text,
         work_text: pending_diff_review_work_text(app, project, feature)
@@ -287,6 +297,7 @@ fn build_claude_sidebar_data(
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Claude,
         status_text,
+        context_indicator: None,
         model_text,
         prompt_text,
         work_text,
@@ -340,6 +351,7 @@ fn build_codex_sidebar_data(
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Codex,
         status_text,
+        context_indicator: None,
         model_text,
         prompt_text,
         work_text,
@@ -1748,6 +1760,10 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::app::{App, PendingInput, ViewState};
+    use crate::context_tracking::{
+        ContextBand, ContextFreshness, ContextPercentage, ContextProvenance, ContextResetMetadata,
+        SessionContextSnapshot, SessionContextState,
+    };
     use crate::project::FeatureSession;
     use crate::project::{
         AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
@@ -2038,6 +2054,26 @@ mod tests {
         )
     }
 
+    fn sidebar_context_snapshot(
+        percentage: u8,
+        band: ContextBand,
+        provenance: ContextProvenance,
+        freshness: ContextFreshness,
+    ) -> SessionContextSnapshot {
+        let now = chrono::Utc::now();
+        SessionContextSnapshot {
+            used_tokens: u64::from(percentage) * 1_000,
+            context_limit: std::num::NonZeroU64::new(100_000).unwrap(),
+            percentage: ContextPercentage::clamped(i64::from(percentage)),
+            band,
+            provenance,
+            freshness,
+            sampled_at: now,
+            checked_at: now,
+            reset: ContextResetMetadata::default(),
+        }
+    }
+
     #[test]
     fn select_sidebar_prompt_prefers_session_specific_prompt() {
         assert_eq!(
@@ -2156,6 +2192,126 @@ mod tests {
             assert!(second.status_text.contains("Input: 2.0k tokens"));
             assert!(!second.status_text.contains("Input: 1.0k tokens"));
         }
+    }
+
+    #[test]
+    fn sidebar_context_follows_the_exact_viewed_agent_window() {
+        for kind in [
+            SessionKind::Claude,
+            SessionKind::Codex,
+            SessionKind::Opencode,
+        ] {
+            let mut app = sidebar_usage_app(kind.clone());
+            app.context_states.insert(
+                "session-1".into(),
+                SessionContextState {
+                    snapshot: Some(sidebar_context_snapshot(
+                        64,
+                        ContextBand::Normal,
+                        ContextProvenance::Direct,
+                        ContextFreshness::Fresh,
+                    )),
+                    ..SessionContextState::default()
+                },
+            );
+            app.context_states.insert(
+                "session-2".into(),
+                SessionContextState {
+                    snapshot: Some(sidebar_context_snapshot(
+                        91,
+                        ContextBand::Critical,
+                        ContextProvenance::Estimated,
+                        ContextFreshness::Stale,
+                    )),
+                    ..SessionContextState::default()
+                },
+            );
+
+            let first = build_agent_sidebar_data(
+                &app,
+                &sidebar_usage_view(kind.clone(), "agent-1", "Agent 1"),
+            )
+            .unwrap();
+            let second = build_agent_sidebar_data(
+                &app,
+                &sidebar_usage_view(kind.clone(), "agent-2", "Agent 2"),
+            )
+            .unwrap();
+            let unmatched = build_agent_sidebar_data(
+                &app,
+                &sidebar_usage_view(kind, "missing-window", "Missing"),
+            )
+            .unwrap();
+
+            assert_eq!(first.context_indicator.unwrap().text, "Ctx 64%");
+            assert_eq!(
+                second.context_indicator.unwrap().text,
+                "Ctx ~91% CRITICAL STALE"
+            );
+            assert!(unmatched.context_indicator.is_none());
+        }
+    }
+
+    #[test]
+    fn sidebar_context_is_omitted_without_a_snapshot() {
+        let app = sidebar_usage_app(SessionKind::Codex);
+        let sidebar = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-1", "Agent 1"),
+        )
+        .unwrap();
+
+        assert!(sidebar.context_indicator.is_none());
+    }
+
+    #[test]
+    fn sidebar_context_tracks_refreshes_and_the_post_reset_gap() {
+        let mut app = sidebar_usage_app(SessionKind::Codex);
+        app.context_states.insert(
+            "session-1".into(),
+            SessionContextState {
+                snapshot: Some(sidebar_context_snapshot(
+                    72,
+                    ContextBand::Warning,
+                    ContextProvenance::Direct,
+                    ContextFreshness::Fresh,
+                )),
+                ..SessionContextState::default()
+            },
+        );
+        let view = sidebar_usage_view(SessionKind::Codex, "agent-1", "Agent 1");
+
+        assert_eq!(
+            build_agent_sidebar_data(&app, &view)
+                .unwrap()
+                .context_indicator
+                .unwrap()
+                .text,
+            "Ctx 72% WARNING"
+        );
+
+        app.context_states.get_mut("session-1").unwrap().snapshot = None;
+        assert!(
+            build_agent_sidebar_data(&app, &view)
+                .unwrap()
+                .context_indicator
+                .is_none()
+        );
+
+        app.context_states.get_mut("session-1").unwrap().snapshot = Some(sidebar_context_snapshot(
+            18,
+            ContextBand::Normal,
+            ContextProvenance::Direct,
+            ContextFreshness::Fresh,
+        ));
+        assert_eq!(
+            build_agent_sidebar_data(&app, &view)
+                .unwrap()
+                .context_indicator
+                .unwrap()
+                .text,
+            "Ctx 18%"
+        );
     }
 
     #[test]

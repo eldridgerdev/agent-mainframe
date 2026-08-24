@@ -10,11 +10,13 @@ mod toast;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     widgets::{Block, Clear},
 };
 
 use crate::app::App;
+use crate::context_display::ContextIndicator;
+use crate::context_tracking::ContextBand;
 use crate::theme::Theme;
 
 pub(crate) use pane::SCROLLBAR_WIDTH;
@@ -23,6 +25,20 @@ pub(crate) use pane::render_ansi_lines;
 pub(crate) use pane::render_vt100_screen;
 pub(crate) use pane::viewing_main_width;
 pub(crate) use toast::draw_toasts;
+
+pub(crate) fn context_indicator_style(indicator: &ContextIndicator, theme: &Theme) -> Style {
+    let color = match indicator.band {
+        ContextBand::Normal => theme.success.to_color(),
+        ContextBand::Warning => theme.warning.to_color(),
+        ContextBand::Critical => theme.danger.to_color(),
+    };
+    let modifier = if indicator.band == ContextBand::Normal {
+        Modifier::empty()
+    } else {
+        Modifier::BOLD
+    };
+    Style::default().fg(color).add_modifier(modifier)
+}
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     dashboard::draw(frame, app);

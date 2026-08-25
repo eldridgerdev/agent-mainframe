@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use super::super::dashboard::centered_rect;
@@ -34,25 +34,27 @@ pub fn draw_fresh_context_prompt_dialog(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(3),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(inner);
 
-    let input = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled(" Prompt: ", Style::default().fg(theme.primary.to_color())),
-            Span::styled(&state.input, Style::default().fg(theme.text.to_color())),
-            Span::styled(CURSOR, Style::default().fg(theme.primary.to_color())),
-        ]),
-        Line::from(vec![Span::styled(
-            " A new session in this feature will start with your plan, changed \
-             files, and this instruction already loaded.",
-            Style::default().fg(theme.text_muted.to_color()),
-        )]),
-    ]);
-    frame.render_widget(input, chunks[0]);
+    let prompt_line = Paragraph::new(Line::from(vec![
+        Span::styled(" Prompt: ", Style::default().fg(theme.primary.to_color())),
+        Span::styled(&state.input, Style::default().fg(theme.text.to_color())),
+        Span::styled(CURSOR, Style::default().fg(theme.primary.to_color())),
+    ]));
+    frame.render_widget(prompt_line, chunks[0]);
+
+    let caption = Paragraph::new(Line::from(Span::styled(
+        " A new session in this feature will start with your plan, changed files, \
+         and this instruction already loaded.",
+        Style::default().fg(theme.text_muted.to_color()),
+    )))
+    .wrap(Wrap { trim: true });
+    frame.render_widget(caption, chunks[1]);
 
     let hint = Paragraph::new(Line::from(vec![
         Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
@@ -60,5 +62,5 @@ pub fn draw_fresh_context_prompt_dialog(
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" cancel", Style::default().fg(theme.text.to_color())),
     ]));
-    frame.render_widget(hint, chunks[2]);
+    frame.render_widget(hint, chunks[3]);
 }

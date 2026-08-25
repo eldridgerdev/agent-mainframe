@@ -40,6 +40,21 @@ are tagged.
   needs. No migration is required; the database updates itself on first
   launch after upgrading.
 
+### Changed
+
+- **TODO assignment now has a durable three-state lifecycle.** Items are
+  explicitly **not started**, **in progress**, or **completed**, with `[ ]`,
+  `[~]`, and `[x]` markers in the TODO editor. Starting a TODO-specific agent
+  reserves the item as in progress before launch, prevents a second agent from
+  being assigned to the same item, and makes `I` continue to the next
+  not-started TODO. If session creation or composer setup fails, the reservation
+  rolls back so the item can be tried again.
+
+  Closing or stopping the associated agent does not silently reset the work:
+  the TODO stays in progress until you change it. Press `Space` or `x` to cycle
+  not started → in progress → completed. If an associated session is removed,
+  AMF clears the stale link while preserving the visible in-progress state.
+
 ### Fixed
 
 - **AI Review findings now stay attached to the correct side and source line
@@ -68,6 +83,9 @@ are tagged.
   until the review is regenerated.
 - No migration is required. Existing same-revision AI Review cache entries
   remain readable and expire under the existing one-week retention policy.
+- No manual TODO migration is required. Existing completed items remain
+  completed; existing incomplete items begin as not started with no agent
+  association.
 
 ## [v0.38.0] - 2026-08-21
 

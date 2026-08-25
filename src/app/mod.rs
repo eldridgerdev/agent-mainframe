@@ -2480,6 +2480,12 @@ impl App {
                 app.debug_log.inject_entries(entries);
             }
         }
+        if let Err(e) = app.reconcile_todo_agent_associations() {
+            app.log_warn(
+                "todos",
+                format!("failed startup TODO association reconciliation: {e}"),
+            );
+        }
 
         for message in crate::highlight::validate_startup_parsers() {
             match message.level {

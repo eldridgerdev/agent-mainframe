@@ -18508,17 +18508,23 @@ fn test_project_scope(project_id: &str) -> crate::db::todos::TodoScope {
 }
 
 fn sample_todo(title: &str, done: bool) -> crate::db::todos::Todo {
+    use crate::db::todos::{TodoStatus, TodoWorkState};
     crate::db::todos::Todo {
         id: format!("todo-{title}"),
         list_id: "list-1".to_string(),
         title: title.to_string(),
         body: None,
         priority: crate::db::todos::TodoPriority::Med,
-        done,
         sort_order: 0,
-        spawned_session_id: None,
+        work: TodoWorkState {
+            status: if done {
+                TodoStatus::Completed
+            } else {
+                TodoStatus::NotStarted
+            },
+            agent_session_id: None,
+        },
         linked_feature_id: None,
-        in_progress: false,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -18969,17 +18975,18 @@ fn todos_toggle_done_sinks_item_below_open() {
     type_str(&mut app, "b");
     app.todos_commit_edit().unwrap();
 
-    // Select "a" (index 0) and mark it done.
+    // Select "a" (index 0), advance through in progress, and mark it done.
     if let AppMode::Todos(state) = &mut app.mode {
         state.panes[0].selected = 0;
     }
+    app.todos_toggle_done().unwrap();
     app.todos_toggle_done().unwrap();
 
     // Open "b" now sorts before done "a"; cursor follows "a".
     assert_eq!(todo_titles(&app), vec!["b", "a"]);
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.panes[0].todos[1].done);
+            assert!(state.panes[0].todos[1].work.status.is_completed());
             assert_eq!(state.panes[0].selected, 1);
         }
         _ => panic!("expected Todos overlay"),
@@ -19197,12 +19204,12 @@ fn next_todo_index_skips_each_exclusion() {
 
     // Done.
     let mut todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
-    todos[0].done = true;
+    todos[0].work.status = crate::db::todos::TodoStatus::Completed;
     assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
 
     // In progress.
     let mut todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
-    todos[0].in_progress = true;
+    todos[0].work.status = crate::db::todos::TodoStatus::InProgress;
     assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
 
     // Explicitly skipped by a previous "skip to next".
@@ -19218,7 +19225,7 @@ fn next_todo_index_skips_each_exclusion() {
         prio_todo("a", High, 0),
         prio_todo("b", crate::db::todos::TodoPriority::Low, 1),
     ];
-    todos[0].spawned_session_id = Some("sess-1".to_string());
+    todos[0].work.agent_session_id = Some("sess-1".to_string());
     assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
 
     // Same for a TODO planned into its own feature: the work moved elsewhere.
@@ -19238,8 +19245,8 @@ fn next_todo_index_falls_back_to_a_started_todo() {
     // offered for the caller to ask about rather than silently reported as
     // "nothing to do".
     let mut todos = vec![prio_todo("a", Med, 0), prio_todo("b", High, 1)];
-    todos[0].spawned_session_id = Some("sess-1".to_string());
-    todos[1].spawned_session_id = Some("sess-2".to_string());
+    todos[0].work.agent_session_id = Some("sess-1".to_string());
+    todos[1].work.agent_session_id = Some("sess-2".to_string());
     assert_eq!(
         App::next_todo_index(&todos, &[]),
         Some(NextTodo::Started(1))
@@ -19257,8 +19264,8 @@ fn next_todo_index_returns_nothing_when_there_is_nothing() {
         prio_todo("b", High, 1),
         prio_todo("c", High, 2),
     ];
-    todos[0].done = true;
-    todos[1].in_progress = true;
+    todos[0].work.status = crate::db::todos::TodoStatus::Completed;
+    todos[1].work.status = crate::db::todos::TodoStatus::InProgress;
     assert_eq!(App::next_todo_index(&todos, &["c".to_string()]), None);
 }
 
@@ -19271,7 +19278,7 @@ fn no_next_todo_message_names_the_reason() {
     );
 
     let mut done = vec![prio_todo("a", High, 0)];
-    done[0].done = true;
+    done[0].work.status = crate::db::todos::TodoStatus::Completed;
     assert_eq!(
         App::no_next_todo_message(&done, &[]),
         "No TODOs left to implement"
@@ -19280,7 +19287,7 @@ fn no_next_todo_message_names_the_reason() {
     // Open items exist, they are just all underway — a different problem with a
     // different fix, so it gets different words.
     let mut busy = vec![prio_todo("a", High, 0)];
-    busy[0].in_progress = true;
+    busy[0].work.status = crate::db::todos::TodoStatus::InProgress;
     assert_eq!(
         App::no_next_todo_message(&busy, &[]),
         "All remaining TODOs are already in progress"
@@ -19298,7 +19305,7 @@ fn implement_next_toasts_when_nothing_is_eligible() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
         let mut todo = sample_todo("a", false);
-        todo.in_progress = true;
+        todo.work.status = crate::db::todos::TodoStatus::InProgress;
         state.panes[0].todos = vec![todo];
     }
     app.implement_next_todo_in_overlay().unwrap();
@@ -19321,7 +19328,7 @@ fn implement_next_prompts_when_the_only_candidate_is_started() {
     let session_id = push_agent_session(&mut app, "sess-1");
     if let AppMode::Todos(state) = &mut app.mode {
         let mut todo = sample_todo("a", false);
-        todo.spawned_session_id = Some(session_id);
+        todo.work.agent_session_id = Some(session_id);
         state.panes[0].todos = vec![todo];
     }
 
@@ -19349,9 +19356,9 @@ fn implement_next_skip_moves_on_to_the_next_todo() {
     let session_id = push_agent_session(&mut app, "sess-1");
     if let AppMode::Todos(state) = &mut app.mode {
         let mut first = sample_todo("a", false);
-        first.spawned_session_id = Some(session_id.clone());
+        first.work.agent_session_id = Some(session_id.clone());
         let mut second = sample_todo("b", false);
-        second.spawned_session_id = Some(session_id);
+        second.work.agent_session_id = Some(session_id);
         state.panes[0].todos = vec![first, second];
     }
 
@@ -19389,7 +19396,7 @@ fn implement_next_skip_moves_on_to_the_next_todo() {
 }
 
 #[test]
-fn implement_next_clears_the_flag_only_where_the_session_is_gone() {
+fn implement_next_clears_only_the_missing_session_association() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
         // Marked underway by an earlier launch whose session has since been
@@ -19397,11 +19404,11 @@ fn implement_next_clears_the_flag_only_where_the_session_is_gone() {
         // on to spawn: what is under test is the reconciliation, which runs
         // over the whole list rather than just the candidate.
         let mut stale = sample_todo("a", true);
-        stale.spawned_session_id = Some("sess-gone".to_string());
-        stale.in_progress = true;
+        stale.work.agent_session_id = Some("sess-gone".to_string());
+        stale.work.status = crate::db::todos::TodoStatus::InProgress;
         // Marked underway by hand: no session to lose, so nothing to clear.
         let mut manual = sample_todo("b", false);
-        manual.in_progress = true;
+        manual.work.status = crate::db::todos::TodoStatus::InProgress;
         state.panes[0].todos = vec![stale, manual];
     }
 
@@ -19409,13 +19416,13 @@ fn implement_next_clears_the_flag_only_where_the_session_is_gone() {
 
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.panes[0].todos[0].spawned_session_id.is_none());
+            assert!(state.panes[0].todos[0].work.agent_session_id.is_none());
             assert!(
-                !state.panes[0].todos[0].in_progress,
-                "a dead link stops counting"
+                state.panes[0].todos[0].work.status.is_in_progress(),
+                "a dead link does not make the work unstarted"
             );
             assert!(
-                state.panes[0].todos[1].in_progress,
+                state.panes[0].todos[1].work.status.is_in_progress(),
                 "a hand-marked TODO has no link to lose and is left alone"
             );
         }
@@ -19500,25 +19507,24 @@ fn implement_next_is_inert_off_a_todos_session_row() {
 }
 
 #[test]
-fn completing_a_todo_ends_its_in_progress_state() {
+fn manual_toggle_advances_in_progress_to_completed() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
         let mut todo = sample_todo("a", false);
-        todo.in_progress = true;
+        todo.work.status = crate::db::todos::TodoStatus::InProgress;
         state.panes[0].todos = vec![todo];
     }
     app.todos_toggle_done().unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.panes[0].todos[0].done);
-            assert!(!state.panes[0].todos[0].in_progress);
+            assert!(state.panes[0].todos[0].work.status.is_completed());
         }
         _ => panic!("expected Todos overlay"),
     }
 }
 
 #[test]
-fn toggling_in_progress_by_hand_uncompletes_the_todo() {
+fn manual_toggle_cycles_completed_to_not_started_to_in_progress() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
         state.panes[0].todos = vec![sample_todo("a", true)];
@@ -19526,16 +19532,16 @@ fn toggling_in_progress_by_hand_uncompletes_the_todo() {
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('i'))).unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.panes[0].todos[0].in_progress);
-            // The two states contradict each other; the one just asked for wins.
-            assert!(!state.panes[0].todos[0].done);
+            assert!(state.panes[0].todos[0].work.status.is_not_started());
         }
         _ => panic!("expected Todos overlay"),
     }
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('i'))).unwrap();
     match &app.mode {
-        AppMode::Todos(state) => assert!(!state.panes[0].todos[0].in_progress),
+        AppMode::Todos(state) => {
+            assert!(state.panes[0].todos[0].work.status.is_in_progress())
+        }
         _ => panic!("expected Todos overlay"),
     }
 }
@@ -19549,18 +19555,156 @@ fn todos_mark_started_updates_in_memory() {
     app.todos_mark_started("todo-b", "sess-42").unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.panes[0].todos[0].spawned_session_id.is_none());
-            assert!(!state.panes[0].todos[0].in_progress);
+            assert!(state.panes[0].todos[0].work.agent_session_id.is_none());
+            assert!(state.panes[0].todos[0].work.status.is_not_started());
             assert_eq!(
-                state.panes[0].todos[1].spawned_session_id.as_deref(),
+                state.panes[0].todos[1].work.agent_session_id.as_deref(),
                 Some("sess-42")
             );
             // The session link and the in-progress flag are written together:
             // the flag is what keeps "implement next" off this item.
-            assert!(state.panes[0].todos[1].in_progress);
+            assert!(state.panes[0].todos[1].work.status.is_in_progress());
         }
         _ => panic!("expected Todos overlay"),
     }
+}
+
+#[test]
+fn todo_launch_request_reserves_before_a_session_exists() {
+    let mut app = todos_app();
+    let todo = sample_todo("a", false);
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].todos = vec![todo.clone()];
+    }
+
+    assert!(app.todos_reserve_launch(&todo).unwrap());
+    match &app.mode {
+        AppMode::Todos(state) => {
+            let work = &state.panes[0].todos[0].work;
+            assert!(work.status.is_in_progress());
+            assert!(work.agent_session_id.is_none());
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn duplicate_spawn_for_in_progress_todo_is_blocked_without_side_effects() {
+    let mut app = todos_app();
+    let mut todo = sample_todo("a", false);
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
+    let before = todo.work.clone();
+
+    app.spawn_todo_agent(0, 0, &todo, true).unwrap();
+
+    assert_eq!(todo.work, before);
+    assert!(app.toasts.iter().any(|toast| {
+        toast.message.contains("already in progress")
+            && toast.message.contains("another agent was not launched")
+    }));
+    assert!(app.store.projects[0].features[0].sessions.is_empty());
+}
+
+#[test]
+fn creation_and_prompt_failures_both_roll_back_todo_reservation() {
+    let mut app = todos_app();
+    let todo = sample_todo("a", false);
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].todos = vec![todo.clone()];
+    }
+
+    // Agent-creation failure path.
+    assert!(app.todos_reserve_launch(&todo).unwrap());
+    app.todos_rollback_launch(&todo.id).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(
+                state.panes[0].todos[0].work,
+                crate::db::todos::TodoWorkState::default()
+            )
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+
+    // Prompt-delivery failure path uses the same centralized rollback.
+    let current = match &app.mode {
+        AppMode::Todos(state) => state.panes[0].todos[0].clone(),
+        _ => unreachable!(),
+    };
+    assert!(app.todos_reserve_launch(&current).unwrap());
+    app.todos_mark_started(&todo.id, "session-created").unwrap();
+    app.todos_rollback_launch(&todo.id).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(
+                state.panes[0].todos[0].work,
+                crate::db::todos::TodoWorkState::default()
+            )
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+/// The scenario a plan interview hits between generating a plan and the user
+/// accepting it: no `Todos` overlay is open (so there is no in-memory pane to
+/// consult) and the TODO was moved to a different list in the meantime. The
+/// lookup must still find it by id alone rather than the stale list it
+/// started in — see `App::find_todo_by_id` and `start_todo_plan_session`.
+#[test]
+fn find_todo_by_id_resolves_after_a_move_when_no_overlay_is_open() {
+    let mut app = todos_app();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(tmp.path()).unwrap());
+
+    let (dst_id, todo_id) = {
+        let db = app.db.as_ref().unwrap();
+        let src = db
+            .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+            .unwrap();
+        let dst = db
+            .create_todo_list(&crate::db::todos::TodoScope::Global, None)
+            .unwrap();
+        let todo = db
+            .add_todo(
+                &src.id,
+                "port me",
+                None,
+                crate::db::todos::TodoPriority::Med,
+            )
+            .unwrap();
+        db.move_todo(&todo.id, &dst.id).unwrap();
+        (dst.id, todo.id)
+    };
+    // Whatever list the caller remembers (or none at all) must not matter.
+    app.mode = AppMode::Normal;
+
+    let found = app
+        .find_todo_by_id(&todo_id)
+        .expect("resolved via the db by id alone, without a stale list_id");
+    assert_eq!(found.list_id, dst_id);
+}
+
+#[test]
+fn reconciliation_clears_missing_session_but_keeps_in_progress_status() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db = crate::db::AmfDb::open(tmp.path()).unwrap();
+    let list = db
+        .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+        .unwrap();
+    let mut todo = db
+        .add_todo(&list.id, "a", None, crate::db::todos::TodoPriority::Med)
+        .unwrap();
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
+    todo.work.agent_session_id = Some("missing-session".to_string());
+    db.update_todo(&todo).unwrap();
+
+    let mut app = todos_app();
+    app.db = Some(db);
+    app.reconcile_todo_agent_associations().unwrap();
+
+    let loaded = app.db.as_ref().unwrap().todos(&list.id).unwrap();
+    assert!(loaded[0].work.status.is_in_progress());
+    assert!(loaded[0].work.agent_session_id.is_none());
 }
 
 // ----- scoped TODO lists ---------------------------------------------------
@@ -19690,7 +19834,7 @@ fn next_todo_across_holds_started_items_in_reserve_across_scopes() {
     use crate::db::todos::TodoPriority;
 
     let mut started = prioritised("wt-high-started", TodoPriority::High);
-    started.spawned_session_id = Some("sess-1".to_string());
+    started.work.agent_session_id = Some("sess-1".to_string());
     let worktree = vec![started];
     let global = vec![prioritised("global-low", TodoPriority::Low)];
 
@@ -19708,11 +19852,11 @@ fn next_todo_across_returns_started_only_when_nothing_unstarted_remains_anywhere
     use crate::app::todos::NextTodo;
 
     let mut started = sample_todo("wt-started", false);
-    started.spawned_session_id = Some("sess-1".to_string());
+    started.work.agent_session_id = Some("sess-1".to_string());
     let worktree = vec![started];
     let project = vec![sample_todo("proj-done", true)];
     let mut busy = sample_todo("global-busy", false);
-    busy.in_progress = true;
+    busy.work.status = crate::db::todos::TodoStatus::InProgress;
     let global = vec![busy];
 
     assert_eq!(
@@ -19732,7 +19876,7 @@ fn next_todo_across_returns_nothing_when_every_list_is_empty() {
 #[test]
 fn no_next_todo_message_across_counts_every_list() {
     let mut busy = sample_todo("b", false);
-    busy.in_progress = true;
+    busy.work.status = crate::db::todos::TodoStatus::InProgress;
     let project = vec![busy];
 
     assert_eq!(
@@ -19921,9 +20065,9 @@ fn each_pane_keeps_its_own_cursor() {
 fn moving_a_todo_to_another_scope_carries_its_links() {
     let mut app = todos_app();
     let mut todo = sample_todo("port me", false);
-    todo.spawned_session_id = Some("sess-1".to_string());
+    todo.work.agent_session_id = Some("sess-1".to_string());
     todo.linked_feature_id = Some("feat-planned".to_string());
-    todo.in_progress = true;
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
     app.mode = AppMode::Todos(three_pane_view(vec![todo], vec![], vec![]));
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('M'))).unwrap();
@@ -19948,9 +20092,9 @@ fn moving_a_todo_to_another_scope_carries_its_links() {
             assert!(state.panes[0].todos.is_empty(), "it left the worktree pane");
             let moved = &state.panes[1].todos[0];
             assert_eq!(moved.title, "port me");
-            assert_eq!(moved.spawned_session_id.as_deref(), Some("sess-1"));
+            assert_eq!(moved.work.agent_session_id.as_deref(), Some("sess-1"));
             assert_eq!(moved.linked_feature_id.as_deref(), Some("feat-planned"));
-            assert!(moved.in_progress);
+            assert!(moved.work.status.is_in_progress());
         }
         _ => panic!("expected Todos overlay"),
     }
@@ -19962,9 +20106,9 @@ fn moving_a_todo_to_another_scope_carries_its_links() {
 fn copying_a_todo_to_another_scope_leaves_it_unstarted() {
     let mut app = todos_app();
     let mut todo = sample_todo("share me", false);
-    todo.spawned_session_id = Some("sess-1".to_string());
+    todo.work.agent_session_id = Some("sess-1".to_string());
     todo.linked_feature_id = Some("feat-planned".to_string());
-    todo.in_progress = true;
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
     app.mode = AppMode::Todos(three_pane_view(vec![todo], vec![], vec![]));
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('C'))).unwrap();
@@ -19975,8 +20119,11 @@ fn copying_a_todo_to_another_scope_leaves_it_unstarted() {
     match &app.mode {
         AppMode::Todos(state) => {
             let original = &state.panes[0].todos[0];
-            assert_eq!(original.spawned_session_id.as_deref(), Some("sess-1"));
-            assert!(original.in_progress, "the original is untouched");
+            assert_eq!(original.work.agent_session_id.as_deref(), Some("sess-1"));
+            assert!(
+                original.work.status.is_in_progress(),
+                "the original is untouched"
+            );
 
             assert!(
                 state.panes[1].todos.is_empty(),
@@ -19985,9 +20132,9 @@ fn copying_a_todo_to_another_scope_leaves_it_unstarted() {
             let copy = &state.panes[2].todos[0];
             assert_eq!(copy.title, "share me");
             assert_ne!(copy.id, original.id);
-            assert!(copy.spawned_session_id.is_none());
+            assert!(copy.work.agent_session_id.is_none());
             assert!(copy.linked_feature_id.is_none());
-            assert!(!copy.in_progress);
+            assert!(copy.work.status.is_not_started());
         }
         _ => panic!("expected Todos overlay"),
     }
@@ -20095,7 +20242,7 @@ fn app_with_worktree_todos(unfinished: usize, done: usize) -> (App, String) {
                 crate::db::todos::TodoPriority::Med,
             )
             .unwrap();
-        todo.done = true;
+        todo.work.status = crate::db::todos::TodoStatus::Completed;
         db.update_todo(&todo).unwrap();
     }
 

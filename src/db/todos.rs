@@ -20,7 +20,125 @@
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// Persisted lifecycle state of a [`Todo`].
+///
+/// This replaces the invalid combinations made possible by the historical
+/// `done` and `in_progress` flags with one exhaustive value. The snake-case
+/// names are shared by SQLite and serde so exports and database rows describe
+/// the same state.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    #[default]
+    NotStarted,
+    InProgress,
+    Completed,
+}
+
+impl TodoStatus {
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            TodoStatus::NotStarted => "not_started",
+            TodoStatus::InProgress => "in_progress",
+            TodoStatus::Completed => "completed",
+        }
+    }
+
+    /// Parse a stored status token; unknown values degrade to not started.
+    ///
+    /// That fallback keeps a damaged or future row visible and eligible for
+    /// an explicit user decision instead of silently presenting it as done.
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "in_progress" => TodoStatus::InProgress,
+            "completed" => TodoStatus::Completed,
+            _ => TodoStatus::NotStarted,
+        }
+    }
+
+    /// The next state selected by the existing manual toggle action.
+    pub fn next_manual(self) -> Self {
+        match self {
+            TodoStatus::NotStarted => TodoStatus::InProgress,
+            TodoStatus::InProgress => TodoStatus::Completed,
+            TodoStatus::Completed => TodoStatus::NotStarted,
+        }
+    }
+
+    pub fn is_not_started(self) -> bool {
+        self == TodoStatus::NotStarted
+    }
+
+    pub fn is_in_progress(self) -> bool {
+        self == TodoStatus::InProgress
+    }
+
+    pub fn is_completed(self) -> bool {
+        self == TodoStatus::Completed
+    }
+}
+
+/// The status and optional agent-session association that must be persisted
+/// together for a TODO.
+///
+/// `agent_session_id` is a [`crate::project::FeatureSession`] id, rather than
+/// a tmux name or harness-specific identifier. It is stable across AMF
+/// restarts and works for every supported agent harness.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoWorkState {
+    pub status: TodoStatus,
+    pub agent_session_id: Option<String>,
+}
+
+impl TodoWorkState {
+    /// Apply the manual three-state cycle. The association is deliberately
+    /// retained: it remains useful for jumping back to prior work, and only a
+    /// failed launch or reconciliation of a missing session invalidates it.
+    pub fn cycle_manually(&mut self) {
+        self.status = self.status.next_manual();
+    }
+
+    /// Reserve a not-started TODO for a TODO-specific launch.
+    ///
+    /// Returns `false` without changing anything when the TODO is already in
+    /// progress or completed. A prior association is cleared because the new
+    /// launch, once created, becomes the association for this reservation.
+    pub fn reserve_launch(&mut self) -> bool {
+        if self.status != TodoStatus::NotStarted {
+            return false;
+        }
+        self.status = TodoStatus::InProgress;
+        self.agent_session_id = None;
+        true
+    }
+
+    /// Record the session produced by a successful reserved launch.
+    ///
+    /// Association is accepted only while the TODO is reserved/in progress,
+    /// preventing a late launch result from attaching itself after a manual
+    /// status change.
+    pub fn associate_session(&mut self, session_id: impl Into<String>) -> bool {
+        if self.status != TodoStatus::InProgress {
+            return false;
+        }
+        self.agent_session_id = Some(session_id.into());
+        true
+    }
+
+    /// Undo a failed agent creation or prompt delivery.
+    pub fn rollback_launch(&mut self) {
+        self.status = TodoStatus::NotStarted;
+        self.agent_session_id = None;
+    }
+
+    /// Clear a stale session reference without changing the TODO's status.
+    pub fn clear_missing_session(&mut self) {
+        self.agent_session_id = None;
+    }
+}
 
 /// Priority of a [`Todo`], persisted as a short token (`high`/`med`/`low`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,22 +275,21 @@ pub struct Todo {
     pub title: String,
     pub body: Option<String>,
     pub priority: TodoPriority,
-    pub done: bool,
     pub sort_order: i64,
-    /// `FeatureSession.id` of an agent launched for this item, if any. Always
-    /// a session inside the list's *host* feature.
-    pub spawned_session_id: Option<String>,
+    pub work: TodoWorkState,
     /// `Feature.id` of a feature plan mode created for this item, if any. A
-    /// different destination from [`Self::spawned_session_id`], and a TODO can
+    /// different destination from [`TodoWorkState::agent_session_id`], and a TODO can
     /// carry both.
     pub linked_feature_id: Option<String>,
-    /// Set while this item is actively being worked, so "implement next" skips
-    /// it. Written when a session is spawned for it and cleared when the item
-    /// is completed, when its session goes away, or by hand — none of which
-    /// `spawned_session_id` alone can express.
-    pub in_progress: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl Todo {
+    /// Automatic TODO spawning is reserved exclusively for untouched work.
+    pub fn is_eligible_for_automatic_spawn(&self) -> bool {
+        self.work.status.is_not_started()
+    }
 }
 
 const LIST_COLUMNS: &str =
@@ -333,33 +450,67 @@ pub fn delete_worktree_list(conn: &Connection, project_id: &str, workdir: &str) 
     Ok(())
 }
 
-/// Load every item in `list_id`, sorted by done (open first), then priority,
-/// then manual `sort_order`.
-pub fn list_todos(conn: &Connection, list_id: &str) -> Result<Vec<Todo>> {
+/// Load a single TODO by id, regardless of which list currently holds it.
+///
+/// Unlike [`list_todos`], this needs no `list_id` — a caller that only has a
+/// TODO's id (e.g. one captured before a `move`/`copy` could have relocated
+/// it) can still resolve the row.
+pub fn find_todo_by_id(conn: &Connection, todo_id: &str) -> Result<Option<Todo>> {
     let mut stmt = conn.prepare(
-        "SELECT id, list_id, title, body, priority, done, sort_order,
-                spawned_session_id, linked_feature_id, in_progress,
+        "SELECT id, list_id, title, body, priority, sort_order,
+                status, agent_session_id, linked_feature_id,
                 created_at, updated_at
-         FROM todos WHERE list_id = ?1
-         ORDER BY done ASC, sort_order ASC",
+         FROM todos WHERE id = ?1",
     )?;
-    let rows = stmt.query_map(params![list_id], |row| {
+    let mut rows = stmt.query_map(params![todo_id], |row| {
         let priority: String = row.get(4)?;
-        let done: i64 = row.get(5)?;
-        let in_progress: i64 = row.get(9)?;
+        let status: String = row.get(6)?;
         Ok(Todo {
             id: row.get(0)?,
             list_id: row.get(1)?,
             title: row.get(2)?,
             body: row.get(3)?,
             priority: TodoPriority::from_db_str(&priority),
-            done: done != 0,
-            sort_order: row.get(6)?,
-            spawned_session_id: row.get(7)?,
+            sort_order: row.get(5)?,
+            work: TodoWorkState {
+                status: TodoStatus::from_db_str(&status),
+                agent_session_id: row.get(7)?,
+            },
             linked_feature_id: row.get(8)?,
-            in_progress: in_progress != 0,
-            created_at: row.get(10)?,
-            updated_at: row.get(11)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+        })
+    })?;
+    rows.next().transpose().map_err(Into::into)
+}
+
+/// Load every item in `list_id`, sorted by status (completed last), then
+/// then manual `sort_order`.
+pub fn list_todos(conn: &Connection, list_id: &str) -> Result<Vec<Todo>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, list_id, title, body, priority, sort_order,
+                status, agent_session_id, linked_feature_id,
+                created_at, updated_at
+         FROM todos WHERE list_id = ?1
+         ORDER BY (status = 'completed') ASC, sort_order ASC",
+    )?;
+    let rows = stmt.query_map(params![list_id], |row| {
+        let priority: String = row.get(4)?;
+        let status: String = row.get(6)?;
+        Ok(Todo {
+            id: row.get(0)?,
+            list_id: row.get(1)?,
+            title: row.get(2)?,
+            body: row.get(3)?,
+            priority: TodoPriority::from_db_str(&priority),
+            sort_order: row.get(5)?,
+            work: TodoWorkState {
+                status: TodoStatus::from_db_str(&status),
+                agent_session_id: row.get(7)?,
+            },
+            linked_feature_id: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
         })
     })?;
 
@@ -383,10 +534,10 @@ pub fn add_todo(
     let id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO todos
-            (id, list_id, title, body, priority, done, sort_order,
-             spawned_session_id, linked_feature_id, in_progress,
+            (id, list_id, title, body, priority, sort_order, status,
+             agent_session_id, linked_feature_id,
              created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, NULL, NULL, 0,
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'not_started', NULL, NULL,
                  datetime('now'), datetime('now'))",
         params![id, list_id, title, body, priority.as_db_str(), next_order],
     )?;
@@ -396,11 +547,9 @@ pub fn add_todo(
         title: title.to_string(),
         body: body.map(str::to_string),
         priority,
-        done: false,
         sort_order: next_order,
-        spawned_session_id: None,
+        work: TodoWorkState::default(),
         linked_feature_id: None,
-        in_progress: false,
         created_at: String::new(),
         updated_at: String::new(),
     })
@@ -411,9 +560,9 @@ pub fn add_todo(
 pub fn update_todo(conn: &Connection, todo: &Todo) -> Result<()> {
     conn.execute(
         "UPDATE todos SET
-            list_id = ?2, title = ?3, body = ?4, priority = ?5, done = ?6,
-            sort_order = ?7, spawned_session_id = ?8, linked_feature_id = ?9,
-            in_progress = ?10, updated_at = datetime('now')
+            list_id = ?2, title = ?3, body = ?4, priority = ?5,
+            sort_order = ?6, status = ?7, agent_session_id = ?8,
+            linked_feature_id = ?9, updated_at = datetime('now')
          WHERE id = ?1",
         params![
             todo.id,
@@ -421,11 +570,10 @@ pub fn update_todo(conn: &Connection, todo: &Todo) -> Result<()> {
             todo.title,
             todo.body,
             todo.priority.as_db_str(),
-            todo.done as i64,
             todo.sort_order,
-            todo.spawned_session_id,
+            todo.work.status.as_db_str(),
+            todo.work.agent_session_id,
             todo.linked_feature_id,
-            todo.in_progress as i64,
         ],
     )?;
     Ok(())
@@ -454,38 +602,46 @@ pub fn set_linked_feature(conn: &Connection, todo_id: &str, feature_id: &str) ->
 
 /// Point a TODO at the session spawned for it. Targeted for the same reason as
 /// [`set_linked_feature`].
-pub fn set_spawned_session(conn: &Connection, todo_id: &str, session_id: &str) -> Result<()> {
+pub fn set_agent_session(conn: &Connection, todo_id: &str, session_id: &str) -> Result<()> {
     conn.execute(
-        "UPDATE todos SET spawned_session_id = ?2, updated_at = datetime('now')
+        "UPDATE todos SET agent_session_id = ?2, updated_at = datetime('now')
          WHERE id = ?1",
         params![todo_id, session_id],
     )?;
     Ok(())
 }
 
-/// Set or clear a TODO's in-progress flag.
-///
-/// Targeted for the same reason as [`set_spawned_session`], and for one more:
-/// the flag is written from surfaces where the TODOs overlay is not open (the
-/// dashboard's "implement next"), so there is no in-memory row to write back
-/// through [`update_todo`].
-pub fn set_in_progress(conn: &Connection, todo_id: &str, in_progress: bool) -> Result<()> {
+/// Persist status and association as one work-state transition.
+pub fn set_work_state(conn: &Connection, todo_id: &str, work: &TodoWorkState) -> Result<()> {
     conn.execute(
-        "UPDATE todos SET in_progress = ?2, updated_at = datetime('now')
+        "UPDATE todos SET status = ?2, agent_session_id = ?3,
+                          updated_at = datetime('now')
          WHERE id = ?1",
-        params![todo_id, in_progress as i64],
+        params![todo_id, work.status.as_db_str(), work.agent_session_id],
     )?;
     Ok(())
 }
 
 /// Drop a TODO's link to the session spawned for it, when that session is gone.
-pub fn clear_spawned_session(conn: &Connection, todo_id: &str) -> Result<()> {
+pub fn clear_agent_session(conn: &Connection, todo_id: &str) -> Result<()> {
     conn.execute(
-        "UPDATE todos SET spawned_session_id = NULL, updated_at = datetime('now')
+        "UPDATE todos SET agent_session_id = NULL, updated_at = datetime('now')
          WHERE id = ?1",
         params![todo_id],
     )?;
     Ok(())
+}
+
+/// All persisted TODO-to-agent associations, for startup/session
+/// reconciliation against the authoritative feature-session store.
+pub fn agent_session_associations(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, agent_session_id FROM todos
+         WHERE agent_session_id IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Drop one TODO's link to the feature planned for it, when that feature is
@@ -549,28 +705,28 @@ pub fn move_todo(conn: &Connection, todo_id: &str, target_list_id: &str) -> Resu
 /// Copy a TODO into another list, appending it at the destination's end, and
 /// return the new item.
 ///
-/// The copy is deliberately *unstarted*: `spawned_session_id`, the feature
-/// link, and `in_progress` are all dropped. Carrying them would leave two rows
+/// The copy is deliberately *unstarted*: the agent association, feature link,
+/// and in-progress state are all dropped. Carrying them would leave two rows
 /// in two panes each claiming the same session, and "implement next" would
 /// then hold both in reserve for work only one of them describes.
 pub fn copy_todo(conn: &Connection, todo_id: &str, target_list_id: &str) -> Result<Option<Todo>> {
     let source = conn
         .query_row(
-            "SELECT title, body, priority, done FROM todos WHERE id = ?1",
+            "SELECT title, body, priority, status FROM todos WHERE id = ?1",
             params![todo_id],
             |row| {
                 let priority: String = row.get(2)?;
-                let done: i64 = row.get(3)?;
+                let status: String = row.get(3)?;
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     TodoPriority::from_db_str(&priority),
-                    done != 0,
+                    TodoStatus::from_db_str(&status),
                 ))
             },
         )
         .optional()?;
-    let Some((title, body, priority, done)) = source else {
+    let Some((title, body, priority, source_status)) = source else {
         return Ok(None);
     };
 
@@ -578,10 +734,10 @@ pub fn copy_todo(conn: &Connection, todo_id: &str, target_list_id: &str) -> Resu
     let id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO todos
-            (id, list_id, title, body, priority, done, sort_order,
-             spawned_session_id, linked_feature_id, in_progress,
+            (id, list_id, title, body, priority, sort_order, status,
+             agent_session_id, linked_feature_id,
              created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, 0,
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL,
                  datetime('now'), datetime('now'))",
         params![
             id,
@@ -589,8 +745,12 @@ pub fn copy_todo(conn: &Connection, todo_id: &str, target_list_id: &str) -> Resu
             title,
             body,
             priority.as_db_str(),
-            done as i64,
-            next_order
+            next_order,
+            if source_status == TodoStatus::Completed {
+                TodoStatus::Completed.as_db_str()
+            } else {
+                TodoStatus::NotStarted.as_db_str()
+            }
         ],
     )?;
     Ok(Some(Todo {
@@ -599,11 +759,16 @@ pub fn copy_todo(conn: &Connection, todo_id: &str, target_list_id: &str) -> Resu
         title,
         body,
         priority,
-        done,
         sort_order: next_order,
-        spawned_session_id: None,
+        work: TodoWorkState {
+            status: if source_status == TodoStatus::Completed {
+                TodoStatus::Completed
+            } else {
+                TodoStatus::NotStarted
+            },
+            agent_session_id: None,
+        },
         linked_feature_id: None,
-        in_progress: false,
         created_at: String::new(),
         updated_at: String::new(),
     }))
@@ -626,6 +791,81 @@ mod tests {
     use super::*;
     use crate::db::AmfDb;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn todo_status_db_and_serde_representations_are_stable() {
+        let cases = [
+            (TodoStatus::NotStarted, "not_started"),
+            (TodoStatus::InProgress, "in_progress"),
+            (TodoStatus::Completed, "completed"),
+        ];
+
+        for (status, token) in cases {
+            assert_eq!(status.as_db_str(), token);
+            assert_eq!(TodoStatus::from_db_str(token), status);
+            assert_eq!(
+                serde_json::to_string(&status).unwrap(),
+                format!("\"{token}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<TodoStatus>(&format!("\"{token}\"")).unwrap(),
+                status
+            );
+        }
+        assert_eq!(
+            TodoStatus::from_db_str("future_state"),
+            TodoStatus::NotStarted
+        );
+    }
+
+    #[test]
+    fn todo_status_manual_cycle_visits_each_state_in_order() {
+        let mut state = TodoWorkState::default();
+        state.cycle_manually();
+        assert_eq!(state.status, TodoStatus::InProgress);
+        state.cycle_manually();
+        assert_eq!(state.status, TodoStatus::Completed);
+        state.cycle_manually();
+        assert_eq!(state.status, TodoStatus::NotStarted);
+    }
+
+    #[test]
+    fn todo_launch_transitions_keep_status_and_association_consistent() {
+        let mut state = TodoWorkState {
+            status: TodoStatus::NotStarted,
+            agent_session_id: Some("old-session".to_string()),
+        };
+
+        assert!(state.reserve_launch());
+        assert_eq!(state.status, TodoStatus::InProgress);
+        assert!(state.agent_session_id.is_none());
+        assert!(
+            !state.reserve_launch(),
+            "an in-progress TODO cannot be reserved twice"
+        );
+        assert!(state.associate_session("new-session"));
+        assert_eq!(state.agent_session_id.as_deref(), Some("new-session"));
+
+        state.clear_missing_session();
+        assert_eq!(state.status, TodoStatus::InProgress);
+        assert!(state.agent_session_id.is_none());
+
+        state.rollback_launch();
+        assert_eq!(state, TodoWorkState::default());
+    }
+
+    #[test]
+    fn manual_cycle_retains_association_and_late_association_is_rejected() {
+        let mut state = TodoWorkState {
+            status: TodoStatus::InProgress,
+            agent_session_id: Some("session-1".to_string()),
+        };
+        state.cycle_manually();
+        assert_eq!(state.status, TodoStatus::Completed);
+        assert_eq!(state.agent_session_id.as_deref(), Some("session-1"));
+        assert!(!state.associate_session("late-session"));
+        assert_eq!(state.agent_session_id.as_deref(), Some("session-1"));
+    }
 
     fn open_temp_db() -> (NamedTempFile, AmfDb) {
         let tmp = NamedTempFile::new().unwrap();
@@ -746,17 +986,17 @@ mod tests {
         assert_eq!(todo.sort_order, 0);
 
         // Mutate and persist.
-        todo.done = true;
+        todo.work.status = TodoStatus::Completed;
         todo.priority = TodoPriority::Low;
-        todo.spawned_session_id = Some("sess-7".to_string());
+        todo.work.agent_session_id = Some("sess-7".to_string());
         db.update_todo(&todo).unwrap();
 
         let loaded = db.todos(&list.id).unwrap();
         assert_eq!(loaded.len(), 1);
-        assert!(loaded[0].done);
+        assert!(loaded[0].work.status.is_completed());
         assert_eq!(loaded[0].priority, TodoPriority::Low);
         assert_eq!(loaded[0].body.as_deref(), Some("cover edge cases"));
-        assert_eq!(loaded[0].spawned_session_id.as_deref(), Some("sess-7"));
+        assert_eq!(loaded[0].work.agent_session_id.as_deref(), Some("sess-7"));
 
         db.delete_todo(&todo.id).unwrap();
         assert!(db.todos(&list.id).unwrap().is_empty());
@@ -791,9 +1031,9 @@ mod tests {
         let mut moving = db
             .add_todo(&src.id, "port me", Some("notes"), TodoPriority::High)
             .unwrap();
-        moving.spawned_session_id = Some("sess-1".to_string());
+        moving.work.agent_session_id = Some("sess-1".to_string());
         moving.linked_feature_id = Some("feat-planned".to_string());
-        moving.in_progress = true;
+        moving.work.status = TodoStatus::InProgress;
         db.update_todo(&moving).unwrap();
 
         db.move_todo(&moving.id, &dst.id).unwrap();
@@ -806,11 +1046,37 @@ mod tests {
             moved.sort_order, 1,
             "appended, not overlapping the sitting item"
         );
-        assert_eq!(moved.spawned_session_id.as_deref(), Some("sess-1"));
+        assert_eq!(moved.work.agent_session_id.as_deref(), Some("sess-1"));
         assert_eq!(moved.linked_feature_id.as_deref(), Some("feat-planned"));
-        assert!(moved.in_progress);
+        assert!(moved.work.status.is_in_progress());
         assert_eq!(moved.body.as_deref(), Some("notes"));
         assert_eq!(moved.priority, TodoPriority::High);
+    }
+
+    /// A caller that only kept a TODO's id (not the list it started in) must
+    /// still be able to resolve it after a move — the scenario a plan
+    /// interview hits between generating a plan and the user accepting it.
+    #[test]
+    fn find_by_id_locates_a_todo_after_it_moved_to_another_list() {
+        let (_tmp, db) = open_temp_db();
+        let src = db
+            .create_todo_list(&worktree("proj-1", "/wt/a"), Some("feat-1"))
+            .unwrap();
+        let dst = db.create_todo_list(&TodoScope::Global, None).unwrap();
+
+        let todo = db
+            .add_todo(&src.id, "port me", None, TodoPriority::Med)
+            .unwrap();
+        db.move_todo(&todo.id, &dst.id).unwrap();
+
+        let found = db
+            .find_todo_by_id(&todo.id)
+            .unwrap()
+            .expect("resolved by id alone, without knowing it moved");
+        assert_eq!(found.list_id, dst.id);
+        assert_eq!(found.title, "port me");
+
+        assert!(db.find_todo_by_id("no-such-id").unwrap().is_none());
     }
 
     /// A copy is a second, *unstarted* item: two panes must never both claim
@@ -826,9 +1092,9 @@ mod tests {
         let mut original = db
             .add_todo(&src.id, "share me", Some("why"), TodoPriority::Low)
             .unwrap();
-        original.spawned_session_id = Some("sess-1".to_string());
+        original.work.agent_session_id = Some("sess-1".to_string());
         original.linked_feature_id = Some("feat-planned".to_string());
-        original.in_progress = true;
+        original.work.status = TodoStatus::InProgress;
         db.update_todo(&original).unwrap();
 
         let copy = db.copy_todo(&original.id, &dst.id).unwrap().unwrap();
@@ -836,17 +1102,17 @@ mod tests {
         // The original is untouched, links and all.
         let kept = &db.todos(&src.id).unwrap()[0];
         assert_eq!(kept.id, original.id);
-        assert_eq!(kept.spawned_session_id.as_deref(), Some("sess-1"));
-        assert!(kept.in_progress);
+        assert_eq!(kept.work.agent_session_id.as_deref(), Some("sess-1"));
+        assert!(kept.work.status.is_in_progress());
 
         assert_ne!(copy.id, original.id);
         let landed = &db.todos(&dst.id).unwrap()[0];
         assert_eq!(landed.title, "share me");
         assert_eq!(landed.body.as_deref(), Some("why"));
         assert_eq!(landed.priority, TodoPriority::Low);
-        assert!(landed.spawned_session_id.is_none());
+        assert!(landed.work.agent_session_id.is_none());
         assert!(landed.linked_feature_id.is_none());
-        assert!(!landed.in_progress);
+        assert!(landed.work.status.is_not_started());
     }
 
     #[test]
@@ -857,10 +1123,10 @@ mod tests {
         assert!(db.todos(&dst.id).unwrap().is_empty());
     }
 
-    /// The in-progress flag round-trips, and the two targeted writers can set
-    /// and clear it without going through a whole-row update.
+    /// Work state round-trips and the targeted writer updates status and
+    /// association together without a whole-row update.
     #[test]
-    fn in_progress_roundtrips_and_has_targeted_writers() {
+    fn work_state_roundtrips_and_has_targeted_writers() {
         let (_tmp, db) = open_temp_db();
         let list = db
             .create_todo_list(&project("proj-1"), Some("feat-1"))
@@ -869,25 +1135,62 @@ mod tests {
             .add_todo(&list.id, "Ship it", None, TodoPriority::High)
             .unwrap();
         // A new TODO is nobody's work in progress.
-        assert!(!todo.in_progress);
-        assert!(!db.todos(&list.id).unwrap()[0].in_progress);
+        assert!(todo.work.status.is_not_started());
+        assert!(db.todos(&list.id).unwrap()[0].work.status.is_not_started());
 
-        todo.in_progress = true;
+        todo.work.status = TodoStatus::InProgress;
         db.update_todo(&todo).unwrap();
-        assert!(db.todos(&list.id).unwrap()[0].in_progress);
+        assert!(db.todos(&list.id).unwrap()[0].work.status.is_in_progress());
 
-        db.set_todo_in_progress(&todo.id, false).unwrap();
-        assert!(!db.todos(&list.id).unwrap()[0].in_progress);
+        let completed = TodoWorkState {
+            status: TodoStatus::Completed,
+            agent_session_id: Some("sess-1".to_string()),
+        };
+        db.set_todo_work_state(&todo.id, &completed).unwrap();
+        assert_eq!(db.todos(&list.id).unwrap()[0].work, completed);
 
         // Clearing a dead session link is its own write, leaving everything
         // else on the row alone.
-        db.set_todo_spawned_session(&todo.id, "sess-1").unwrap();
-        db.set_todo_in_progress(&todo.id, true).unwrap();
-        db.clear_todo_spawned_session(&todo.id).unwrap();
+        db.clear_todo_agent_session(&todo.id).unwrap();
         let loaded = db.todos(&list.id).unwrap();
-        assert!(loaded[0].spawned_session_id.is_none());
+        assert!(loaded[0].work.agent_session_id.is_none());
         assert_eq!(loaded[0].title, "Ship it");
-        assert!(loaded[0].in_progress);
+        assert!(loaded[0].work.status.is_completed());
+    }
+
+    #[test]
+    fn todo_status_and_agent_association_survive_database_restart() {
+        let tmp = NamedTempFile::new().unwrap();
+        let (list_id, todo_id) = {
+            let db = AmfDb::open(tmp.path()).unwrap();
+            let list = db
+                .create_todo_list(&project("proj-1"), Some("feat-1"))
+                .unwrap();
+            let mut todo = db
+                .add_todo(&list.id, "Keep working", None, TodoPriority::High)
+                .unwrap();
+            todo.work = TodoWorkState {
+                status: TodoStatus::InProgress,
+                agent_session_id: Some("session-42".to_string()),
+            };
+            db.update_todo(&todo).unwrap();
+            (list.id, todo.id)
+        };
+
+        let reopened = AmfDb::open(tmp.path()).unwrap();
+        let loaded = reopened
+            .todos(&list_id)
+            .unwrap()
+            .into_iter()
+            .find(|todo| todo.id == todo_id)
+            .unwrap();
+        assert_eq!(
+            loaded.work,
+            TodoWorkState {
+                status: TodoStatus::InProgress,
+                agent_session_id: Some("session-42".to_string()),
+            }
+        );
     }
 
     #[test]
@@ -920,7 +1223,7 @@ mod tests {
             .unwrap();
         let mut a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let _b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
-        a.done = true;
+        a.work.status = TodoStatus::Completed;
         db.update_todo(&a).unwrap();
 
         let titles: Vec<String> = db
@@ -961,12 +1264,12 @@ mod tests {
         assert!(todo.linked_feature_id.is_none());
 
         // Both links can be held at once: they point at different things.
-        todo.spawned_session_id = Some("sess-1".to_string());
+        todo.work.agent_session_id = Some("sess-1".to_string());
         todo.linked_feature_id = Some("feat-new".to_string());
         db.update_todo(&todo).unwrap();
 
         let loaded = &db.todos(&list.id).unwrap()[0];
-        assert_eq!(loaded.spawned_session_id.as_deref(), Some("sess-1"));
+        assert_eq!(loaded.work.agent_session_id.as_deref(), Some("sess-1"));
         assert_eq!(loaded.linked_feature_id.as_deref(), Some("feat-new"));
     }
 
@@ -979,7 +1282,7 @@ mod tests {
         let mut a = db.add_todo(&list.id, "a", None, TodoPriority::Med).unwrap();
         let mut b = db.add_todo(&list.id, "b", None, TodoPriority::Med).unwrap();
         a.linked_feature_id = Some("feat-gone".to_string());
-        a.spawned_session_id = Some("sess-1".to_string());
+        a.work.agent_session_id = Some("sess-1".to_string());
         b.linked_feature_id = Some("feat-kept".to_string());
         db.update_todo(&a).unwrap();
         db.update_todo(&b).unwrap();
@@ -992,7 +1295,7 @@ mod tests {
         let b = loaded.iter().find(|t| t.title == "b").unwrap();
         assert!(a.linked_feature_id.is_none());
         // Only the feature link is dropped; the session link is a separate one.
-        assert_eq!(a.spawned_session_id.as_deref(), Some("sess-1"));
+        assert_eq!(a.work.agent_session_id.as_deref(), Some("sess-1"));
         assert_eq!(b.linked_feature_id.as_deref(), Some("feat-kept"));
     }
 

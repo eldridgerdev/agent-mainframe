@@ -20,7 +20,7 @@ use crate::app::{
     TodoPlanDestination, TodoPlanOrigin, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
     TodosHostReassignState,
 };
-use crate::db::todos::{Todo, TodoPriority, TodoScope};
+use crate::db::todos::{Todo, TodoPriority, TodoScope, TodoStatus, TodoWorkState};
 
 /// The selected TODO and the overlay context needed to act on it, gathered in
 /// one read so callers do not re-borrow `self.mode` field by field.
@@ -52,7 +52,6 @@ pub(crate) enum NextTodo {
 /// One scope's list as "implement next" sees it.
 pub(crate) struct ImplementNextList {
     pub kind: TodoPaneKind,
-    pub list_id: Option<String>,
     /// The feature whose agent and mode a spawn from this list would inherit,
     /// when the scope names one. `None` for the global list, and unused for
     /// project scope, which asks the user regardless.
@@ -658,11 +657,9 @@ impl App {
                 title,
                 body: None,
                 priority: TodoPriority::Med,
-                done: false,
                 sort_order: next_order,
-                spawned_session_id: None,
+                work: TodoWorkState::default(),
                 linked_feature_id: None,
-                in_progress: false,
                 created_at: String::new(),
                 updated_at: String::new(),
             },
@@ -694,7 +691,7 @@ impl App {
         if let Some(db) = &self.db {
             db.update_todo(&updated)?;
         }
-        // Re-sort in case `done` changed, keeping the cursor on the same item.
+        // Re-sort in case status changed, keeping the cursor on the same item.
         if let Some(pane) = self.todos_pane_mut() {
             Self::resort_todos(&mut pane.todos);
             if let Some(pos) = pane.todos.iter().position(|t| t.id == updated.id) {
@@ -704,31 +701,15 @@ impl App {
         Ok(())
     }
 
-    /// Toggle the selected TODO's done flag. Completing an item ends whatever
-    /// was underway on it, so the in-progress flag goes with it.
+    /// Cycle the selected TODO through not started, in progress, and completed.
     pub fn todos_toggle_done(&mut self) -> Result<()> {
-        self.todos_update_selected(|t| {
-            t.done = !t.done;
-            if t.done {
-                t.in_progress = false;
-            }
-        })
+        self.todos_update_selected(|t| t.work.cycle_manually())
     }
 
-    /// Toggle the selected TODO's in-progress flag by hand.
-    ///
-    /// The flag is set automatically when an agent is launched, but it has to
-    /// be clearable: a session the user abandoned without closing would
-    /// otherwise keep the item out of "implement next" for good. Marking an
-    /// item underway also un-completes it — the two states contradict each
-    /// other, and the one just asked for is the one that wins.
+    /// Compatibility entry point for the former separate in-progress toggle.
+    /// It now follows the same single status cycle as every manual toggle.
     pub fn todos_toggle_in_progress(&mut self) -> Result<()> {
-        self.todos_update_selected(|t| {
-            t.in_progress = !t.in_progress;
-            if t.in_progress {
-                t.done = false;
-            }
-        })
+        self.todos_toggle_done()
     }
 
     /// Cycle the selected TODO's priority High → Med → Low → High.
@@ -917,11 +898,16 @@ impl App {
                     title: source.title.clone(),
                     body: source.body.clone(),
                     priority: source.priority,
-                    done: source.done,
                     sort_order: 0,
-                    spawned_session_id: None,
+                    work: TodoWorkState {
+                        status: if source.work.status == TodoStatus::Completed {
+                            TodoStatus::Completed
+                        } else {
+                            TodoStatus::NotStarted
+                        },
+                        agent_session_id: None,
+                    },
                     linked_feature_id: None,
-                    in_progress: false,
                     created_at: String::new(),
                     updated_at: String::new(),
                 })
@@ -1027,7 +1013,7 @@ impl App {
         // 2. A still-live session spawned for this TODO. Searched across every
         //    feature, not just this list's host: a project- or global-scoped
         //    TODO's agent lives wherever the user chose to put it.
-        if let Some(session_id) = todo.spawned_session_id.as_deref()
+        if let Some(session_id) = todo.work.agent_session_id.as_deref()
             && let Some((spi, sfi, si)) = self.session_indices_by_id(session_id)
         {
             self.selection = Selection::Session(spi, sfi, si);
@@ -1399,7 +1385,7 @@ impl App {
     ///
     /// Takes the TODO by value rather than reading `self.mode`, because the
     /// dashboard's "implement next" spawns with no overlay open.
-    fn spawn_todo_agent(
+    pub(crate) fn spawn_todo_agent(
         &mut self,
         pi: usize,
         fi: usize,
@@ -1408,13 +1394,32 @@ impl App {
     ) -> Result<()> {
         let prompt = Self::todo_spawn_prompt(todo);
 
+        if todo.work.status == TodoStatus::InProgress {
+            self.push_toast_warning(
+                "This TODO is already in progress; another agent was not launched",
+            );
+            return Ok(());
+        }
+        if todo.work.status == TodoStatus::Completed {
+            self.push_toast_warning("Mark this TODO not started before launching an agent");
+            return Ok(());
+        }
+
         let existing = if force_new {
             None
         } else {
-            todo.spawned_session_id
+            todo.work
+                .agent_session_id
                 .as_deref()
                 .and_then(|sid| self.session_indices_by_id(sid))
         };
+
+        if !self.todos_reserve_launch(todo)? {
+            self.push_toast_warning(
+                "This TODO is already in progress; another agent was not launched",
+            );
+            return Ok(());
+        }
 
         let (pi, fi, si) = match existing {
             Some(found) => found,
@@ -1439,6 +1444,7 @@ impl App {
                 ) {
                     Ok(si) => (pi, fi, si),
                     Err(e) => {
+                        self.todos_rollback_launch_best_effort(&todo.id);
                         self.push_toast_error(format!("Failed to launch agent: {e}"));
                         return Ok(());
                     }
@@ -1454,18 +1460,25 @@ impl App {
             .and_then(|f| f.sessions.get(si))
             .map(|s| s.id.clone())
         else {
+            self.todos_rollback_launch_best_effort(&todo.id);
             self.push_toast_error("The session for this TODO vanished as it was created");
             return Ok(());
         };
-        // Record the link and the in-progress flag before we leave the overlay
-        // (still in Todos mode, so the in-memory panes stay truthful too).
-        self.todos_mark_started(&todo.id, &session_id)?;
+        if let Err(e) = self.todos_mark_started(&todo.id, &session_id) {
+            self.todos_rollback_launch_best_effort(&todo.id);
+            return Err(e);
+        }
 
         // Switch into the session view and seed the composer (editable). The
         // seed is not submitted, so the user reviews it before sending.
         self.selection = Selection::Session(pi, fi, si);
-        self.enter_view_without_auto_compose()?;
-        self.open_compose_seeded(prompt)?;
+        if let Err(e) = self
+            .enter_view_without_auto_compose()
+            .and_then(|_| self.open_compose_seeded(prompt))
+        {
+            self.todos_rollback_launch_best_effort(&todo.id);
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -1569,7 +1582,7 @@ impl App {
     pub(crate) fn todo_provenance(&self, _pi: usize, _fi: usize, todo: &Todo) -> Vec<String> {
         let mut lines = Vec::new();
 
-        if let Some(session_id) = todo.spawned_session_id.as_deref() {
+        if let Some(session_id) = todo.work.agent_session_id.as_deref() {
             let found = self
                 .session_indices_by_id(session_id)
                 .and_then(|(pi, fi, si)| {
@@ -1643,26 +1656,81 @@ impl App {
         }
     }
 
-    /// Record that work has started on a TODO: its session link and its
-    /// in-progress flag, in memory (across every loaded pane) and (with a DB)
-    /// on disk.
+    /// Reserve a TODO before any agent/session side effect is attempted.
+    pub(crate) fn todos_reserve_launch(&mut self, todo: &Todo) -> Result<bool> {
+        let mut work = todo.work.clone();
+        if !work.reserve_launch() {
+            return Ok(false);
+        }
+        if let Some(db) = &self.db {
+            db.set_todo_work_state(&todo.id, &work)?;
+        }
+        if let AppMode::Todos(state) = &mut self.mode {
+            for pane in &mut state.panes {
+                if let Some(loaded) = pane.todos.iter_mut().find(|item| item.id == todo.id) {
+                    loaded.work = work.clone();
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Restore the pre-launch state after agent creation or prompt setup fails.
+    pub(crate) fn todos_rollback_launch(&mut self, todo_id: &str) -> Result<()> {
+        let mut work = TodoWorkState::default();
+        work.rollback_launch();
+        if let Some(db) = &self.db {
+            db.set_todo_work_state(todo_id, &work)?;
+        }
+        if let AppMode::Todos(state) = &mut self.mode {
+            for pane in &mut state.panes {
+                if let Some(todo) = pane.todos.iter_mut().find(|item| item.id == todo_id) {
+                    todo.work = work.clone();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Self::todos_rollback_launch`] for a failure-handling arm that already
+    /// has a more specific error or toast to report.
+    ///
+    /// `?` on the rollback itself would let a *second* failure (the rollback's
+    /// DB write) replace that message with an opaque, unrelated one, so this
+    /// logs a rollback failure instead of propagating it — the caller's
+    /// original error is always what reaches the user.
+    pub(crate) fn todos_rollback_launch_best_effort(&mut self, todo_id: &str) {
+        if let Err(e) = self.todos_rollback_launch(todo_id) {
+            self.log_warn(
+                "todos",
+                format!("failed to roll back reservation for TODO {todo_id}: {e}"),
+            );
+        }
+    }
+
+    /// Record the session produced for a reserved TODO, in memory (across every
+    /// loaded pane) and on disk.
     ///
     /// The DB writes are targeted rather than a whole-row [`update_todo`]
     /// because this is called from the dashboard's "implement next" as well,
     /// where no overlay is open and there is no in-memory row to write back —
     /// and reconstructing one would overwrite whatever else changed meanwhile.
     pub(crate) fn todos_mark_started(&mut self, todo_id: &str, session_id: &str) -> Result<()> {
+        let mut persisted = TodoWorkState {
+            status: TodoStatus::InProgress,
+            agent_session_id: Some(session_id.to_string()),
+        };
         if let AppMode::Todos(state) = &mut self.mode {
             for pane in state.panes.iter_mut() {
                 if let Some(todo) = pane.todos.iter_mut().find(|t| t.id == todo_id) {
-                    todo.spawned_session_id = Some(session_id.to_string());
-                    todo.in_progress = true;
+                    todo.work.status = TodoStatus::InProgress;
+                    todo.work.associate_session(session_id);
+                    persisted = todo.work.clone();
                 }
             }
         }
         if let Some(db) = &self.db {
-            db.set_todo_spawned_session(todo_id, session_id)?;
-            db.set_todo_in_progress(todo_id, true)?;
+            db.set_todo_work_state(todo_id, &persisted)?;
         }
         Ok(())
     }
@@ -1778,7 +1846,6 @@ impl App {
                 .iter()
                 .map(|pane| ImplementNextList {
                     kind: pane.kind,
-                    list_id: pane.list.as_ref().map(|l| l.id.clone()),
                     host: match pane.kind {
                         TodoPaneKind::Global => None,
                         _ => Some((
@@ -1815,12 +1882,7 @@ impl App {
                     ),
                 )),
             };
-            lists.push(ImplementNextList {
-                kind,
-                list_id: list.map(|l| l.id),
-                host,
-                todos,
-            });
+            lists.push(ImplementNextList { kind, host, todos });
         }
         ImplementNextCtx {
             pi,
@@ -1858,7 +1920,6 @@ impl App {
                 let todo = &list.todos[i];
                 let (todo_id, todo_title) = (todo.id.clone(), todo.title.clone());
                 let kind = list.kind;
-                let list_id = list.list_id.clone();
                 let host_feature_id = list.host.and_then(|(pi, fi)| {
                     self.store
                         .projects
@@ -1873,7 +1934,6 @@ impl App {
                     fallback_fi: ctx.fallback_fi,
                     host_feature_id,
                     pane_kind: kind,
-                    list_id,
                     todo_id,
                     todo_title,
                     skipped_ids: skipped,
@@ -1923,10 +1983,12 @@ impl App {
         let mut started: Option<(usize, usize)> = None;
         for (li, i) in order {
             let todo = &lists[li][i];
-            if todo.done || todo.in_progress || skipped_ids.iter().any(|id| id == &todo.id) {
+            if !todo.is_eligible_for_automatic_spawn()
+                || skipped_ids.iter().any(|id| id == &todo.id)
+            {
                 continue;
             }
-            if todo.spawned_session_id.is_none() && todo.linked_feature_id.is_none() {
+            if todo.work.agent_session_id.is_none() && todo.linked_feature_id.is_none() {
                 return Some((li, NextTodo::Ready(i)));
             }
             if started.is_none() {
@@ -1952,7 +2014,7 @@ impl App {
         let open = lists
             .iter()
             .flat_map(|todos| todos.iter())
-            .filter(|t| !t.done)
+            .filter(|t| !t.work.status.is_completed())
             .count();
         if open == 0 {
             "No TODOs left to implement".to_string()
@@ -1963,22 +2025,18 @@ impl App {
         }
     }
 
-    /// Drop session links whose session is gone, and the in-progress flag they
-    /// were the evidence for.
+    /// Drop session links whose session is gone without changing status.
     ///
-    /// AMF does not clear `spawned_session_id` when a session is removed — the
-    /// link is checked at use time instead — so without this a TODO whose agent
-    /// was closed would stay marked underway forever and never be offered
-    /// again. A session counts as gone only when it exists in **no** feature:
+    /// A session counts as gone only when it exists in **no** feature:
     /// a project- or global-scoped TODO's agent may be running somewhere other
-    /// than the list's host. The flag is only cleared alongside a dead link:
-    /// an item the user marked in progress by hand has no session to lose and
-    /// is left alone.
+    /// than the list's host. The in-progress status intentionally remains: a
+    /// missing agent does not make work unstarted again.
     fn todos_reconcile_dead_sessions(&mut self, todos: &mut [Todo]) -> Result<()> {
         let dead: Vec<String> = todos
             .iter()
             .filter(|t| {
-                t.spawned_session_id
+                t.work
+                    .agent_session_id
                     .as_deref()
                     .is_some_and(|sid| self.session_indices_by_id(sid).is_none())
             })
@@ -1989,21 +2047,58 @@ impl App {
         }
 
         for todo in todos.iter_mut().filter(|t| dead.contains(&t.id)) {
-            todo.spawned_session_id = None;
-            todo.in_progress = false;
+            todo.work.clear_missing_session();
         }
         if let AppMode::Todos(state) = &mut self.mode {
             for pane in state.panes.iter_mut() {
                 for todo in pane.todos.iter_mut().filter(|t| dead.contains(&t.id)) {
-                    todo.spawned_session_id = None;
-                    todo.in_progress = false;
+                    todo.work.clear_missing_session();
                 }
             }
         }
         if let Some(db) = &self.db {
             for id in &dead {
-                db.clear_todo_spawned_session(id)?;
-                db.set_todo_in_progress(id, false)?;
+                db.clear_todo_agent_session(id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reconcile every persisted TODO association against the sessions in the
+    /// project store. This runs from the ordinary status sync, including the
+    /// startup sync, so stale links heal without opening the TODO overlay.
+    pub(crate) fn reconcile_todo_agent_associations(&mut self) -> Result<()> {
+        let Some(db) = self.db.as_ref() else {
+            return Ok(());
+        };
+        let live_ids: std::collections::HashSet<&str> = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| project.features.iter())
+            .flat_map(|feature| feature.sessions.iter())
+            .map(|session| session.id.as_str())
+            .collect();
+        let stale: Vec<String> = db
+            .todo_agent_session_associations()?
+            .into_iter()
+            .filter_map(|(todo_id, session_id)| {
+                (!live_ids.contains(session_id.as_str())).then_some(todo_id)
+            })
+            .collect();
+
+        for todo_id in &stale {
+            db.clear_todo_agent_session(todo_id)?;
+        }
+        if let AppMode::Todos(state) = &mut self.mode {
+            for pane in &mut state.panes {
+                for todo in pane
+                    .todos
+                    .iter_mut()
+                    .filter(|todo| stale.contains(&todo.id))
+                {
+                    todo.work.clear_missing_session();
+                }
             }
         }
         Ok(())
@@ -2012,7 +2107,11 @@ impl App {
     /// Re-read a TODO by id from whichever list is authoritative right now.
     /// Used when acting on a prompt, so the list changing underneath it is
     /// noticed rather than acted on stale.
-    fn find_todo_by_id(&self, list_id: Option<&str>, todo_id: &str) -> Option<Todo> {
+    ///
+    /// Looked up by id alone, not a remembered `list_id`: the TODO may have
+    /// been moved or copied to a different list since the caller last saw
+    /// it, and a list-scoped lookup would silently miss it in that case.
+    pub(crate) fn find_todo_by_id(&self, todo_id: &str) -> Option<Todo> {
         if let AppMode::Todos(state) = &self.mode {
             return state
                 .panes
@@ -2020,11 +2119,7 @@ impl App {
                 .find_map(|pane| pane.todos.iter().find(|t| t.id == todo_id))
                 .cloned();
         }
-        let db = self.db.as_ref()?;
-        db.todos(list_id?)
-            .ok()?
-            .into_iter()
-            .find(|t| t.id == todo_id)
+        self.db.as_ref()?.find_todo_by_id(todo_id).ok()?
     }
 
     // ----- already-started prompt -----------------------------------------
@@ -2074,8 +2169,7 @@ impl App {
                 self.implement_next(ctx, skipped)
             }
             TodoImplementChoice::Jump | TodoImplementChoice::SpawnNew => {
-                let Some(todo) = self.find_todo_by_id(state.list_id.as_deref(), &state.todo_id)
-                else {
+                let Some(todo) = self.find_todo_by_id(&state.todo_id) else {
                     self.push_toast_warning("That TODO is no longer in the list");
                     return Ok(());
                 };
@@ -2119,7 +2213,8 @@ impl App {
             }
         }
         if let Some((pi, fi, si)) = todo
-            .spawned_session_id
+            .work
+            .agent_session_id
             .as_deref()
             .and_then(|sid| self.session_indices_by_id(sid))
         {
@@ -2175,7 +2270,13 @@ impl App {
 
     /// Sort items into display order: open first, then by manual `sort_order`.
     fn resort_todos(todos: &mut [Todo]) {
-        todos.sort_by(|a, b| a.done.cmp(&b.done).then(a.sort_order.cmp(&b.sort_order)));
+        todos.sort_by(|a, b| {
+            a.work
+                .status
+                .is_completed()
+                .cmp(&b.work.status.is_completed())
+                .then(a.sort_order.cmp(&b.sort_order))
+        });
     }
 
     // ----- feature deletion ----------------------------------------------
@@ -2208,7 +2309,7 @@ impl App {
             .todos(&list.id)
             .ok()?
             .into_iter()
-            .filter(|t| !t.done)
+            .filter(|t| !t.work.status.is_completed())
             .count();
         if unfinished == 0 {
             return None;
@@ -2314,7 +2415,7 @@ impl App {
                 let moving: Vec<String> = db
                     .todos(&state.list_id)?
                     .into_iter()
-                    .filter(|t| !t.done)
+                    .filter(|t| !t.work.status.is_completed())
                     .map(|t| t.id)
                     .collect();
                 for id in &moving {

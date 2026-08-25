@@ -1175,7 +1175,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::Todos(state) = &app.mode {
-        super::dialogs::draw_todos_view(frame, state, &app.theme, app.config.nerd_font);
+        super::dialogs::draw_todos_view_with_visibility(
+            frame,
+            state,
+            &app.theme,
+            app.config.nerd_font,
+            app.todo_project_visible,
+            app.todo_global_visible,
+        );
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }

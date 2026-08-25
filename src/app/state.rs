@@ -3048,14 +3048,10 @@ pub struct TodoViewState {
     /// worktree pane is absent for a feature on the repo root, which is the
     /// only way this is shorter than three.
     pub panes: Vec<TodoPane>,
-    /// Index into `panes` of the pane that owns the cursor. Always within
-    /// [`Self::visible_panes`].
-    pub focus: usize,
-    /// Whether the project and global panes are revealed. Seeded from
-    /// `AppConfig::todo_side_panes` and written back when toggled, so a
-    /// dashboard `I` — which runs with no overlay open — reads the same
-    /// setting the overlay would.
-    pub side_panes_open: bool,
+    /// Index into `panes` of the visible pane that owns the cursor. `None` is
+    /// valid for a repository-root feature when both optional scopes are
+    /// hidden.
+    pub focus: Option<usize>,
     /// Active inline edit, if any (add/edit title/notes/scratchpad).
     pub editor: Option<TodoEditor>,
     /// Set when a delete is awaiting y/n confirmation.
@@ -3067,41 +3063,31 @@ pub struct TodoViewState {
 }
 
 impl TodoViewState {
-    /// How many panes are on screen: just the worktree pane when the side
-    /// panes are closed, otherwise all of them.
-    ///
-    /// A feature with no worktree pane always shows all of them — closing the
-    /// side panes there would leave nothing at all, and the project and global
-    /// lists are that feature's only lists.
-    pub fn visible_pane_count(&self) -> usize {
-        if self.side_panes_open || self.panes.is_empty() {
-            return self.panes.len();
-        }
-        match self.panes[0].kind {
-            TodoPaneKind::Worktree => 1,
-            _ => self.panes.len(),
+    pub fn pane_is_visible(pane: &TodoPane, project_visible: bool, global_visible: bool) -> bool {
+        match pane.kind {
+            TodoPaneKind::Worktree => true,
+            TodoPaneKind::Project => project_visible,
+            TodoPaneKind::Global => global_visible,
         }
     }
 
-    /// The panes on screen, in layout order.
-    pub fn visible_panes(&self) -> &[TodoPane] {
-        &self.panes[..self.visible_pane_count()]
+    /// Indices of actionable panes in worktree → project → global order.
+    pub fn visible_pane_indices(&self, project_visible: bool, global_visible: bool) -> Vec<usize> {
+        self.panes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pane)| {
+                Self::pane_is_visible(pane, project_visible, global_visible).then_some(index)
+            })
+            .collect()
     }
 
     pub fn focused(&self) -> Option<&TodoPane> {
-        self.panes.get(self.focus)
+        self.focus.and_then(|focus| self.panes.get(focus))
     }
 
     pub fn focused_mut(&mut self) -> Option<&mut TodoPane> {
-        self.panes.get_mut(self.focus)
-    }
-
-    /// Pull focus back into view — used after the side panes are closed, which
-    /// can leave the cursor on a pane that is no longer drawn.
-    pub fn clamp_focus(&mut self) {
-        if self.focus >= self.visible_pane_count() {
-            self.focus = 0;
-        }
+        self.focus.and_then(|focus| self.panes.get_mut(focus))
     }
 }
 

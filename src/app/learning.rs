@@ -3000,27 +3000,26 @@ impl App {
             self.mode = restore;
             return false;
         }
-        let found = match &mut self.mode {
+        let found = match &self.mode {
             AppMode::Todos(state) => state.panes.iter().enumerate().find_map(|(p, pane)| {
                 pane.todos
                     .iter()
                     .position(|t| t.id == todo_id)
-                    .map(|i| (p, i))
+                    .map(|i| (p, i, pane.scope.clone()))
             }),
             _ => None,
         };
-        let Some((pane_index, index)) = found else {
+        let Some((pane_index, index, scope)) = found else {
             // The link is stale: put the reader back where they were rather
             // than dropping them into a list that does not hold the item.
             self.mode = restore;
             return false;
         };
+        // Following a direct link to a hidden scope makes that scope visible
+        // process-wide so the selected TODO can actually be shown.
+        self.set_todo_scope_visibility(&scope, true);
         if let AppMode::Todos(state) = &mut self.mode {
-            state.focus = pane_index;
-            // A kept note in a side pane is only reachable with them open.
-            if pane_index >= state.visible_pane_count() {
-                state.side_panes_open = true;
-            }
+            state.focus = Some(pane_index);
             if let Some(pane) = state.panes.get_mut(pane_index) {
                 pane.selected = index;
             }

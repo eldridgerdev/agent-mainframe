@@ -442,6 +442,12 @@ impl AmfDb {
         todos::list_todos(&self.conn, list_id)
     }
 
+    /// Look up a single TODO by id without knowing which list currently
+    /// holds it (it may have been moved/copied since the caller last saw it).
+    pub fn find_todo_by_id(&self, todo_id: &str) -> Result<Option<todos::Todo>> {
+        todos::find_todo_by_id(&self.conn, todo_id)
+    }
+
     pub fn add_todo(
         &self,
         list_id: &str,

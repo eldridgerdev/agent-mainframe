@@ -450,6 +450,40 @@ pub fn delete_worktree_list(conn: &Connection, project_id: &str, workdir: &str) 
     Ok(())
 }
 
+/// Load a single TODO by id, regardless of which list currently holds it.
+///
+/// Unlike [`list_todos`], this needs no `list_id` — a caller that only has a
+/// TODO's id (e.g. one captured before a `move`/`copy` could have relocated
+/// it) can still resolve the row.
+pub fn find_todo_by_id(conn: &Connection, todo_id: &str) -> Result<Option<Todo>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, list_id, title, body, priority, sort_order,
+                status, agent_session_id, linked_feature_id,
+                created_at, updated_at
+         FROM todos WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query_map(params![todo_id], |row| {
+        let priority: String = row.get(4)?;
+        let status: String = row.get(6)?;
+        Ok(Todo {
+            id: row.get(0)?,
+            list_id: row.get(1)?,
+            title: row.get(2)?,
+            body: row.get(3)?,
+            priority: TodoPriority::from_db_str(&priority),
+            sort_order: row.get(5)?,
+            work: TodoWorkState {
+                status: TodoStatus::from_db_str(&status),
+                agent_session_id: row.get(7)?,
+            },
+            linked_feature_id: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+        })
+    })?;
+    rows.next().transpose().map_err(Into::into)
+}
+
 /// Load every item in `list_id`, sorted by status (completed last), then
 /// then manual `sort_order`.
 pub fn list_todos(conn: &Connection, list_id: &str) -> Result<Vec<Todo>> {
@@ -1017,6 +1051,32 @@ mod tests {
         assert!(moved.work.status.is_in_progress());
         assert_eq!(moved.body.as_deref(), Some("notes"));
         assert_eq!(moved.priority, TodoPriority::High);
+    }
+
+    /// A caller that only kept a TODO's id (not the list it started in) must
+    /// still be able to resolve it after a move — the scenario a plan
+    /// interview hits between generating a plan and the user accepting it.
+    #[test]
+    fn find_by_id_locates_a_todo_after_it_moved_to_another_list() {
+        let (_tmp, db) = open_temp_db();
+        let src = db
+            .create_todo_list(&worktree("proj-1", "/wt/a"), Some("feat-1"))
+            .unwrap();
+        let dst = db.create_todo_list(&TodoScope::Global, None).unwrap();
+
+        let todo = db
+            .add_todo(&src.id, "port me", None, TodoPriority::Med)
+            .unwrap();
+        db.move_todo(&todo.id, &dst.id).unwrap();
+
+        let found = db
+            .find_todo_by_id(&todo.id)
+            .unwrap()
+            .expect("resolved by id alone, without knowing it moved");
+        assert_eq!(found.list_id, dst.id);
+        assert_eq!(found.title, "port me");
+
+        assert!(db.find_todo_by_id("no-such-id").unwrap().is_none());
     }
 
     /// A copy is a second, *unstarted* item: two panes must never both claim

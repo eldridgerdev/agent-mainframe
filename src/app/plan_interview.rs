@@ -1777,7 +1777,7 @@ impl App {
             return Ok(());
         };
 
-        let reserved_todo = self.find_todo_by_id(Some(&origin.list_id), &origin.todo_id);
+        let reserved_todo = self.find_todo_by_id(&origin.todo_id);
         if let Some(todo) = reserved_todo.as_ref()
             && !self.todos_reserve_launch(todo)?
         {
@@ -1804,7 +1804,7 @@ impl App {
             Ok(si) => si,
             Err(e) => {
                 if reserved_todo.is_some() {
-                    self.todos_rollback_launch(&origin.todo_id)?;
+                    self.todos_rollback_launch_best_effort(&origin.todo_id);
                 }
                 self.push_toast_error(format!("Plan saved, but the agent failed to start: {e}"));
                 self.message = Some(format!("Plan written to {}", plan_path.display()));
@@ -1816,7 +1816,7 @@ impl App {
         if reserved_todo.is_some()
             && let Err(e) = self.todos_mark_started(&origin.todo_id, &session_id)
         {
-            self.todos_rollback_launch(&origin.todo_id)?;
+            self.todos_rollback_launch_best_effort(&origin.todo_id);
             return Err(e);
         }
 
@@ -1826,7 +1826,7 @@ impl App {
             .and_then(|_| self.open_compose_seeded(todo_plan_kickoff_prompt(plan_file)))
         {
             if reserved_todo.is_some() {
-                self.todos_rollback_launch(&origin.todo_id)?;
+                self.todos_rollback_launch_best_effort(&origin.todo_id);
             }
             return Err(e);
         }

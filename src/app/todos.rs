@@ -52,7 +52,6 @@ pub(crate) enum NextTodo {
 /// One scope's list as "implement next" sees it.
 pub(crate) struct ImplementNextList {
     pub kind: TodoPaneKind,
-    pub list_id: Option<String>,
     /// The feature whose agent and mode a spawn from this list would inherit,
     /// when the scope names one. `None` for the global list, and unused for
     /// project scope, which asks the user regardless.
@@ -1445,7 +1444,7 @@ impl App {
                 ) {
                     Ok(si) => (pi, fi, si),
                     Err(e) => {
-                        self.todos_rollback_launch(&todo.id)?;
+                        self.todos_rollback_launch_best_effort(&todo.id);
                         self.push_toast_error(format!("Failed to launch agent: {e}"));
                         return Ok(());
                     }
@@ -1461,12 +1460,12 @@ impl App {
             .and_then(|f| f.sessions.get(si))
             .map(|s| s.id.clone())
         else {
-            self.todos_rollback_launch(&todo.id)?;
+            self.todos_rollback_launch_best_effort(&todo.id);
             self.push_toast_error("The session for this TODO vanished as it was created");
             return Ok(());
         };
         if let Err(e) = self.todos_mark_started(&todo.id, &session_id) {
-            self.todos_rollback_launch(&todo.id)?;
+            self.todos_rollback_launch_best_effort(&todo.id);
             return Err(e);
         }
 
@@ -1477,7 +1476,7 @@ impl App {
             .enter_view_without_auto_compose()
             .and_then(|_| self.open_compose_seeded(prompt))
         {
-            self.todos_rollback_launch(&todo.id)?;
+            self.todos_rollback_launch_best_effort(&todo.id);
             return Err(e);
         }
         Ok(())
@@ -1693,6 +1692,22 @@ impl App {
         Ok(())
     }
 
+    /// [`Self::todos_rollback_launch`] for a failure-handling arm that already
+    /// has a more specific error or toast to report.
+    ///
+    /// `?` on the rollback itself would let a *second* failure (the rollback's
+    /// DB write) replace that message with an opaque, unrelated one, so this
+    /// logs a rollback failure instead of propagating it — the caller's
+    /// original error is always what reaches the user.
+    pub(crate) fn todos_rollback_launch_best_effort(&mut self, todo_id: &str) {
+        if let Err(e) = self.todos_rollback_launch(todo_id) {
+            self.log_warn(
+                "todos",
+                format!("failed to roll back reservation for TODO {todo_id}: {e}"),
+            );
+        }
+    }
+
     /// Record the session produced for a reserved TODO, in memory (across every
     /// loaded pane) and on disk.
     ///
@@ -1831,7 +1846,6 @@ impl App {
                 .iter()
                 .map(|pane| ImplementNextList {
                     kind: pane.kind,
-                    list_id: pane.list.as_ref().map(|l| l.id.clone()),
                     host: match pane.kind {
                         TodoPaneKind::Global => None,
                         _ => Some((
@@ -1868,12 +1882,7 @@ impl App {
                     ),
                 )),
             };
-            lists.push(ImplementNextList {
-                kind,
-                list_id: list.map(|l| l.id),
-                host,
-                todos,
-            });
+            lists.push(ImplementNextList { kind, host, todos });
         }
         ImplementNextCtx {
             pi,
@@ -1911,7 +1920,6 @@ impl App {
                 let todo = &list.todos[i];
                 let (todo_id, todo_title) = (todo.id.clone(), todo.title.clone());
                 let kind = list.kind;
-                let list_id = list.list_id.clone();
                 let host_feature_id = list.host.and_then(|(pi, fi)| {
                     self.store
                         .projects
@@ -1926,7 +1934,6 @@ impl App {
                     fallback_fi: ctx.fallback_fi,
                     host_feature_id,
                     pane_kind: kind,
-                    list_id,
                     todo_id,
                     todo_title,
                     skipped_ids: skipped,
@@ -2100,7 +2107,11 @@ impl App {
     /// Re-read a TODO by id from whichever list is authoritative right now.
     /// Used when acting on a prompt, so the list changing underneath it is
     /// noticed rather than acted on stale.
-    pub(crate) fn find_todo_by_id(&self, list_id: Option<&str>, todo_id: &str) -> Option<Todo> {
+    ///
+    /// Looked up by id alone, not a remembered `list_id`: the TODO may have
+    /// been moved or copied to a different list since the caller last saw
+    /// it, and a list-scoped lookup would silently miss it in that case.
+    pub(crate) fn find_todo_by_id(&self, todo_id: &str) -> Option<Todo> {
         if let AppMode::Todos(state) = &self.mode {
             return state
                 .panes
@@ -2108,11 +2119,7 @@ impl App {
                 .find_map(|pane| pane.todos.iter().find(|t| t.id == todo_id))
                 .cloned();
         }
-        let db = self.db.as_ref()?;
-        db.todos(list_id?)
-            .ok()?
-            .into_iter()
-            .find(|t| t.id == todo_id)
+        self.db.as_ref()?.find_todo_by_id(todo_id).ok()?
     }
 
     // ----- already-started prompt -----------------------------------------
@@ -2162,8 +2169,7 @@ impl App {
                 self.implement_next(ctx, skipped)
             }
             TodoImplementChoice::Jump | TodoImplementChoice::SpawnNew => {
-                let Some(todo) = self.find_todo_by_id(state.list_id.as_deref(), &state.todo_id)
-                else {
+                let Some(todo) = self.find_todo_by_id(&state.todo_id) else {
                     self.push_toast_warning("That TODO is no longer in the list");
                     return Ok(());
                 };

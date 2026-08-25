@@ -19645,6 +19645,40 @@ fn creation_and_prompt_failures_both_roll_back_todo_reservation() {
     }
 }
 
+/// The scenario a plan interview hits between generating a plan and the user
+/// accepting it: no `Todos` overlay is open (so there is no in-memory pane to
+/// consult) and the TODO was moved to a different list in the meantime. The
+/// lookup must still find it by id alone rather than the stale list it
+/// started in — see `App::find_todo_by_id` and `start_todo_plan_session`.
+#[test]
+fn find_todo_by_id_resolves_after_a_move_when_no_overlay_is_open() {
+    let mut app = todos_app();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(tmp.path()).unwrap());
+
+    let (dst_id, todo_id) = {
+        let db = app.db.as_ref().unwrap();
+        let src = db
+            .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+            .unwrap();
+        let dst = db
+            .create_todo_list(&crate::db::todos::TodoScope::Global, None)
+            .unwrap();
+        let todo = db
+            .add_todo(&src.id, "port me", None, crate::db::todos::TodoPriority::Med)
+            .unwrap();
+        db.move_todo(&todo.id, &dst.id).unwrap();
+        (dst.id, todo.id)
+    };
+    // Whatever list the caller remembers (or none at all) must not matter.
+    app.mode = AppMode::Normal;
+
+    let found = app
+        .find_todo_by_id(&todo_id)
+        .expect("resolved via the db by id alone, without a stale list_id");
+    assert_eq!(found.list_id, dst_id);
+}
+
 #[test]
 fn reconciliation_clears_missing_session_but_keeps_in_progress_status() {
     let tmp = tempfile::NamedTempFile::new().unwrap();

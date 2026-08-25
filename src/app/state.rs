@@ -3305,16 +3305,14 @@ pub struct TodoImplementChoiceState {
     pub fallback_fi: usize,
     /// The list's host feature id, when the list could be loaded.
     pub host_feature_id: Option<String>,
-    /// Which scope the candidate came from, and the id of the list it is in.
-    /// The scope decides whether *Start another agent on it* can spawn
-    /// straight away (worktree) or has to ask which feature to spawn in
-    /// (project / global); the list id is how the item is re-resolved on
-    /// confirm when no overlay is open to read it from.
+    /// Which scope the candidate came from. Decides whether *Start another
+    /// agent on it* can spawn straight away (worktree) or has to ask which
+    /// feature to spawn in (project / global).
     pub pane_kind: TodoPaneKind,
-    pub list_id: Option<String>,
-    /// The candidate: its id, so it is re-resolved on confirm rather than
-    /// trusted (the list can change while this prompt is open), and its title
-    /// for display.
+    /// The candidate: its id, so it is re-resolved by id alone on confirm
+    /// (not trusted, and not tied to a remembered list — the item may have
+    /// been moved to a different list while this prompt was open), and its
+    /// title for display.
     pub todo_id: String,
     pub todo_title: String,
     /// TODOs already passed over by *Skip to next*, carried so a resumed scan

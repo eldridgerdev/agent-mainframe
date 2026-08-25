@@ -287,18 +287,27 @@ impl App {
         let mut project_id: Option<String> = None;
         if let Some(project) = self.store.find_project(&project_name) {
             project_id = Some(project.id.clone());
-            let features: Vec<(String, PathBuf, bool)> = project
+            let features: Vec<(String, PathBuf, bool, String, String)> = project
                 .features
                 .iter()
-                .map(|f| (f.tmux_session.clone(), f.workdir.clone(), f.is_worktree))
+                .map(|f| {
+                    (
+                        f.tmux_session.clone(),
+                        f.workdir.clone(),
+                        f.is_worktree,
+                        f.id.clone(),
+                        f.branch.clone(),
+                    )
+                })
                 .collect();
             let repo = project.repo.clone();
 
-            for (session, workdir, is_worktree) in features {
+            for (session, workdir, is_worktree, feature_id, branch) in features {
                 let _ = TmuxManager::kill_session(&session);
                 if is_worktree {
                     let _ = WorktreeManager::remove(&repo, &workdir);
                 }
+                self.clear_pr_association_for_deleted_feature(&feature_id, &repo, &branch);
             }
         }
 

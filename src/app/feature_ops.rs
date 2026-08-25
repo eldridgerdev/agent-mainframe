@@ -1631,7 +1631,7 @@ impl App {
     /// Evict every dashboard cache entry tied to a successfully deleted
     /// feature. The persisted terminal result is keyed by repository + branch,
     /// so it must be removed before that branch name can identify future work.
-    fn clear_pr_association_for_deleted_feature(
+    pub(crate) fn clear_pr_association_for_deleted_feature(
         &mut self,
         feature_id: &str,
         repo: &Path,

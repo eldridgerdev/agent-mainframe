@@ -8035,6 +8035,60 @@ fn completed_background_deletion_clears_terminal_pr_association() {
     assert!(!cached.contains_key(&(repo.path().to_string_lossy().to_string(), branch)));
 }
 
+#[test]
+fn delete_project_clears_terminal_pr_associations_for_all_features() {
+    let repo = TempDir::new().unwrap();
+    let store_file = NamedTempFile::new().unwrap();
+    let db_file = NamedTempFile::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let feature = &store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let terminal_pr = crate::github::TerminalPr {
+        number: 550,
+        state: crate::github::TerminalPrState::Merged,
+        at: "2026-08-21T13:32:59Z".to_string(),
+    };
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = store_file.path().to_path_buf();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_terminal_state(&repo.path().to_string_lossy(), &branch, &terminal_pr)
+        .unwrap();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "new-head".to_string(),
+            number: 561,
+            unresolved_threads: Some(0),
+        },
+    );
+    app.terminal_prs.insert(feature_id.clone(), terminal_pr);
+    app.confirmed_no_terminal_pr.insert(feature_id.clone());
+    app.mode = AppMode::DeletingProject("my-project".to_string());
+
+    app.delete_project().unwrap();
+
+    assert!(!app.active_prs.contains_key(&feature_id));
+    assert!(!app.terminal_prs.contains_key(&feature_id));
+    assert!(!app.confirmed_no_terminal_pr.contains(&feature_id));
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_all_pr_terminal_state()
+        .unwrap();
+    assert!(!cached.contains_key(&(repo.path().to_string_lossy().to_string(), branch)));
+}
+
 // ── ensure_notification_hooks ─────────────────────────────
 
 use tempfile::TempDir;

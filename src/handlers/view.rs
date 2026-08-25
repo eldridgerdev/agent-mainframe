@@ -437,6 +437,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('n') => {
             app.open_current_plan_from_view()?;
         }
+        KeyCode::Char('F') => {
+            app.start_fresh_context_session_from_view()?;
+        }
         KeyCode::Char('A') => {
             // Harness setup is an intermediate destination, not the end of
             // the inspection trip. Keep the interview parked so replacing the
@@ -477,7 +480,7 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use mockall::Sequence;
-    use tempfile::TempDir;
+    use tempfile::{NamedTempFile, TempDir};
 
     use crate::app::{CommandAction, ViewState, analyze_prompt};
     use crate::project::{
@@ -704,6 +707,138 @@ mod tests {
         assert_eq!(
             app.toasts.last().map(|toast| toast.message.as_str()),
             Some("No Markdown plan is available in this worktree")
+        );
+    }
+
+    /// Build a viewing-mode `App` over `repo` with a mocked tmux that accepts
+    /// exactly the calls `start_fresh_context_session_from_view` makes when
+    /// the feature is already running: a session-exists check plus one new
+    /// window for the fresh session.
+    fn app_for_fresh_context_test(repo: &Path) -> App {
+        let mut feature = Feature::new(
+            "feature".to_string(),
+            "feature".to_string(),
+            repo.to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        feature.status = ProjectStatus::Active;
+        let session = feature.add_session(SessionKind::Claude).clone();
+
+        let mut project = Project::new(
+            "demo".to_string(),
+            repo.to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
+        project.features.push(feature);
+
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_create_window().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .returning(|_, _, _, _, _| Ok(()));
+
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+        let tmp = NamedTempFile::new().unwrap();
+        app.store_path = tmp.path().to_path_buf();
+        app.mode = AppMode::Viewing(ViewState::new(
+            "demo".to_string(),
+            "feature".to_string(),
+            "amf-feature".to_string(),
+            session.tmux_window.clone(),
+            session.label.clone(),
+            SessionKind::Claude,
+            VibeMode::Vibeless,
+            false,
+        ));
+        app
+    }
+
+    fn composed_text(app: &App) -> String {
+        match &app.mode {
+            AppMode::Compose(state) => state.editor.text().to_string(),
+            other => panic!(
+                "expected Compose mode, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    #[test]
+    fn leader_shift_f_starts_a_fresh_context_session_seeded_with_plan_and_diff() {
+        let repo = init_repo_with_branch_change();
+        std::fs::write(repo.path().join("AMF_PLAN.md"), "# Plan\n").unwrap();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+
+        let text = composed_text(&app);
+        assert!(text.starts_with("Read AMF_PLAN.md for full context on this feature. "));
+        assert!(text.contains("Changed/new files to look at:"));
+        assert!(text.contains("src.txt"));
+        assert!(text.contains("z_new.txt"));
+        assert!(text.ends_with(
+            "(insert new prompt here) grill me with any questions to clarify \
+             before implementing"
+        ));
+
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+        assert_eq!(
+            app.store.projects[0].features[0].sessions[1].label,
+            "Fresh Context"
+        );
+    }
+
+    #[test]
+    fn leader_shift_f_omits_the_plan_line_and_warns_when_no_plan_file_exists() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+
+        let text = composed_text(&app);
+        assert!(!text.contains("Read "));
+        assert!(text.starts_with("Changed/new files to look at:"));
+        assert_eq!(
+            app.toasts
+                .iter()
+                .find(|toast| toast.message.contains("No plan file"))
+                .map(|toast| toast.message.as_str()),
+            Some("No plan file found for this feature -- starting without one")
+        );
+    }
+
+    #[test]
+    fn leader_shift_f_omits_changed_files_for_a_non_git_project() {
+        let repo = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("AMF_PLAN.md"), "# Plan\n").unwrap();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+
+        let text = composed_text(&app);
+        assert_eq!(
+            text,
+            "Read AMF_PLAN.md for full context on this feature. (insert new prompt here) \
+             grill me with any questions to clarify before implementing"
         );
     }
 

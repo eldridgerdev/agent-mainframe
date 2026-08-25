@@ -10,7 +10,18 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **A new leader command starts a fresh agent session for continuing work
+  without dragging along a long conversation history.** From an agent
+  session, press `Ctrl+Space`, then `Shift+F` to open a brand-new session in
+  the same feature, using the same agent. Its compose box is pre-filled (not
+  sent) with a prompt pointing the new session at the feature's current plan
+  and the files changed on this branch, so it starts oriented without
+  inheriting the old session's accumulated context. Add your own instructions
+  before sending. If the feature has no plan file, that part is left out and
+  AMF says why; on a non-git project, or a branch with nothing changed yet,
+  the changed-files list is simply left out too.
 
 ## [v0.39.0] - 2026-08-25
 

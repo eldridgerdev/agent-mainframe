@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.39.0] - 2026-08-25
+
 ### Added
 
 - **Agent sidebars now keep the feature's current plan within reach.** Claude

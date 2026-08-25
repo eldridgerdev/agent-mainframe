@@ -438,7 +438,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             app.open_current_plan_from_view()?;
         }
         KeyCode::Char('F') => {
-            app.start_fresh_context_session_from_view()?;
+            app.open_fresh_context_prompt_from_view();
         }
         KeyCode::Char('A') => {
             // Harness setup is an intermediate destination, not the end of
@@ -711,9 +711,9 @@ mod tests {
     }
 
     /// Build a viewing-mode `App` over `repo` with a mocked tmux that accepts
-    /// exactly the calls `start_fresh_context_session_from_view` makes when
-    /// the feature is already running: a session-exists check plus one new
-    /// window for the fresh session.
+    /// exactly the calls `commit_fresh_context_prompt` makes when the feature
+    /// is already running: a session-exists check plus one new window for the
+    /// fresh session.
     fn app_for_fresh_context_test(repo: &Path) -> App {
         let mut feature = Feature::new(
             "feature".to_string(),
@@ -779,24 +779,86 @@ mod tests {
         }
     }
 
+    /// Press leader `F`, type `instruction`, then Enter -- the two-step flow
+    /// (prompt for the instruction, then start the session) that replaced a
+    /// single keypress once the fresh-context prompt started asking first.
+    fn open_and_submit_fresh_context_prompt(app: &mut App, instruction: &str) {
+        app.activate_leader();
+        handle_view_key(app, key(KeyCode::Char('F')), 20).unwrap();
+        assert!(
+            matches!(app.mode, AppMode::FreshContextPrompt(_)),
+            "expected the fresh-context prompt to open, got {:?}",
+            std::mem::discriminant(&app.mode)
+        );
+        for c in instruction.chars() {
+            crate::handlers::handle_fresh_context_prompt_key(app, key(KeyCode::Char(c))).unwrap();
+        }
+        crate::handlers::handle_fresh_context_prompt_key(app, key(KeyCode::Enter)).unwrap();
+    }
+
+    #[test]
+    fn leader_shift_f_opens_a_prompt_naming_the_feature() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::FreshContextPrompt(state) => {
+                assert_eq!(state.feature_name, "feature");
+                assert_eq!(state.input, "");
+            }
+            other => panic!(
+                "expected FreshContextPrompt, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    #[test]
+    fn leader_shift_f_esc_cancels_back_to_the_session_view_unchanged() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+        crate::handlers::handle_fresh_context_prompt_key(&mut app, key(KeyCode::Char('x')))
+            .unwrap();
+        crate::handlers::handle_fresh_context_prompt_key(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+    }
+
+    #[test]
+    fn leader_shift_f_empty_instruction_is_a_no_op_cancel() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+        crate::handlers::handle_fresh_context_prompt_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+    }
+
     #[test]
     fn leader_shift_f_starts_a_fresh_context_session_seeded_with_plan_and_diff() {
         let repo = init_repo_with_branch_change();
         std::fs::write(repo.path().join("AMF_PLAN.md"), "# Plan\n").unwrap();
         let mut app = app_for_fresh_context_test(repo.path());
 
-        app.activate_leader();
-        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+        open_and_submit_fresh_context_prompt(&mut app, "Fix the login bug.");
 
         let text = composed_text(&app);
         assert!(text.starts_with("Read AMF_PLAN.md for full context on this feature. "));
         assert!(text.contains("Changed/new files to look at:"));
         assert!(text.contains("src.txt"));
         assert!(text.contains("z_new.txt"));
-        assert!(text.ends_with(
-            "(insert new prompt here) grill me with any questions to clarify \
-             before implementing"
-        ));
+        assert!(text.contains("Fix the login bug."));
+        assert!(text.ends_with("Grill me with any questions to clarify before implementing"));
 
         assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
         assert_eq!(
@@ -810,8 +872,7 @@ mod tests {
         let repo = init_repo_with_branch_change();
         let mut app = app_for_fresh_context_test(repo.path());
 
-        app.activate_leader();
-        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+        open_and_submit_fresh_context_prompt(&mut app, "Fix the login bug.");
 
         let text = composed_text(&app);
         assert!(!text.contains("Read "));
@@ -831,14 +892,13 @@ mod tests {
         std::fs::write(repo.path().join("AMF_PLAN.md"), "# Plan\n").unwrap();
         let mut app = app_for_fresh_context_test(repo.path());
 
-        app.activate_leader();
-        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+        open_and_submit_fresh_context_prompt(&mut app, "Fix the login bug.");
 
         let text = composed_text(&app);
         assert_eq!(
             text,
-            "Read AMF_PLAN.md for full context on this feature. (insert new prompt here) \
-             grill me with any questions to clarify before implementing"
+            "Read AMF_PLAN.md for full context on this feature. Fix the login bug. \
+             Grill me with any questions to clarify before implementing"
         );
     }
 

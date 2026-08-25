@@ -9,6 +9,7 @@ mod diff_review;
 mod dormant;
 mod feature_creation;
 mod fork;
+mod handoff;
 mod harness;
 mod hooks;
 mod input;
@@ -46,6 +47,7 @@ pub use diff_review::handle_diff_review_key;
 pub use dormant::handle_dormant_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
+pub use handoff::handle_fresh_context_prompt_key;
 pub use harness::handle_harness_setup_key;
 pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_running_hook_key};
 pub use input::handle_paste;
@@ -89,6 +91,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::Todos(_) => handle_todos_key(app, key),
         AppMode::Learning(_) => handle_learning_key(app, key),
         AppMode::TodoQuickCapture(_) => handle_todo_quick_capture_key(app, key),
+        AppMode::FreshContextPrompt(_) => handle_fresh_context_prompt_key(app, key),
         AppMode::TodosHostReassign(_) => handle_todos_host_reassign_key(app, key.code),
         AppMode::TodoImplementChoice(_) => handle_todo_implement_choice_key(app, key.code),
         AppMode::TodoSpawnTarget(_) => handle_todo_spawn_target_key(app, key.code),

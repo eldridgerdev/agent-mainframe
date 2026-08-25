@@ -9,28 +9,72 @@ use crate::diff::{DiffFileStatus, DiffSnapshot};
 /// reusing one.
 const FRESH_CONTEXT_LABEL: &str = "Fresh Context";
 
-/// Literal placeholder the plan calls for: the user types over this in the
-/// pre-filled, unsent compose box before sending.
-const FRESH_CONTEXT_PLACEHOLDER: &str =
-    "(insert new prompt here) grill me with any questions to clarify before implementing";
+/// Trailing clarification ask appended to every seeded prompt, per the
+/// brief's template -- the fresh session has no memory of this feature's
+/// history, so it's told to check before it starts changing things.
+const FRESH_CONTEXT_CLARIFY_ASK: &str =
+    "Grill me with any questions to clarify before implementing";
 
 impl App {
-    /// Start a brand-new agent-harness session in the current feature,
-    /// seeded with a prompt pointing it at the feature's plan and the files
-    /// changed on this branch -- so continuing related work doesn't have to
-    /// carry the calling session's full token history forward. Left
-    /// pre-filled and unsent in the compose box, matching Learning Mode's
-    /// escalation pattern, so the user can fill in the placeholder and
-    /// review before sending.
-    pub fn start_fresh_context_session_from_view(&mut self) -> Result<()> {
+    /// Open the fresh-context instruction prompt over the current session
+    /// view (`Ctrl+Space` then `Shift+F`). Collecting the instruction first
+    /// means the seeded prompt is complete when the new session opens,
+    /// rather than asking the user to type over a placeholder there.
+    pub fn open_fresh_context_prompt_from_view(&mut self) {
         let view = match &self.mode {
             AppMode::Viewing(view) if view.session_kind.is_agent_harness() => view.clone(),
             AppMode::Viewing(_) => {
                 self.push_toast_warning("Fresh context sessions start from an agent session");
-                return Ok(());
+                return;
+            }
+            _ => return,
+        };
+
+        let Some((pi, fi)) = view_project_feature_indices(&self.store, &view) else {
+            self.push_toast_warning("Could not resolve the current feature");
+            return;
+        };
+
+        let feature_name = self.store.projects[pi].features[fi].name.clone();
+        self.mode = AppMode::FreshContextPrompt(FreshContextPromptState {
+            view,
+            feature_name,
+            input: String::new(),
+        });
+    }
+
+    /// Cancel the fresh-context prompt, returning to the session view
+    /// unchanged.
+    pub fn cancel_fresh_context_prompt(&mut self) {
+        if let AppMode::FreshContextPrompt(state) = &self.mode {
+            self.mode = AppMode::Viewing(state.view.clone());
+        }
+    }
+
+    /// Start a brand-new agent-harness session in the current feature, using
+    /// the typed instruction, seeded with a prompt pointing it at the
+    /// feature's plan and the files changed on this branch -- so continuing
+    /// related work doesn't have to carry the calling session's full token
+    /// history forward. An empty instruction is a no-op cancel, matching TODO
+    /// quick-capture. Left pre-filled and unsent in the compose box, matching
+    /// Learning Mode's escalation pattern, so the user can still review
+    /// before sending.
+    pub fn commit_fresh_context_prompt(&mut self) -> Result<()> {
+        let (view, instruction) = match &self.mode {
+            AppMode::FreshContextPrompt(state) => {
+                (state.view.clone(), state.input.trim().to_string())
             }
             _ => return Ok(()),
         };
+
+        // Reverting to `Viewing` up front means every early return below --
+        // an unresolvable feature, a launch failure -- leaves the user back
+        // where they started rather than stuck behind the prompt.
+        self.mode = AppMode::Viewing(view.clone());
+
+        if instruction.is_empty() {
+            return Ok(());
+        }
 
         let Some((pi, fi)) = view_project_feature_indices(&self.store, &view) else {
             self.push_toast_warning("Could not resolve the current feature");
@@ -53,7 +97,8 @@ impl App {
             Err(_) => Vec::new(),
         };
 
-        let prompt = build_fresh_context_prompt(relative_plan.as_deref(), &changed_files);
+        let prompt =
+            build_fresh_context_prompt(relative_plan.as_deref(), &changed_files, &instruction);
 
         // Recording that a fresh session was requested is not what's at
         // stake here -- unlike Learning Mode there is no answer row to link
@@ -120,11 +165,16 @@ fn changed_file_paths(snapshot: &DiffSnapshot) -> Vec<String> {
         .collect()
 }
 
-/// Build the fresh-context prompt per the brief's template. Either input
-/// section is omitted when there's nothing to say -- no plan file, or no
-/// changed files (e.g. a brand-new feature, or a non-git project where the
-/// diff snapshot couldn't be loaded).
-fn build_fresh_context_prompt(relative_plan: Option<&str>, changed_files: &[String]) -> String {
+/// Build the fresh-context prompt per the brief's template, using the user's
+/// own `instruction` in place of the brief's "(insert new prompt here)"
+/// placeholder. Either input section is omitted when there's nothing to say
+/// -- no plan file, or no changed files (e.g. a brand-new feature, or a
+/// non-git project where the diff snapshot couldn't be loaded).
+fn build_fresh_context_prompt(
+    relative_plan: Option<&str>,
+    changed_files: &[String],
+    instruction: &str,
+) -> String {
     let mut prompt = String::new();
     if let Some(plan) = relative_plan {
         prompt.push_str(&format!("Read {plan} for full context on this feature. "));
@@ -135,7 +185,9 @@ fn build_fresh_context_prompt(relative_plan: Option<&str>, changed_files: &[Stri
             changed_files.join(", ")
         ));
     }
-    prompt.push_str(FRESH_CONTEXT_PLACEHOLDER);
+    prompt.push_str(instruction);
+    prompt.push(' ');
+    prompt.push_str(FRESH_CONTEXT_CLARIFY_ASK);
     prompt
 }
 
@@ -194,46 +246,55 @@ mod tests {
         let prompt = build_fresh_context_prompt(
             Some("AMF_PLAN.md"),
             &["src/foo.rs".to_string(), "src/bar.rs".to_string()],
+            "Fix the login bug.",
         );
 
         assert_eq!(
             prompt,
             "Read AMF_PLAN.md for full context on this feature. \
              Changed/new files to look at: src/foo.rs, src/bar.rs. \
-             (insert new prompt here) grill me with any questions to clarify before implementing"
+             Fix the login bug. \
+             Grill me with any questions to clarify before implementing"
         );
     }
 
     #[test]
     fn prompt_omits_plan_line_when_no_plan_file_exists() {
-        let prompt = build_fresh_context_prompt(None, &["src/foo.rs".to_string()]);
+        let prompt =
+            build_fresh_context_prompt(None, &["src/foo.rs".to_string()], "Fix the login bug.");
 
         assert_eq!(
             prompt,
             "Changed/new files to look at: src/foo.rs. \
-             (insert new prompt here) grill me with any questions to clarify before implementing"
+             Fix the login bug. \
+             Grill me with any questions to clarify before implementing"
         );
     }
 
     #[test]
     fn prompt_omits_changed_files_line_when_there_are_none() {
-        let prompt = build_fresh_context_prompt(Some("AMF_PLAN.md"), &[]);
+        let prompt =
+            build_fresh_context_prompt(Some("AMF_PLAN.md"), &[], "Fix the login bug.");
 
         assert_eq!(
             prompt,
             "Read AMF_PLAN.md for full context on this feature. \
-             (insert new prompt here) grill me with any questions to clarify before implementing"
+             Fix the login bug. \
+             Grill me with any questions to clarify before implementing"
         );
     }
 
     #[test]
-    fn prompt_is_just_the_placeholder_with_no_plan_and_no_changed_files() {
+    fn prompt_is_just_the_instruction_and_clarify_ask_with_no_plan_and_no_changed_files() {
         // Covers both "not a git repo" (load_snapshot errors, so the caller
         // passes an empty slice) and a brand-new feature with nothing changed
         // yet.
-        let prompt = build_fresh_context_prompt(None, &[]);
+        let prompt = build_fresh_context_prompt(None, &[], "Fix the login bug.");
 
-        assert_eq!(prompt, FRESH_CONTEXT_PLACEHOLDER);
+        assert_eq!(
+            prompt,
+            "Fix the login bug. Grill me with any questions to clarify before implementing"
+        );
     }
 
     #[test]

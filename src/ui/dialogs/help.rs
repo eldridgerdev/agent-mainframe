@@ -232,7 +232,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("d", "Diff viewer (all changes / commit)"),
         ("m", "Markdown file picker/viewer"),
         ("n", "Open current plan"),
-        ("F", "Start a fresh-context session (seeded with plan + diff)"),
+        ("F", "Start a fresh-context session (asks for your prompt first)"),
         ("b", "Show/hide sidebar"),
         ("v", "Expand/collapse todos"),
         ("N", "Quick-capture a TODO for this worktree"),

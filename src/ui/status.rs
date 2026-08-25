@@ -363,6 +363,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::FreshContextPrompt(_) => Line::from(vec![
+            Span::styled("Enter", key_style()),
+            Span::raw(" start session  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::TodoImplementChoice(_) => Line::from(vec![
             Span::styled("j/k", key_style()),
             Span::raw(" choose  "),

@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use crate::app::{
     App, AppMode, Selection, StartIntent, TodoImplementChoice, TodoImplementChoiceState,
-    TodoLaunchAction, TodoLaunchStep, TodoPlanDestination, TodoPlanOrigin, TodoViewState,
-    TodosHostReassignState,
+    TodoImplementNextContext, TodoLaunchAction, TodoLaunchStep, TodoPlanDestination,
+    TodoPlanOrigin, TodoViewState, TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority};
 
@@ -32,22 +32,13 @@ pub(crate) struct SelectedTodoContext {
 /// What [`App::next_todo_index`] settled on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NextTodo {
-    /// Nothing has been started for it yet: put an agent on it without asking.
-    Ready(usize),
-    /// The best remaining candidate already links a session or a planned
-    /// feature. Returned for the caller to ask about, never acted on silently.
-    Started(usize),
-}
-
-/// The list "implement next" scans and the indices it acts under, gathered from
-/// whichever surface invoked it.
-pub(crate) struct ImplementNextCtx {
-    pub pi: usize,
-    /// The feature the TODOs *session* lives under, used when the list's own
-    /// host feature can no longer be resolved.
-    pub fallback_fi: usize,
-    pub host_feature_id: Option<String>,
-    pub todos: Vec<Todo>,
+    /// Nothing has been started for it yet: eligible for an atomic claim.
+    Unstarted(usize),
+    /// No unstarted item remains; this linked item is held in reserve and may
+    /// only be reported as status.
+    Reserved(usize),
+    /// No eligible or reserved item remains.
+    Unavailable,
 }
 
 impl App {
@@ -1209,51 +1200,58 @@ impl App {
     /// Gather the list to scan: the overlay's in-memory rows when it is open
     /// (they are its source of truth, and may hold edits a DB-less run never
     /// persisted), otherwise the project's list read from the DB.
-    fn implement_next_ctx(&mut self, pi: usize, fallback_fi: usize) -> ImplementNextCtx {
+    fn implement_next_ctx(&mut self, pi: usize, fallback_fi: usize) -> TodoImplementNextContext {
         if let AppMode::Todos(state) = &self.mode {
-            return ImplementNextCtx {
+            return TodoImplementNextContext {
                 pi: state.pi,
                 fallback_fi: state.fi,
                 host_feature_id: state.list.as_ref().map(|l| l.feature_id.clone()),
+                list_id: state.list.as_ref().map(|l| l.id.clone()),
                 todos: state.todos.clone(),
             };
         }
         let project_id = match self.store.projects.get(pi) {
             Some(project) => project.id.clone(),
             None => {
-                return ImplementNextCtx {
+                return TodoImplementNextContext {
                     pi,
                     fallback_fi,
                     host_feature_id: None,
+                    list_id: None,
                     todos: Vec::new(),
                 };
             }
         };
         let (list, todos) = self.load_todos_for_project(&project_id);
-        ImplementNextCtx {
+        TodoImplementNextContext {
             pi,
             fallback_fi,
-            host_feature_id: list.map(|l| l.feature_id),
+            host_feature_id: list.as_ref().map(|l| l.feature_id.clone()),
+            list_id: list.map(|l| l.id),
             todos,
         }
     }
 
     /// Run the scan and act on what it finds.
-    fn implement_next(&mut self, mut ctx: ImplementNextCtx, skipped: Vec<String>) -> Result<()> {
+    fn implement_next(
+        &mut self,
+        mut ctx: TodoImplementNextContext,
+        skipped: Vec<String>,
+    ) -> Result<()> {
         let fi =
             self.resolve_todo_host_feature(ctx.pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
         self.todos_reconcile_dead_sessions(ctx.pi, fi, &mut ctx.todos)?;
 
         match Self::next_todo_index(&ctx.todos, &skipped) {
-            None => {
+            NextTodo::Unavailable => {
                 self.push_toast_info(Self::no_next_todo_message(&ctx.todos, &skipped));
                 Ok(())
             }
-            Some(NextTodo::Ready(i)) => {
+            NextTodo::Unstarted(i) => {
                 let todo = ctx.todos[i].clone();
                 self.spawn_todo_agent(ctx.pi, fi, &todo, false)
             }
-            Some(NextTodo::Started(i)) => {
+            NextTodo::Reserved(i) => {
                 let todo = &ctx.todos[i];
                 let (todo_id, todo_title) = (todo.id.clone(), todo.title.clone());
                 let origin = std::mem::replace(&mut self.mode, AppMode::Normal);
@@ -1281,11 +1279,11 @@ impl App {
     ///
     /// A TODO that already links a session or a planned feature is not
     /// *chosen*, it is held in reserve: an unstarted item anywhere in the scan
-    /// wins over it, and it is only returned — as [`NextTodo::Started`], for
+    /// wins over it, and it is only returned — as [`NextTodo::Reserved`], for
     /// the caller to ask about — when nothing unstarted remains. That is what
     /// reconciles "skip TODOs that already have a session" with there being a
     /// prompt for exactly that case.
-    pub(crate) fn next_todo_index(todos: &[Todo], skipped_ids: &[String]) -> Option<NextTodo> {
+    pub(crate) fn next_todo_index(todos: &[Todo], skipped_ids: &[String]) -> NextTodo {
         let mut order: Vec<usize> = (0..todos.len()).collect();
         order.sort_by_key(|&i| todos[i].priority.rank());
 
@@ -1296,13 +1294,15 @@ impl App {
                 continue;
             }
             if todo.spawned_session_id.is_none() && todo.linked_feature_id.is_none() {
-                return Some(NextTodo::Ready(i));
+                return NextTodo::Unstarted(i);
             }
             if started.is_none() {
                 started = Some(i);
             }
         }
-        started.map(NextTodo::Started)
+        started
+            .map(NextTodo::Reserved)
+            .unwrap_or(NextTodo::Unavailable)
     }
 
     /// Why the scan came back empty, said in the terms the user can act on.
@@ -1455,7 +1455,7 @@ impl App {
     ///
     /// A link whose feature is gone is *cleared*, exactly as `g`/`Enter` clears
     /// it, and for a sharper reason here: the link is the only thing holding
-    /// the TODO back from [`NextTodo::Ready`], so leaving it would make every
+    /// the TODO back from [`NextTodo::Unstarted`], so leaving it would make every
     /// future "implement next" offer the same item and every jump fail the same
     /// way. Dropping it lets the next scan pick the TODO up and start it.
     fn jump_to_started_todo(&mut self, pi: usize, fi: usize, todo: &Todo) -> Result<()> {

@@ -1,10 +1,8 @@
 # Feature TODOs
 
-- **Status:** All epics shipped, including Epic 7 (plan mode from a
-  TODO). Epics 2–6 (session kind, native view, editing, spawn agent from a
-  TODO, quick-capture + scratchpad, help-overlay wiring, docs) plus Epic
-  1's final item — the host-feature deletion re-home/delete prompt
-  (`AppMode::TodosHostReassign`) — were complete before it.
+- **Status:** Epics 1–7 shipped. Epic 8 (atomic “Implement next” with an
+  explicit harness and permission choice) is in progress; its shared state and
+  result model is complete, while the transaction and visible flow remain.
 - **Owner:** unassigned
 - **Relates to:** `SessionKind` (`src/project.rs`), session picker
   (`src/app/session_ops.rs`, `src/handlers/picker.rs`), composer seed
@@ -354,6 +352,40 @@ spawned the labelled session, and seeded the composer unsent. Fixed while
 walking it: wrapped option details lost their hanging indent, since
 `Paragraph` wrapping restarts continuation lines at column zero
 (`detail_lines`).
+
+### Epic 8 — Atomic “Implement next” configuration
+
+In progress. The dashboard and TODO-view `I` paths will share one flow that
+asks for an agent harness and permission mode, then atomically claims the
+highest-priority unstarted item. Linked sessions and planned features are held
+in reserve: if no unstarted item remains, AMF reports the reserved item's
+status without opening, creating, or changing work.
+
+- [x] Define the shared two-step configuration state and explicit unstarted,
+      unavailable, reserved, and newly claimed result types. Claiming is after
+      both prompts so cancelling configuration cannot leave an item in
+      progress.
+- [ ] Atomically select and claim the next eligible SQLite row, preserving
+      priority and manual-order tie-breaking and revalidating eligibility at
+      write time.
+- [ ] Wire the shared harness and permission prompts into both `I` entry
+      surfaces using the project's installed/supported choices.
+- [ ] Spawn with the selected configuration, link the new session, and open
+      the TODO-derived prompt in the editable, unsent composer.
+- [ ] Roll back handled spawn or composer-seeding failures without adding
+      crash recovery that clears committed claims.
+- [ ] Keep SQLite and any loaded TODO view synchronized after claim, linkage,
+      and rollback.
+- [ ] Replace the old reserved-work chooser with a status-only result on both
+      surfaces.
+- [ ] Cover ordering, filtering, status-only behavior, rollback, handler
+      parity, and a two-connection claim race; run the full Rust checks and
+      manually verify both TUI entry paths.
+
+Current visual proof is in
+`docs/screenshots/implement-next-todo-foundation/`. It demonstrates the
+existing quick-capture and `I next` entry point; the new prompts are not shown
+because they are not wired in this first increment.
 
 ## Open (not built)
 

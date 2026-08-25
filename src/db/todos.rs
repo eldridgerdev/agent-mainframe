@@ -93,6 +93,23 @@ pub struct Todo {
     pub updated_at: String,
 }
 
+/// Result of the transactional "implement next" claim.
+///
+/// This is deliberately richer than `Option<Todo>`: callers must distinguish
+/// a list with no eligible work from one whose only remaining candidate is
+/// reserved by an existing session or planned feature. Only [`Self::Claimed`]
+/// means this invocation changed a row from unstarted to in progress.
+#[derive(Debug, Clone)]
+pub enum ClaimNextTodoOutcome {
+    /// The transaction changed this TODO from unstarted to in progress.
+    Claimed(Todo),
+    /// No unstarted or reserved TODO remains.
+    Unavailable,
+    /// No unstarted TODO remains, but this linked item is held in reserve.
+    /// The caller reports its status and must not mutate or open its work.
+    Reserved(Todo),
+}
+
 /// Load the TODO list for `project_id`, or `None` if the project has none.
 pub fn load_list(conn: &Connection, project_id: &str) -> Result<Option<TodoList>> {
     let row = conn

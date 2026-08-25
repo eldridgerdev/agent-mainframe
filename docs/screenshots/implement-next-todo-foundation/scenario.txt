@@ -1,0 +1,30 @@
+# Needs an isolated seeded project named implement-next-demo with a first
+# feature whose initial agent session is labelled "Claude 1".
+shot:seeded-dashboard
+
+key:/
+text:Claude 1
+wait:500
+key:Enter
+key:Enter
+wait:1800
+
+key:C-Space
+key:N
+wait:400
+text:Claim next TODO atomically
+wait:1200
+shot:todo-quick-capture
+key:Enter
+wait:700
+
+key:C-q
+wait:500
+key:/
+text:TODOs
+wait:500
+key:Enter
+wait:400
+key:Enter
+wait:700
+shot:todos-view-implement-next

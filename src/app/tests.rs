@@ -18624,7 +18624,7 @@ fn next_todo_index_takes_the_highest_priority_first() {
     ];
     assert_eq!(
         App::next_todo_index(&todos, &[]),
-        Some(crate::app::todos::NextTodo::Ready(1))
+        crate::app::todos::NextTodo::Unstarted(1)
     );
 }
 
@@ -18640,7 +18640,7 @@ fn next_todo_index_breaks_ties_by_list_order() {
     ];
     assert_eq!(
         App::next_todo_index(&todos, &[]),
-        Some(crate::app::todos::NextTodo::Ready(0))
+        crate::app::todos::NextTodo::Unstarted(0)
     );
 }
 
@@ -18652,18 +18652,18 @@ fn next_todo_index_skips_each_exclusion() {
     // Done.
     let mut todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
     todos[0].done = true;
-    assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
+    assert_eq!(App::next_todo_index(&todos, &[]), NextTodo::Unstarted(1));
 
     // In progress.
     let mut todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
     todos[0].in_progress = true;
-    assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
+    assert_eq!(App::next_todo_index(&todos, &[]), NextTodo::Unstarted(1));
 
     // Explicitly skipped by a previous "skip to next".
     let todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
     assert_eq!(
         App::next_todo_index(&todos, &["a".to_string()]),
-        Some(NextTodo::Ready(1))
+        NextTodo::Unstarted(1)
     );
 
     // Already linked to a session: held in reserve, not chosen, while an
@@ -18673,7 +18673,7 @@ fn next_todo_index_skips_each_exclusion() {
         prio_todo("b", crate::db::todos::TodoPriority::Low, 1),
     ];
     todos[0].spawned_session_id = Some("sess-1".to_string());
-    assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
+    assert_eq!(App::next_todo_index(&todos, &[]), NextTodo::Unstarted(1));
 
     // Same for a TODO planned into its own feature: the work moved elsewhere.
     let mut todos = vec![
@@ -18681,29 +18681,26 @@ fn next_todo_index_skips_each_exclusion() {
         prio_todo("b", crate::db::todos::TodoPriority::Low, 1),
     ];
     todos[0].linked_feature_id = Some("feat-9".to_string());
-    assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
+    assert_eq!(App::next_todo_index(&todos, &[]), NextTodo::Unstarted(1));
 }
 
 #[test]
-fn next_todo_index_falls_back_to_a_started_todo() {
+fn next_todo_index_falls_back_to_a_reserved_todo() {
     use crate::app::todos::NextTodo;
     use crate::db::todos::TodoPriority::{High, Med};
-    // Nothing unstarted is left, so the highest-priority started item is
-    // offered for the caller to ask about rather than silently reported as
-    // "nothing to do".
+    // Nothing unstarted is left, so the highest-priority reserved item is
+    // returned for a status-only outcome rather than reported as unavailable.
     let mut todos = vec![prio_todo("a", Med, 0), prio_todo("b", High, 1)];
     todos[0].spawned_session_id = Some("sess-1".to_string());
     todos[1].spawned_session_id = Some("sess-2".to_string());
-    assert_eq!(
-        App::next_todo_index(&todos, &[]),
-        Some(NextTodo::Started(1))
-    );
+    assert_eq!(App::next_todo_index(&todos, &[]), NextTodo::Reserved(1));
 }
 
 #[test]
-fn next_todo_index_returns_nothing_when_there_is_nothing() {
+fn next_todo_index_returns_unavailable_when_there_is_nothing() {
+    use crate::app::todos::NextTodo;
     use crate::db::todos::TodoPriority::High;
-    assert_eq!(App::next_todo_index(&[], &[]), None);
+    assert_eq!(App::next_todo_index(&[], &[]), NextTodo::Unavailable);
 
     // Every item ineligible: done, in progress, and skipped in turn.
     let mut todos = vec![
@@ -18713,7 +18710,10 @@ fn next_todo_index_returns_nothing_when_there_is_nothing() {
     ];
     todos[0].done = true;
     todos[1].in_progress = true;
-    assert_eq!(App::next_todo_index(&todos, &["c".to_string()]), None);
+    assert_eq!(
+        App::next_todo_index(&todos, &["c".to_string()]),
+        NextTodo::Unavailable
+    );
 }
 
 #[test]
@@ -18913,7 +18913,7 @@ fn implement_next_jump_clears_a_dead_feature_link_and_frees_the_todo() {
             );
             assert_eq!(
                 App::next_todo_index(&state.todos, &[]),
-                Some(NextTodo::Ready(0)),
+                NextTodo::Unstarted(0),
                 "so the next scan starts the TODO instead of re-offering it"
             );
         }

@@ -100,6 +100,13 @@ are tagged.
 
 ### Changed
 
+- **No on-screen change yet to `I`'s “Implement next” workflow.** This
+  incremental update defines the shared harness/permission setup states and
+  the distinct claimed, unavailable, and reserved outcomes needed to make the
+  workflow safe across concurrent AMF instances. The visible prompts, atomic
+  SQLite claim, rollback behavior, and status-only reserved-item handling are
+  still in progress; until those land, `I` continues to behave as documented
+  in the Added section above. No migration is required.
 - **Project config moved to `amf.json` at the repo root.** AMF's per-project
   settings — custom sessions, feature presets, lifecycle hooks, keybindings,
   plan questions, and prompt templates — now live in a tracked `amf.json`

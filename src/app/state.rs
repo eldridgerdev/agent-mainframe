@@ -3117,6 +3117,62 @@ pub enum TodoImplementChoice {
     Cancel,
 }
 
+/// The two user decisions made before an "Implement next" claim is attempted.
+///
+/// Keeping this as one shared state machine lets the dashboard and TODO view
+/// enter the same flow. The claim intentionally comes after both steps, so
+/// cancelling either prompt cannot leave an item marked in progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Wired into AppMode by the later prompt-flow task.
+pub enum TodoImplementNextStep {
+    AgentHarness,
+    PermissionMode,
+}
+
+/// Everything the shared "Implement next" flow needs after either entry
+/// surface has resolved the project and TODO list.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // `list_id` is consumed by the later atomic-claim task.
+pub(crate) struct TodoImplementNextContext {
+    pub pi: usize,
+    /// The feature containing the TODOs session, used if the list's recorded
+    /// host feature can no longer be resolved.
+    pub fallback_fi: usize,
+    pub host_feature_id: Option<String>,
+    /// Required by the SQLite claim path. `None` is retained for DB-less app
+    /// states so the flow can report persistence as unavailable explicitly.
+    pub list_id: Option<String>,
+    pub todos: Vec<crate::db::todos::Todo>,
+}
+
+/// Modal configuration state shared by dashboard and TODO-view invocations.
+///
+/// The originating mode is restored on cancel and for status-only outcomes.
+/// A successful claim leaves this state through the spawn/composer path.
+#[allow(dead_code)] // Wired into AppMode by the later prompt-flow task.
+pub struct TodoImplementNextState {
+    pub origin: Box<AppMode>,
+    pub context: TodoImplementNextContext,
+    pub step: TodoImplementNextStep,
+    /// Harnesses installed and allowed for the owning project.
+    pub agents: Vec<AgentKind>,
+    pub selected_agent: usize,
+    /// Permission modes valid for the selected harness/project combination.
+    pub permission_modes: Vec<VibeMode>,
+    pub selected_permission_mode: usize,
+}
+
+#[allow(dead_code)]
+impl TodoImplementNextState {
+    pub fn selected_agent(&self) -> Option<&AgentKind> {
+        self.agents.get(self.selected_agent)
+    }
+
+    pub fn selected_permission_mode(&self) -> Option<&VibeMode> {
+        self.permission_modes.get(self.selected_permission_mode)
+    }
+}
+
 impl TodoImplementChoice {
     pub const ALL: [TodoImplementChoice; 4] = [
         TodoImplementChoice::Jump,

@@ -19665,7 +19665,12 @@ fn find_todo_by_id_resolves_after_a_move_when_no_overlay_is_open() {
             .create_todo_list(&crate::db::todos::TodoScope::Global, None)
             .unwrap();
         let todo = db
-            .add_todo(&src.id, "port me", None, crate::db::todos::TodoPriority::Med)
+            .add_todo(
+                &src.id,
+                "port me",
+                None,
+                crate::db::todos::TodoPriority::Med,
+            )
             .unwrap();
         db.move_todo(&todo.id, &dst.id).unwrap();
         (dst.id, todo.id)

@@ -151,7 +151,10 @@ fn fresh_context_session_label(feature: &Feature) -> String {
 }
 
 fn relative_display_path(workdir: &Path, path: &Path) -> String {
-    path.strip_prefix(workdir).unwrap_or(path).display().to_string()
+    path.strip_prefix(workdir)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 /// Changed/new files worth pointing a fresh session at: everything except
@@ -273,8 +276,7 @@ mod tests {
 
     #[test]
     fn prompt_omits_changed_files_line_when_there_are_none() {
-        let prompt =
-            build_fresh_context_prompt(Some("AMF_PLAN.md"), &[], "Fix the login bug.");
+        let prompt = build_fresh_context_prompt(Some("AMF_PLAN.md"), &[], "Fix the login bug.");
 
         assert_eq!(
             prompt,

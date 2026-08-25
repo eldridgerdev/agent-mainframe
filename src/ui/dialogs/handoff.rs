@@ -58,7 +58,10 @@ pub fn draw_fresh_context_prompt_dialog(
 
     let hint = Paragraph::new(Line::from(vec![
         Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" start session  ", Style::default().fg(theme.text.to_color())),
+        Span::styled(
+            " start session  ",
+            Style::default().fg(theme.text.to_color()),
+        ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" cancel", Style::default().fg(theme.text.to_color())),
     ]));

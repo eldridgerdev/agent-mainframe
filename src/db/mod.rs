@@ -171,6 +171,12 @@ impl AmfDb {
         pr_terminal_state::save(&self.conn, repo, branch, pr)
     }
 
+    /// Remove the terminal PR cached for a deleted feature's repository and
+    /// branch so a future feature can safely reuse the branch name.
+    pub fn delete_pr_terminal_state(&self, repo: &str, branch: &str) -> Result<()> {
+        pr_terminal_state::delete(&self.conn, repo, branch)
+    }
+
     /// Local triage rows for `pr_number` as `comment_id -> (state, note)`,
     /// across every head SHA (triage survives a push).
     pub fn load_pr_comment_triage(

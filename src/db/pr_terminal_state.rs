@@ -59,6 +59,20 @@ pub fn save(conn: &Connection, repo: &str, branch: &str, pr: &TerminalPr) -> Res
     Ok(())
 }
 
+/// Forget the terminal PR previously associated with `repo` + `branch`.
+///
+/// Feature deletion is the lifetime boundary for this cache entry. A later
+/// feature may deliberately reuse the same branch name for a different PR, so
+/// carrying the old terminal result across deletion would misbadge the new
+/// worktree before its own PR exists.
+pub fn delete(conn: &Connection, repo: &str, branch: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM pr_terminal_state WHERE repo = ?1 AND branch = ?2",
+        params![repo, branch],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +148,23 @@ mod tests {
             .get(&("/repo/a".to_string(), "feat-x".to_string()))
             .unwrap();
         assert_eq!(pr.state, TerminalPrState::Closed);
+    }
+
+    #[test]
+    fn delete_removes_only_the_requested_repo_and_branch() {
+        let (_tmp, db) = open_temp_db();
+        db.save_pr_terminal_state("/repo/a", "feat-x", &merged(1))
+            .unwrap();
+        db.save_pr_terminal_state("/repo/a", "feat-y", &merged(2))
+            .unwrap();
+        db.save_pr_terminal_state("/repo/b", "feat-x", &merged(3))
+            .unwrap();
+
+        db.delete_pr_terminal_state("/repo/a", "feat-x").unwrap();
+
+        let all = db.load_all_pr_terminal_state().unwrap();
+        assert!(!all.contains_key(&("/repo/a".to_string(), "feat-x".to_string())));
+        assert!(all.contains_key(&("/repo/a".to_string(), "feat-y".to_string())));
+        assert!(all.contains_key(&("/repo/b".to_string(), "feat-x".to_string())));
     }
 }

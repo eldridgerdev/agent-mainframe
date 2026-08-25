@@ -1164,6 +1164,13 @@ impl App {
             self.user_stopped_features
                 .retain(|id| !live_feature_ids.contains(id));
         }
+
+        if let Err(e) = self.reconcile_todo_agent_associations() {
+            self.log_warn(
+                "todos",
+                format!("failed to reconcile TODO agent associations: {e}"),
+            );
+        }
     }
 
     #[allow(dead_code)] // exercised only by unit tests

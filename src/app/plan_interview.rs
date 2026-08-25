@@ -1777,6 +1777,18 @@ impl App {
             return Ok(());
         };
 
+        let reserved_todo = self.find_todo_by_id(Some(&origin.list_id), &origin.todo_id);
+        if let Some(todo) = reserved_todo.as_ref()
+            && !self.todos_reserve_launch(todo)?
+        {
+            self.mode = AppMode::Normal;
+            self.push_toast_warning(
+                "Plan saved, but this TODO is already in progress; another agent was not launched",
+            );
+            self.message = Some(format!("Plan written to {}", plan_path.display()));
+            return Ok(());
+        }
+
         self.mode = AppMode::Normal;
         let agent = self.store.projects[pi].features[fi].agent.clone();
         let label = Self::todo_session_label(&origin.todo_title);
@@ -1791,6 +1803,9 @@ impl App {
         ) {
             Ok(si) => si,
             Err(e) => {
+                if reserved_todo.is_some() {
+                    self.todos_rollback_launch(&origin.todo_id)?;
+                }
                 self.push_toast_error(format!("Plan saved, but the agent failed to start: {e}"));
                 self.message = Some(format!("Plan written to {}", plan_path.display()));
                 return Ok(());
@@ -1798,15 +1813,24 @@ impl App {
         };
 
         let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
-        if let Some(db) = self.db.as_ref()
-            && let Err(e) = db.set_todo_spawned_session(&origin.todo_id, &session_id)
+        if reserved_todo.is_some()
+            && let Err(e) = self.todos_mark_started(&origin.todo_id, &session_id)
         {
-            self.log_warn("todos", format!("failed to link TODO to its session: {e}"));
+            self.todos_rollback_launch(&origin.todo_id)?;
+            return Err(e);
         }
 
         self.selection = Selection::Session(pi, fi, si);
-        self.enter_view_without_auto_compose()?;
-        self.open_compose_seeded(todo_plan_kickoff_prompt(plan_file))
+        if let Err(e) = self
+            .enter_view_without_auto_compose()
+            .and_then(|_| self.open_compose_seeded(todo_plan_kickoff_prompt(plan_file)))
+        {
+            if reserved_todo.is_some() {
+                self.todos_rollback_launch(&origin.todo_id)?;
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Locate a live agent session for the feature an on-demand plan was just

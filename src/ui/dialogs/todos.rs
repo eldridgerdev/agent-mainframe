@@ -13,7 +13,7 @@ use crate::app::{
     TodoPaneKind, TodoQuickCaptureState, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
     TodosHostReassignState,
 };
-use crate::db::todos::{Todo, TodoPriority};
+use crate::db::todos::{Todo, TodoPriority, TodoStatus};
 use crate::theme::Theme;
 
 const CURSOR: &str = "\u{2588}";
@@ -331,12 +331,16 @@ fn draw_pane(
     theme: &Theme,
     nerd_font: bool,
 ) {
-    let open = pane.todos.iter().filter(|t| !t.done).count();
+    let open = pane
+        .todos
+        .iter()
+        .filter(|t| !t.work.status.is_completed())
+        .count();
     let done = pane.todos.len().saturating_sub(open);
     let in_progress = pane
         .todos
         .iter()
-        .filter(|t| !t.done && t.in_progress)
+        .filter(|t| t.work.status.is_in_progress())
         .count();
     // Only shown when there is something underway: a permanent "0 in progress"
     // is noise on a list nobody has started.
@@ -811,12 +815,10 @@ fn todo_line<'a>(
     // Three states, not two: an item being worked reads differently from one
     // nobody has picked up, which is what makes "implement next" skipping it
     // legible rather than arbitrary.
-    let checkbox = if todo.done {
-        "[x]"
-    } else if todo.in_progress {
-        "[~]"
-    } else {
-        "[ ]"
+    let checkbox = match todo.work.status {
+        TodoStatus::Completed => "[x]",
+        TodoStatus::InProgress => "[~]",
+        TodoStatus::NotStarted => "[ ]",
     };
     let cursor = if selected { "› " } else { "  " };
     let cursor_color = if active {
@@ -825,11 +827,11 @@ fn todo_line<'a>(
         theme.text_muted.to_color()
     };
 
-    let title_style = if todo.done {
+    let title_style = if todo.work.status.is_completed() {
         Style::default()
             .fg(theme.text_muted.to_color())
             .add_modifier(Modifier::CROSSED_OUT)
-    } else if todo.in_progress {
+    } else if todo.work.status.is_in_progress() {
         Style::default()
             .fg(theme.warning.to_color())
             .add_modifier(if active {
@@ -857,7 +859,7 @@ fn todo_line<'a>(
     };
 
     // Marker for a TODO that has launched an agent session.
-    let launched_indicator = if todo.spawned_session_id.is_some() {
+    let launched_indicator = if todo.work.agent_session_id.is_some() {
         if nerd_font { "  \u{f135}" } else { "  ▸" }
     } else {
         ""
@@ -879,9 +881,9 @@ fn todo_line<'a>(
         ),
         Span::styled(
             format!("{checkbox} "),
-            Style::default().fg(if todo.done {
+            Style::default().fg(if todo.work.status.is_completed() {
                 theme.success.to_color()
-            } else if todo.in_progress {
+            } else if todo.work.status.is_in_progress() {
                 theme.warning.to_color()
             } else {
                 theme.text_muted.to_color()
@@ -914,7 +916,7 @@ fn todo_line<'a>(
 /// pane to move between, so a single-pane view does not advertise a `Tab` that
 /// would do nothing.
 fn draw_hint(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme) {
-    let base = "  j/k move  a add  e title  o notes  space done  i wip  p prio  J/K reorder  g start/plan  I next  b scratch  M/C move/copy  d del  Esc/q close";
+    let base = "  j/k move  a add  e title  o notes  space state  p prio  J/K reorder  g start/plan  I next  b scratch  M/C move/copy  d del  Esc/q close";
     let text = if state.visible_pane_count() > 1 {
         format!("  Tab pane{base}")
     } else {

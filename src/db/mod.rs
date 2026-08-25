@@ -472,16 +472,20 @@ impl AmfDb {
         todos::set_linked_feature(&self.conn, todo_id, feature_id)
     }
 
-    pub fn set_todo_spawned_session(&self, todo_id: &str, session_id: &str) -> Result<()> {
-        todos::set_spawned_session(&self.conn, todo_id, session_id)
+    pub fn set_todo_agent_session(&self, todo_id: &str, session_id: &str) -> Result<()> {
+        todos::set_agent_session(&self.conn, todo_id, session_id)
     }
 
-    pub fn clear_todo_spawned_session(&self, todo_id: &str) -> Result<()> {
-        todos::clear_spawned_session(&self.conn, todo_id)
+    pub fn clear_todo_agent_session(&self, todo_id: &str) -> Result<()> {
+        todos::clear_agent_session(&self.conn, todo_id)
     }
 
-    pub fn set_todo_in_progress(&self, todo_id: &str, in_progress: bool) -> Result<()> {
-        todos::set_in_progress(&self.conn, todo_id, in_progress)
+    pub fn todo_agent_session_associations(&self) -> Result<Vec<(String, String)>> {
+        todos::agent_session_associations(&self.conn)
+    }
+
+    pub fn set_todo_work_state(&self, todo_id: &str, work: &todos::TodoWorkState) -> Result<()> {
+        todos::set_work_state(&self.conn, todo_id, work)
     }
 
     pub fn reorder_todos(&self, ordered_ids: &[String]) -> Result<()> {

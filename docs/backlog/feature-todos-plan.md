@@ -1,7 +1,8 @@
 # Feature TODOs
 
-- **Status:** All epics shipped, including Epic 8 (scoped lists —
-  worktree / project / global) and Epic 7 (plan mode from a TODO). Epics
+- **Status:** All epics shipped, including Epic 9 (durable not-started /
+  in-progress / completed lifecycle), Epic 8 (scoped lists — worktree /
+  project / global), and Epic 7 (plan mode from a TODO). Epics
   2–6 (session kind, native view, editing, spawn agent from a TODO,
   quick-capture + scratchpad, help-overlay wiring, docs) plus Epic 1's
   final item — the host-feature deletion re-home/delete prompt
@@ -56,8 +57,8 @@ sent.
   project- or global-scoped TODO belongs to no one checkout, so there is
   nothing to infer and the user picks the feature; that feature then
   supplies the agent and mode exactly as a host feature would.
-- **Item fields:** done checkbox, priority, notes/detail body, and a
-  link to the spawned session.
+- **Item fields:** lifecycle status (not started / in progress / completed),
+  priority, notes/detail body, and an optional agent-session association.
 - **Extras in scope:** reorder items, editable composer prompt before
   launch, a list-level "left off here" carry-over note, and
   quick-capture of a TODO from inside any session view.
@@ -481,6 +482,39 @@ then asks which feature should work the global one, and deleting the
 feature raises the disposition prompt — with cancel leaving the feature,
 its sessions, and its worktree on disk untouched. Also checked at 200 /
 100 / 60 columns for the narrow-terminal fallback.
+
+### Epic 9 — Durable TODO assignment lifecycle
+
+Shipped. Replaces the independent `done` / `in_progress` flags and loosely
+related spawned-session link with one explicit lifecycle plus an optional
+agent association. An item is reserved before AMF launches its agent, so the
+same TODO cannot accidentally be assigned twice and `I` has one authoritative
+definition of eligible work.
+
+- [x] `TodoStatus::{NotStarted, InProgress, Completed}` and `TodoWorkState`
+      define the valid states. `MIGRATION_028` adds the persisted status and
+      association, preserves completed rows, and maps every incomplete legacy
+      row to not started with no association.
+- [x] `Space` and `x` both cycle not started → in progress → completed; the
+      editor renders `[ ]`, `[~]`, and `[x]`, reports open / work-in-progress /
+      done counts, and the help overlay describes the same state machine.
+- [x] Direct TODO launches and accepted TODO-plan launches reserve the item
+      before creating an agent, save the new `FeatureSession` id once known,
+      and roll back to not started if agent creation or composer seeding fails.
+- [x] An explicit attempt to launch an in-progress TODO is blocked. Dashboard
+      and editor `I` selection consider only not-started items, while existing
+      priority, scope, and manual-order tie-breaking remain unchanged.
+- [x] Startup and status reconciliation clear an association whose session no
+      longer exists, but deliberately leave the TODO in progress; stopping or
+      deleting an agent is not evidence that the work itself is abandoned.
+- [x] Database, app-state, launch-flow, selection, reconciliation, rendering,
+      and migration tests cover the lifecycle and its failure paths.
+
+**Verified by running the app** in a throwaway AMF instance at 120×40: all
+three markers and counts rendered together, the launch chooser identified an
+in-progress item, a duplicate launch was blocked with an explanatory message,
+and dashboard `I` opened the TODO-specific composer with the item prompt seeded
+and unsent.
 
 ## Open (not built)
 

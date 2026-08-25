@@ -7909,6 +7909,132 @@ fn complete_deleting_feature_clears_sidebar_caches() {
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
+#[test]
+fn complete_deleting_feature_clears_terminal_pr_association() {
+    let repo = TempDir::new().unwrap();
+    let store_file = NamedTempFile::new().unwrap();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    store.projects[0].features[0].is_worktree = true;
+    let feature = &store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let terminal_pr = crate::github::TerminalPr {
+        number: 550,
+        state: crate::github::TerminalPrState::Merged,
+        at: "2026-08-21T13:32:59Z".to_string(),
+    };
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = store_file.path().to_path_buf();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_terminal_state(&repo.path().to_string_lossy(), &branch, &terminal_pr)
+        .unwrap();
+    app.terminal_prs
+        .insert(feature_id.clone(), terminal_pr.clone());
+    app.confirmed_no_terminal_pr.insert(feature_id.clone());
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "new-head".to_string(),
+            number: 561,
+            unresolved_threads: Some(0),
+        },
+    );
+    app.mode = AppMode::DeletingFeatureInProgress(DeletingFeatureState {
+        project_name: "my-project".to_string(),
+        feature_name: "my-feat".to_string(),
+        tmux_session: "amf-my-feat".to_string(),
+        is_worktree: true,
+        repo: repo.path().to_path_buf(),
+        workdir: repo.path().join(".worktrees/my-feat"),
+        stage: DeleteStage::Completed,
+        child: None,
+        output: String::new(),
+        output_rx: None,
+        error: None,
+    });
+
+    app.complete_deleting_feature().unwrap();
+
+    assert!(!app.active_prs.contains_key(&feature_id));
+    assert!(!app.terminal_prs.contains_key(&feature_id));
+    assert!(!app.confirmed_no_terminal_pr.contains(&feature_id));
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_all_pr_terminal_state()
+        .unwrap();
+    assert!(!cached.contains_key(&(repo.path().to_string_lossy().to_string(), branch)));
+}
+
+#[test]
+fn completed_background_deletion_clears_terminal_pr_association() {
+    let repo = TempDir::new().unwrap();
+    let store_file = NamedTempFile::new().unwrap();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    store.projects[0].features[0].is_worktree = true;
+    let feature = &store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let terminal_pr = crate::github::TerminalPr {
+        number: 550,
+        state: crate::github::TerminalPrState::Merged,
+        at: "2026-08-21T13:32:59Z".to_string(),
+    };
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = store_file.path().to_path_buf();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_terminal_state(&repo.path().to_string_lossy(), &branch, &terminal_pr)
+        .unwrap();
+    app.terminal_prs.insert(feature_id.clone(), terminal_pr);
+    app.background_deletions.insert(
+        "my-project/my-feat".to_string(),
+        BackgroundDeletion {
+            project_name: "my-project".to_string(),
+            feature_name: "my-feat".to_string(),
+            tmux_session: "amf-my-feat".to_string(),
+            is_worktree: true,
+            repo: repo.path().to_path_buf(),
+            workdir: repo.path().join(".worktrees/my-feat"),
+            stage: DeleteStage::Completed,
+            child: None,
+            output: String::new(),
+            output_rx: None,
+            error: None,
+        },
+    );
+
+    app.poll_background_deletions().unwrap();
+
+    assert!(!app.terminal_prs.contains_key(&feature_id));
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_all_pr_terminal_state()
+        .unwrap();
+    assert!(!cached.contains_key(&(repo.path().to_string_lossy().to_string(), branch)));
+}
+
 // ── ensure_notification_hooks ─────────────────────────────
 
 use tempfile::TempDir;

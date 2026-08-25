@@ -70,6 +70,7 @@ mod tests {
             findings: vec![AiReviewFinding {
                 path: Some("src/lib.rs".into()),
                 line: Some(42),
+                side: Some(crate::diff::DiffSide::New),
                 body: body.into(),
                 diff_hunk: Some("@@ -1 +1 @@".into()),
                 skipped: false,

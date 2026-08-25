@@ -13534,6 +13534,7 @@ fn sample_ai_review_finding(body: &str) -> crate::app::ai_review::AiReviewFindin
     crate::app::ai_review::AiReviewFinding {
         path: None,
         line: None,
+        side: None,
         body: body.to_string(),
         diff_hunk: None,
         skipped: false,

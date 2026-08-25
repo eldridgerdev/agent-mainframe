@@ -1405,6 +1405,26 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `build_ai_review` tests updated to set a matching `diff_hunk` on their
       still-inline-expected fixtures). → `src/app/pr_review.rs`,
       `src/app/tests.rs`.
+
+      **Follow-up, 2026-08-24 — correct in-range line mis-mappings.** The hunk
+      membership guard above prevented an invalid line from reaching GitHub,
+      but it could not detect a wrong line number that happened to name a
+      different valid row in the same hunk. This occurs predictably after an
+      earlier insertion or deletion: for example, old line 19 can be a removed
+      row while new line 19 is unrelated context. AI Review now renders the
+      parsed diff with an explicit bracketed coordinate on every addressable
+      row and requires `path|RIGHT|line` or `path|LEFT|line` findings. Response
+      validation resolves that coordinate through the shared unified-diff row
+      map before retaining the line or reconstructing its hunk. Legacy
+      `path:line` output remains accepted only when it identifies one row
+      unambiguously across both sides; invalid and ambiguous requests keep
+      their file and prose but lose the misleading line target and post as
+      summary text. The pane displays deletion anchors as `(base)` and posts
+      them to GitHub's `LEFT` side. Regression fixtures cover multiple hunks,
+      earlier line shifts, context, replacements, pure additions/deletions,
+      and first/last changed lines; isolated UI evidence lives in
+      `docs/screenshots/ai-review-line-mapping/`. → `src/diff.rs`,
+      `src/app/ai_review.rs`, `src/ui/dialogs/ai_review.rs`.
 - [x] **Make the review-memory path configurable per project (resolves half
       of the Open Questions item below).** `AppConfig::review_memory_path`
       was already a path override, but global-only — every project shared

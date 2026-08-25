@@ -100,6 +100,7 @@ pub struct Todo {
 /// reserved by an existing session or planned feature. Only [`Self::Claimed`]
 /// means this invocation changed a row from unstarted to in progress.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Wired into the atomic-claim call site by the later prompt-flow task.
 pub enum ClaimNextTodoOutcome {
     /// The transaction changed this TODO from unstarted to in progress.
     Claimed(Todo),

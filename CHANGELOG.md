@@ -10,7 +10,14 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **The context-window indicator now shows the raw token count, not just the
+  percentage.** Every session row's `Ctx` indicator — Normal, `WARNING`, and
+  `CRITICAL` alike — now reads its actual token count next to the label
+  (e.g. `Ctx ~91% CRITICAL · 182,000`), so you can judge how large a
+  session's context has actually grown instead of relying on the severity
+  label alone. No config changes or migration required.
 
 ## [v0.39.0] - 2026-08-25
 

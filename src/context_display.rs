@@ -32,12 +32,29 @@ pub fn format_context_indicator(snapshot: &SessionContextSnapshot) -> ContextInd
     if stale {
         text.push_str(" STALE");
     }
+    text.push_str(" · ");
+    text.push_str(&format_raw_token_count(snapshot.used_tokens));
 
     ContextIndicator {
         text,
         band: snapshot.band,
         stale,
     }
+}
+
+/// Render a raw token count with thousands separators and no unit suffix or
+/// rounding, so the number stands on its own next to the severity label
+/// regardless of band.
+fn format_raw_token_count(tokens: u64) -> String {
+    let digits = tokens.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().rev().enumerate() {
+        if index != 0 && index % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped.chars().rev().collect()
 }
 
 #[cfg(test)]
@@ -79,7 +96,7 @@ mod tests {
                 ContextFreshness::Fresh,
             ))
             .text,
-            "Ctx 64%"
+            "Ctx 64% · 64,000"
         );
         assert_eq!(
             format_context_indicator(&snapshot(
@@ -89,7 +106,7 @@ mod tests {
                 ContextFreshness::Fresh,
             ))
             .text,
-            "Ctx ~64%"
+            "Ctx ~64% · 64,000"
         );
     }
 
@@ -103,7 +120,7 @@ mod tests {
                 ContextFreshness::Fresh,
             ))
             .text,
-            "Ctx 70% WARNING"
+            "Ctx 70% WARNING · 70,000"
         );
         assert_eq!(
             format_context_indicator(&snapshot(
@@ -113,7 +130,7 @@ mod tests {
                 ContextFreshness::Fresh,
             ))
             .text,
-            "Ctx ~85% CRITICAL"
+            "Ctx ~85% CRITICAL · 85,000"
         );
     }
 
@@ -126,7 +143,16 @@ mod tests {
             ContextFreshness::Stale,
         ));
 
-        assert_eq!(indicator.text, "Ctx 91% CRITICAL STALE");
+        assert_eq!(indicator.text, "Ctx 91% CRITICAL STALE · 91,000");
         assert!(indicator.stale);
+    }
+
+    #[test]
+    fn raw_token_count_uses_thousands_separators_at_every_magnitude() {
+        assert_eq!(format_raw_token_count(0), "0");
+        assert_eq!(format_raw_token_count(999), "999");
+        assert_eq!(format_raw_token_count(1_000), "1,000");
+        assert_eq!(format_raw_token_count(184_320), "184,320");
+        assert_eq!(format_raw_token_count(1_234_567), "1,234,567");
     }
 }

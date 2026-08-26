@@ -301,11 +301,13 @@ overlay:
   move/copy the selected item to another scope. `M`/`C` offer every *other*
   pane, visible or not — the scopes exist regardless of the toggles.
 - **Move vs copy is a semantic difference, not a convenience one.** A
-  **move** (`move_todo`) carries `spawned_session_id`, `linked_feature_id`,
-  and `in_progress`: it is the same work, re-filed. A **copy** (`copy_todo`)
-  clears all three, so two panes never both claim one session and
-  "implement next" does not hold both in reserve for work only one of them
-  describes. Both append at the destination's `sort_order` end.
+  **move** (`move_todo`) leaves `agent_session_id`, `linked_feature_id`, and
+  `status` untouched: it is the same work, re-filed. A **copy** (`copy_todo`)
+  clears the session and feature links and resets `status` to not-started
+  (a completed source copies as completed — that half of the state is worth
+  keeping), so two panes never both claim one session and "implement next"
+  does not hold both in reserve for work only one of them describes. Both
+  append at the destination's `sort_order` end.
 - **Spawn from a TODO:** `g`/`Enter` resolves a linked feature, then a live
   linked session, then opens the chooser. A **worktree** TODO spawns in the
   feature that owns the checkout, inheriting its agent + mode. A **project**
@@ -326,20 +328,41 @@ overlay:
   so the per-list rules can be pinned down alone. It concatenates the lists
   in scope order and **stable**-sorts by `TodoPriority::rank`, which gives
   exactly the intended rule: priority first, scope as the between-list
-  tie-break, manual `sort_order` as the within-list one. `done` /
-  `in_progress` / explicitly-skipped ids are passed over. A TODO that links a
-  session or a planned feature is **held in reserve, not skipped** — any
-  unstarted item in any visible scope outranks it, and it is only returned
-  (as `NextTodo::Started`) when nothing unstarted remains anywhere.
-- **In-progress (`todos.in_progress`, `MIGRATION_024`):** a stored state, not
-  a derivation of `spawned_session_id` — a session link survives abandonment
-  and is absent for work started by hand. Set by a spawn
-  (`todos_mark_started`, targeted DB writes so it works with no overlay open,
-  and updating every loaded pane), cleared by completing the item, by hand
-  with `i`, and by `todos_reconcile_dead_sessions` — which drops a link whose
-  session is gone **and only then** the flag, so a hand-marked TODO with no
-  session is left alone. Stopping the host feature clears nothing: stopped
-  work is still in progress.
+  tie-break, manual `sort_order` as the within-list one. Completed and
+  in-progress items (`Todo::is_eligible_for_automatic_spawn`, i.e.
+  `status != NotStarted`) and explicitly-skipped ids are passed over. A TODO
+  that links a session or a planned feature is **held in reserve, not
+  skipped** — any unstarted item in any visible scope outranks it, and it is
+  only returned (as `NextTodo::Started`) when nothing unstarted remains
+  anywhere.
+- **Status (`TodoStatus`, `MIGRATION_028`):** `NotStarted` / `InProgress` /
+  `Completed`, stored as a checked `status` TEXT column that replaced the
+  earlier boolean `todos.in_progress` from `MIGRATION_024` — one exhaustive
+  value instead of two flags that could disagree. Paired with
+  `agent_session_id` (also added by `MIGRATION_028`; a
+  [`crate::project::FeatureSession`] id, harness-neutral and stable across
+  restarts) inside `TodoWorkState`, which is the only thing allowed to
+  change either field: `reserve_launch` claims a not-started TODO before its
+  session exists (`InProgress`, no association yet — this is what a spawn
+  sets, via `todos_reserve_launch`, before the launch can fail),
+  `associate_session` attaches the real session id once created
+  (`todos_mark_started`, only while still `InProgress`, so a late result
+  can't attach after a manual status change), `rollback_launch` reverts a
+  failed creation or prompt-delivery back to `NotStarted` with no
+  association (`todos_rollback_launch`, called through a best-effort wrapper
+  on failure paths so a rollback write failing can't replace the original,
+  actionable launch error), and `clear_missing_session` drops a stale
+  session id **without** touching `status`. A session link survives
+  abandonment on purpose — it is what lets a repeat spawn attempt find and
+  offer the work already started, and what's absent for a TODO marked
+  in-progress by hand.
+  `status` only changes on completion or the manual `i` cycle
+  (`TodoWorkState::cycle_manually`); a dead associated session
+  (`todos_reconcile_dead_sessions`, `reconcile_todo_agent_associations`, run
+  from ordinary status sync including startup) clears **only** the link, not
+  the flag — "a missing agent does not make work unstarted again." Stopping
+  the host feature clears nothing either: stopped work is still in
+  progress.
 - **The already-started prompt** is `AppMode::TodoImplementChoice`, not a
   `TodoLaunchStep`, because only one of its two surfaces has a
   `TodoViewState`. It carries the candidate's `pane_kind` and `list_id` so

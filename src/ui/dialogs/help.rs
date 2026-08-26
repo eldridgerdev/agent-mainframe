@@ -51,6 +51,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("y", "Toggle mark feature as ready"),
         ("Z", "Generate session summary"),
         ("z", "Dormant features (idle + unattended)"),
+        ("w", "Context window / warning settings"),
         ("i", "Needs attention: questions and finished work"),
         ("I", "On a TODOs row: start the next TODO"),
         ("/", "Search and jump to item"),

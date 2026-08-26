@@ -500,6 +500,40 @@ fn app_config_default_diff_review_viewer_is_amf() {
 }
 
 #[test]
+fn app_config_context_defaults_match_the_hardcoded_fallbacks() {
+    let config = AppConfig::default();
+    assert_eq!(config.context_window_override, None);
+    assert_eq!(
+        config.context_warning_percent,
+        crate::context_tracking::DEFAULT_CONTEXT_WARNING_PERCENT
+    );
+    assert_eq!(
+        config.context_critical_percent,
+        crate::context_tracking::DEFAULT_CONTEXT_CRITICAL_PERCENT
+    );
+}
+
+#[test]
+fn app_config_missing_context_keys_use_defaults() {
+    // Configs written before these keys existed must keep loading.
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.context_window_override, None);
+    assert_eq!(config.context_warning_percent, 70);
+    assert_eq!(config.context_critical_percent, 85);
+}
+
+#[test]
+fn app_config_context_values_are_configurable() {
+    let config: AppConfig = serde_json::from_str(
+        r#"{"context_window_override":500000,"context_warning_percent":50,"context_critical_percent":75}"#,
+    )
+    .unwrap();
+    assert_eq!(config.context_window_override, Some(500_000));
+    assert_eq!(config.context_warning_percent, 50);
+    assert_eq!(config.context_critical_percent, 75);
+}
+
+#[test]
 fn app_config_default_diff_viewer_layout_is_unified() {
     let config = AppConfig::default();
     assert_eq!(config.diff_viewer_layout, DiffViewerLayout::Unified);
@@ -735,6 +769,168 @@ fn default_project_preferred_agent_comes_from_config() {
     app.config.projects.default_preferred_agent = Some(AgentKind::Opencode);
 
     assert_eq!(app.default_project_preferred_agent(), AgentKind::Opencode);
+}
+
+// ── ContextSettings dialog ─────────────────────────────────
+
+fn context_settings_test_app() -> App {
+    App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    )
+}
+
+#[test]
+fn context_settings_opens_prefilled_with_current_config() {
+    let mut app = context_settings_test_app();
+    app.config.context_window_override = Some(500_000);
+    app.config.context_warning_percent = 60;
+    app.config.context_critical_percent = 90;
+
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    assert_eq!(state.window_limit_input, "500000");
+    assert_eq!(state.warning_input, "60");
+    assert_eq!(state.critical_input, "90");
+    assert_eq!(state.field, crate::app::ContextSettingsField::WindowLimit);
+}
+
+#[test]
+fn context_settings_confirm_persists_valid_values() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.window_limit_input = "500000".to_string();
+    state.warning_input = "50".to_string();
+    state.critical_input = "80".to_string();
+
+    assert!(app.context_settings_confirm());
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(app.config.context_window_override, Some(500_000));
+    assert_eq!(app.config.context_warning_percent, 50);
+    assert_eq!(app.config.context_critical_percent, 80);
+}
+
+#[test]
+fn context_settings_confirm_blank_window_limit_clears_the_override() {
+    let mut app = context_settings_test_app();
+    app.config.context_window_override = Some(500_000);
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.window_limit_input.clear();
+
+    assert!(app.context_settings_confirm());
+    assert_eq!(app.config.context_window_override, None);
+}
+
+#[test]
+fn context_settings_confirm_rejects_critical_at_or_below_warning() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.warning_input = "80".to_string();
+    state.critical_input = "80".to_string();
+
+    assert!(!app.context_settings_confirm());
+    let AppMode::ContextSettings(state) = &app.mode else {
+        panic!("dialog should stay open after a rejected confirm");
+    };
+    assert!(state.error.is_some());
+    // Rejected values must not leak into the live config.
+    assert_eq!(app.config.context_warning_percent, 70);
+}
+
+#[test]
+fn context_settings_confirm_rejects_out_of_range_percentages() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.critical_input = "150".to_string();
+
+    assert!(!app.context_settings_confirm());
+    assert!(matches!(&app.mode, AppMode::ContextSettings(s) if s.error.is_some()));
+}
+
+#[test]
+fn context_settings_confirm_rejects_zero_window_limit() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.window_limit_input = "0".to_string();
+
+    assert!(!app.context_settings_confirm());
+    assert!(matches!(&app.mode, AppMode::ContextSettings(s) if s.error.is_some()));
+}
+
+#[test]
+fn context_settings_cancel_discards_changes() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.warning_input = "10".to_string();
+
+    app.cancel_context_settings();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(app.config.context_warning_percent, 70);
+}
+
+#[test]
+fn context_settings_focus_cycles_through_all_fields_and_wraps() {
+    use crate::app::ContextSettingsField;
+
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    app.context_settings_focus_next();
+    assert!(matches!(
+        &app.mode,
+        AppMode::ContextSettings(s) if s.field == ContextSettingsField::WarningPercent
+    ));
+    app.context_settings_focus_next();
+    assert!(matches!(
+        &app.mode,
+        AppMode::ContextSettings(s) if s.field == ContextSettingsField::CriticalPercent
+    ));
+    app.context_settings_focus_next();
+    assert!(matches!(
+        &app.mode,
+        AppMode::ContextSettings(s) if s.field == ContextSettingsField::WindowLimit
+    ));
+    app.context_settings_focus_prev();
+    assert!(matches!(
+        &app.mode,
+        AppMode::ContextSettings(s) if s.field == ContextSettingsField::CriticalPercent
+    ));
 }
 
 // ── strip_between_markers ─────────────────────────────────

@@ -10,6 +10,7 @@ mod codex_sessions;
 pub mod commands;
 mod compose;
 mod config_wizard;
+mod context_settings;
 mod diff;
 pub(crate) mod dormant;
 pub(crate) mod editor_ops;
@@ -541,6 +542,22 @@ pub struct AppConfig {
     /// [`Self::low_memory_warn_mb`].
     #[serde(default = "default_waiting_stale_minutes")]
     pub waiting_stale_minutes: u64,
+    /// Overrides the context-window size AMF assumes when a harness's own
+    /// telemetry doesn't report one (Claude falls back to a hardcoded
+    /// 900,000; Codex, OpenCode, and Pi otherwise have no fallback at all —
+    /// see `CLAUDE_DEFAULT_CONTEXT_LIMIT` in `context_collectors.rs`). `None`
+    /// keeps each harness's existing default behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_override: Option<u64>,
+    /// Percentage of the context window at which the severity indicator
+    /// switches from normal to `ContextBand::Warning`.
+    #[serde(default = "default_context_warning_percent")]
+    pub context_warning_percent: u8,
+    /// Percentage of the context window at which the severity indicator
+    /// switches to `ContextBand::Critical`. Must stay greater than
+    /// `context_warning_percent` for the bands to remain meaningful.
+    #[serde(default = "default_context_critical_percent")]
+    pub context_critical_percent: u8,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -619,6 +636,14 @@ fn default_waiting_stale_minutes() -> u64 {
     30
 }
 
+fn default_context_warning_percent() -> u8 {
+    crate::context_tracking::DEFAULT_CONTEXT_WARNING_PERCENT
+}
+
+fn default_context_critical_percent() -> u8 {
+    crate::context_tracking::DEFAULT_CONTEXT_CRITICAL_PERCENT
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum DiffReviewViewer {
     // The native AMF diff viewer is the only supported reviewer. The legacy
@@ -675,6 +700,9 @@ impl Default for AppConfig {
             dormant_idle_minutes: default_dormant_idle_minutes(),
             dormant_last_accessed_hours: default_dormant_last_accessed_hours(),
             waiting_stale_minutes: default_waiting_stale_minutes(),
+            context_window_override: None,
+            context_warning_percent: default_context_warning_percent(),
+            context_critical_percent: default_context_critical_percent(),
         }
     }
 }

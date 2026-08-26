@@ -502,7 +502,11 @@ Acceptance criteria:
 - [x] Render context pressure in agent session rows, with direct/estimated,
       stale, warning, critical, and reset states.
 - [ ] Render latest-turn usage and recent burn in the session row/sidebar.
-- [ ] Add configurable soft context and cumulative usage thresholds.
+- [x] Add configurable context-window-size and warning/critical percentage
+      thresholds, global via `AppConfig` and a dedicated dashboard dialog
+      (`w`, `src/app/context_settings.rs`, `src/context_tracking.rs`).
+      Cumulative token/dollar usage thresholds and per-utility-call budgets
+      are still open.
 - [ ] Add dashboard/sidebar warnings and deduplicate repeated alerts.
 - [ ] Introduce a capability-driven resume/compact/fresh dialog.
 - [ ] Make normal restart semantics consistent across Claude, Codex,

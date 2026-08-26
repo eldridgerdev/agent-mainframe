@@ -878,6 +878,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("n/Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::ContextSettings(_) => Line::from(vec![
+            Span::styled(" Tab", key_style()),
+            Span::raw(" next field  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" save  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {

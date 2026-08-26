@@ -24,6 +24,17 @@ are tagged.
   non-git project, or a branch with nothing changed yet, the changed-files
   list is simply left out too.
 
+- **You can now customize the context-window size and the warning/critical
+  thresholds behind the `Ctx` indicator, instead of relying on AMF's
+  hardcoded defaults.** Press `w` on the dashboard to open Context Window
+  Settings: set a token count to override the context-window size AMF
+  assumes when a harness doesn't report its own (useful if you're on a
+  larger or smaller context-window plan than AMF's default guess), and set
+  the usage percentages at which the indicator switches to `WARNING` and
+  `CRITICAL` (70% / 85% by default). These are global settings, saved to
+  your AMF config. No migration is required — leaving both blank/default
+  keeps today's behavior exactly as it is.
+
 ### Changed
 
 - **The context-window indicator now shows the raw token count, not just the

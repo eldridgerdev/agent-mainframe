@@ -10,7 +10,24 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Harness pickers now show how much rate-limit headroom you have left,
+  right where you choose a harness.** When creating a feature (Harness
+  step) or adding a session (`s`), a Claude or Codex option now shows a
+  line underneath it like `5h 62% left · resets in 3h   7d 90% left`, so
+  you can see you're about to run low before you start. It reads the same
+  cached numbers already shown in the dashboard's status bar — no extra
+  waiting, no new login prompts. If nothing is known for a harness (this
+  includes OpenCode and Pi, which don't expose this today), the line is
+  simply left out.
+
+### Fixed
+
+- Fixed the new usage line above being unreadable when its row was
+  selected in the add-session picker, in themes (including the default)
+  where the selection highlight and the line's muted text color matched.
+  It now switches to the brighter selected-row text color.
 
 ## [v0.40.0] - 2026-08-26
 

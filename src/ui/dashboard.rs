@@ -1549,11 +1549,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
                 super::dialogs::draw_confirm_supervibe_dialog(frame, &app.theme);
             } else {
+                let usage = app.usage.get_data();
                 super::dialogs::draw_create_feature_dialog(
                     frame,
                     state,
                     state.feature_presets.as_slice(),
                     state.allowed_agents.as_slice(),
+                    &usage,
                     &app.theme,
                 );
             }
@@ -1684,7 +1686,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::SessionPicker(state) = &app.mode {
-        super::picker::draw_session_picker(frame, state, app.config.nerd_font, &app.theme);
+        let usage = app.usage.get_data();
+        super::picker::draw_session_picker(frame, state, &usage, app.config.nerd_font, &app.theme);
     }
 
     if let AppMode::NamingNewSession(state) = &app.mode {

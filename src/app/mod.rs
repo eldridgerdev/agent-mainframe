@@ -541,13 +541,6 @@ pub struct AppConfig {
     /// [`Self::low_memory_warn_mb`].
     #[serde(default = "default_waiting_stale_minutes")]
     pub waiting_stale_minutes: u64,
-    /// Whether the TODO editor reveals the project and global panes beside the
-    /// worktree one. App-level rather than per-overlay on purpose: the
-    /// dashboard's "implement next" runs with no overlay open and still has to
-    /// know which scopes count as visible, so the toggle has to live somewhere
-    /// both surfaces can read. Default closed — the worktree list alone.
-    #[serde(default)]
-    pub todo_side_panes: bool,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -682,7 +675,6 @@ impl Default for AppConfig {
             dormant_idle_minutes: default_dormant_idle_minutes(),
             dormant_last_accessed_hours: default_dormant_last_accessed_hours(),
             waiting_stale_minutes: default_waiting_stale_minutes(),
-            todo_side_panes: false,
         }
     }
 }
@@ -824,6 +816,12 @@ pub struct App {
     /// `todo_origin`, so an unrelated feature created afterwards cannot pick up
     /// a stale brief.
     pub pending_todo_plan_brief: Option<String>,
+    /// Process-lifetime visibility for the project TODO scope. This is shared
+    /// by every TODO view but intentionally resets whenever AMF starts.
+    pub todo_project_visible: bool,
+    /// Process-lifetime visibility for the global TODO scope. This is shared
+    /// by every TODO view but intentionally resets whenever AMF starts.
+    pub todo_global_visible: bool,
     pub message: Option<String>,
     pub toasts: Vec<Toast>,
     pub should_quit: bool,
@@ -1268,6 +1266,8 @@ impl App {
         self.toasts.len().hash(&mut hasher);
         self.pending_inputs.len().hash(&mut hasher);
         self.tmux_cursor.hash(&mut hasher);
+        self.todo_project_visible.hash(&mut hasher);
+        self.todo_global_visible.hash(&mut hasher);
 
         match &self.selection {
             Selection::Project(pi) => {
@@ -2328,6 +2328,8 @@ impl App {
             mode: AppMode::Normal,
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
+            todo_project_visible: true,
+            todo_global_visible: true,
             message: None,
             toasts: Vec::new(),
             should_quit: false,
@@ -2573,6 +2575,8 @@ impl App {
             mode: AppMode::Normal,
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
+            todo_project_visible: true,
+            todo_global_visible: true,
             message: None,
             toasts: Vec::new(),
             should_quit: false,

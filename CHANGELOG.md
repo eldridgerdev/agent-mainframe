@@ -24,6 +24,25 @@ are tagged.
   non-git project, or a branch with nothing changed yet, the changed-files
   list is simply left out too.
 
+### Changed
+
+- **Project and global TODO lists can now be shown or hidden independently.**
+  Press `p` for the project list and `g` for the global list; hidden scopes stay
+  discoverable through labeled placeholders and are excluded from pane
+  navigation, `I` (implement next), and other cross-pane actions. The worktree
+  list remains visible whenever the feature has one, while repo-root features
+  may hide both optional lists. Visibility is shared by every TODO view for the
+  current AMF run and resets to both lists shown on the next launch.
+- **TODO priority and launch keys moved to make room for the scope toggles.**
+  Press `P` to cycle priority and `Enter` to start or plan the selected TODO.
+  The previous `\` side-pane toggle and `g` launch alias are no longer used in
+  the TODO editor.
+
+### Migration
+
+- No data migration is required. TODO contents and pane state are retained when
+  a scope is hidden; only the TODO editor keybindings changed.
+
 ## [v0.39.0] - 2026-08-25
 
 ### Added

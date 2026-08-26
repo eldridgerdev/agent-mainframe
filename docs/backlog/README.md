@@ -84,10 +84,11 @@ doc always says exactly what remains.
 - [Feature TODOs](feature-todos-plan.md) — _All epics shipped._ Scoped
   TODO lists added as a `SessionKind::Todos` session via the `s` picker
   (one per feature, native UI, SQLite-backed). A feature's editor opens
-  on its own **worktree** list, with the **project** list and a
-  machine-wide **global** list one keypress away as side panes; items
-  move or copy between scopes. Each TODO carries priority, notes, and
-  done state. Full editing (add/edit/notes/done/priority/reorder/delete
+  on its own **worktree** list, with the **project** list (`p`) and a
+  machine-wide **global** list (`g`) each independently toggled on or off
+  as side panes; items move or copy between scopes. Each TODO carries
+  priority, notes, and done state. Full editing
+  (add/edit/notes/done/priority/reorder/delete
   + a per-list scratchpad), spawning an agent from a TODO with a
   pre-filled composer prompt, "implement next" across the visible
   scopes, plan mode from a TODO, and quick-capture from any session view

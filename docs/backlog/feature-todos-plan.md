@@ -1,7 +1,8 @@
 # Feature TODOs
 
-- **Status:** All epics shipped, including Epic 9 (durable not-started /
-  in-progress / completed lifecycle), Epic 8 (scoped lists — worktree /
+- **Status:** All epics shipped, including the Epic 8 follow-up for
+  independently showing project and global scopes, Epic 9 (durable not-started
+  / in-progress / completed lifecycle), Epic 8 (scoped lists — worktree /
   project / global), and Epic 7 (plan mode from a TODO). Epics
   2–6 (session kind, native view, editing, spawn agent from a TODO,
   quick-capture + scratchpad, help-overlay wiring, docs) plus Epic 1's
@@ -411,17 +412,19 @@ here rather than linked.
       project → global, each owning its list, items, cursor, scroll, and
       scratchpad. Lists are *loaded* on open and created lazily on first
       write, so an untouched scope leaves no row behind.
-- [x] One rule for "visible", used by both the draw
-      (`visible_pane_count`) and the scan (`visible_todo_scopes`): the
-      worktree pane alone until the side panes are revealed, and *all*
-      panes for a feature that has none — closing them there would leave
-      nothing. The reveal is `AppConfig::todo_side_panes`, app-level
-      rather than per-overlay **because the dashboard's `I` runs with no
-      overlay open** and still needs a defined answer.
-- [x] New overlay keys, verified free against the live dispatch before
-      committing to them: `Tab`/`BackTab` cycle focus (and say to press
-      `\` when there is only one pane rather than swallowing the press),
-      `\` toggles the side panes, `M`/`C` move/copy across scopes.
+- [x] One rule for "visible", used by both rendering and view-level actions:
+      the worktree pane is unconditional, while process-lifetime project and
+      global flags independently include or exclude those scopes. Both begin
+      visible on launch and are shared across TODO views without being written
+      to config or SQLite. A repo-root feature may hide both optional scopes;
+      labeled placeholders keep them discoverable while `I`, navigation, and
+      other cross-pane actions see no actionable list.
+- [x] Overlay keys: `Tab`/`BackTab` cycle focus across visible panes, `p`
+      toggles project visibility, `g` toggles global visibility, and `M`/`C`
+      move/copy across visible scopes. Hiding the focused pane advances focus
+      in worktree → project → global order with wraparound. To avoid
+      conflicts, priority is `P`, launching/planning is `Enter`, and the old
+      `\` combined reveal is removed.
       `pane_slots` handles narrow terminals — 3 panes at ≥120 cols, 2 at
       ≥72, 1 below, with the focused pane always drawn and the worktree
       pane keeping its slot whenever there is room for a second.
@@ -474,14 +477,14 @@ of a live `~/.config/amf/amf.db` — same list id, same host feature, all 23
 items intact, `carry_over` preserved, and `PRAGMA foreign_key_check`
 clean afterwards, with `todos` still referencing the rebuilt table.
 
-**Verified by running the app** (`scripts/dev/screenshot/amf-capture.sh`
-with `scenarios/todo-scopes.txt`, throwaway repo + scratch instance): the
-editor opens on the worktree pane alone, `\` reveals all three, `M` moves
-an item to the global list, `I` takes the worktree item without asking and
-then asks which feature should work the global one, and deleting the
-feature raises the disposition prompt — with cancel leaving the feature,
-its sessions, and its worktree on disk untouched. Also checked at 200 /
-100 / 60 columns for the narrow-terminal fallback.
+**Verified by running the app** (`scripts/dev/screenshot/amf-capture.sh`,
+throwaway repo + scratch instance): `p` and `g` independently hide their
+scopes, each hidden pane becomes a labeled placeholder without exposing its
+TODO contents, hiding the focused pane advances focus, and restoring a pane
+preserves its items. A repo-root feature can hide both project and global
+scopes at once without leaving an actionable pane. The earlier scoped-list
+flow also verified `M` move behavior, cross-scope `I`, deletion disposition,
+and the 200 / 100 / 60-column fallbacks.
 
 ### Epic 9 — Durable TODO assignment lifecycle
 

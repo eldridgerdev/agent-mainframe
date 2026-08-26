@@ -18862,8 +18862,7 @@ fn todo_view_with(todos: Vec<crate::db::todos::Todo>) -> TodoViewState {
             selected: 0,
             scroll_offset: 0,
         }],
-        focus: 0,
-        side_panes_open: false,
+        focus: Some(0),
         editor: None,
         pending_delete: false,
         launch: None,
@@ -18925,14 +18924,14 @@ fn launch_step(app: &App) -> Option<&crate::app::TodoLaunchStep> {
     }
 }
 
-/// `g` on a TODO with nothing linked has to ask rather than pick for the user:
+/// `Enter` on a TODO with nothing linked has to ask rather than pick for the user:
 /// spawning and planning are different amounts of work to commit to.
 #[test]
-fn g_on_an_unlinked_todo_opens_the_chooser_instead_of_spawning() {
+fn enter_on_an_unlinked_todo_opens_the_chooser_instead_of_spawning() {
     let mut app = todos_app();
     seed_selected_todo(&mut app, "wire up the chooser");
 
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert!(
         matches!(
@@ -18953,7 +18952,7 @@ fn esc_walks_back_from_destination_to_chooser_to_the_list() {
     let mut app = todos_app();
     seed_selected_todo(&mut app, "plan me");
 
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
     // Move to "Plan this TODO first" and take it.
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
@@ -18988,7 +18987,7 @@ fn esc_walks_back_from_destination_to_chooser_to_the_list() {
 fn chooser_cursor_clamps_at_both_ends() {
     let mut app = todos_app();
     seed_selected_todo(&mut app, "plan me");
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('k'))).unwrap();
     assert_eq!(
@@ -19010,7 +19009,7 @@ fn chooser_cursor_clamps_at_both_ends() {
 /// A TODO already planned into a feature jumps there instead of asking again —
 /// the decision was made the first time.
 #[test]
-fn g_on_a_todo_linked_to_a_live_feature_jumps_there_without_asking() {
+fn enter_on_a_todo_linked_to_a_live_feature_jumps_there_without_asking() {
     let mut tmux = MockTmuxOps::new();
     // The jump enters the feature's view, which reconciles against tmux.
     tmux.expect_session_exists().return_const(true);
@@ -19029,7 +19028,7 @@ fn g_on_a_todo_linked_to_a_live_feature_jumps_there_without_asking() {
         _ => unreachable!(),
     }
 
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert!(
         !matches!(app.mode, AppMode::Todos(_)),
@@ -19040,7 +19039,7 @@ fn g_on_a_todo_linked_to_a_live_feature_jumps_there_without_asking() {
 /// A link whose feature was deleted must not be a dead end: it is dropped, the
 /// user is told, and the next press offers the chooser.
 #[test]
-fn g_on_a_todo_linked_to_a_deleted_feature_clears_the_link_and_offers_the_chooser() {
+fn enter_on_a_todo_linked_to_a_deleted_feature_clears_the_link_and_offers_the_chooser() {
     let mut app = todos_app();
     seed_selected_todo(&mut app, "planned into a ghost");
     match &mut app.mode {
@@ -19050,7 +19049,7 @@ fn g_on_a_todo_linked_to_a_deleted_feature_clears_the_link_and_offers_the_choose
         _ => unreachable!(),
     }
 
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     match &app.mode {
         AppMode::Todos(state) => {
@@ -19912,8 +19911,8 @@ fn todo_pane(
     }
 }
 
-/// A three-pane overlay with the side panes revealed, which is the shape every
-/// cross-scope behaviour is about.
+/// A three-pane overlay, which is the shape every cross-scope behaviour is
+/// about.
 fn three_pane_view(
     worktree: Vec<crate::db::todos::Todo>,
     project: Vec<crate::db::todos::Todo>,
@@ -19934,7 +19933,7 @@ fn three_pane_view(
             global,
         ),
     ];
-    state.side_panes_open = true;
+    state.focus = Some(0);
     state
 }
 
@@ -20075,66 +20074,43 @@ fn no_next_todo_message_across_counts_every_list() {
 
 // ----- which scopes are visible -------------------------------------------
 
-/// Closed side panes mean the worktree list alone; opening them adds the
-/// project and global lists, in tie-break order.
 #[test]
-fn visible_todo_scopes_follow_the_side_pane_toggle() {
+fn todo_scope_visibility_is_independent_and_worktree_is_always_visible() {
     use crate::app::TodoPaneKind;
     let mut app = todos_app();
     make_feature_a_worktree(&mut app);
 
-    let closed = app.visible_todo_scopes(0, 0, false);
-    assert_eq!(closed.len(), 1);
-    assert_eq!(closed[0].0, TodoPaneKind::Worktree);
-
-    let open = app.visible_todo_scopes(0, 0, true);
+    let all = app.visible_todo_scopes(0, 0);
     assert_eq!(
-        open.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+        all.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
         vec![
             TodoPaneKind::Worktree,
             TodoPaneKind::Project,
             TodoPaneKind::Global
         ]
     );
-}
+    app.todo_project_visible = false;
+    assert_eq!(
+        app.visible_todo_scopes(0, 0)
+            .iter()
+            .map(|(kind, _)| *kind)
+            .collect::<Vec<_>>(),
+        vec![TodoPaneKind::Worktree, TodoPaneKind::Global]
+    );
+    app.todo_global_visible = false;
+    assert_eq!(
+        app.visible_todo_scopes(0, 0)
+            .iter()
+            .map(|(kind, _)| *kind)
+            .collect::<Vec<_>>(),
+        vec![TodoPaneKind::Worktree]
+    );
 
-/// A feature on the repo root has no worktree list, so the project and global
-/// lists are always visible — closing the side panes there would leave nothing
-/// at all.
-#[test]
-fn a_repo_root_feature_always_sees_the_project_and_global_scopes() {
-    use crate::app::TodoPaneKind;
-    let app = todos_app();
-    assert!(!app.store.projects[0].features[0].is_worktree);
-
-    for open in [false, true] {
-        let scopes = app.visible_todo_scopes(0, 0, open);
-        assert_eq!(
-            scopes.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
-            vec![TodoPaneKind::Project, TodoPaneKind::Global],
-            "side panes {open}: no worktree scope, and never an empty set"
-        );
-    }
-}
-
-/// The same rule the overlay draws with.
-#[test]
-fn visible_pane_count_matches_the_visible_scopes() {
-    let mut state = three_pane_view(vec![], vec![], vec![]);
-    assert_eq!(state.visible_pane_count(), 3);
-    state.side_panes_open = false;
-    assert_eq!(state.visible_pane_count(), 1, "worktree pane only");
-
-    // Repo-root shape: no worktree pane, so closing changes nothing.
-    let mut state = todo_view_with(vec![]);
-    state.panes.push(todo_pane(
-        crate::app::TodoPaneKind::Global,
-        crate::db::todos::TodoScope::Global,
-        vec![],
-    ));
-    assert_eq!(state.visible_pane_count(), 2);
-    state.side_panes_open = true;
-    assert_eq!(state.visible_pane_count(), 2);
+    let worktree = worktree_scope("proj-1", "/tmp/test-workdir");
+    assert!(app.toggle_todo_scope_visibility(&worktree));
+    assert!(app.todo_scope_visible(&worktree));
+    assert!(!app.todo_project_visible);
+    assert!(!app.todo_global_visible);
 }
 
 // ----- pane focus ----------------------------------------------------------
@@ -20150,63 +20126,202 @@ fn tab_moves_focus_between_the_visible_panes() {
     };
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
-    assert_eq!(focus(&app), 1);
+    assert_eq!(focus(&app), Some(1));
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
-    assert_eq!(focus(&app), 2);
+    assert_eq!(focus(&app), Some(2));
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
-    assert_eq!(focus(&app), 0, "focus wraps");
+    assert_eq!(focus(&app), Some(0), "focus wraps");
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::BackTab)).unwrap();
-    assert_eq!(focus(&app), 2, "Shift+Tab wraps the other way");
+    assert_eq!(focus(&app), Some(2), "Shift+Tab wraps the other way");
 }
 
-/// With one pane showing there is nowhere for `Tab` to go, so it says which
-/// key opens the others rather than swallowing the press.
 #[test]
-fn tab_with_the_side_panes_closed_says_how_to_open_them() {
+fn navigation_skips_hidden_scopes() {
     let mut app = todos_app();
-    let mut state = three_pane_view(vec![], vec![], vec![]);
-    state.side_panes_open = false;
-    app.mode = AppMode::Todos(state);
+    app.mode = AppMode::Todos(three_pane_view(vec![], vec![], vec![]));
+    app.todo_project_visible = false;
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
-
-    match &app.mode {
-        AppMode::Todos(state) => assert_eq!(state.focus, 0),
-        _ => panic!("expected Todos overlay"),
-    }
-    assert!(
-        app.toasts.iter().any(|t| t.message.contains("press \\")),
-        "the refusal names the key, got {:?}",
-        app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
-    );
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(2)));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(0)));
 }
 
-/// The toggle is app-level, so the dashboard's `I` — which runs with no
-/// overlay open — reads the same setting.
 #[test]
-fn toggling_the_side_panes_records_the_choice_app_wide() {
+fn hiding_the_focused_scope_advances_and_wraps() {
     let mut app = todos_app();
-    let mut state = three_pane_view(vec![], vec![], vec![]);
-    state.side_panes_open = false;
-    state.focus = 0;
-    app.mode = AppMode::Todos(state);
-    assert!(!app.config.todo_side_panes);
-
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('\\'))).unwrap();
-    assert!(app.config.todo_side_panes);
-    assert!(matches!(&app.mode, AppMode::Todos(s) if s.visible_pane_count() == 3));
-
-    // Closing again pulls a cursor left on a side pane back into view.
+    app.mode = AppMode::Todos(three_pane_view(vec![], vec![], vec![]));
     if let AppMode::Todos(state) = &mut app.mode {
-        state.focus = 2;
+        state.focus = Some(1);
     }
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(2)));
+
+    // Restore project without moving focus, then hide global: the search wraps
+    // from global back to worktree.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(0)));
+}
+
+#[test]
+fn repo_root_view_supports_no_visible_actionable_pane_and_recovers() {
+    let mut app = todos_app();
+    let mut state = todo_view_with(vec![]);
+    state.panes.push(todo_pane(
+        crate::app::TodoPaneKind::Global,
+        crate::db::todos::TodoScope::Global,
+        vec![],
+    ));
+    app.mode = AppMode::Todos(state);
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(1)));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(0)));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus.is_none()));
+
+    app.todos_select_next();
+    app.todos_begin_add();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.editor.is_none()));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(1)));
+}
+
+#[test]
+fn visibility_keys_replace_backslash_without_losing_priority_or_launch() {
+    use crate::db::todos::TodoPriority;
+
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(
+        vec![sample_todo("work", false)],
+        vec![],
+        vec![],
+    ));
+
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('\\'))).unwrap();
-    assert!(!app.config.todo_side_panes);
+    assert!(app.todo_project_visible && app.todo_global_visible);
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    assert!(!app.todo_project_visible && !app.todo_global_visible);
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('P'))).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::Todos(state) if state.panes[0].todos[0].priority == TodoPriority::Low
+    ));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::Todos(state) if state.launch.is_some()
+    ));
+}
+
+#[test]
+fn visibility_is_shared_across_views_and_survives_reopening() {
+    let mut app = todos_app();
+    let mut second = app.store.projects[0].features[0].clone();
+    second.id = "feat-2".to_string();
+    second.name = "other-feat".to_string();
+    second.workdir = PathBuf::from("/tmp/other-workdir");
+    app.store.projects[0].features.push(second);
+
+    app.open_todos_view(0, 0).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    app.close_todos_view();
+    app.open_todos_view(0, 0).unwrap();
+    assert!(!app.todo_project_visible);
+    assert!(app.todo_global_visible);
+
+    app.close_todos_view();
+    app.open_todos_view(0, 1).unwrap();
+    assert!(
+        !app.todo_project_visible,
+        "the second TODO view shares state"
+    );
+    assert!(app.todo_global_visible);
+}
+
+#[test]
+fn new_app_starts_with_both_optional_scopes_visible() {
+    let mut first = todos_app();
+    first.todo_project_visible = false;
+    first.todo_global_visible = false;
+
+    let restarted = todos_app();
+    assert!(restarted.todo_project_visible);
+    assert!(restarted.todo_global_visible);
+}
+
+#[test]
+fn hidden_pane_state_is_restored_unchanged() {
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(
+        vec![],
+        vec![sample_todo("p1", false), sample_todo("p2", false)],
+        vec![],
+    ));
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.focus = Some(1);
+        state.panes[1].selected = 1;
+        state.panes[1].scroll_offset = 7;
+    }
+    app.todos_toggle_project_visibility();
+    app.todos_toggle_project_visibility();
+    assert!(matches!(
+        &app.mode,
+        AppMode::Todos(state)
+            if state.panes[1].selected == 1
+                && state.panes[1].scroll_offset == 7
+                && state.panes[1].todos.len() == 2
+    ));
+}
+
+#[test]
+fn hidden_scopes_are_excluded_from_implement_next_priority_resolution() {
+    use crate::db::todos::TodoPriority;
+
+    let mut app = todos_app();
+    let session_id = push_agent_session(&mut app, "sess-visible");
+    let mut project = prioritised("project-visible", TodoPriority::Med);
+    project.work.agent_session_id = Some(session_id.clone());
+    let mut global = prioritised("global-hidden", TodoPriority::High);
+    global.work.agent_session_id = Some(session_id);
+    app.mode = AppMode::Todos(three_pane_view(vec![], vec![project], vec![global]));
+    app.todo_global_visible = false;
+
+    app.implement_next_todo_in_overlay().unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::TodoImplementChoice(state) if state.todo_id == "todo-project-visible"
+    ));
+}
+
+#[test]
+fn hidden_scopes_are_excluded_from_cross_pane_move_targets() {
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(
+        vec![sample_todo("move-me", false)],
+        vec![],
+        vec![],
+    ));
+    app.todo_project_visible = false;
+
+    app.todos_begin_scope_move(false);
     match &app.mode {
-        AppMode::Todos(state) => {
-            assert_eq!(state.visible_pane_count(), 1);
-            assert_eq!(state.focus, 0, "focus cannot rest on a pane that is gone");
-        }
+        AppMode::Todos(state) => assert_eq!(
+            state
+                .scope_move
+                .as_ref()
+                .unwrap()
+                .targets
+                .iter()
+                .map(|(_, index)| *index)
+                .collect::<Vec<_>>(),
+            vec![2]
+        ),
         _ => panic!("expected Todos overlay"),
     }
 }
@@ -20230,7 +20345,7 @@ fn each_pane_keeps_its_own_cursor() {
 
     match &app.mode {
         AppMode::Todos(state) => {
-            assert_eq!(state.focus, 0);
+            assert_eq!(state.focus, Some(0));
             assert_eq!(state.panes[0].selected, 1, "the worktree cursor was kept");
             assert_eq!(state.panes[1].selected, 1);
         }

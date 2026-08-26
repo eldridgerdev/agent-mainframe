@@ -337,13 +337,15 @@ editor shows up to three lists side by side:
 | **Project** | Work belonging to the project as a whole, whichever checkout you are in. |
 | **Global** | Work belonging to no project at all, shared across every repo AMF knows about. |
 
-Only the worktree list is on screen until you press `\`, which reveals the
-project and global lists beside it and remembers the choice. `Tab` /
-`Shift+Tab` move between the lists on screen; each keeps its own cursor,
-scroll, and scratchpad. `M` moves the selected TODO to another list and `C`
-copies it — a move carries whatever was already started for the item, a copy
-lands as fresh, unstarted work. The global list has no entry point of its own:
-you reach it as a side pane here.
+All three scopes start visible. Press `p` to hide or show the project list and
+`g` to hide or show the global list independently; the worktree list is always
+visible when the feature has one. Hidden scopes stay represented by compact
+labeled placeholders. The choice is shared by every TODO view for the rest of
+the current AMF run and resets the next time AMF starts. `Tab` / `Shift+Tab`
+move between visible lists; each list keeps its own cursor, scroll, and
+scratchpad while hidden. `M` moves the selected TODO to another visible list
+and `C` copies it — a move carries whatever was already started for the item,
+while a copy lands as fresh, unstarted work.
 
 From any session, press `Ctrl+Space`, then `N` to capture a TODO without
 leaving your current work. It lands in that feature's worktree list (the
@@ -354,7 +356,7 @@ Existing TODO lists are unchanged by the upgrade: they stay project-scoped,
 keep their host feature and their links, and show up in the project pane. New
 worktree lists start empty.
 
-Press `g` (or `Enter`) on a TODO to start work on it. AMF asks how:
+Press `Enter` on a TODO to start work on it. AMF asks how:
 
 | Choice | What happens |
 | --- | --- |
@@ -374,23 +376,22 @@ lands in an existing feature is written to `AMF_PLAN.todo-<name>.md` rather than
 it, and the agent is told which file is its own.
 
 A TODO planned into a new feature stays open on the list, marked as linked, and
-`g` afterwards jumps to that feature rather than asking again. If the feature is
-later deleted the TODO survives, the link is dropped, and `g` offers the choice
-again. An interrupted interview is saved as a draft and offered back the next
-time you press `g` on that TODO.
+`Enter` afterwards jumps to that feature rather than asking again. If the
+feature is later deleted the TODO survives, the link is dropped, and `Enter`
+offers the choice again. An interrupted interview is saved as a draft and
+offered back the next time you press `Enter` on that TODO.
 
 Press `I` to work the list rather than a particular item: AMF takes the
 highest-priority TODO nobody has started, opens an agent on it, and marks the
 item in progress (`[~]`) so the next `I` moves on. It considers whichever
-lists are currently showing — the worktree list alone with the side panes
-closed, all three with them open — and at equal priority prefers the narrower
-scope: worktree, then project, then global. It works on the list itself and on
-the `TODOs` row on the dashboard, and the composer is seeded but unsent,
-exactly as `g` leaves it.
+lists are currently visible. Hidden project and global scopes are excluded;
+at equal priority AMF prefers the narrower visible scope: worktree, then
+project, then global. It works on the list itself and on the `TODOs` row on the
+dashboard, and the composer is seeded but unsent, exactly as `Enter` leaves it.
 
 A worktree TODO is worked in the feature that owns the checkout. A project or
-global TODO belongs to no one checkout, so `g`, `Enter`, and `I` ask which
-feature should work it; the feature you pick supplies the agent and permission
+global TODO belongs to no one checkout, so `Enter` and `I` ask which feature
+should work it; the feature you pick supplies the agent and permission
 mode exactly as a worktree TODO's own feature would. Press `i` on a TODO to
 set or clear that in-progress mark by hand — useful when you abandoned a session
 without closing it. When every remaining TODO is already underway, AMF offers

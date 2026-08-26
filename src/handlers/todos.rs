@@ -4,7 +4,8 @@
 //! launch chooser / destination step, the move/copy scope chooser, an active
 //! inline edit (add / title / notes / scratchpad), and the normal navigation +
 //! action keys — which now also move focus between panes (`Tab`), reveal them
-//! (`\`), and re-file the selected item across scopes (`M` / `C`).
+//! independently (`p` / `g`), and re-file the selected item across scopes
+//! (`M` / `C`).
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -61,22 +62,23 @@ pub fn handle_todos_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('b') => app.todos_begin_edit_scratchpad(),
         KeyCode::Char(' ') | KeyCode::Char('x') => app.todos_toggle_done()?,
         KeyCode::Char('i') => app.todos_toggle_in_progress()?,
-        KeyCode::Char('p') => app.todos_cycle_priority()?,
+        KeyCode::Char('P') => app.todos_cycle_priority()?,
         KeyCode::Char('J') => app.todos_reorder(1)?,
         KeyCode::Char('K') => app.todos_reorder(-1)?,
         KeyCode::Char('d') => app.todos_request_delete(),
-        KeyCode::Char('g') | KeyCode::Enter => app.todos_launch_selected()?,
-        // Pane focus and the side-pane reveal. `BackTab` is what a terminal
-        // reports for Shift+Tab.
+        KeyCode::Enter => app.todos_launch_selected()?,
+        // Pane focus and independent project/global visibility. `BackTab` is
+        // what a terminal reports for Shift+Tab.
         KeyCode::Tab => app.todos_cycle_focus(1),
         KeyCode::BackTab => app.todos_cycle_focus(-1),
-        KeyCode::Char('\\') => app.todos_toggle_side_panes(),
+        KeyCode::Char('p') => app.todos_toggle_project_visibility(),
+        KeyCode::Char('g') => app.todos_toggle_global_visibility(),
         // Re-file the selected item into another scope: `M` moves it (links
         // and all), `C` leaves a copy behind as fresh, unstarted work.
         KeyCode::Char('M') => app.todos_begin_scope_move(false),
         KeyCode::Char('C') => app.todos_begin_scope_move(true),
-        // Distinct from `g`/`Enter`: those act on the cursor, this picks the
-        // next TODO in priority order wherever it is in the list.
+        // Distinct from `Enter`: that acts on the cursor, while this picks the
+        // next TODO in priority order wherever it is in the view.
         KeyCode::Char('I') => app.implement_next_todo_in_overlay()?,
         _ => {}
     }

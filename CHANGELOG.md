@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.40.0] - 2026-08-26
+
 ### Added
 
 - **A new leader command starts a fresh agent session for continuing work
@@ -71,6 +75,10 @@ are tagged.
 
 ### Fixed
 
+- **Deleting a feature or project now clears its remembered PR association.**
+  Reusing the same branch name for later work no longer shows the old feature's
+  merged or closed PR badge. Failed deletions leave the association intact.
+
 - **Accepting a completed plan now asks immediately before starting above the
   agent concurrency limit.** The completed plan stays available while the
   Resource Check popup is open: continue to create and start the planned
@@ -80,6 +88,8 @@ are tagged.
 
 ### Migration
 
+- No migration is required for PR cleanup. Associations are cleared when a
+  feature or project is deleted after upgrading.
 - No migration is required. Existing TODO states and associations are
   preserved.
 - No data migration is required. TODO contents and pane state are retained when

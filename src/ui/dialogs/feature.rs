@@ -439,11 +439,10 @@ fn draw_create_feature_branch_mode(
             crate::usage::format_usage_summary(&crate::usage::usage_windows_for(agent, usage))
         })
         .collect();
-    let wanted_agent_block_height = 1
-        + agent_summaries
-            .iter()
-            .map(|summary| if summary.is_some() { 2 } else { 1 })
-            .sum::<u16>();
+    let wanted_agent_block_height = 1 + agent_summaries
+        .iter()
+        .map(|summary| if summary.is_some() { 2 } else { 1 })
+        .sum::<u16>();
     // Every other Length section below plus the two single-line spacers
     // around the Min(0) help area — kept in sync with the constraints list
     // just below so the agent block never grows into space they need.

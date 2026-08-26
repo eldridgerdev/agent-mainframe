@@ -154,11 +154,7 @@ pub fn usage_windows_for(agent: &AgentKind, data: &UsageData) -> Vec<UsageWindow
                 windows.push(UsageWindow {
                     label: "5h",
                     percent_remaining: 100.0 - pct,
-                    reset_at: data
-                        .codex
-                        .five_hour_resets
-                        .as_deref()
-                        .and_then(parse_reset),
+                    reset_at: data.codex.five_hour_resets.as_deref().and_then(parse_reset),
                 });
             }
             if let Some(pct) = data.codex.weekly_usage_pct {

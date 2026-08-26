@@ -18992,7 +18992,7 @@ fn starting_then_cancelling_todo_planning_keeps_it_in_progress_and_preserves_the
         state.panes[0].scroll_offset = 7;
     }
 
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 

@@ -1139,7 +1139,7 @@ mod tests {
                 ContextProvenance::Estimated,
                 ContextFreshness::Fresh,
             )),
-            38,
+            48,
         ));
 
         assert!(rendered.contains('…'));

@@ -26,6 +26,19 @@ are tagged.
 
 ### Changed
 
+- **The context-window indicator now shows the raw token count, not just the
+  percentage.** Every session row's `Ctx` indicator — Normal, `WARNING`, and
+  `CRITICAL` alike — now reads its actual token count next to the label
+  (e.g. `Ctx ~91% CRITICAL · 182,000`), so you can judge how large a
+  session's context has actually grown instead of relying on the severity
+  label alone. No config changes or migration required.
+
+- **Raised the fallback context-window size used for Claude Code sessions
+  from 200,000 to 900,000 tokens.** This only affects the `Ctx` percentage
+  when Claude's own status line or transcript doesn't report its context
+  window size directly; AMF's estimate now better matches Sonnet's actual
+  auto-compact window instead of understating it.
+
 - **Project and global TODO lists can now be shown or hidden independently.**
   Press `p` for the project list and `g` for the global list; hidden scopes stay
   discoverable through labeled placeholders and are excluded from pane

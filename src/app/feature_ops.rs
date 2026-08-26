@@ -395,6 +395,24 @@ impl App {
         &mut self,
         prepared: PreparedFeatureLaunch,
     ) -> Result<()> {
+        self.finish_feature_launch_with_resource_approval(prepared, false)
+    }
+
+    /// Finish a launch whose resource confirmation has already been answered.
+    /// The approved bit reaches the start primitive so the resumed operation
+    /// cannot park again or fall back to the creation-time warning toast.
+    pub(crate) fn finish_feature_launch_resource_approved(
+        &mut self,
+        prepared: PreparedFeatureLaunch,
+    ) -> Result<()> {
+        self.finish_feature_launch_with_resource_approval(prepared, true)
+    }
+
+    fn finish_feature_launch_with_resource_approval(
+        &mut self,
+        prepared: PreparedFeatureLaunch,
+        resource_approved: bool,
+    ) -> Result<()> {
         let existing_pending = self
             .store
             .projects
@@ -489,9 +507,11 @@ impl App {
             .position(|p| p.name == prepared.project_name)
         {
             let fi = self.store.projects[pi].features.len().saturating_sub(1);
-            // A machine at the agent cap gets the feature without its agent
-            // rather than a modal in the middle of the creation flow.
-            started = self.autostart_allowed(&prepared.branch);
+            // Ordinary automation and creation paths cannot be parked mid-flow,
+            // so they leave the feature stopped and explain how to start it.
+            // An accepted plan can preserve its state in the resource dialog;
+            // confirmation resumes here with approval already granted.
+            started = resource_approved || self.autostart_allowed(&prepared.branch);
             if started {
                 // `autostart_allowed` above is this path's gate.
                 self.ensure_feature_running(pi, fi, StartIntent::Approved)?;

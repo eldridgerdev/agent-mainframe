@@ -9,8 +9,8 @@ use anyhow::{Context, Result, bail};
 
 use super::pr_review::estimate_tokens;
 use super::{
-    App, AppMode, PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget, PreparedFeatureLaunch,
-    Selection, StartIntent, TodoPlanOrigin,
+    App, AppMode, PendingPlanLaunch, PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget,
+    PreparedFeatureLaunch, Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
@@ -21,7 +21,7 @@ const PLAN_FILE_NAME: &str = "AMF_PLAN.md";
 /// Composer seed offered after an accepted interview. Deliberately short and
 /// editable: the plan itself carries the detail, and the instruction block
 /// already told the agent to treat its decisions as settled.
-const PLAN_KICKOFF_PROMPT: &str = "\
+pub(super) const PLAN_KICKOFF_PROMPT: &str = "\
 Read `AMF_PLAN.md`. It is the plan I approved for this feature — its \
 decisions are settled unless I say otherwise.
 
@@ -1644,29 +1644,32 @@ impl App {
         // still leaves a transcript behind.
         self.persist_plan_interview_draft();
 
-        let pending = match &mut self.mode {
-            AppMode::PlanInterview(state) => state.pending_launch.take(),
+        let pending = match &self.mode {
+            AppMode::PlanInterview(state) => state.pending_launch.clone(),
             _ => return Ok(()),
         };
 
         if let Some(mut prepared) = pending {
-            self.mode = AppMode::Normal;
-            let project_name = prepared.project_name.clone();
-            let branch = prepared.branch.clone();
             // The launch injects the plan-mode instruction block into the
             // harness's instruction file (via `ensure_feature_running`), so the
             // agent already knows the plan is user-approved before it reads the
             // kickoff prompt.
             prepared.startup_prompt = Some(PLAN_KICKOFF_PROMPT.to_string());
-            self.finish_feature_launch_without_interview(prepared)?;
-            self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
-            // The feature exists only now, so this is the first moment the TODO
-            // can be pointed at it. The row itself stays open: the plan is the
-            // start of the work, not the end of it.
-            if let Some(origin) = &todo_origin {
-                self.link_todo_to_new_feature(origin, &project_name, &branch);
+            let pending = PendingPlanLaunch {
+                prepared,
+                interview_key,
+                plan,
+            };
+
+            // A completed interview has all the state needed to pause safely,
+            // so use the same interactive resource gate as manual starts. The
+            // dialog retains this PlanInterview mode for cancellation.
+            if self.gate_plan_launch(pending.clone()) {
+                return Ok(());
             }
-            Ok(())
+
+            self.mode = AppMode::Normal;
+            self.resume_accepted_plan_launch(pending)
         } else if let Some(origin) = todo_origin {
             // A TODO planned into its host feature. The plan is on disk beside
             // the feature's own; accepting starts an agent on it rather than
@@ -1705,6 +1708,31 @@ impl App {
             }
             Ok(())
         }
+    }
+
+    /// Resume the exact accepted-plan launch stashed by the resource dialog.
+    /// The resource check has either passed or been explicitly confirmed, so
+    /// creation and startup bypass the creation-time toast gate exactly once.
+    pub(crate) fn resume_accepted_plan_launch(&mut self, pending: PendingPlanLaunch) -> Result<()> {
+        let PendingPlanLaunch {
+            prepared,
+            interview_key,
+            plan,
+        } = pending;
+        let project_name = prepared.project_name.clone();
+        let branch = prepared.branch.clone();
+        let todo_origin = prepared.todo_origin.clone();
+
+        self.finish_feature_launch_resource_approved(prepared)?;
+        self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
+
+        // The feature exists only now, so this is the first moment the TODO can
+        // be pointed at it. The row itself stays open: the plan is the start of
+        // the work, not the end of it.
+        if let Some(origin) = &todo_origin {
+            self.link_todo_to_new_feature(origin, &project_name, &branch);
+        }
+        Ok(())
     }
 
     /// Whether this interview's plan lands in a feature that already exists.

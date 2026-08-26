@@ -286,7 +286,11 @@ pub enum ContextSettingsField {
 }
 
 impl ContextSettingsField {
-    const ALL: [Self; 3] = [Self::WindowLimit, Self::WarningPercent, Self::CriticalPercent];
+    const ALL: [Self; 3] = [
+        Self::WindowLimit,
+        Self::WarningPercent,
+        Self::CriticalPercent,
+    ];
 
     pub fn next(self) -> Self {
         let index = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
@@ -4987,6 +4991,10 @@ pub enum PendingStart {
     EnterView { auto_compose: bool },
     /// Jumping to a stopped feature from inside a session view (leader n/p).
     SwitchViewToFeature { pi: usize, fi: usize },
+    /// Creating and starting a newly accepted plan-mode feature. Unlike the
+    /// ordinary creation autostart, this operation can be parked because the
+    /// resource dialog retains the completed interview below.
+    PlannedFeature(Box<PendingPlanLaunch>),
 }
 
 /// The pre-start warning: what tripped, what it was about to do, and where to
@@ -5002,6 +5010,10 @@ pub struct ResourceConfirmState {
     /// Session view to restore after confirming or cancelling, when the start
     /// was initiated from inside an embedded session rather than the dashboard.
     pub from_view: Option<ViewState>,
+    /// Completed plan review restored verbatim when a planned feature start is
+    /// cancelled. Other resource-gate callers originate from the dashboard or
+    /// a session view and leave this empty.
+    pub plan_interview: Option<PlanInterviewState>,
 }
 
 pub enum HookNext {
@@ -5392,7 +5404,7 @@ impl CreateFeatureState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreparedFeatureLaunch {
     pub project_name: String,
     pub branch: String,
@@ -5413,6 +5425,19 @@ pub struct PreparedFeatureLaunch {
     /// Set when this launch was started from a TODO, so accepting the plan can
     /// link the created feature back to the row it came from.
     pub todo_origin: Option<TodoPlanOrigin>,
+}
+
+/// An accepted plan's exact deferred feature launch.
+///
+/// The resource confirmation owns this after the interview has written the
+/// plan but before the feature exists. Keeping the prepared launch and the
+/// accepted markdown together lets confirmation resume without rebuilding the
+/// wizard state, regenerating the plan, or losing the kickoff prompt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingPlanLaunch {
+    pub prepared: PreparedFeatureLaunch,
+    pub interview_key: String,
+    pub plan: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

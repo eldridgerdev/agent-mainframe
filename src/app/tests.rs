@@ -1,3 +1,4 @@
+use super::plan_interview::PLAN_KICKOFF_PROMPT;
 use super::setup::{
     cleanup_agent_injected_files, ensure_notification_hooks, ensure_plan_mode_instructions,
     ensure_review_claude_md, strip_between_markers,
@@ -4172,6 +4173,183 @@ fn synthesized_plan_response() -> String {
      ## Tasks\n- [ ] Implement the feature\n- [ ] Verify it\n\n\
      ## Risks / open questions\n- None identified.\n"
         .to_string()
+}
+
+/// Tmux behavior needed by an accepted plan that first opens the resource
+/// confirmation and then launches after approval. A real sleeping child makes
+/// the existing feature's mocked pane count as busy without touching the
+/// process-global headless lease used by concurrently-running tests.
+fn plan_resource_gate_tmux(expect_launch: bool) -> (MockTmuxOps, BusyPane) {
+    let child = std::process::Command::new("sh")
+        .args(["-c", "sleep 60 & wait"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("sh should be available");
+    let pane_pid = child.id() as i64;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let procs = crate::resources::procs::list_processes();
+        if crate::resources::procs::process_tree(&procs, pane_pid).len() > 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_list_panes()
+        .returning(move || vec![("amf-my-feat".to_string(), "claude".to_string(), pane_pid)]);
+    if expect_launch {
+        let created = Arc::new(AtomicBool::new(false));
+        let seen = created.clone();
+        tmux.expect_session_exists()
+            .returning(move |_| seen.load(Ordering::SeqCst));
+        tmux.expect_create_session_with_window()
+            .returning(move |_, _, _| {
+                created.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+        tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_select_window().returning(|_, _| Ok(()));
+    }
+    (tmux, BusyPane(child))
+}
+
+#[test]
+fn accepted_plan_over_limit_asks_then_resumes_exact_launch_once() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.store.projects[0].features[0].status = ProjectStatus::Active;
+    app.store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Existing Claude".into());
+    let (tmux, _pane) = plan_resource_gate_tmux(true);
+    app.tmux = Box::new(tmux);
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+
+    let (workdir, expected_plan) = match &mut app.mode {
+        AppMode::PlanInterview(state) => {
+            let plan = synthesized_plan_response();
+            state.apply_synthesis(plan.clone());
+            (state.workdir.clone(), plan)
+        }
+        _ => panic!("expected plan review"),
+    };
+
+    app.complete_plan_interview().unwrap();
+
+    match &app.mode {
+        AppMode::ConfirmResourceStart(state) => {
+            assert_eq!(state.over_limit.unwrap().limit, 1);
+            let PendingStart::PlannedFeature(pending) = &state.pending else {
+                panic!("expected the accepted plan launch to be parked");
+            };
+            assert_eq!(pending.plan, expected_plan);
+            assert_eq!(pending.prepared.workdir, workdir);
+            assert_eq!(
+                pending.prepared.startup_prompt.as_deref(),
+                Some(PLAN_KICKOFF_PROMPT)
+            );
+            assert!(matches!(
+                state.plan_interview.as_ref(),
+                Some(interview)
+                    if interview.phase == PlanInterviewPhase::Review
+                        && interview.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+                        && interview.pending_launch.is_some()
+            ));
+        }
+        _ => panic!("expected the resource confirmation"),
+    }
+    assert!(workdir.join("AMF_PLAN.md").is_file());
+    assert!(
+        !app.store.projects[0]
+            .features
+            .iter()
+            .any(|feature| feature.name == "planned-feature")
+    );
+    assert!(
+        !app.toasts
+            .iter()
+            .any(|toast| toast.message.contains("Press c to start it"))
+    );
+
+    crate::handlers::handle_resource_confirm_key(&mut app, KeyCode::Enter).unwrap();
+
+    assert_eq!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .filter(|feature| feature.name == "planned-feature")
+            .count(),
+        1
+    );
+    match &app.mode {
+        AppMode::Compose(state) => {
+            assert_eq!(state.editor.text(), PLAN_KICKOFF_PROMPT);
+            assert_eq!(state.view.feature_name, "planned-feature");
+        }
+        _ => panic!("confirmed plan should land in the seeded composer"),
+    }
+
+    // The dialog payload was consumed before replay. A repeated confirmation
+    // call is a no-op and cannot create a duplicate feature or second harness.
+    app.confirm_pending_start().unwrap();
+    assert_eq!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .filter(|feature| feature.name == "planned-feature")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn cancelling_over_limit_plan_start_restores_completed_review() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.store.projects[0].features[0].status = ProjectStatus::Active;
+    app.store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Existing Claude".into());
+    let (tmux, _pane) = plan_resource_gate_tmux(false);
+    app.tmux = Box::new(tmux);
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+
+    let (workdir, expected_plan) = match &mut app.mode {
+        AppMode::PlanInterview(state) => {
+            let plan = synthesized_plan_response();
+            state.apply_synthesis(plan.clone());
+            (state.workdir.clone(), plan)
+        }
+        _ => panic!("expected plan review"),
+    };
+    app.complete_plan_interview().unwrap();
+    assert!(matches!(app.mode, AppMode::ConfirmResourceStart(_)));
+
+    crate::handlers::handle_resource_confirm_key(&mut app, KeyCode::Esc).unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+                && state.pending_launch.is_some()
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Planned feature start cancelled; plan kept for review")
+    );
+    assert_eq!(
+        std::fs::read_to_string(workdir.join("AMF_PLAN.md")).unwrap(),
+        expected_plan
+    );
+    assert!(
+        !app.store.projects[0]
+            .features
+            .iter()
+            .any(|feature| feature.name == "planned-feature")
+    );
 }
 
 fn plan_critique_response() -> String {

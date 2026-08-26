@@ -166,6 +166,19 @@ doc always says exactly what remains.
 - [Vim mode](vim-mode-plan.md) — _Partial._ Ranked checklist of vim
   features for the in-house editor (`src/editor.rs`). Tier 1 core editing
   largely shipped; change operators and Tiers 2-3 remain.
+- [Remote Control — companion app](remote-control-companion-app-plan.md) —
+  _Ready._ Monitor and, eventually, fully control AMF agent sessions
+  (any harness, any feature) from a phone: read-only status/notifications
+  first, then answering blocked-agent prompts, then full terminal
+  control — over LAN and/or an existing tunnel tool. Client is a Flutter
+  native app (iOS + Android) rather than a PWA, paired to AMF via a
+  QR-code exchange for a per-device token. A new remote-control
+  server (tokio/axum) runs on-demand on its own thread, marshalling all
+  App-state access through the existing main-loop channel pattern. Ten
+  epics across four priority tiers, with server skeleton, device
+  storage, and native-app groundwork startable in parallel from day one.
+  Distinct from the shipped per-Claude-session Remote Control below,
+  which mirrors to claude.ai/mobile via Anthropic's own infrastructure.
 - [Remote Control — server mode](remote-control-server-mode-plan.md) —
   _Backlog._ Spawn new Claude sessions on demand from web/mobile, each
   in its own worktree. Deferred; AMF's role would shift from

@@ -3134,6 +3134,18 @@ pub struct TodoQuickCaptureState {
     pub input: String,
 }
 
+/// Collects the user's instruction before starting a fresh-context agent
+/// session (`Ctrl+Space` then `Shift+F`, `crate::app::handoff`), so the
+/// seeded prompt is complete on arrival instead of asking the user to type
+/// over a placeholder in the new session's compose box.
+pub struct FreshContextPromptState {
+    pub view: ViewState,
+    /// Feature the fresh session will be created in, shown in the dialog.
+    pub feature_name: String,
+    /// The instruction being typed.
+    pub input: String,
+}
+
 /// Prompt shown when the feature that hosts a project's TODO list is deleted
 /// while the project survives (see `docs/backlog/feature-todos-plan.md`, Epic 1).
 /// The user chooses which surviving feature re-homes the list, or deletes it.
@@ -4377,6 +4389,9 @@ pub enum AppMode {
     #[allow(dead_code)] // Entered by the plan's Epic 4 dashboard key.
     Learning(Box<LearningViewState>),
     TodoQuickCapture(TodoQuickCaptureState),
+    /// Collect the user's instruction before starting a fresh-context agent
+    /// session (see `FreshContextPromptState`).
+    FreshContextPrompt(FreshContextPromptState),
     /// Re-home or delete a project's TODO list after its host feature is deleted.
     TodosHostReassign(TodosHostReassignState),
     /// "Implement next" landed on a TODO that already has work started for it.

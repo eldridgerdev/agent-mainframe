@@ -10,6 +10,20 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **A new leader command starts a fresh agent session for continuing work
+  without dragging along a long conversation history.** From an agent
+  session, press `Ctrl+Space`, then `Shift+F`. AMF asks what you want the new
+  session to do, then opens a brand-new session in the same feature, using
+  the same agent. Its compose box arrives pre-filled (not sent) with your
+  instruction plus a pointer to the feature's current plan and the files
+  changed on this branch, so it starts oriented without inheriting the old
+  session's accumulated context — review it and send when ready. If the
+  feature has no plan file, that part is left out and AMF says why; on a
+  non-git project, or a branch with nothing changed yet, the changed-files
+  list is simply left out too.
+
 ### Changed
 
 - **Project and global TODO lists can now be shown or hidden independently.**

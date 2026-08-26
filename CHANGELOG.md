@@ -19,6 +19,12 @@ are tagged.
   session's context has actually grown instead of relying on the severity
   label alone. No config changes or migration required.
 
+- **Raised the fallback context-window size used for Claude Code sessions
+  from 200,000 to 900,000 tokens.** This only affects the `Ctx` percentage
+  when Claude's own status line or transcript doesn't report its context
+  window size directly; AMF's estimate now better matches Sonnet's actual
+  auto-compact window instead of understating it.
+
 ## [v0.39.0] - 2026-08-25
 
 ### Added

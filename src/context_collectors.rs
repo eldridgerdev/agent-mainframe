@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const CLAUDE_DEFAULT_CONTEXT_LIMIT: u64 = 200_000;
+const CLAUDE_DEFAULT_CONTEXT_LIMIT: u64 = 900_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextUnavailableReason {
@@ -1421,7 +1421,7 @@ mod tests {
             panic!("expected transcript fallback");
         };
         assert_eq!(sample.used_tokens, 101_002);
-        assert_eq!(sample.context_limit, Some(200_000));
+        assert_eq!(sample.context_limit, Some(900_000));
         assert_eq!(sample.provenance, ContextProvenance::Estimated);
     }
 

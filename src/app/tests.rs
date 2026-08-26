@@ -9943,7 +9943,7 @@ fn session_status_sync_refreshes_all_context_harnesses_and_excludes_terminal() {
             .join(".claude/projects")
             .join(encoded)
             .join("claude-all.jsonl"),
-        "{\"type\":\"assistant\",\"timestamp\":\"2026-08-23T12:00:00Z\",\"sessionId\":\"claude-all\",\"requestId\":\"r1\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":140000,\"output_tokens\":1}}}\n".to_string(),
+        "{\"type\":\"assistant\",\"timestamp\":\"2026-08-23T12:00:00Z\",\"sessionId\":\"claude-all\",\"requestId\":\"r1\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":630000,\"output_tokens\":1}}}\n".to_string(),
     );
     write(
         roots.path().join(".codex/sessions/codex-all.jsonl"),

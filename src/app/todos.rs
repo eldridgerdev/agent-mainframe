@@ -2,10 +2,10 @@
 //! scopes a feature can file work under.
 //!
 //! The overlay shows up to three panes — the feature's own **worktree** list,
-//! its **project** list, and the machine-wide **global** list — of which only
-//! the worktree pane is on screen until the side panes are revealed. Each pane
-//! keeps its own items, cursor, scroll, and scratchpad, so moving focus never
-//! disturbs the pane being left.
+//! its **project** list, and the machine-wide **global** list. Project and
+//! global visibility are independent, while a worktree pane is always shown.
+//! Each pane keeps its own items, cursor, scroll, and scratchpad, so moving
+//! focus or hiding a scope never disturbs the pane being left.
 //!
 //! Edits mutate the in-memory [`TodoPane`] and, when a DB is present, persist
 //! the change. The in-memory panes are the source of truth for the overlay (so
@@ -154,6 +154,42 @@ impl App {
         }
     }
 
+    /// Whether a TODO scope is actionable in the current AMF process.
+    /// Worktree TODOs are always visible; the two broader scopes share their
+    /// visibility across every overlay opened during this run.
+    pub(crate) fn todo_scope_visible(&self, scope: &TodoScope) -> bool {
+        match scope {
+            TodoScope::Worktree { .. } => true,
+            TodoScope::Project { .. } => self.todo_project_visible,
+            TodoScope::Global => self.todo_global_visible,
+        }
+    }
+
+    /// Toggle one of the optional TODO scopes and return its new visibility.
+    /// A worktree scope cannot be hidden, so toggling it is a no-op that
+    /// reports `true`.
+    pub(crate) fn toggle_todo_scope_visibility(&mut self, scope: &TodoScope) -> bool {
+        match scope {
+            TodoScope::Worktree { .. } => true,
+            TodoScope::Project { .. } => {
+                self.todo_project_visible = !self.todo_project_visible;
+                self.todo_project_visible
+            }
+            TodoScope::Global => {
+                self.todo_global_visible = !self.todo_global_visible;
+                self.todo_global_visible
+            }
+        }
+    }
+
+    pub(crate) fn set_todo_scope_visibility(&mut self, scope: &TodoScope, visible: bool) {
+        match scope {
+            TodoScope::Worktree { .. } => {}
+            TodoScope::Project { .. } => self.todo_project_visible = visible,
+            TodoScope::Global => self.todo_global_visible = visible,
+        }
+    }
+
     // ----- open / close ---------------------------------------------------
 
     /// Open the native TODOs overlay for the TODOs session at `(pi, fi)`.
@@ -190,7 +226,7 @@ impl App {
         ));
         scopes.push((TodoPaneKind::Global, TodoScope::Global, String::new()));
 
-        let panes = scopes
+        let panes: Vec<TodoPane> = scopes
             .into_iter()
             .map(|(kind, scope, title)| {
                 let (list, todos) = self.load_todos_for_scope(&scope);
@@ -205,6 +241,9 @@ impl App {
                 }
             })
             .collect();
+        let focus = panes
+            .iter()
+            .position(|pane| self.todo_scope_visible(&pane.scope));
 
         self.mode = AppMode::Todos(TodoViewState {
             pi,
@@ -212,10 +251,7 @@ impl App {
             project_name,
             feature_name,
             panes,
-            // Index 0 is the worktree pane when there is one, the project pane
-            // otherwise — which is exactly where focus should start.
-            focus: 0,
-            side_panes_open: self.config.todo_side_panes,
+            focus,
             editor: None,
             pending_delete: false,
             launch: None,
@@ -323,36 +359,84 @@ impl App {
         }
     }
 
-    /// `Tab` / `Shift+Tab`: move focus between the panes that are on screen.
-    ///
-    /// With the side panes closed there is only one pane to be on, so this
-    /// says which key opens the others rather than swallowing the press.
+    /// `Tab` / `Shift+Tab`: move focus between visible actionable panes.
     pub fn todos_cycle_focus(&mut self, delta: isize) {
+        let (project_visible, global_visible) =
+            (self.todo_project_visible, self.todo_global_visible);
         let AppMode::Todos(state) = &mut self.mode else {
             return;
         };
-        let visible = state.visible_pane_count();
-        if visible <= 1 {
-            self.push_toast_info("Only one TODO list is showing — press \\ to open the side panes");
+        let visible = state.visible_pane_indices(project_visible, global_visible);
+        if visible.is_empty() {
+            self.push_toast_info("No TODO list is visible — press p or g to show one");
             return;
         }
-        let next = (state.focus as isize + delta).rem_euclid(visible as isize);
-        state.focus = next as usize;
+        let current = state
+            .focus
+            .and_then(|focus| visible.iter().position(|index| *index == focus));
+        let next = match current {
+            Some(current) => (current as isize + delta).rem_euclid(visible.len() as isize) as usize,
+            None if delta < 0 => visible.len() - 1,
+            None => 0,
+        };
+        state.focus = Some(visible[next]);
     }
 
-    /// `\`: reveal or hide the project and global panes, remembering the
-    /// choice app-wide so the dashboard's `I` scans the same scopes.
-    pub fn todos_toggle_side_panes(&mut self) {
-        let open = match &mut self.mode {
-            AppMode::Todos(state) => {
-                state.side_panes_open = !state.side_panes_open;
-                state.clamp_focus();
-                state.side_panes_open
-            }
+    fn todos_toggle_pane_visibility(&mut self, kind: TodoPaneKind) {
+        let (pane_index, scope) = match &self.mode {
+            AppMode::Todos(state) => match state
+                .panes
+                .iter()
+                .enumerate()
+                .find(|(_, pane)| pane.kind == kind)
+            {
+                Some((index, pane)) => (index, pane.scope.clone()),
+                None => return,
+            },
             _ => return,
         };
-        self.config.todo_side_panes = open;
-        self.save_config();
+
+        let now_visible = self.toggle_todo_scope_visibility(&scope);
+        let (project_visible, global_visible) =
+            (self.todo_project_visible, self.todo_global_visible);
+        let AppMode::Todos(state) = &mut self.mode else {
+            return;
+        };
+
+        if now_visible {
+            if state.focus.is_none() {
+                state.focus = Some(pane_index);
+            }
+            return;
+        }
+        if state.focus != Some(pane_index) {
+            return;
+        }
+        if state.panes.is_empty() {
+            state.focus = None;
+            return;
+        }
+
+        // Advance from the pane being hidden in the established ordering,
+        // wrapping once. This naturally yields `None` when both optional
+        // scopes are hidden and this feature has no worktree pane.
+        state.focus = (1..=state.panes.len())
+            .map(|offset| (pane_index + offset) % state.panes.len())
+            .find(|index| {
+                TodoViewState::pane_is_visible(
+                    &state.panes[*index],
+                    project_visible,
+                    global_visible,
+                )
+            });
+    }
+
+    pub fn todos_toggle_project_visibility(&mut self) {
+        self.todos_toggle_pane_visibility(TodoPaneKind::Project);
+    }
+
+    pub fn todos_toggle_global_visibility(&mut self) {
+        self.todos_toggle_pane_visibility(TodoPaneKind::Global);
     }
 
     // ----- quick-capture from a session view ----------------------------
@@ -480,7 +564,9 @@ impl App {
 
     /// Start adding a new TODO (empty title editor) in the focused pane.
     pub fn todos_begin_add(&mut self) {
-        self.todos_begin_edit(crate::app::TodoEditTarget::New, String::new());
+        if self.todos_pane().is_some() {
+            self.todos_begin_edit(crate::app::TodoEditTarget::New, String::new());
+        }
     }
 
     /// Start editing the selected TODO's title.
@@ -631,7 +717,7 @@ impl App {
     /// The focused pane's list id, created on first write.
     fn todos_ensure_list_id(&mut self) -> Option<String> {
         let focus = match &self.mode {
-            AppMode::Todos(state) => state.focus,
+            AppMode::Todos(state) => state.focus?,
             _ => return None,
         };
         self.todos_ensure_list_id_for(focus)
@@ -779,11 +865,11 @@ impl App {
 
     /// `M` / `C`: choose another scope to re-file the selected TODO into.
     ///
-    /// Every other pane is offered, whether or not it is currently on screen:
-    /// the scopes exist for this feature regardless of what the side-pane
-    /// toggle is showing, and refusing to move an item because its destination
-    /// is hidden would be a rule the user cannot see.
+    /// Every other visible pane is offered. Hidden scopes are not actionable
+    /// until the user reveals them again.
     pub fn todos_begin_scope_move(&mut self, copy: bool) {
+        let (project_visible, global_visible) =
+            (self.todo_project_visible, self.todo_global_visible);
         let AppMode::Todos(state) = &self.mode else {
             return;
         };
@@ -792,12 +878,17 @@ impl App {
             return;
         };
         let (todo_id, todo_title) = (todo.id.clone(), todo.title.clone());
-        let focus = state.focus;
+        let Some(focus) = state.focus else {
+            self.push_toast_warning("No visible TODO list is selected");
+            return;
+        };
         let targets: Vec<(String, usize)> = state
             .panes
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != focus)
+            .filter(|(i, pane)| {
+                *i != focus && TodoViewState::pane_is_visible(pane, project_visible, global_visible)
+            })
             .map(|(i, pane)| {
                 let label = if pane.title.is_empty() {
                     pane.kind.label().to_string()
@@ -852,7 +943,10 @@ impl App {
                         step.todo_id.clone(),
                         step.todo_title.clone(),
                         *target,
-                        state.focus,
+                        match state.focus {
+                            Some(focus) => focus,
+                            None => return Ok(()),
+                        },
                     ),
                     None => return Ok(()),
                 },
@@ -972,7 +1066,7 @@ impl App {
 
     // ----- spawn agent ---------------------------------------------------
 
-    /// `g`/`Enter` on the selected TODO.
+    /// `Enter` on the selected TODO.
     ///
     /// Resolves what the key means before offering a choice, because a TODO
     /// that already has somewhere to go should go there rather than ask again:
@@ -1740,7 +1834,7 @@ impl App {
     /// Separate from [`Self::handle_todos_host_feature_deleted`], which is
     /// about the *list's* home: this is about individual rows that were planned
     /// into the deleted feature. The TODO survives — the work it describes
-    /// outlived the branch — and the next `g` offers the chooser again rather
+    /// outlived the branch — and the next `Enter` offers the chooser again rather
     /// than a jump that cannot land.
     pub(crate) fn clear_todo_links_to_deleted_feature(&mut self, feature_id: Option<&str>) {
         let Some(feature_id) = feature_id else { return };
@@ -1794,8 +1888,8 @@ impl App {
     }
 
     /// `I` inside the TODOs overlay. Same scan as the dashboard's, over the
-    /// panes already loaded, and deliberately distinct from `g`/`Enter`, which
-    /// stay on the item under the cursor.
+    /// panes already loaded, and deliberately distinct from `Enter`, which
+    /// stays on the item under the cursor.
     pub fn implement_next_todo_in_overlay(&mut self) -> Result<()> {
         let AppMode::Todos(state) = &self.mode else {
             return Ok(());
@@ -1808,28 +1902,28 @@ impl App {
     /// The scopes a surface counts as visible for `(pi, fi)`, in the order
     /// ties between them resolve.
     ///
-    /// The same rule [`TodoViewState::visible_pane_count`] draws with: the
-    /// worktree list alone until the side panes are opened, and all of them
-    /// for a feature that has no worktree list of its own.
+    /// The worktree scope is unconditional; project and global use the shared
+    /// process-lifetime visibility flags.
     pub(crate) fn visible_todo_scopes(
         &self,
         pi: usize,
         fi: usize,
-        side_panes_open: bool,
     ) -> Vec<(TodoPaneKind, TodoScope)> {
         let mut scopes = Vec::new();
         if let Some(scope) = self.worktree_todo_scope(pi, fi) {
             scopes.push((TodoPaneKind::Worktree, scope));
         }
-        if side_panes_open || scopes.is_empty() {
-            if let Some(project) = self.store.projects.get(pi) {
-                scopes.push((
-                    TodoPaneKind::Project,
-                    TodoScope::Project {
-                        project_id: project.id.clone(),
-                    },
-                ));
-            }
+        if self.todo_project_visible
+            && let Some(project) = self.store.projects.get(pi)
+        {
+            scopes.push((
+                TodoPaneKind::Project,
+                TodoScope::Project {
+                    project_id: project.id.clone(),
+                },
+            ));
+        }
+        if self.todo_global_visible {
             scopes.push((TodoPaneKind::Global, TodoScope::Global));
         }
         scopes
@@ -1841,9 +1935,14 @@ impl App {
     fn implement_next_ctx(&mut self, pi: usize, fallback_fi: usize) -> ImplementNextCtx {
         if let AppMode::Todos(state) = &self.mode {
             let (pi, fallback_fi) = (state.pi, state.fi);
+            let visible =
+                state.visible_pane_indices(self.todo_project_visible, self.todo_global_visible);
             let lists = state
-                .visible_panes()
+                .panes
                 .iter()
+                .enumerate()
+                .filter(|(index, _)| visible.contains(index))
+                .map(|(_, pane)| pane)
                 .map(|pane| ImplementNextList {
                     kind: pane.kind,
                     host: match pane.kind {
@@ -1867,7 +1966,7 @@ impl App {
             };
         }
 
-        let scopes = self.visible_todo_scopes(pi, fallback_fi, self.config.todo_side_panes);
+        let scopes = self.visible_todo_scopes(pi, fallback_fi);
         let mut lists = Vec::new();
         for (kind, scope) in scopes {
             let (list, todos) = self.load_todos_for_scope(&scope);
@@ -1893,6 +1992,10 @@ impl App {
 
     /// Run the scan and act on what it finds.
     fn implement_next(&mut self, mut ctx: ImplementNextCtx, skipped: Vec<String>) -> Result<()> {
+        if ctx.lists.is_empty() {
+            self.push_toast_info("No TODO list is visible — press p or g to show one");
+            return Ok(());
+        }
         for list in ctx.lists.iter_mut() {
             self.todos_reconcile_dead_sessions(&mut list.todos)?;
         }

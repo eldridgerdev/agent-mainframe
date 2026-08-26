@@ -988,6 +988,7 @@ fn mode_view_context(mode: &AppMode) -> Option<&crate::app::ViewState> {
         AppMode::SteeringPrompt(state) => Some(&state.view),
         AppMode::Compose(state) => Some(&state.view),
         AppMode::TodoQuickCapture(state) => Some(&state.view),
+        AppMode::FreshContextPrompt(state) => Some(&state.view),
         AppMode::SessionPicker(state) => state.from_view.as_ref(),
         AppMode::DiffReviewPrompt(state) => state.return_to_view.as_ref(),
         AppMode::LatestPrompt(state) => Some(&state.view),
@@ -1175,7 +1176,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::Todos(state) = &app.mode {
-        super::dialogs::draw_todos_view(frame, state, &app.theme, app.config.nerd_font);
+        super::dialogs::draw_todos_view_with_visibility(
+            frame,
+            state,
+            &app.theme,
+            app.config.nerd_font,
+            app.todo_project_visible,
+            app.todo_global_visible,
+        );
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
@@ -1388,6 +1396,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let AppMode::TodoQuickCapture(state) = &app.mode {
         super::dialogs::draw_todo_quick_capture_dialog(frame, state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
+        return;
+    }
+
+    let fresh_context_prompt_from_view = if let AppMode::FreshContextPrompt(state) = &app.mode {
+        Some(state.view.clone())
+    } else {
+        None
+    };
+    if let Some(view) = fresh_context_prompt_from_view.as_ref() {
+        draw_view_pane(frame, app, view, false, false);
+    }
+    if let AppMode::FreshContextPrompt(state) = &app.mode {
+        super::dialogs::draw_fresh_context_prompt_dialog(frame, state, &app.theme);
         draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }

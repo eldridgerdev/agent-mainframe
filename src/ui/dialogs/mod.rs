@@ -8,6 +8,7 @@ mod diff;
 mod dormant;
 mod editor_view;
 mod feature;
+mod handoff;
 mod harness;
 mod help;
 mod hooks;
@@ -36,6 +37,7 @@ pub use feature::{
     draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
     draw_deleting_feature_dialog, draw_fork_feature_dialog, draw_steering_prompt_dialog,
 };
+pub use handoff::draw_fresh_context_prompt_dialog;
 pub use harness::draw_harness_setup_dialog;
 pub use help::draw_help;
 pub use hooks::{
@@ -65,5 +67,5 @@ pub use theme::draw_theme_picker;
 pub use todos::{
     draw_todo_delete_disposition_dialog, draw_todo_implement_choice_dialog,
     draw_todo_quick_capture_dialog, draw_todo_spawn_target_dialog, draw_todos_host_reassign_dialog,
-    draw_todos_view,
+    draw_todos_view_with_visibility,
 };

@@ -507,7 +507,11 @@ Acceptance criteria:
 - [ ] Introduce a capability-driven resume/compact/fresh dialog.
 - [ ] Make normal restart semantics consistent across Claude, Codex,
       and opencode.
-- [ ] Add a leader command for compact or fresh-session rotation.
+- [x] Add a leader command for fresh-session rotation (`Ctrl+Space` then
+      `F`, `src/app/handoff.rs`): starts a new agent session in the same
+      feature/worktree, seeded with a plan-plus-changed-files prompt.
+      Compact rotation, and binding the prompt to the structured handoff
+      schema in P3 below, are still open.
 - [ ] Add tests for unknown context limits, threshold crossings, exact
       versus inferred sources, and unsupported compaction.
 

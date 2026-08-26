@@ -10,6 +10,20 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **A new leader command starts a fresh agent session for continuing work
+  without dragging along a long conversation history.** From an agent
+  session, press `Ctrl+Space`, then `Shift+F`. AMF asks what you want the new
+  session to do, then opens a brand-new session in the same feature, using
+  the same agent. Its compose box arrives pre-filled (not sent) with your
+  instruction plus a pointer to the feature's current plan and the files
+  changed on this branch, so it starts oriented without inheriting the old
+  session's accumulated context — review it and send when ready. If the
+  feature has no plan file, that part is left out and AMF says why; on a
+  non-git project, or a branch with nothing changed yet, the changed-files
+  list is simply left out too.
+
 ### Changed
 
 - **The context-window indicator now shows the raw token count, not just the
@@ -24,6 +38,23 @@ are tagged.
   when Claude's own status line or transcript doesn't report its context
   window size directly; AMF's estimate now better matches Sonnet's actual
   auto-compact window instead of understating it.
+
+- **Project and global TODO lists can now be shown or hidden independently.**
+  Press `p` for the project list and `g` for the global list; hidden scopes stay
+  discoverable through labeled placeholders and are excluded from pane
+  navigation, `I` (implement next), and other cross-pane actions. The worktree
+  list remains visible whenever the feature has one, while repo-root features
+  may hide both optional lists. Visibility is shared by every TODO view for the
+  current AMF run and resets to both lists shown on the next launch.
+- **TODO priority and launch keys moved to make room for the scope toggles.**
+  Press `P` to cycle priority and `Enter` to start or plan the selected TODO.
+  The previous `\` side-pane toggle and `g` launch alias are no longer used in
+  the TODO editor.
+
+### Migration
+
+- No data migration is required. TODO contents and pane state are retained when
+  a scope is hidden; only the TODO editor keybindings changed.
 
 ## [v0.39.0] - 2026-08-25
 

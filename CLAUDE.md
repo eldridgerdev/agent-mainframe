@@ -281,22 +281,25 @@ overlay:
   left. Lists are *loaded* on open and created lazily on first write
   (`todos_ensure_list_id_for`), so an untouched scope leaves no row behind.
   An inline `TextEditor` handles title/notes/scratchpad edits.
-- **What "visible" means, in one rule.** `visible_pane_count()` (draw) and
-  `App::visible_todo_scopes()` (scan) implement the same thing: the worktree
-  pane alone until the side panes are revealed, and *all* panes for a
-  feature that has no worktree pane — closing them there would leave nothing.
-  The reveal is `AppConfig::todo_side_panes`, app-level rather than
-  per-overlay **because the dashboard's `I` runs with no overlay open** and
-  still needs a defined notion of which scopes count.
+- **What "visible" means, in one rule.** `TodoViewState::pane_is_visible`
+  (also `visible_pane_indices`, used by both draw and key handling) and
+  `App::visible_todo_scopes()` (scan) implement the same thing: the
+  worktree pane is always visible, and the project and global panes are
+  each gated by their own independent flag, `AppConfig::todo_project_visible`
+  and `todo_global_visible` — either, both, or neither can be hidden, with
+  `focus: Option<usize>` (not a bare index) covering the case where every
+  optional pane is hidden on a repo-root feature. The flags are app-level
+  rather than per-overlay **because the dashboard's `I` runs with no
+  overlay open** and still needs a defined notion of which scopes count.
 - **Layout:** `pane_slots` decides which panes get a column at the current
   width (3 at ≥120 cols, 2 at ≥72, else 1). Two rules in order: the focused
   pane is always drawn, and the worktree pane keeps its slot whenever there
   is room for a second.
-- **Keys added to the overlay:** `Tab`/`BackTab` cycle focus (and *say* to
-  press `\` when there is only one pane rather than swallowing the press),
-  `\` toggles the side panes, `M`/`C` move/copy the selected item to another
-  scope. `M`/`C` offer every *other* pane, visible or not — the scopes exist
-  regardless of the toggle.
+- **Keys added to the overlay:** `Tab`/`BackTab` cycle focus among visible
+  panes, `p`/`g` independently toggle the project/global panes on or off
+  (hiding the focused pane advances focus to the next visible one), `M`/`C`
+  move/copy the selected item to another scope. `M`/`C` offer every *other*
+  pane, visible or not — the scopes exist regardless of the toggles.
 - **Move vs copy is a semantic difference, not a convenience one.** A
   **move** (`move_todo`) carries `spawned_session_id`, `linked_feature_id`,
   and `in_progress`: it is the same work, re-filed. A **copy** (`copy_todo`)

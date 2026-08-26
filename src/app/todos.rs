@@ -1776,14 +1776,17 @@ impl App {
     /// so that state is permission to continue rather than a duplicate-launch
     /// conflict. A not-started item can still occur when accepting an older
     /// draft or after an external status edit; reserve it through the ordinary
-    /// launch path and tell the caller that a startup failure should undo that
-    /// new reservation. Completed work remains blocked.
+    /// launch path (this always succeeds, since `todo`'s status was just
+    /// checked here and nothing re-reads it in between) and tell the caller
+    /// that a startup failure should undo that new reservation. Completed work
+    /// remains blocked.
     pub(crate) fn todos_prepare_planned_launch(&mut self, todo: &Todo) -> Result<Option<bool>> {
         match todo.work.status {
             TodoStatus::InProgress => Ok(Some(false)),
-            TodoStatus::NotStarted => self
-                .todos_reserve_launch(todo)
-                .map(|reserved| if reserved { Some(true) } else { None }),
+            TodoStatus::NotStarted => {
+                self.todos_reserve_launch(todo)?;
+                Ok(Some(true))
+            }
             TodoStatus::Completed => Ok(None),
         }
     }

@@ -153,20 +153,39 @@ pub struct SessionContextState {
     pub awaiting_post_reset: bool,
 }
 
-pub const CONTEXT_WARNING_PERCENT: u8 = 70;
-pub const CONTEXT_CRITICAL_PERCENT: u8 = 85;
+pub const DEFAULT_CONTEXT_WARNING_PERCENT: u8 = 70;
+pub const DEFAULT_CONTEXT_CRITICAL_PERCENT: u8 = 85;
 const ROLLBACK_MIN_WINDOW_PERCENT: u64 = 10;
 const ROLLBACK_MAX_RETAINED_PERCENT: u64 = 75;
 const ROLLBACK_MIN_TOKENS: u64 = 10_000;
 
+/// User-adjustable percentage boundaries for [`ContextBand`], threaded through
+/// from [`crate::app::AppConfig`] so a customized value reaches the shared
+/// calculation policy without every caller needing to know about `AppConfig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextThresholds {
+    pub warning_percent: u8,
+    pub critical_percent: u8,
+}
+
+impl Default for ContextThresholds {
+    fn default() -> Self {
+        Self {
+            warning_percent: DEFAULT_CONTEXT_WARNING_PERCENT,
+            critical_percent: DEFAULT_CONTEXT_CRITICAL_PERCENT,
+        }
+    }
+}
+
 /// Normalize one collector sample using the feature's shared display policy.
 ///
 /// Percentages use integer floor division, so the warning and critical bands
-/// begin only when actual usage reaches the exact 70% and 85% boundaries.
+/// begin only when actual usage reaches `thresholds`' exact boundaries.
 /// Arithmetic is widened to `u128` before multiplication and percentages are
 /// clamped at 100 for over-limit provider reports.
 pub fn calculate_context_snapshot(
     sample: ContextUsageSample,
+    thresholds: ContextThresholds,
 ) -> Result<SessionContextSnapshot, ContextCalculationError> {
     let limit = sample
         .context_limit
@@ -175,10 +194,12 @@ pub fn calculate_context_snapshot(
         NonZeroU64::new(limit).ok_or(ContextCalculationError::InvalidContextLimit)?;
     let raw_percentage = (u128::from(sample.used_tokens) * 100 / u128::from(limit)).min(100) as i64;
     let percentage = ContextPercentage::clamped(raw_percentage);
-    let band = match percentage.get() {
-        CONTEXT_CRITICAL_PERCENT..=100 => ContextBand::Critical,
-        CONTEXT_WARNING_PERCENT..=84 => ContextBand::Warning,
-        _ => ContextBand::Normal,
+    let band = if percentage.get() >= thresholds.critical_percent {
+        ContextBand::Critical
+    } else if percentage.get() >= thresholds.warning_percent {
+        ContextBand::Warning
+    } else {
+        ContextBand::Normal
     };
 
     Ok(SessionContextSnapshot {
@@ -200,6 +221,7 @@ impl SessionContextState {
     pub fn accept_sample(
         &mut self,
         mut sample: ContextUsageSample,
+        thresholds: ContextThresholds,
     ) -> Result<(), ContextCalculationError> {
         let previous = self.snapshot.as_ref();
         let conversation_changed = self
@@ -243,7 +265,7 @@ impl SessionContextState {
         }
 
         sample.reset = self.reset.clone();
-        let snapshot = calculate_context_snapshot(sample)?;
+        let snapshot = calculate_context_snapshot(sample, thresholds)?;
         self.snapshot = Some(snapshot);
         self.awaiting_post_reset = false;
         Ok(())
@@ -398,7 +420,9 @@ mod tests {
         ];
 
         for (used, expected_band, expected_percentage) in cases {
-            let snapshot = calculate_context_snapshot(sample(used, Some(100_000))).unwrap();
+            let snapshot =
+                calculate_context_snapshot(sample(used, Some(100_000)), ContextThresholds::default())
+                    .unwrap();
             assert_eq!(snapshot.band, expected_band, "used tokens: {used}");
             assert_eq!(
                 snapshot.percentage.get(),
@@ -409,8 +433,50 @@ mod tests {
     }
 
     #[test]
+    fn custom_thresholds_move_the_severity_boundaries() {
+        let thresholds = ContextThresholds {
+            warning_percent: 50,
+            critical_percent: 90,
+        };
+
+        // 60% clears the default 70% warning boundary but not the customized
+        // 50% one.
+        let mid = calculate_context_snapshot(sample(60_000, Some(100_000)), thresholds).unwrap();
+        assert_eq!(mid.band, ContextBand::Warning);
+
+        // 85% trips the default 85% critical boundary but stays Warning
+        // under the customized 90% one.
+        let high = calculate_context_snapshot(sample(85_000, Some(100_000)), thresholds).unwrap();
+        assert_eq!(high.band, ContextBand::Warning);
+
+        let critical =
+            calculate_context_snapshot(sample(90_000, Some(100_000)), thresholds).unwrap();
+        assert_eq!(critical.band, ContextBand::Critical);
+    }
+
+    #[test]
+    fn custom_context_window_changes_the_percentage_and_band() {
+        // Same raw usage, a larger (customized) context window: the
+        // percentage — and therefore the band — must be computed against the
+        // override, not some other fixed limit.
+        let small_window =
+            calculate_context_snapshot(sample(70_000, Some(100_000)), ContextThresholds::default())
+                .unwrap();
+        assert_eq!(small_window.percentage.get(), 70);
+        assert_eq!(small_window.band, ContextBand::Warning);
+
+        let large_window =
+            calculate_context_snapshot(sample(70_000, Some(1_000_000)), ContextThresholds::default())
+                .unwrap();
+        assert_eq!(large_window.percentage.get(), 7);
+        assert_eq!(large_window.band, ContextBand::Normal);
+    }
+
+    #[test]
     fn calculation_clamps_over_limit_usage_without_losing_raw_tokens() {
-        let snapshot = calculate_context_snapshot(sample(u64::MAX, Some(100_000))).unwrap();
+        let snapshot =
+            calculate_context_snapshot(sample(u64::MAX, Some(100_000)), ContextThresholds::default())
+                .unwrap();
 
         assert_eq!(snapshot.used_tokens, u64::MAX);
         assert_eq!(snapshot.percentage, ContextPercentage::MAX);
@@ -420,11 +486,11 @@ mod tests {
     #[test]
     fn calculation_rejects_missing_and_zero_limits_recoverably() {
         assert_eq!(
-            calculate_context_snapshot(sample(10, None)),
+            calculate_context_snapshot(sample(10, None), ContextThresholds::default()),
             Err(ContextCalculationError::MissingContextLimit)
         );
         assert_eq!(
-            calculate_context_snapshot(sample(10, Some(0))),
+            calculate_context_snapshot(sample(10, Some(0)), ContextThresholds::default()),
             Err(ContextCalculationError::InvalidContextLimit)
         );
     }
@@ -434,7 +500,7 @@ mod tests {
         let mut input = sample(64_000, Some(100_000));
         input.provenance = ContextProvenance::Estimated;
 
-        let snapshot = calculate_context_snapshot(input).unwrap();
+        let snapshot = calculate_context_snapshot(input, ContextThresholds::default()).unwrap();
 
         assert_eq!(snapshot.provenance, ContextProvenance::Estimated);
     }
@@ -444,7 +510,9 @@ mod tests {
         let mut state = SessionContextState::default();
         let input = sample(64_000, Some(100_000));
         let sampled_at = input.sampled_at;
-        state.accept_sample(input).unwrap();
+        state
+            .accept_sample(input, ContextThresholds::default())
+            .unwrap();
 
         state.mark_unavailable(timestamp(3_005));
 
@@ -459,12 +527,16 @@ mod tests {
         let mut state = SessionContextState::default();
         let mut first = sample(80_000, Some(100_000));
         first.reset.conversation_id = Some("conversation-1".to_string());
-        state.accept_sample(first).unwrap();
+        state
+            .accept_sample(first, ContextThresholds::default())
+            .unwrap();
 
         let mut second = sample(1_000, Some(100_000));
         second.sampled_at = timestamp(3_010);
         second.reset.conversation_id = Some("conversation-2".to_string());
-        state.accept_sample(second).unwrap();
+        state
+            .accept_sample(second, ContextThresholds::default())
+            .unwrap();
 
         assert_eq!(state.reset.generation, 1);
         assert_eq!(
@@ -479,7 +551,9 @@ mod tests {
         let mut state = SessionContextState::default();
         let mut first = sample(90_000, Some(100_000));
         first.reset.conversation_id = Some("conversation-1".to_string());
-        state.accept_sample(first).unwrap();
+        state
+            .accept_sample(first, ContextThresholds::default())
+            .unwrap();
         let event = ContextResetEvent {
             reason: ContextResetReason::Compaction,
             detected_at: timestamp(3_010),
@@ -496,7 +570,9 @@ mod tests {
         after.sampled_at = timestamp(3_020);
         after.reset.conversation_id = Some("conversation-1".to_string());
         after.reset.last_reset = Some(event);
-        state.accept_sample(after).unwrap();
+        state
+            .accept_sample(after, ContextThresholds::default())
+            .unwrap();
 
         assert_eq!(state.reset.generation, 1);
         assert!(!state.awaiting_post_reset);
@@ -506,12 +582,18 @@ mod tests {
     #[test]
     fn rollback_detection_ignores_corrections_but_accepts_large_drops() {
         let mut state = SessionContextState::default();
-        state.accept_sample(sample(80_000, Some(100_000))).unwrap();
+        state
+            .accept_sample(sample(80_000, Some(100_000)), ContextThresholds::default())
+            .unwrap();
 
-        state.accept_sample(sample(78_000, Some(100_000))).unwrap();
+        state
+            .accept_sample(sample(78_000, Some(100_000)), ContextThresholds::default())
+            .unwrap();
         assert_eq!(state.reset.generation, 0);
 
-        state.accept_sample(sample(40_000, Some(100_000))).unwrap();
+        state
+            .accept_sample(sample(40_000, Some(100_000)), ContextThresholds::default())
+            .unwrap();
         assert_eq!(state.reset.generation, 1);
         assert_eq!(
             state.reset.last_reset.as_ref().map(|event| event.reason),

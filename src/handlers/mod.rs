@@ -3,6 +3,7 @@ mod batch_creation;
 mod browse;
 mod compose;
 mod config_wizard;
+mod context_settings;
 mod dialog;
 mod diff;
 mod diff_review;
@@ -35,6 +36,7 @@ pub use batch_creation::handle_create_batch_features_key;
 pub use browse::handle_browse_path_key;
 pub use compose::handle_compose_key;
 pub use config_wizard::handle_config_wizard_key;
+pub use context_settings::handle_context_settings_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
@@ -169,5 +171,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::HarnessSetup(_) => handle_harness_setup_key(app, key.code),
         AppMode::ConfigWizard(_) => handle_config_wizard_key(app, key),
         AppMode::ReviewHarnessPick(_) => handle_review_harness_pick_key(app, key.code),
+        AppMode::ContextSettings(_) => handle_context_settings_key(app, key),
     }
 }

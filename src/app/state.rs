@@ -275,6 +275,44 @@ pub struct RenameFeatureState {
     pub input: String,
 }
 
+/// Which field of [`ContextSettingsState`] currently has input focus.
+/// Declared in edit order so `next()`/`prev()` can wrap with simple
+/// arithmetic instead of a match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextSettingsField {
+    WindowLimit,
+    WarningPercent,
+    CriticalPercent,
+}
+
+impl ContextSettingsField {
+    const ALL: [Self; 3] = [Self::WindowLimit, Self::WarningPercent, Self::CriticalPercent];
+
+    pub fn next(self) -> Self {
+        let index = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let index = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+/// Global context-window/severity settings dialog (`w` on the dashboard).
+/// Edits [`super::AppConfig::context_window_override`],
+/// `context_warning_percent`, and `context_critical_percent` directly —
+/// unlike `ConfigWizard` this has no project/global scope choice, since the
+/// values it edits are process-wide by design.
+pub struct ContextSettingsState {
+    pub field: ContextSettingsField,
+    /// Empty means "no override" (falls back to each harness's own default).
+    pub window_limit_input: String,
+    pub warning_input: String,
+    pub critical_input: String,
+    pub error: Option<String>,
+}
+
 pub struct SessionConfigState {
     pub project_idx: usize,
     pub feature_idx: usize,
@@ -4497,6 +4535,8 @@ pub enum AppMode {
     ConfirmResourceStart(Box<ResourceConfirmState>),
     /// Features that are idle and unattended, with per-row reclaim actions.
     Dormant(DormantViewState),
+    /// Global context-window/severity settings (`w` on the dashboard).
+    ContextSettings(ContextSettingsState),
 }
 
 /// Pending dispatch of a finished review's feedback to a freshly-spun-up

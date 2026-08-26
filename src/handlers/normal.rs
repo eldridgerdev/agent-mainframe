@@ -335,6 +335,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('D') => {
             app.open_debug_log(None);
         }
+        KeyCode::Char('w') => {
+            app.start_context_settings();
+        }
         _ => {}
     }
     Ok(())

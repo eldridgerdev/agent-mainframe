@@ -420,21 +420,6 @@ fn draw_create_feature_branch_mode(
     let has_chrome_row = state.agent == AgentKind::Claude;
     let has_rc_row = state.agent == AgentKind::Claude;
 
-    // 1 name line per harness, plus 1 more when a usage summary is known
-    // for it (omitted entirely when unknown, per the picker's "fail
-    // silently" rule) — the block above sizes itself to this each frame.
-    let agent_summaries: Vec<Option<String>> = allowed_agents
-        .iter()
-        .map(|agent| {
-            crate::usage::format_usage_summary(&crate::usage::usage_windows_for(agent, usage))
-        })
-        .collect();
-    let agent_block_height = 1
-        + agent_summaries
-            .iter()
-            .map(|summary| if summary.is_some() { 2 } else { 1 })
-            .sum::<u16>();
-
     let title = format!(" New Feature ({}) ", state.project_name);
     let block = Block::default()
         .title(title)
@@ -444,6 +429,39 @@ fn draw_create_feature_branch_mode(
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // 1 name line per harness, plus 1 more when a usage summary is known
+    // for it (omitted entirely when unknown, per the picker's "fail
+    // silently" rule) — the block above sizes itself to this each frame.
+    let agent_summaries: Vec<Option<String>> = allowed_agents
+        .iter()
+        .map(|agent| {
+            crate::usage::format_usage_summary(&crate::usage::usage_windows_for(agent, usage))
+        })
+        .collect();
+    let wanted_agent_block_height = 1
+        + agent_summaries
+            .iter()
+            .map(|summary| if summary.is_some() { 2 } else { 1 })
+            .sum::<u16>();
+    // Every other Length section below plus the two single-line spacers
+    // around the Min(0) help area — kept in sync with the constraints list
+    // just below so the agent block never grows into space they need.
+    let other_sections_height = 3 + 1 + 3 + 1 // [0..3] branch, spacer, worktree, spacer
+        + 1 + 5 + 1 // [5..7] spacer, mode, spacer
+        + 1 + 1 // [8][10] review, plan checkboxes
+        + if has_chrome_row { 1 } else { 0 } // [12] chrome checkbox
+        + if has_rc_row { 1 } else { 0 } // [14] remote_control checkbox
+        + 1 // [16] steering coach checkbox
+        + 1 // [17] spacer before focused help
+        + 1; // [19] hints
+    let min_agent_block_height = 1 + allowed_agents.len() as u16;
+    let agent_block_height = wanted_agent_block_height.min(
+        inner
+            .height
+            .saturating_sub(other_sections_height)
+            .max(min_agent_block_height),
+    );
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

@@ -24,6 +24,7 @@ pub fn draw_create_feature_dialog(
     state: &CreateFeatureState,
     presets: &[FeaturePreset],
     allowed_agents: &[AgentKind],
+    usage: &crate::usage::UsageData,
     theme: &Theme,
 ) {
     match state.step {
@@ -43,7 +44,7 @@ pub fn draw_create_feature_dialog(
             draw_create_feature_session_name(frame, state, theme);
         }
         _ => {
-            draw_create_feature_branch_mode(frame, state, allowed_agents, theme);
+            draw_create_feature_branch_mode(frame, state, allowed_agents, usage, theme);
         }
     }
 }
@@ -411,12 +412,28 @@ fn draw_create_feature_branch_mode(
     frame: &mut Frame,
     state: &CreateFeatureState,
     allowed_agents: &[AgentKind],
+    usage: &crate::usage::UsageData,
     theme: &Theme,
 ) {
     let area = centered_rect(60, 90, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
     let has_chrome_row = state.agent == AgentKind::Claude;
     let has_rc_row = state.agent == AgentKind::Claude;
+
+    // 1 name line per harness, plus 1 more when a usage summary is known
+    // for it (omitted entirely when unknown, per the picker's "fail
+    // silently" rule) — the block above sizes itself to this each frame.
+    let agent_summaries: Vec<Option<String>> = allowed_agents
+        .iter()
+        .map(|agent| {
+            crate::usage::format_usage_summary(&crate::usage::usage_windows_for(agent, usage))
+        })
+        .collect();
+    let agent_block_height = 1
+        + agent_summaries
+            .iter()
+            .map(|summary| if summary.is_some() { 2 } else { 1 })
+            .sum::<u16>();
 
     let title = format!(" New Feature ({}) ", state.project_name);
     let block = Block::default()
@@ -435,7 +452,7 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(1),                                  // [1] spacer
             Constraint::Length(3),                                  // [2] worktree
             Constraint::Length(1),                                  // [3] spacer
-            Constraint::Length(4),                                  // [4] agent
+            Constraint::Length(agent_block_height),                 // [4] agent
             Constraint::Length(1),                                  // [5] spacer
             Constraint::Length(5),                                  // [6] mode
             Constraint::Length(1),                                  // [7] spacer
@@ -558,6 +575,12 @@ fn draw_create_feature_branch_mode(
             format!("   {} {}", marker, agent.display_name()),
             style,
         )));
+        if let Some(summary) = &agent_summaries[i] {
+            agent_lines.push(Line::from(Span::styled(
+                format!("      {summary}"),
+                Style::default().fg(theme.text_muted.to_color()),
+            )));
+        }
     }
 
     let agent_widget = Paragraph::new(agent_lines);

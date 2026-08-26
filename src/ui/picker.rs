@@ -3,7 +3,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
@@ -16,6 +16,7 @@ use crate::app::{
 use crate::custom_session_icons::resolve_custom_session_icon;
 use crate::project::SessionKind;
 use crate::theme::Theme;
+use crate::usage::{UsageData, format_usage_summary, usage_windows_for_session_kind};
 
 use super::dashboard::centered_rect;
 
@@ -1533,6 +1534,7 @@ pub fn draw_opencode_session_confirm(frame: &mut Frame, theme: &Theme) {
 pub fn draw_session_picker(
     frame: &mut Frame,
     state: &SessionPickerState,
+    usage: &UsageData,
     nerd_font: bool,
     theme: &Theme,
 ) {
@@ -1653,13 +1655,33 @@ pub fn draw_session_picker(
 
             let line = Line::from(spans);
 
+            let usage_summary =
+                format_usage_summary(&usage_windows_for_session_kind(&session.kind, usage));
+            let text: Text = match usage_summary {
+                Some(summary) => {
+                    // `text_muted` and the selection background are the
+                    // same "darkgray" in the default theme, so the muted
+                    // color would be invisible on a highlighted row.
+                    let usage_style = if is_selected && !is_disabled {
+                        Style::default().fg(theme.text.to_color())
+                    } else {
+                        Style::default().fg(theme.text_muted.to_color())
+                    };
+                    Text::from(vec![
+                        line,
+                        Line::from(Span::styled(format!("      {summary}"), usage_style)),
+                    ])
+                }
+                None => Text::from(line),
+            };
+
             if is_selected && !is_disabled {
                 selected_item_idx = Some(items.len());
                 items.push(
-                    ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg())),
+                    ListItem::new(text).style(Style::default().bg(theme.effective_selection_bg())),
                 );
             } else {
-                items.push(ListItem::new(line));
+                items.push(ListItem::new(text));
             }
         }
     }

@@ -26,6 +26,13 @@ are tagged.
 
 ### Changed
 
+- **Starting a TODO plan now marks the item in progress immediately.** Choosing
+  **Plan this TODO first** changes the TODO from `[ ]` to `[~]` before the plan
+  destination is selected, so the list accurately shows that planning work has
+  begun and `I` will not assign the same item again. Cancelling later plan or
+  feature setup keeps the item in progress; failed direct agent launches still
+  roll back to not started as before.
+
 - **The context-window indicator now shows the raw token count, not just the
   percentage.** Every session row's `Ctx` indicator — Normal, `WARNING`, and
   `CRITICAL` alike — now reads its actual token count next to the label
@@ -53,6 +60,8 @@ are tagged.
 
 ### Migration
 
+- No migration is required. Existing TODO states and associations are
+  preserved.
 - No data migration is required. TODO contents and pane state are retained when
   a scope is hidden; only the TODO editor keybindings changed.
 

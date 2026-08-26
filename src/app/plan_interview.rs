@@ -1777,17 +1777,20 @@ impl App {
             return Ok(());
         };
 
-        let reserved_todo = self.find_todo_by_id(&origin.todo_id);
-        if let Some(todo) = reserved_todo.as_ref()
-            && !self.todos_reserve_launch(todo)?
-        {
-            self.mode = AppMode::Normal;
-            self.push_toast_warning(
-                "Plan saved, but this TODO is already in progress; another agent was not launched",
-            );
-            self.message = Some(format!("Plan written to {}", plan_path.display()));
-            return Ok(());
-        }
+        let planned_todo = self.find_todo_by_id(&origin.todo_id);
+        let rollback_on_failure = if let Some(todo) = planned_todo.as_ref() {
+            let Some(rollback_on_failure) = self.todos_prepare_planned_launch(todo)? else {
+                self.mode = AppMode::Normal;
+                self.push_toast_warning(
+                    "Plan saved, but this TODO is completed; an agent was not launched",
+                );
+                self.message = Some(format!("Plan written to {}", plan_path.display()));
+                return Ok(());
+            };
+            rollback_on_failure
+        } else {
+            false
+        };
 
         self.mode = AppMode::Normal;
         let agent = self.store.projects[pi].features[fi].agent.clone();
@@ -1803,7 +1806,7 @@ impl App {
         ) {
             Ok(si) => si,
             Err(e) => {
-                if reserved_todo.is_some() {
+                if rollback_on_failure {
                     self.todos_rollback_launch_best_effort(&origin.todo_id);
                 }
                 self.push_toast_error(format!("Plan saved, but the agent failed to start: {e}"));
@@ -1813,10 +1816,12 @@ impl App {
         };
 
         let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
-        if reserved_todo.is_some()
-            && let Err(e) = self.todos_mark_started(&origin.todo_id, &session_id)
+        if planned_todo.is_some()
+            && let Err(e) = self.todos_mark_in_progress(&origin.todo_id, Some(&session_id))
         {
-            self.todos_rollback_launch_best_effort(&origin.todo_id);
+            if rollback_on_failure {
+                self.todos_rollback_launch_best_effort(&origin.todo_id);
+            }
             return Err(e);
         }
 
@@ -1825,7 +1830,7 @@ impl App {
             .enter_view_without_auto_compose()
             .and_then(|_| self.open_compose_seeded(todo_plan_kickoff_prompt(plan_file)))
         {
-            if reserved_todo.is_some() {
+            if rollback_on_failure {
                 self.todos_rollback_launch_best_effort(&origin.todo_id);
             }
             return Err(e);

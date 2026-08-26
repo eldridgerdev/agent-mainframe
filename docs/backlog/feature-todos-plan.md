@@ -504,6 +504,13 @@ definition of eligible work.
 - [x] Direct TODO launches and accepted TODO-plan launches reserve the item
       before creating an agent, save the new `FeatureSession` id once known,
       and roll back to not started if agent creation or composer seeding fails.
+- [x] Starting the TODO plan workflow marks the originating item in progress
+      as soon as **Plan this TODO first** is confirmed, before the destination
+      picker. The shared idempotent transition preserves the item's scope,
+      order, content, priority, feature link, and any existing session
+      association across worktree, project, and global lists. Cancelling later
+      plan or feature setup leaves it in progress because planning already
+      began; direct agent launch failures keep their existing rollback.
 - [x] An explicit attempt to launch an in-progress TODO is blocked. Dashboard
       and editor `I` selection consider only not-started items, while existing
       priority, scope, and manual-order tie-breaking remain unchanged.
@@ -517,7 +524,10 @@ definition of eligible work.
 three markers and counts rendered together, the launch chooser identified an
 in-progress item, a duplicate launch was blocked with an explanatory message,
 and dashboard `I` opened the TODO-specific composer with the item prompt seeded
-and unsent.
+and unsent. The plan-start transition was separately captured before planning,
+at the destination picker, and after cancelling back to the list in
+`docs/screenshots/todo-assignment-lifecycle/`; the final frame shows `[~]` and
+`1 wip` while preserving the selected row.
 
 ## Open (not built)
 

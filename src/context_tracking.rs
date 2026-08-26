@@ -420,9 +420,11 @@ mod tests {
         ];
 
         for (used, expected_band, expected_percentage) in cases {
-            let snapshot =
-                calculate_context_snapshot(sample(used, Some(100_000)), ContextThresholds::default())
-                    .unwrap();
+            let snapshot = calculate_context_snapshot(
+                sample(used, Some(100_000)),
+                ContextThresholds::default(),
+            )
+            .unwrap();
             assert_eq!(snapshot.band, expected_band, "used tokens: {used}");
             assert_eq!(
                 snapshot.percentage.get(),
@@ -465,18 +467,22 @@ mod tests {
         assert_eq!(small_window.percentage.get(), 70);
         assert_eq!(small_window.band, ContextBand::Warning);
 
-        let large_window =
-            calculate_context_snapshot(sample(70_000, Some(1_000_000)), ContextThresholds::default())
-                .unwrap();
+        let large_window = calculate_context_snapshot(
+            sample(70_000, Some(1_000_000)),
+            ContextThresholds::default(),
+        )
+        .unwrap();
         assert_eq!(large_window.percentage.get(), 7);
         assert_eq!(large_window.band, ContextBand::Normal);
     }
 
     #[test]
     fn calculation_clamps_over_limit_usage_without_losing_raw_tokens() {
-        let snapshot =
-            calculate_context_snapshot(sample(u64::MAX, Some(100_000)), ContextThresholds::default())
-                .unwrap();
+        let snapshot = calculate_context_snapshot(
+            sample(u64::MAX, Some(100_000)),
+            ContextThresholds::default(),
+        )
+        .unwrap();
 
         assert_eq!(snapshot.used_tokens, u64::MAX);
         assert_eq!(snapshot.percentage, ContextPercentage::MAX);

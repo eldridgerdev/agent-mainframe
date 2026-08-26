@@ -69,12 +69,23 @@ are tagged.
   The previous `\` side-pane toggle and `g` launch alias are no longer used in
   the TODO editor.
 
+### Fixed
+
+- **Accepting a completed plan now asks immediately before starting above the
+  agent concurrency limit.** The completed plan stays available while the
+  Resource Check popup is open: continue to create and start the planned
+  feature with its original kickoff prompt, or cancel back to plan review
+  without creating it. This replaces the detour to the dashboard and the
+  follow-up “Press c to start it” warning.
+
 ### Migration
 
 - No migration is required. Existing TODO states and associations are
   preserved.
 - No data migration is required. TODO contents and pane state are retained when
   a scope is hidden; only the TODO editor keybindings changed.
+- No migration is required for plan completion confirmations. Existing agent
+  limits and plan-mode features continue to use their current configuration.
 
 ## [v0.39.0] - 2026-08-25
 

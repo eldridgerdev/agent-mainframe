@@ -702,6 +702,13 @@ interview with prior answers pre-filled, get an updated
       rather than hardcoding Claude for every feature. Visual proof:
       `docs/screenshots/harness-aware-session-summary/`, regenerable via
       `scripts/dev/screenshot/scenarios/harness-aware-session-summary.txt`
+- [x] Keep accepted plan launches interactive at the agent concurrency limit.
+      Completing a plan now opens the existing Resource Check popup in place
+      instead of creating a stopped feature, returning to the dashboard, and
+      asking for a second `c` keypress. The popup retains the completed review
+      and exact kickoff prompt: `y`/`Enter` resumes the launch once, while
+      `n`/`Esc` returns to the intact review without creating the feature.
+      Visual proof: `docs/screenshots/plan-mode-concurrency-confirmation/`
 - [x] Make the mouse wheel scroll the review gate. The scroll handlers matched
       a chain of modes and then fell through to dashboard selection movement,
       with no case for the interview — so a wheel notch over a plan taller than

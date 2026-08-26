@@ -11,7 +11,11 @@ use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 
-pub fn draw_context_settings_dialog(frame: &mut Frame, state: &ContextSettingsState, theme: &Theme) {
+pub fn draw_context_settings_dialog(
+    frame: &mut Frame,
+    state: &ContextSettingsState,
+    theme: &Theme,
+) {
     let area = centered_rect(56, 42, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
@@ -35,37 +39,37 @@ pub fn draw_context_settings_dialog(frame: &mut Frame, state: &ContextSettingsSt
         ])
         .split(inner);
 
-    let field_line = |label: &str,
-                       value: &str,
-                       field: ContextSettingsField,
-                       hint: &str|
-     -> Vec<Line<'static>> {
-        let focused = state.field == field;
-        let label_style = if focused {
-            Style::default()
-                .fg(theme.primary.to_color())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text_muted.to_color())
+    let field_line =
+        |label: &str, value: &str, field: ContextSettingsField, hint: &str| -> Vec<Line<'static>> {
+            let focused = state.field == field;
+            let label_style = if focused {
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_muted.to_color())
+            };
+            let mut spans = vec![
+                Span::styled(format!(" {label}: "), label_style),
+                Span::styled(
+                    value.to_string(),
+                    Style::default().fg(theme.text.to_color()),
+                ),
+            ];
+            if focused {
+                spans.push(Span::styled(
+                    "\u{2588}",
+                    Style::default().fg(theme.primary.to_color()),
+                ));
+            }
+            vec![
+                Line::from(spans),
+                Line::from(Span::styled(
+                    format!("   {hint}"),
+                    Style::default().fg(theme.text_muted.to_color()),
+                )),
+            ]
         };
-        let mut spans = vec![
-            Span::styled(format!(" {label}: "), label_style),
-            Span::styled(value.to_string(), Style::default().fg(theme.text.to_color())),
-        ];
-        if focused {
-            spans.push(Span::styled(
-                "\u{2588}",
-                Style::default().fg(theme.primary.to_color()),
-            ));
-        }
-        vec![
-            Line::from(spans),
-            Line::from(Span::styled(
-                format!("   {hint}"),
-                Style::default().fg(theme.text_muted.to_color()),
-            )),
-        ]
-    };
 
     let window_limit_display = if state.window_limit_input.is_empty() {
         "(none — use each harness's own default)".to_string()
@@ -119,10 +123,7 @@ pub fn draw_context_settings_dialog(frame: &mut Frame, state: &ContextSettingsSt
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("Enter", Style::default().fg(theme.primary.to_color())),
-        Span::styled(
-            " save  ",
-            Style::default().fg(theme.text_muted.to_color()),
-        ),
+        Span::styled(" save  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("Esc", Style::default().fg(theme.primary.to_color())),
         Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
     ]);

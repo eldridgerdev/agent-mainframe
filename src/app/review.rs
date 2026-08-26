@@ -1139,7 +1139,7 @@ impl App {
                 state.comment_severity = crate::app::Severity::default();
                 String::new()
             };
-            state.feedback_editor = crate::editor::TextEditor::new(text);
+            state.reset_feedback_editor(text);
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.editing_line_comment = true;
@@ -1224,7 +1224,7 @@ impl App {
             }
             state.editing_line_comment = false;
             state.comment_anchor = None;
-            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+            state.reset_feedback_editor(String::new());
         }
         if let Some(path) = commented_path {
             self.diff_review_sync_auto_reject(&path);
@@ -1321,7 +1321,7 @@ impl App {
                     span_current_text(&texts, &(lo..=hi))
                 }
             };
-            state.feedback_editor = crate::editor::TextEditor::new(prefill);
+            state.reset_feedback_editor(prefill);
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.editing_suggestion = true;
@@ -1405,7 +1405,7 @@ impl App {
             }
             state.editing_suggestion = false;
             state.comment_anchor = None;
-            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+            state.reset_feedback_editor(String::new());
         }
         if let Some(path) = commented_path {
             self.diff_review_sync_auto_reject(&path);
@@ -2417,7 +2417,7 @@ impl App {
             // to Blocker — rejecting a file outright is a must-fix signal.
             let (text, severity) = existing.unwrap_or((String::new(), Severity::Blocker));
             state.comment_severity = severity;
-            state.feedback_editor = crate::editor::TextEditor::new(text);
+            state.reset_feedback_editor(text);
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.feedback_editing = true;
@@ -2431,7 +2431,7 @@ impl App {
             if !state.review {
                 return;
             }
-            state.feedback_editor = crate::editor::TextEditor::new(state.general_feedback.clone());
+            state.reset_feedback_editor(state.general_feedback.clone());
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.editing_general = true;
@@ -2452,9 +2452,7 @@ impl App {
             };
             let existing = state.file_comments.get(&file.path);
             state.comment_severity = existing.map(|c| c.severity).unwrap_or_default();
-            state.feedback_editor = crate::editor::TextEditor::new(
-                existing.map(|c| c.text.clone()).unwrap_or_default(),
-            );
+            state.reset_feedback_editor(existing.map(|c| c.text.clone()).unwrap_or_default());
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.editing_file_comment = true;
@@ -2491,7 +2489,7 @@ impl App {
                 }
             }
             state.editing_file_comment = false;
-            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+            state.reset_feedback_editor(String::new());
         }
         self.persist_review_progress();
     }
@@ -2533,7 +2531,7 @@ impl App {
             }
             state.general_feedback = state.feedback_editor.text().trim().to_string();
             state.editing_general = false;
-            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+            state.reset_feedback_editor(String::new());
         }
         self.persist_review_progress();
     }
@@ -2545,8 +2543,23 @@ impl App {
             state.editing_line_comment = false;
             state.editing_file_comment = false;
             state.editing_suggestion = false;
-            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+            state.reset_feedback_editor(String::new());
         }
+    }
+
+    /// Toggle Vim for every comment and suggestion editor in the current
+    /// review session. The active editor's text survives the keymap reset;
+    /// future editors inherit the same transient preference.
+    pub fn diff_review_toggle_vim(&mut self) {
+        let enabled = match &mut self.mode {
+            AppMode::DiffViewer(state) if state.review => state.toggle_feedback_vim(),
+            _ => return,
+        };
+        self.message = Some(if enabled {
+            "Review editor Vim mode enabled · Normal".to_string()
+        } else {
+            "Review editor Vim mode disabled".to_string()
+        });
     }
 
     /// Record the typed feedback as a rejection for the current file, then
@@ -2567,7 +2580,7 @@ impl App {
                 state.auto_rejected.remove(&path);
             }
             state.feedback_editing = false;
-            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+            state.reset_feedback_editor(String::new());
         }
         self.diff_review_advance();
         self.persist_review_progress();

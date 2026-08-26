@@ -146,6 +146,20 @@ impl TextEditor {
         editor
     }
 
+    /// Build a fresh vim editor in Normal mode.
+    ///
+    /// Session-wide editor preferences use this when opening a new editing
+    /// surface: the buffer is retained, while cursor/undo/key-sequence state is
+    /// deliberately initialized from scratch.
+    pub fn with_vim_normal(text: String) -> Self {
+        let mut editor = Self::with_vim(text);
+        editor.vim_mode = VimMode::Normal;
+        // `with_vim` stages an Insert-session snapshot. Normal mode has no
+        // active Insert session, so there is nothing to commit or undo yet.
+        editor.pending = None;
+        editor
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -1625,6 +1639,20 @@ mod tests {
         assert!(outcome.mode_changed);
         assert_eq!(editor.keymap(), EditorKeymap::Plain);
         assert_eq!(editor.vim_mode(), None);
+    }
+
+    #[test]
+    fn with_vim_normal_starts_fresh_in_normal_mode() {
+        let mut editor = TextEditor::with_vim_normal("hello world".to_string());
+
+        assert_eq!(editor.keymap(), EditorKeymap::Vim);
+        assert_eq!(editor.vim_mode(), Some(VimMode::Normal));
+        editor.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(
+            editor.text(),
+            "hello world",
+            "fresh editors have no undo history"
+        );
     }
 
     #[test]

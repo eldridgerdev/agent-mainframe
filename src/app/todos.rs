@@ -1201,7 +1201,7 @@ impl App {
     /// Drop a TODO's dead feature link, in memory and (with a DB) on disk.
     ///
     /// The DB write is targeted by id rather than an `update_todo` of the
-    /// overlay row, for the same reason [`Self::todos_mark_started`] is: this
+    /// overlay row, for the same reason [`Self::todos_mark_in_progress`] is: this
     /// also runs from the dashboard's "implement next", where no overlay is
     /// open and there is no in-memory row to write back.
     fn clear_todo_linked_feature(&mut self, todo_id: &str) -> Result<()> {
@@ -1265,6 +1265,7 @@ impl App {
                 self.todos_spawn_agent()
             }
             (_, Some(TodoLaunchAction::PlanMode), _) => {
+                self.todos_mark_in_progress(&step.origin().todo_id, None)?;
                 self.open_todo_plan_destination(step.origin().clone());
                 Ok(())
             }
@@ -1558,7 +1559,7 @@ impl App {
             self.push_toast_error("The session for this TODO vanished as it was created");
             return Ok(());
         };
-        if let Err(e) = self.todos_mark_started(&todo.id, &session_id) {
+        if let Err(e) = self.todos_mark_in_progress(&todo.id, Some(&session_id)) {
             self.todos_rollback_launch_best_effort(&todo.id);
             return Err(e);
         }
@@ -1769,6 +1770,27 @@ impl App {
         Ok(true)
     }
 
+    /// Prepare the agent launch that follows an accepted TODO plan.
+    ///
+    /// Plan mode normally marked the item in progress when the workflow began,
+    /// so that state is permission to continue rather than a duplicate-launch
+    /// conflict. A not-started item can still occur when accepting an older
+    /// draft or after an external status edit; reserve it through the ordinary
+    /// launch path (this always succeeds, since `todo`'s status was just
+    /// checked here and nothing re-reads it in between) and tell the caller
+    /// that a startup failure should undo that new reservation. Completed work
+    /// remains blocked.
+    pub(crate) fn todos_prepare_planned_launch(&mut self, todo: &Todo) -> Result<Option<bool>> {
+        match todo.work.status {
+            TodoStatus::InProgress => Ok(Some(false)),
+            TodoStatus::NotStarted => {
+                self.todos_reserve_launch(todo)?;
+                Ok(Some(true))
+            }
+            TodoStatus::Completed => Ok(None),
+        }
+    }
+
     /// Restore the pre-launch state after agent creation or prompt setup fails.
     pub(crate) fn todos_rollback_launch(&mut self, todo_id: &str) -> Result<()> {
         let mut work = TodoWorkState::default();
@@ -1802,29 +1824,42 @@ impl App {
         }
     }
 
-    /// Record the session produced for a reserved TODO, in memory (across every
-    /// loaded pane) and on disk.
+    /// Mark a TODO in progress, optionally associating the session produced for
+    /// it, in memory (across every loaded pane) and on disk.
     ///
-    /// The DB writes are targeted rather than a whole-row [`update_todo`]
-    /// because this is called from the dashboard's "implement next" as well,
-    /// where no overlay is open and there is no in-memory row to write back —
-    /// and reconstructing one would overwrite whatever else changed meanwhile.
-    pub(crate) fn todos_mark_started(&mut self, todo_id: &str, session_id: &str) -> Result<()> {
-        let mut persisted = TodoWorkState {
-            status: TodoStatus::InProgress,
-            agent_session_id: Some(session_id.to_string()),
-        };
+    /// Passing no session preserves an existing association, which is the
+    /// status-only transition used when plan mode begins. Passing a session is
+    /// the successful agent-launch transition. Repeating either transition on
+    /// an already in-progress TODO is intentionally harmless.
+    ///
+    /// The targeted work-state write leaves scope, list identity, ordering,
+    /// title, notes, priority, and feature linkage untouched. It also works
+    /// from the dashboard's "implement next", where no overlay is open.
+    pub(crate) fn todos_mark_in_progress(
+        &mut self,
+        todo_id: &str,
+        session_id: Option<&str>,
+    ) -> Result<()> {
+        let mut persisted = self
+            .find_todo_by_id(todo_id)
+            .map(|todo| todo.work)
+            .unwrap_or_default();
+        persisted.status = TodoStatus::InProgress;
+        if let Some(session_id) = session_id {
+            persisted.agent_session_id = Some(session_id.to_string());
+        }
+
+        // Persist first so a failed write does not make the visible overlay
+        // claim the action succeeded when its source of truth did not change.
+        if let Some(db) = &self.db {
+            db.set_todo_work_state(todo_id, &persisted)?;
+        }
         if let AppMode::Todos(state) = &mut self.mode {
             for pane in state.panes.iter_mut() {
                 if let Some(todo) = pane.todos.iter_mut().find(|t| t.id == todo_id) {
-                    todo.work.status = TodoStatus::InProgress;
-                    todo.work.associate_session(session_id);
-                    persisted = todo.work.clone();
+                    todo.work = persisted.clone();
                 }
             }
-        }
-        if let Some(db) = &self.db {
-            db.set_todo_work_state(todo_id, &persisted)?;
         }
         Ok(())
     }

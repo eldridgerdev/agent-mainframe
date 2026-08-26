@@ -18981,6 +18981,49 @@ fn esc_walks_back_from_destination_to_chooser_to_the_list() {
     );
 }
 
+/// Choosing plan mode is the lifecycle boundary: the TODO changes before the
+/// destination is chosen, and backing out of that workflow does not pretend it
+/// was never begun. The layered picker must not disturb the list viewport.
+#[test]
+fn starting_then_cancelling_todo_planning_keeps_it_in_progress_and_preserves_the_pane() {
+    let mut app = todos_app();
+    seed_selected_todo(&mut app, "plan me");
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].scroll_offset = 7;
+    }
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(matches!(
+                state.launch,
+                Some(crate::app::TodoLaunchStep::Destination { .. })
+            ));
+            assert!(state.panes[0].todos[0].work.status.is_in_progress());
+            assert_eq!(state.focus, Some(0));
+            assert_eq!(state.panes[0].selected, 0);
+            assert_eq!(state.panes[0].scroll_offset, 7);
+        }
+        _ => panic!("expected the destination picker over the TODO list"),
+    }
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.launch.is_none());
+            assert!(state.panes[0].todos[0].work.status.is_in_progress());
+            assert_eq!(state.focus, Some(0));
+            assert_eq!(state.panes[0].selected, 0);
+            assert_eq!(state.panes[0].scroll_offset, 7);
+        }
+        _ => panic!("expected to return to the TODO list"),
+    }
+}
+
 /// The cursor clamps rather than wraps: with two options, wrapping makes j and
 /// k the same key and the highlight appears not to move.
 #[test]
@@ -19726,12 +19769,13 @@ fn manual_toggle_cycles_completed_to_not_started_to_in_progress() {
 }
 
 #[test]
-fn todos_mark_started_updates_in_memory() {
+fn todos_mark_in_progress_updates_in_memory() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
         state.panes[0].todos = vec![sample_todo("a", false), sample_todo("b", false)];
     }
-    app.todos_mark_started("todo-b", "sess-42").unwrap();
+    app.todos_mark_in_progress("todo-b", Some("sess-42"))
+        .unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
             assert!(state.panes[0].todos[0].work.agent_session_id.is_none());
@@ -19745,6 +19789,113 @@ fn todos_mark_started_updates_in_memory() {
             assert!(state.panes[0].todos[1].work.status.is_in_progress());
         }
         _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn mark_in_progress_updates_every_in_memory_scope_without_moving_the_cursor() {
+    let mut app = todos_app();
+    let mut worktree = sample_todo("worktree", false);
+    let mut project = sample_todo("project", false);
+    let mut global = sample_todo("global", false);
+    worktree.id = "todo-worktree".to_string();
+    project.id = "todo-project".to_string();
+    global.id = "todo-global".to_string();
+    app.mode = AppMode::Todos(three_pane_view(vec![worktree], vec![project], vec![global]));
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.focus = Some(2);
+        state.panes[0].scroll_offset = 3;
+        state.panes[1].scroll_offset = 4;
+        state.panes[2].scroll_offset = 5;
+    }
+
+    for id in ["todo-worktree", "todo-project", "todo-global"] {
+        app.todos_mark_in_progress(id, None).unwrap();
+    }
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(
+                state
+                    .panes
+                    .iter()
+                    .all(|pane| pane.todos[0].work.status.is_in_progress())
+            );
+            assert_eq!(state.focus, Some(2));
+            assert_eq!(
+                state
+                    .panes
+                    .iter()
+                    .map(|pane| (pane.selected, pane.scroll_offset))
+                    .collect::<Vec<_>>(),
+                vec![(0, 3), (0, 4), (0, 5)]
+            );
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn mark_in_progress_persists_all_scopes_and_is_idempotent() {
+    use crate::db::todos::{TodoPriority, TodoScope, TodoStatus};
+
+    let mut app = todos_app();
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+
+    let scopes = [
+        worktree_scope("proj-1", "/tmp/test-workdir"),
+        test_project_scope("proj-1"),
+        TodoScope::Global,
+    ];
+    let mut originals = Vec::new();
+    for (index, scope) in scopes.iter().enumerate() {
+        let list = app
+            .db
+            .as_ref()
+            .unwrap()
+            .create_todo_list(scope, (index < 2).then_some("feat-1"))
+            .unwrap();
+        let mut todo = app
+            .db
+            .as_ref()
+            .unwrap()
+            .add_todo(
+                &list.id,
+                &format!("scope {index}"),
+                Some("keep these notes"),
+                TodoPriority::High,
+            )
+            .unwrap();
+        todo.sort_order = 40 + index as i64;
+        todo.work.agent_session_id = Some(format!("existing-session-{index}"));
+        todo.linked_feature_id = Some(format!("linked-feature-{index}"));
+        app.db.as_ref().unwrap().update_todo(&todo).unwrap();
+        originals.push(todo);
+    }
+    app.mode = AppMode::Normal;
+
+    for todo in &originals {
+        app.todos_mark_in_progress(&todo.id, None).unwrap();
+        app.todos_mark_in_progress(&todo.id, None).unwrap();
+    }
+
+    for original in originals {
+        let loaded = app
+            .db
+            .as_ref()
+            .unwrap()
+            .find_todo_by_id(&original.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.work.status, TodoStatus::InProgress);
+        assert_eq!(loaded.work.agent_session_id, original.work.agent_session_id);
+        assert_eq!(loaded.list_id, original.list_id);
+        assert_eq!(loaded.title, original.title);
+        assert_eq!(loaded.body, original.body);
+        assert_eq!(loaded.priority, original.priority);
+        assert_eq!(loaded.sort_order, original.sort_order);
+        assert_eq!(loaded.linked_feature_id, original.linked_feature_id);
     }
 }
 
@@ -19768,6 +19919,45 @@ fn todo_launch_request_reserves_before_a_session_exists() {
 }
 
 #[test]
+fn accepted_plan_continues_from_the_in_progress_state_created_at_plan_start() {
+    let mut app = todos_app();
+    let mut todo = sample_todo("planned", false);
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].todos = vec![todo.clone()];
+    }
+
+    assert_eq!(
+        app.todos_prepare_planned_launch(&todo).unwrap(),
+        Some(false)
+    );
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.panes[0].todos[0].work.status.is_in_progress());
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn accepted_older_plan_reserves_not_started_work_but_blocks_completed_work() {
+    let mut app = todos_app();
+    let not_started = sample_todo("not-started", false);
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].todos = vec![not_started.clone()];
+    }
+    assert_eq!(
+        app.todos_prepare_planned_launch(&not_started).unwrap(),
+        Some(true),
+        "a legacy or externally reset plan needs a rollback-capable reservation"
+    );
+
+    let mut completed = sample_todo("completed", true);
+    completed.work.status = crate::db::todos::TodoStatus::Completed;
+    assert_eq!(app.todos_prepare_planned_launch(&completed).unwrap(), None);
+}
+
+#[test]
 fn duplicate_spawn_for_in_progress_todo_is_blocked_without_side_effects() {
     let mut app = todos_app();
     let mut todo = sample_todo("a", false);
@@ -19785,7 +19975,7 @@ fn duplicate_spawn_for_in_progress_todo_is_blocked_without_side_effects() {
 }
 
 #[test]
-fn creation_and_prompt_failures_both_roll_back_todo_reservation() {
+fn failed_agent_session_startup_and_prompt_setup_both_roll_back_todo_reservation() {
     let mut app = todos_app();
     let todo = sample_todo("a", false);
     if let AppMode::Todos(state) = &mut app.mode {
@@ -19811,7 +20001,8 @@ fn creation_and_prompt_failures_both_roll_back_todo_reservation() {
         _ => unreachable!(),
     };
     assert!(app.todos_reserve_launch(&current).unwrap());
-    app.todos_mark_started(&todo.id, "session-created").unwrap();
+    app.todos_mark_in_progress(&todo.id, Some("session-created"))
+        .unwrap();
     app.todos_rollback_launch(&todo.id).unwrap();
     match &app.mode {
         AppMode::Todos(state) => {

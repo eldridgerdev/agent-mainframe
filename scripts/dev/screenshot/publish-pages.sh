@@ -11,6 +11,7 @@ PR_NUMBER=""
 SCENARIO=""
 REF=""
 PROJECT="${CF_PAGES_PROJECT:-}"
+SUMMARY=""
 ALLOWED_ACTOR="eldridgerdev"
 GEOMETRY="120x40"
 GIF=false
@@ -25,6 +26,7 @@ from main; only its capture job checks out --ref. Failures warn by default.
 
   --pr <number>          Pull request to update (required)
   --scenario <file>      Repository-relative scenario (required)
+  --summary <text>       What the evidence flow proves (required)
   --ref <branch>         Pushed ref to capture (default: current branch)
   --pages-project <name> Pages project (default: CF_PAGES_PROJECT variable)
   --geometry <WxH>       Capture geometry (default: 120x40)
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr) PR_NUMBER="${2:-}"; shift 2 ;;
     --scenario) SCENARIO="${2:-}"; shift 2 ;;
+    --summary) SUMMARY="${2:-}"; shift 2 ;;
     --ref) REF="${2:-}"; shift 2 ;;
     --pages-project) PROJECT="${2:-}"; shift 2 ;;
     --geometry) GEOMETRY="${2:-}"; shift 2 ;;
@@ -51,6 +54,7 @@ done
 [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || warn "--pr must be numeric"
 [[ "$GEOMETRY" =~ ^[0-9]+x[0-9]+$ ]] || warn "--geometry must look like WxH"
 [[ -n "$SCENARIO" ]] || warn "--scenario is required"
+[[ -n "$SUMMARY" && ${#SUMMARY} -le 600 ]] || warn "--summary is required and must be 600 characters or fewer"
 command -v gh >/dev/null 2>&1 || warn "GitHub CLI (gh) is not installed"
 cd "$REPO_ROOT" || warn "cannot enter repository root"
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || warn "could not resolve GitHub repository"
@@ -67,7 +71,7 @@ case "$scenario_abs" in "$REPO_ROOT"/*) SCENARIO="${scenario_abs#"$REPO_ROOT/"}"
 request_id="$(date +%Y%m%d-%H%M%S)-$$"
 if ! gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$WORKFLOW_REF" \
   --raw-field "ref=$REF" --raw-field "scenario=$SCENARIO" \
-  --raw-field "pr_number=$PR_NUMBER" --raw-field "geometry=$GEOMETRY" \
+  --raw-field "pr_number=$PR_NUMBER" --raw-field "summary=$SUMMARY" --raw-field "geometry=$GEOMETRY" \
   --raw-field "gif=$GIF" --raw-field "request_id=$request_id"; then
   warn "could not dispatch the Pages workflow; ensure main is pushed and gh is authenticated"
 fi

@@ -157,6 +157,7 @@ scenario have been pushed:
 scripts/dev/screenshot/publish-pages.sh \
     --pr <number> \
     --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+    --summary "One sentence explaining the complete flow under review" \
     --ref <pushed-branch>
 ```
 
@@ -188,6 +189,12 @@ Enable access policy** before publishing evidence; raw ANSI/text captures remain
 in the internal artifact. Repeated runs update the same branch alias while
 preserving all other PR body content.
 
+To make the index useful without downloading anything, add a `note:` step
+immediately before every `shot:` in the scenario. The note is a concise,
+reviewer-facing sentence describing the visible state and what it proves. The
+required `--summary` describes the overall flow. Pages renders the summary and
+an ordered walkthrough with each note under **What this proves**.
+
 Capture, authentication, workflow, artifact, and PR-body failures print an
 actionable `warning:` and return success by default so a larger PR workflow can
 continue. Pass `--strict` when the caller needs a nonzero exit status instead.
@@ -216,6 +223,8 @@ list of one or more of:
 - `text:<text>` — `tmux send-keys -l` with literal text (special
   characters are not interpreted as key names).
 - `wait:<ms>` — sleep this many milliseconds before the next step.
+- `note:<text>` — a reviewer-facing sentence explaining what the next `shot:`
+  proves; it is shown in the private Pages gallery, not sent as terminal input.
 - `shot:<label>` — `capture-pane -e -p` the current pane to
   `NNN-<label>.ansi` in the output dir (`NNN` is a zero-padded, per-run
   step counter, not tied to the line number). Each shot also writes an

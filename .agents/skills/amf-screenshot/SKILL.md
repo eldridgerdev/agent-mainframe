@@ -30,9 +30,14 @@ Write one step per line. Separate multiple steps on a line with `|`:
 - `key:<name>` sends a tmux key such as `Enter`, `j`, or `Escape`.
 - `text:<literal>` types literal text.
 - `wait:<ms>` waits for a redraw or asynchronous operation.
+- `note:<text>` explains what the immediately following `shot:` proves; use a
+  complete reviewer-facing sentence.
 - `shot:<label>` captures numbered `.ansi` and plain-text `.txt` files.
 
-Add a shot at each frame that materially demonstrates the requested behavior. Prefer a scratch scenario file unless it is broadly reusable.
+Add a shot at each frame that materially demonstrates the requested behavior.
+Put a `note:` immediately before every published shot—state the visible state
+and why it proves the flow. Prefer a scratch scenario file unless it is broadly
+reusable.
 
 When the scenario needs existing data, pass `--seed` and optionally `--seed-feature`. Use the payload shapes in `scripts/dev/screenshot/scenarios/seed-project.json`, `seed-feature.json`, and `docs/automation/`.
 
@@ -66,6 +71,7 @@ an **open** PR, run the repository's agent-driven publisher:
 scripts/dev/screenshot/publish-pages.sh \
   --pr <number> \
   --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+  --summary "One sentence explaining the complete flow under review" \
   --ref <pushed-branch> \
   --strict
 ```
@@ -75,6 +81,8 @@ private Cloudflare Pages workflow and replaces only the PR body section between
 `<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->`. The
 Pages gallery is restricted by Cloudflare Access; raw ANSI/text captures remain
 in a 14-day internal artifact and screenshots are never committed to the branch.
+The gallery index displays the flow summary first, followed by ordered frames
+with their `note:` explanation under **What this proves**.
 
 Publication is a real external write and must be explicitly requested. The
 publisher accepts only the `eldridgerdev` GitHub identity; it rejects another

@@ -103,6 +103,11 @@ Relevant flags:
 - `--keep` — preserve the scratch root instead of deleting it on exit
   (useful while iterating on a scenario).
 
+For a screenshot of an already-completed AI Review, use
+`scenarios/ai-review-completed-fixture.txt`. It uses AMF's deterministic
+`seed-ai-review` fixture; CI must never start a live `A` review or depend on a
+logged-in Claude/Codex harness for visual proof.
+
 This produces, per `shot:` step, a numbered `.ansi` dump and a
 plain-text `.txt` twin (same capture, no escape codes) in `--out-dir`
 (default `<scratch-root>/shots`).

@@ -15,6 +15,9 @@ SUMMARY=""
 ALLOWED_ACTOR="eldridgerdev"
 GEOMETRY="120x40"
 GIF=false
+SEED=""
+SEED_FEATURE=""
+CONFIG_FILE=""
 STRICT=0
 
 usage() {
@@ -31,6 +34,9 @@ from main; only its capture job checks out --ref. Failures warn by default.
   --pages-project <name> Pages project (default: CF_PAGES_PROJECT variable)
   --geometry <WxH>       Capture geometry (default: 120x40)
   --gif                  Include an animated GIF
+  --seed <file>          Repository-relative project seed payload
+  --seed-feature <file>  Repository-relative feature seed payload
+  --config <file>        Repository-relative AMF config payload
   --strict               Return nonzero on failure
 EOF
 }
@@ -45,6 +51,9 @@ while [[ $# -gt 0 ]]; do
     --pages-project) PROJECT="${2:-}"; shift 2 ;;
     --geometry) GEOMETRY="${2:-}"; shift 2 ;;
     --gif) GIF=true; shift ;;
+    --seed) SEED="${2:-}"; shift 2 ;;
+    --seed-feature) SEED_FEATURE="${2:-}"; shift 2 ;;
+    --config) CONFIG_FILE="${2:-}"; shift 2 ;;
     --strict) STRICT=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) warn "unknown argument: $1" ;;
@@ -67,12 +76,20 @@ REF="${REF:-$(git branch --show-current)}"
 
 scenario_abs="$(realpath "$SCENARIO" 2>/dev/null)" || warn "scenario must exist"
 case "$scenario_abs" in "$REPO_ROOT"/*) SCENARIO="${scenario_abs#"$REPO_ROOT/"}" ;; *) warn "scenario must be inside repository" ;; esac
+optional_inputs=()
+for pair in "seed:$SEED" "seed_feature:$SEED_FEATURE" "config:$CONFIG_FILE"; do
+  key="${pair%%:*}"; value="${pair#*:}"
+  if [[ -n "$value" ]]; then
+    absolute="$(realpath "$value" 2>/dev/null)" || warn "$key must exist"
+    case "$absolute" in "$REPO_ROOT"/*) optional_inputs+=(--raw-field "$key=${absolute#"$REPO_ROOT/"}") ;; *) warn "$key must be inside repository" ;; esac
+  fi
+done
 
 request_id="$(date +%Y%m%d-%H%M%S)-$$"
 if ! gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$WORKFLOW_REF" \
   --raw-field "ref=$REF" --raw-field "scenario=$SCENARIO" \
   --raw-field "pr_number=$PR_NUMBER" --raw-field "summary=$SUMMARY" --raw-field "geometry=$GEOMETRY" \
-  --raw-field "gif=$GIF" --raw-field "request_id=$request_id"; then
+  --raw-field "gif=$GIF" --raw-field "request_id=$request_id" "${optional_inputs[@]}"; then
   warn "could not dispatch the Pages workflow; ensure main is pushed and gh is authenticated"
 fi
 

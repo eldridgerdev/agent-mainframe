@@ -7,7 +7,10 @@ use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
 use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
 use super::*;
-use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
+use crate::automation::{
+    CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest, SeedAiReviewFinding,
+    SeedAiReviewRequest,
+};
 use crate::db::todos::{TodoPriority, TodoStatus};
 use crate::extension::{ExtensionConfig, FeaturePreset, HookConfig, HookPrompt, LifecycleHooks};
 use crate::project::TodoSessionReference;
@@ -22051,6 +22054,48 @@ fn open_ai_review_for_pr_reopens_cached_findings_and_summary() {
             assert_eq!(state.summary.as_deref(), Some("Cached review summary."));
         }
         _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
+fn seed_ai_review_fixture_persists_and_opens_without_running_an_agent() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    let workdir = tempfile::tempdir().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+
+    let response = app
+        .seed_ai_review_from_request(&SeedAiReviewRequest {
+            pr_number: 55,
+            head_sha: "fixture-sha".to_string(),
+            summary: "Deterministic completed review.".to_string(),
+            findings: vec![SeedAiReviewFinding {
+                body: "A deterministic finding.".to_string(),
+                ..Default::default()
+            }],
+            open: true,
+            workdir: Some(workdir.path().to_path_buf()),
+            repository: Some("owner/repository".to_string()),
+            head_ref: Some("fixture-branch".to_string()),
+        })
+        .unwrap();
+
+    assert!(response.ok);
+    assert!(response.opened);
+    assert_eq!(response.finding_count, 1);
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.pr.number, 55);
+            assert_eq!(state.pr.head_sha, "fixture-sha");
+            assert_eq!(state.findings[0].body, "A deterministic finding.");
+            assert_eq!(state.summary.as_deref(), Some("Deterministic completed review."));
+        }
+        _ => panic!("expected seeded AI Review pane"),
     }
 }
 

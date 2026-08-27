@@ -1,11 +1,14 @@
 # Context-pressure hint
 
-These captures show the context-pressure feature's new leader commands and
-fresh-session composer in an isolated `120x40` AMF screenshot instance.
+These captures show the context-pressure feature's sidebar item, new leader
+commands, and fresh-session composer in an isolated `120x40` AMF screenshot
+instance.
 
+- `sidebar-warning.png` shows the selected session's `Fresh Context` item,
+  critical usage, and `<leader F>` action.
 - `leader-menu.png` shows `F Fresh context` and `X Dismiss context hint`.
-- `fresh-context-composer.png` shows the editable fresh-context handoff
-  dialog.
+- `fresh-context-composer.png` shows the generated editable continuation
+  prompt.
 
-The scratch harness did not have warning-level live context telemetry, so the
-warning-only sidebar section correctly remained hidden in this run.
+The capture uses synthetic warning-level telemetry injected only for this
+throwaway screenshot run; the generated transcript was removed before cleanup.

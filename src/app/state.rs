@@ -5970,8 +5970,7 @@ impl PlanInterviewState {
                     PlanQuestionKind::FreeText => (Some(raw.to_string()), String::new()),
                     PlanQuestionKind::Select(options) => {
                         let stored_custom = record.custom_answer_for(&question.id);
-                        let (indices, custom) =
-                            split_choice_answer(raw, stored_custom, options);
+                        let (indices, custom) = split_choice_answer(raw, stored_custom, options);
                         let labels: Vec<&str> = indices
                             .iter()
                             .filter_map(|&index| options.get(index))
@@ -6151,8 +6150,7 @@ impl PlanInterviewState {
                     // restored" rather than moving the highlight to option 0.
                     PlanQuestionKind::Select(options) => {
                         let prior_custom = self.prior_custom_answers.get(&id).map(String::as_str);
-                        let (indices, custom) =
-                            split_choice_answer(&prior, prior_custom, options);
+                        let (indices, custom) = split_choice_answer(&prior, prior_custom, options);
                         if indices.is_empty() && custom.trim().is_empty() {
                             return false;
                         }
@@ -7505,12 +7503,8 @@ mod tests {
             source: crate::plan_interview::QuestionSource::Template,
             optional: false,
         };
-        let mut state = PlanInterviewState::new(
-            "feature".into(),
-            "feat-1".into(),
-            vec![question],
-            None,
-        );
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
         state.editor = TextEditor::new("A useful feature".into());
         state.advance().unwrap();
 
@@ -7552,17 +7546,16 @@ mod tests {
             source: crate::plan_interview::QuestionSource::Template,
             optional: false,
         };
-        let mut state = PlanInterviewState::new(
-            "feature".into(),
-            "feat-1".into(),
-            vec![question],
-            None,
-        );
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
         state.editor = TextEditor::new("A useful feature".into());
         state.advance().unwrap();
 
         // Nothing picked, custom text blank: a required question blocks submit.
-        assert_eq!(state.advance(), Err(PlanInterviewAdvanceError::AnswerRequired));
+        assert_eq!(
+            state.advance(),
+            Err(PlanInterviewAdvanceError::AnswerRequired)
+        );
         assert_eq!(state.answers[0], None);
 
         // Esc restores the buffer the editor opened with.
@@ -7582,12 +7575,8 @@ mod tests {
             source: crate::plan_interview::QuestionSource::Template,
             optional: true,
         };
-        let mut state = PlanInterviewState::new(
-            "feature".into(),
-            "feat-1".into(),
-            vec![question],
-            None,
-        );
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
         state.editor = TextEditor::new("brief".into());
         state.advance().unwrap();
 

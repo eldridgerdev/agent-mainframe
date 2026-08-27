@@ -992,7 +992,10 @@ pub fn split_choice_answer(
             .collect()
     };
 
-    if let Some(custom) = stored_custom.map(str::trim).filter(|custom| !custom.is_empty()) {
+    if let Some(custom) = stored_custom
+        .map(str::trim)
+        .filter(|custom| !custom.is_empty())
+    {
         let suffix = format!("{CHOICE_CUSTOM_SEPARATOR}{custom}");
         let labels_part = combined
             .strip_suffix(&suffix)

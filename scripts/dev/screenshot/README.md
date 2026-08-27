@@ -168,6 +168,9 @@ artifact, and edit the PR. The scenario, seed files, and config file are
 repository-relative and must exist on the pushed ref; screenshots themselves
 never need to be committed.
 
+The workflow must already be present on the repository's default branch before
+the command can dispatch it; the capture itself may target any pushed ref.
+
 The command dispatches `.github/workflows/amf-screenshot-artifact.yml`, which
 builds AMF on an isolated GitHub runner, runs `amf-capture.sh`, renders PNGs,
 optionally assembles a GIF, and uploads these files as one 14-day artifact:

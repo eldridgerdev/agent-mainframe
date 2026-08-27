@@ -143,6 +143,54 @@ fn plan_sidebar_text(app: &App, feature: &Feature) -> String {
         .unwrap_or_else(|| "No plan selected".to_string())
 }
 
+/// Render every TODO-menu-originated session reference from current persisted
+/// TODO data. A reference keeps only the stable TODO id, so a moved item is
+/// shown in its new scope without rewriting any session record.
+fn active_todos_sidebar_text(app: &App) -> Option<String> {
+    let mut entries = Vec::new();
+    for (project, feature, session) in app.store.projects.iter().flat_map(|project| {
+        project.features.iter().flat_map(move |feature| {
+            feature
+                .sessions
+                .iter()
+                .map(move |session| (project, feature, session))
+        })
+    }) {
+        let Some(reference) = session
+            .todo_reference
+            .as_ref()
+            .filter(|reference| reference.launched_from_todo_menu)
+        else {
+            continue;
+        };
+        let Some(resolved) = app.resolve_todo_by_id(&reference.todo_id) else {
+            continue;
+        };
+        let scope = match &resolved.list.scope {
+            crate::db::todos::TodoScope::Worktree { .. } => "worktree",
+            crate::db::todos::TodoScope::Project { .. } => "project",
+            crate::db::todos::TodoScope::Global => "global",
+        };
+        let priority = resolved.todo.priority.as_db_str();
+        let status = match resolved.todo.work.status {
+            crate::db::todos::TodoStatus::NotStarted => "not started",
+            crate::db::todos::TodoStatus::InProgress => "in progress",
+            crate::db::todos::TodoStatus::Completed => "complete",
+        };
+        entries.push(format!(
+            "{} / {} / {}\n{} · {} · {} · {}",
+            project.name,
+            feature.name,
+            session.label,
+            resolved.todo.title,
+            priority,
+            scope,
+            status,
+        ));
+    }
+    (!entries.is_empty()).then(|| entries.join("\n\n"))
+}
+
 fn build_agent_sidebar_data(
     app: &App,
     view: &crate::app::ViewState,
@@ -206,6 +254,7 @@ fn build_agent_sidebar_data(
             n => format!("Waiting for {n} inputs"),
         },
     };
+    let active_todos_text = active_todos_sidebar_text(app);
 
     match sidebar_kind {
         SessionKind::Opencode => build_opencode_sidebar_data(
@@ -217,6 +266,7 @@ fn build_agent_sidebar_data(
             status_line,
             context_snapshot,
             context_hint_visible,
+            active_todos_text,
         ),
         SessionKind::Claude => build_claude_sidebar_data(
             app,
@@ -227,6 +277,7 @@ fn build_agent_sidebar_data(
             status_line,
             context_snapshot,
             context_hint_visible,
+            active_todos_text,
         ),
         SessionKind::Codex => build_codex_sidebar_data(
             app,
@@ -237,6 +288,7 @@ fn build_agent_sidebar_data(
             status_line,
             context_snapshot,
             context_hint_visible,
+            active_todos_text,
         ),
         SessionKind::Pi => build_pi_sidebar_data(
             app,
@@ -247,6 +299,7 @@ fn build_agent_sidebar_data(
             status_line,
             context_snapshot,
             context_hint_visible,
+            active_todos_text,
         ),
         _ => None,
     }
@@ -262,6 +315,7 @@ fn build_opencode_sidebar_data(
     status_line: String,
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
+    active_todos_text: Option<String>,
 ) -> Option<super::pane::AgentSidebarData> {
     let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
     let usage_line = session
@@ -308,6 +362,7 @@ fn build_opencode_sidebar_data(
             .or(work_text)
             .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
         todos_text,
+        active_todos_text,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -326,6 +381,7 @@ fn build_claude_sidebar_data(
     status_line: String,
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
+    active_todos_text: Option<String>,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -358,6 +414,7 @@ fn build_claude_sidebar_data(
         prompt_text,
         work_text,
         todos_text,
+        active_todos_text,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -376,6 +433,7 @@ fn build_codex_sidebar_data(
     status_line: String,
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
+    active_todos_text: Option<String>,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -417,6 +475,7 @@ fn build_codex_sidebar_data(
         prompt_text,
         work_text,
         todos_text: None,
+        active_todos_text,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -435,6 +494,7 @@ fn build_pi_sidebar_data(
     status_line: String,
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
+    active_todos_text: Option<String>,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -458,6 +518,7 @@ fn build_pi_sidebar_data(
         prompt_text,
         work_text,
         todos_text: None,
+        active_todos_text,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -1679,6 +1740,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_todo_delete_disposition_dialog(frame, state, &app.theme);
     }
 
+    if let AppMode::ConfirmTodoReferenceCompletion(state) = &app.mode {
+        super::dialogs::draw_todo_reference_completion_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::RenamingSession(state) = &app.mode {
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
     }
@@ -2068,6 +2133,7 @@ mod tests {
             label: "Codex".into(),
             tmux_window: "codex".into(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: Some(TokenUsageSource {
                 provider: TokenUsageProvider::Codex,
                 id: session_id.into(),
@@ -2095,6 +2161,7 @@ mod tests {
             label: label.into(),
             tmux_window: window.into(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: chrono::Utc::now(),
@@ -3148,6 +3215,7 @@ mod tests {
                 label: "Claude".into(),
                 tmux_window: "claude".into(),
                 claude_session_id: Some("claude-session".into()),
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -3257,6 +3325,7 @@ mod tests {
                 label: "Claude".into(),
                 tmux_window: "claude".into(),
                 claude_session_id: Some("claude-session".into()),
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -3366,6 +3435,7 @@ mod tests {
                 label: "Opencode".into(),
                 tmux_window: "opencode".into(),
                 claude_session_id: None,
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,

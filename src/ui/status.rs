@@ -878,6 +878,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("n/Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::ConfirmTodoReferenceCompletion(_) => Line::from(vec![
+            Span::styled(" y/Enter", key_style()),
+            Span::raw(" complete TODO  "),
+            Span::styled("n/Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::ContextSettings(_) => Line::from(vec![
             Span::styled(" Tab", key_style()),
             Span::raw(" next field  "),

@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use crate::project::{
     AgentKind, CURRENT_PROJECT_STORE_VERSION, Feature, FeatureSession, Project, ProjectStatus,
-    ProjectStore, SessionBookmark, SessionKind, TokenUsageSourceMatch, VibeMode,
+    ProjectStore, SessionBookmark, SessionKind, TodoSessionReference, TokenUsageSourceMatch,
+    VibeMode,
 };
 use crate::prompt_library::{PromptPlaceholder, PromptTemplate};
 use crate::token_tracking::TokenUsageSource;
@@ -360,7 +361,8 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
     let mut stmt = conn.prepare(
         "SELECT id, kind, label, tmux_window, claude_session_id,
                 token_usage_source, token_usage_source_match,
-                created_at, command, on_stop, pre_check
+                created_at, command, on_stop, pre_check,
+                todo_id, todo_launched_from_menu
          FROM feature_sessions WHERE feature_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -373,6 +375,12 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
                 label: row.get(2)?,
                 tmux_window: row.get(3)?,
                 claude_session_id: row.get(4)?,
+                todo_reference: row
+                    .get::<_, Option<String>>(11)?
+                    .map(|todo_id| TodoSessionReference {
+                        todo_id,
+                        launched_from_todo_menu: row.get::<_, i64>(12).unwrap_or(0) != 0,
+                    }),
                 token_usage_source: row
                     .get::<_, Option<String>>(5)?
                     .as_deref()
@@ -539,9 +547,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         id, feature_id, kind, label, tmux_window,
                         claude_session_id, token_usage_source,
                         token_usage_source_match, created_at,
-                        command, on_stop, pre_check, sort_order
+                        command, on_stop, pre_check, todo_id,
+                        todo_launched_from_menu, sort_order
                     ) VALUES (
-                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13
+                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15
                     )",
                     params![
                         session.id,
@@ -556,6 +565,12 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         session.command,
                         session.on_stop,
                         session.pre_check,
+                        session.todo_reference.as_ref().map(|reference| &reference.todo_id),
+                        session
+                            .todo_reference
+                            .as_ref()
+                            .is_some_and(|reference| reference.launched_from_todo_menu)
+                            as i32,
                         si as i64,
                     ],
                 )?;
@@ -651,6 +666,10 @@ mod tests {
             label: "Claude 1".to_string(),
             tmux_window: "claude".to_string(),
             claude_session_id: Some("claude-abc123".to_string()),
+            todo_reference: Some(TodoSessionReference {
+                todo_id: "todo-123".to_string(),
+                launched_from_todo_menu: true,
+            }),
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -749,6 +768,13 @@ mod tests {
         let ls = &lf.sessions[0];
         assert_eq!(ls.kind, SessionKind::Claude);
         assert_eq!(ls.claude_session_id, Some("claude-abc123".to_string()));
+        assert_eq!(
+            ls.todo_reference,
+            Some(TodoSessionReference {
+                todo_id: "todo-123".to_string(),
+                launched_from_todo_menu: true,
+            })
+        );
         assert!(ls.status_text.is_none()); // transient — never persisted
     }
 

@@ -11,12 +11,43 @@ use crate::app::{
     TodoDeleteDisposition, TodoDeleteDispositionState, TodoEditTarget, TodoEditor,
     TodoImplementChoice, TodoImplementChoiceState, TodoLaunchAction, TodoLaunchStep, TodoPane,
     TodoPaneKind, TodoQuickCaptureState, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
-    TodosHostReassignState,
+    TodoReferenceCompletionState, TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority, TodoStatus};
 use crate::theme::Theme;
 
 const CURSOR: &str = "\u{2588}";
+
+/// Confirm completing the TODO reference attached to the embedded session.
+pub fn draw_todo_reference_completion_dialog(
+    frame: &mut Frame,
+    _state: &TodoReferenceCompletionState,
+    theme: &Theme,
+) {
+    let area = centered_rect(54, 20, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let block = Block::default()
+        .title(" Complete referenced TODO ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.warning.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from("Mark this session's referenced TODO complete?"),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Enter/y", Style::default().fg(theme.success.to_color())),
+                Span::raw(" confirm  "),
+                Span::styled("Esc/n", Style::default().fg(theme.text_muted.to_color())),
+                Span::raw(" cancel"),
+            ]),
+        ])
+        .wrap(Wrap { trim: true }),
+        inner,
+    );
+}
 
 /// One-line quick-capture dialog overlaid on a session view. Collects a TODO
 /// title to append to the current project's list.

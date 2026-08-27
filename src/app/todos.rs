@@ -18,7 +18,7 @@ use crate::app::{
     App, AppMode, Selection, StartIntent, TodoDeleteDisposition, TodoImplementChoice,
     TodoImplementChoiceState, TodoLaunchAction, TodoLaunchStep, TodoPane, TodoPaneKind,
     TodoPlanDestination, TodoPlanOrigin, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
-    TodosHostReassignState,
+    TodoReferenceCompletionState, TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority, TodoScope, TodoStatus, TodoWorkState};
 
@@ -1489,7 +1489,7 @@ impl App {
     ) -> Result<()> {
         let prompt = Self::todo_spawn_prompt(todo);
 
-        if todo.work.status == TodoStatus::InProgress {
+        if todo.work.status == TodoStatus::InProgress && !force_new {
             self.push_toast_warning(
                 "This TODO is already in progress; another agent was not launched",
             );
@@ -1509,13 +1509,18 @@ impl App {
                 .and_then(|sid| self.session_indices_by_id(sid))
         };
 
-        if !self.todos_reserve_launch(todo)? {
+        // A forced launch is an explicit request for another agent on the
+        // same TODO. Its work state is already reserved, so do not roll that
+        // reservation back if the new session later fails.
+        let reserved_here = todo.work.status != TodoStatus::InProgress;
+        if reserved_here && !self.todos_reserve_launch(todo)? {
             self.push_toast_warning(
                 "This TODO is already in progress; another agent was not launched",
             );
             return Ok(());
         }
 
+        let created_session = existing.is_none();
         let (pi, fi, si) = match existing {
             Some(found) => found,
             None => {
@@ -1539,7 +1544,9 @@ impl App {
                 ) {
                     Ok(si) => (pi, fi, si),
                     Err(e) => {
-                        self.todos_rollback_launch_best_effort(&todo.id);
+                        if reserved_here {
+                            self.todos_rollback_launch_best_effort(&todo.id);
+                        }
                         self.push_toast_error(format!("Failed to launch agent: {e}"));
                         return Ok(());
                     }
@@ -1555,12 +1562,46 @@ impl App {
             .and_then(|f| f.sessions.get(si))
             .map(|s| s.id.clone())
         else {
-            self.todos_rollback_launch_best_effort(&todo.id);
+            if reserved_here {
+                self.todos_rollback_launch_best_effort(&todo.id);
+            }
             self.push_toast_error("The session for this TODO vanished as it was created");
             return Ok(());
         };
+        if created_session {
+            let Some(session) = self
+                .store
+                .projects
+                .get_mut(pi)
+                .and_then(|project| project.features.get_mut(fi))
+            .and_then(|feature| feature.sessions.get_mut(si))
+            else {
+                if reserved_here {
+                    self.todos_rollback_launch_best_effort(&todo.id);
+                }
+                self.push_toast_error("The session for this TODO vanished as it was created");
+                return Ok(());
+            };
+            session.todo_reference = Some(crate::project::TodoSessionReference {
+                todo_id: todo.id.clone(),
+                launched_from_todo_menu: true,
+            });
+
+            // The generic session launcher saves before this TODO-specific
+            // provenance is known. Persist the follow-up separately; a live
+            // harness is retained if the write fails, matching the launcher's
+            // existing failure policy.
+            if let Err(e) = self.save() {
+                self.log_warn(
+                    "todos",
+                    format!("started TODO agent but couldn't save its TODO reference: {e}"),
+                );
+            }
+        }
         if let Err(e) = self.todos_mark_in_progress(&todo.id, Some(&session_id)) {
-            self.todos_rollback_launch_best_effort(&todo.id);
+            if reserved_here {
+                self.todos_rollback_launch_best_effort(&todo.id);
+            }
             return Err(e);
         }
 
@@ -1571,7 +1612,9 @@ impl App {
             .enter_view_without_auto_compose()
             .and_then(|_| self.open_compose_seeded(prompt))
         {
-            self.todos_rollback_launch_best_effort(&todo.id);
+            if reserved_here {
+                self.todos_rollback_launch_best_effort(&todo.id);
+            }
             return Err(e);
         }
         Ok(())
@@ -2260,6 +2303,16 @@ impl App {
         self.db.as_ref()?.find_todo_by_id(todo_id).ok()?
     }
 
+    /// Resolve a referenced TODO at its current scope, even when it moved
+    /// after the agent session was launched.
+    #[allow(dead_code)] // consumed by the forthcoming Active TODO sidebar
+    pub(crate) fn resolve_todo_by_id(
+        &self,
+        todo_id: &str,
+    ) -> Option<crate::db::todos::ResolvedTodo> {
+        self.db.as_ref()?.resolve_todo_by_id(todo_id).ok()?
+    }
+
     // ----- already-started prompt -----------------------------------------
 
     pub fn todo_implement_choice_move(&mut self, delta: isize) {
@@ -2381,7 +2434,9 @@ impl App {
         }
     }
 
-    /// Delete the selected TODO. The linked session, if any, is left untouched.
+    /// Delete the selected TODO. The linked session, if any, is left running,
+    /// but its explicit TODO-sidebar reference is cleared after the deletion
+    /// succeeds so it cannot resolve a deleted item later.
     pub fn todos_confirm_delete(&mut self) -> Result<()> {
         if let AppMode::Todos(state) = &mut self.mode {
             state.pending_delete = false;
@@ -2403,7 +2458,170 @@ impl App {
         if let Some(db) = &self.db {
             db.delete_todo(&removed_id)?;
         }
+        if self.clear_todo_session_references(&removed_id) > 0
+            && let Err(e) = self.save()
+        {
+            self.log_warn(
+                "todos",
+                format!("deleted TODO but couldn't persist cleared session references: {e}"),
+            );
+        }
         Ok(())
+    }
+
+    /// Clear retained sidebar provenance for a TODO that no longer exists.
+    /// This intentionally does not stop its harness or alter the old TODO
+    /// work-state association; only the explicit feature-session reference is
+    /// affected.
+    fn clear_todo_session_references(&mut self, todo_id: &str) -> usize {
+        let mut cleared = 0;
+        for session in self
+            .store
+            .projects
+            .iter_mut()
+            .flat_map(|project| project.features.iter_mut())
+            .flat_map(|feature| feature.sessions.iter_mut())
+        {
+            if session
+                .todo_reference
+                .as_ref()
+                .is_some_and(|reference| reference.todo_id == todo_id)
+            {
+                session.todo_reference = None;
+                cleared += 1;
+            }
+        }
+        cleared
+    }
+
+    /// Ask before completing the TODO explicitly attached to the embedded
+    /// session. References from ordinary agent launches are never eligible.
+    pub(crate) fn request_todo_reference_completion(&mut self) {
+        let Some((view, todo_id)) = (match &self.mode {
+            AppMode::Viewing(view) => {
+                let reference = self
+                    .store
+                    .projects
+                    .iter()
+                    .find(|project| project.name == view.project_name)
+                    .and_then(|project| {
+                        project
+                            .features
+                            .iter()
+                            .find(|feature| feature.name == view.feature_name)
+                    })
+                    .and_then(|feature| {
+                        feature
+                            .sessions
+                            .iter()
+                            .find(|session| session.tmux_window == view.window)
+                    })
+                    .and_then(|session| session.todo_reference.as_ref())
+                    .and_then(|reference| {
+                        reference
+                            .launched_from_todo_menu
+                            .then(|| reference.todo_id.clone())
+                    });
+                reference.map(|todo_id| (view.clone(), todo_id))
+            }
+            _ => None,
+        }) else {
+            self.push_toast_warning("This session was not started from a TODO");
+            return;
+        };
+
+        self.mode = AppMode::ConfirmTodoReferenceCompletion(TodoReferenceCompletionState {
+            view,
+            todo_id,
+        });
+    }
+
+    /// Complete the confirmed referenced TODO, retaining the session reference
+    /// so the sidebar continues to show the completed work.
+    pub(crate) fn confirm_todo_reference_completion(&mut self) -> Result<()> {
+        let AppMode::ConfirmTodoReferenceCompletion(state) =
+            std::mem::replace(&mut self.mode, AppMode::Normal)
+        else {
+            return Ok(());
+        };
+
+        let outcome = (|| -> Result<&'static str> {
+            let Some(db) = &self.db else {
+                anyhow::bail!("TODO persistence is unavailable");
+            };
+            let Some(mut todo) = db.find_todo_by_id(&state.todo_id)? else {
+                anyhow::bail!("the referenced TODO was deleted");
+            };
+            if todo.work.status == TodoStatus::Completed {
+                return Ok("Referenced TODO was already complete");
+            }
+            todo.work.status = TodoStatus::Completed;
+            db.update_todo(&todo)?;
+            Ok("Marked referenced TODO complete")
+        })();
+
+        self.mode = AppMode::Viewing(state.view);
+        match outcome {
+            Ok(message) => self.push_toast_success(message),
+            Err(error) => self.push_toast_error(format!("Couldn't complete referenced TODO: {error}")),
+        }
+        Ok(())
+    }
+
+    pub(crate) fn cancel_todo_reference_completion(&mut self) {
+        let AppMode::ConfirmTodoReferenceCompletion(state) =
+            std::mem::replace(&mut self.mode, AppMode::Normal)
+        else {
+            return;
+        };
+        self.mode = AppMode::Viewing(state.view);
+    }
+
+    /// Explicitly remove the current embedded session's TODO reference. This
+    /// never changes the TODO's completion state.
+    pub(crate) fn clear_active_todo_reference(&mut self) {
+        let cleared = match &self.mode {
+            AppMode::Viewing(view) => self
+                .store
+                .projects
+                .iter_mut()
+                .find(|project| project.name == view.project_name)
+                .and_then(|project| {
+                    project
+                        .features
+                        .iter_mut()
+                        .find(|feature| feature.name == view.feature_name)
+                })
+                .and_then(|feature| {
+                    feature
+                        .sessions
+                        .iter_mut()
+                        .find(|session| session.tmux_window == view.window)
+                })
+                .and_then(|session| {
+                    session
+                        .todo_reference
+                        .as_ref()
+                        .is_some_and(|reference| reference.launched_from_todo_menu)
+                        .then(|| {
+                            session.todo_reference = None;
+                        })
+                })
+                .is_some(),
+            _ => false,
+        };
+
+        if !cleared {
+            self.push_toast_warning("This session has no TODO reference to clear");
+            return;
+        }
+        if let Err(e) = self.save() {
+            self.log_warn(
+                "todos",
+                format!("cleared TODO reference but couldn't persist it: {e}"),
+            );
+        }
+        self.push_toast_success("Cleared this session's TODO reference");
     }
 
     /// Sort items into display order: open first, then by manual `sort_order`.

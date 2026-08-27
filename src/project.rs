@@ -151,6 +151,11 @@ pub struct FeatureSession {
     pub label: String,
     pub tmux_window: String,
     pub claude_session_id: Option<String>,
+    /// The TODO that initiated this agent session, when it was launched from
+    /// the TODO menu.  The identity is stable across TODO list moves; the
+    /// current TODO data is always resolved from SQLite rather than copied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_reference: Option<TodoSessionReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage_source: Option<TokenUsageSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,6 +171,17 @@ pub struct FeatureSession {
     pub status_text: Option<String>,
     #[serde(skip)]
     pub token_usage: Option<SessionTokenUsage>,
+}
+
+/// Provenance retained on an agent session started through the TODO menu.
+///
+/// `launched_from_todo_menu` is deliberately stored alongside the TODO id so
+/// legacy TODO/session associations cannot be mistaken for this feature's
+/// explicit sidebar reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TodoSessionReference {
+    pub todo_id: String,
+    pub launched_from_todo_menu: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -654,6 +670,7 @@ impl Feature {
             label,
             tmux_window: window,
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -690,6 +707,7 @@ impl Feature {
             label: name,
             tmux_window: window,
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -1119,6 +1137,7 @@ impl ProjectStore {
                                 label: "Claude 1".into(),
                                 tmux_window: "claude".into(),
                                 claude_session_id: f.claude_session_id,
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: f.created_at,
@@ -1134,6 +1153,7 @@ impl ProjectStore {
                                 label: "Terminal 1".into(),
                                 tmux_window: "terminal".into(),
                                 claude_session_id: None,
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: f.created_at,
@@ -1444,6 +1464,7 @@ mod tests {
             label: "test".to_string(),
             tmux_window: window.to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -1453,6 +1474,35 @@ mod tests {
             status_text: None,
             token_usage: None,
         }
+    }
+
+    #[test]
+    fn session_todo_reference_is_backward_compatible_and_serializes_when_present() {
+        let legacy = r#"{
+            "id":"session-1",
+            "kind":"claude",
+            "label":"Claude 1",
+            "tmux_window":"claude",
+            "claude_session_id":null,
+            "created_at":"2025-01-01T00:00:00Z"
+        }"#;
+
+        let legacy_session: FeatureSession = serde_json::from_str(legacy).unwrap();
+        assert!(legacy_session.todo_reference.is_none());
+
+        let referenced = FeatureSession {
+            todo_reference: Some(TodoSessionReference {
+                todo_id: "todo-1".to_string(),
+                launched_from_todo_menu: true,
+            }),
+            ..legacy_session
+        };
+        let serialized = serde_json::to_value(referenced).unwrap();
+        assert_eq!(serialized["todo_reference"]["todo_id"], "todo-1");
+        assert_eq!(
+            serialized["todo_reference"]["launched_from_todo_menu"],
+            true
+        );
     }
 
     fn make_feature() -> Feature {
@@ -1516,6 +1566,7 @@ mod tests {
                         label: "Claude 1".to_string(),
                         tmux_window: "claude".to_string(),
                         claude_session_id: None,
+                        todo_reference: None,
                         token_usage_source: None,
                         token_usage_source_match: None,
                         created_at: Utc::now(),
@@ -1579,6 +1630,7 @@ mod tests {
                                 label: "Terminal 1".to_string(),
                                 tmux_window: "terminal".to_string(),
                                 claude_session_id: Some("claude-123".to_string()),
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: Utc::now(),
@@ -1594,6 +1646,7 @@ mod tests {
                                 label: "Claude 2".to_string(),
                                 tmux_window: "claude-2".to_string(),
                                 claude_session_id: None,
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: Utc::now(),

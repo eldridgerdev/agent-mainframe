@@ -805,6 +805,7 @@ mod tests {
             label: label.to_string(),
             tmux_window: label.to_ascii_lowercase().replace(' ', "-"),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),

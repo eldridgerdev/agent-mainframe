@@ -4483,6 +4483,9 @@ pub enum AppMode {
     /// unfinished TODOs: move them to the project list, move them to the
     /// global list, delete them, or cancel the deletion outright.
     TodoDeleteDisposition(TodoDeleteDispositionState),
+    /// Confirm completing the TODO explicitly referenced by the embedded
+    /// agent session currently being viewed.
+    ConfirmTodoReferenceCompletion(TodoReferenceCompletionState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
@@ -4578,6 +4581,12 @@ pub enum AppMode {
     Dormant(DormantViewState),
     /// Global context-window/severity settings (`w` on the dashboard).
     ContextSettings(ContextSettingsState),
+}
+
+/// The view to return to plus the stable TODO identity to complete.
+pub struct TodoReferenceCompletionState {
+    pub view: ViewState,
+    pub todo_id: String,
 }
 
 /// Pending dispatch of a finished review's feedback to a freshly-spun-up

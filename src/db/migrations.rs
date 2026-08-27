@@ -128,6 +128,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Replace TODO completion flags with a three-state status and agent association",
             MIGRATION_028,
         ),
+        (
+            "Persist TODO-menu launch references on agent sessions",
+            MIGRATION_029,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -744,6 +748,18 @@ SET status = CASE WHEN done != 0 THEN 'completed' ELSE 'not_started' END,
     agent_session_id = CASE WHEN done != 0 THEN spawned_session_id ELSE NULL END;
 ";
 
+/// A TODO reference belongs to an AMF agent session, rather than to the TODO's
+/// lifecycle/work-state link.  Existing sessions predate this explicit launch
+/// provenance and therefore remain unreferenced.
+const MIGRATION_029: &str = "
+ALTER TABLE feature_sessions ADD COLUMN todo_id TEXT;
+ALTER TABLE feature_sessions
+    ADD COLUMN todo_launched_from_menu INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_feature_sessions_todo_reference
+    ON feature_sessions(todo_id)
+    WHERE todo_id IS NOT NULL;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -780,7 +796,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 28);
+        assert_eq!(version, 29);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -875,7 +891,37 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 28);
+        assert_eq!(version, 29);
+    }
+
+    #[test]
+    fn migration_029_leaves_existing_sessions_without_todo_provenance() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (28, datetime('now'), 'seed');
+             INSERT INTO projects (id, name, repo, created_at)
+                VALUES ('p1', 'project', '/repo', datetime('now'));
+             INSERT INTO features (id, project_id, name, branch, workdir, created_at, last_accessed)
+                VALUES ('f1', 'p1', 'feature', 'main', '/repo', datetime('now'), datetime('now'));
+             INSERT INTO feature_sessions (id, feature_id, kind, created_at)
+                VALUES ('s1', 'f1', 'claude', datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let reference: (Option<String>, i64) = conn
+            .query_row(
+                "SELECT todo_id, todo_launched_from_menu
+                 FROM feature_sessions WHERE id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(reference, (None, 0));
     }
 
     /// Migration 023 adds `linked_feature_id` to TODOs written before it
@@ -1125,7 +1171,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 28);
+        assert_eq!(rows, 29);
     }
 
     /// Features written before selected-plan persistence existed acquire a
@@ -1173,7 +1219,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 28);
+        assert_eq!(version, 29);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

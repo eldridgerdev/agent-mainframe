@@ -355,17 +355,26 @@ if [[ "$first_screen" == "Configure Agent Harnesses" ]]; then
     echo "resolving first-run harness setup dialog" >&2
     # The dialog's title renders before amf starts reading keys, so a single
     # immediate Enter is silently dropped. Re-send it until the availability
-    # check actually starts (or resolves).
-    harness_resolved=""
-    for _ in 1 2 3 4 5 6; do
-        tmux send-keys -t "$SESSION" Enter
-        if harness_resolved="$(wait_for_any 3 "(installed)" "(not found" 2>/dev/null)"; then
+    # check actually starts (or resolves). Probe each row because a runner
+    # may provide Codex, Opencode, or Pi without having Claude installed.
+    harness_installed=0
+    for _ in 1 2 3 4; do
+        harness_resolved=""
+        for _ in 1 2 3 4 5 6; do
+            tmux send-keys -t "$SESSION" Enter
+            if harness_resolved="$(wait_for_any 3 "(installed)" "(not found" 2>/dev/null)"; then
+                break
+            fi
+            harness_resolved=""
+        done
+        if [[ "$harness_resolved" == "(installed)" ]]; then
+            harness_installed=1
             break
         fi
-        harness_resolved=""
+        tmux send-keys -t "$SESSION" j
     done
-    if [[ -z "$harness_resolved" ]]; then
-        echo "error: harness setup dialog never resolved an availability check" >&2
+    if [[ "$harness_installed" -ne 1 ]]; then
+        echo "error: harness setup dialog found no installed harness" >&2
         tmux capture-pane -p -t "$SESSION" >&2 || true
         exit 1
     fi

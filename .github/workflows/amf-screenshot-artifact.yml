@@ -63,6 +63,9 @@ jobs:
       - name: Install capture dependencies
         run: sudo apt-get update && sudo apt-get install -y fonts-dejavu tmux
 
+      - name: Install Codex harness
+        run: npm install --global @openai/codex
+
       - name: Install Pillow
         run: |
           python3 -m venv "$RUNNER_TEMP/amf-screenshot-venv"

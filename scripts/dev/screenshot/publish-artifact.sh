@@ -130,7 +130,7 @@ for _ in {1..30}; do
         --event workflow_dispatch --limit 30 --json databaseId,displayTitle 2>/dev/null || true)"
     run_id="$(RUNS_JSON="$runs" REQUEST_ID="$request_id" python3 - <<'PY'
 import json, os
-for run in json.loads(os.environ.get("RUNS_JSON", "[]")):
+for run in json.loads(os.environ.get("RUNS_JSON", "") or "[]"):
     if os.environ["REQUEST_ID"] in run.get("displayTitle", ""):
         print(run["databaseId"])
         break
@@ -148,7 +148,7 @@ for _ in {1..180}; do
     run_json="$(gh run view "$run_id" --repo "$REPO" --json status,conclusion 2>/dev/null || true)"
     read -r status conclusion < <(RUN_JSON="$run_json" python3 - <<'PY'
 import json, os
-data = json.loads(os.environ.get("RUN_JSON", "{}"))
+data = json.loads(os.environ.get("RUN_JSON", "") or "{}")
 print(data.get("status", ""), data.get("conclusion", ""))
 PY
 )

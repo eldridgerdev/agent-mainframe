@@ -2305,7 +2305,7 @@ impl App {
     }
 
     /// Resolve a referenced TODO at its current scope, even when it moved
-    /// after the agent session was launched. Consumed by the Active TODO
+    /// after the agent session was launched. Consumed by the active TODO
     /// sidebar section via `App::active_todos_sidebar_cache`.
     pub(crate) fn resolve_todo_by_id(
         &self,
@@ -2314,7 +2314,7 @@ impl App {
         self.db.as_ref()?.resolve_todo_by_id(todo_id).ok()?
     }
 
-    /// Rebuild the cached "Active TODOs" sidebar text from current persisted
+    /// Rebuild the cached per-session active-TODO sidebar text from current persisted
     /// TODO data. Each TODO-menu-originated session reference resolves two
     /// SQLite queries, so this runs on status sync and after local mutations
     /// that change references — never per frame (see
@@ -2322,7 +2322,7 @@ impl App {
     pub(crate) fn refresh_active_todos_sidebar_cache(&mut self) {
         // First pass borrows only the store; the DB resolution runs afterwards
         // so it does not have to co-exist with the session iterator.
-        let referenced: Vec<(String, String, String, String)> = self
+        let referenced: Vec<(String, String)> = self
             .store
             .projects
             .iter()
@@ -2333,41 +2333,28 @@ impl App {
                             .todo_reference
                             .as_ref()
                             .filter(|reference| reference.launched_from_todo_menu)
-                            .map(|reference| {
-                                (
-                                    project.name.clone(),
-                                    feature.name.clone(),
-                                    session.label.clone(),
-                                    reference.todo_id.clone(),
-                                )
-                            })
+                            .map(|reference| (session.id.clone(), reference.todo_id.clone()))
                     })
                 })
             })
             .collect();
 
-        let mut entries = Vec::new();
-        for (project_name, feature_name, session_label, todo_id) in referenced {
+        let mut entries = std::collections::HashMap::new();
+        for (session_id, todo_id) in referenced {
             let Some(resolved) = self.resolve_todo_by_id(&todo_id) else {
                 continue;
             };
-            let scope = match &resolved.list.scope {
-                crate::db::todos::TodoScope::Worktree { .. } => "worktree",
-                crate::db::todos::TodoScope::Project { .. } => "project",
-                crate::db::todos::TodoScope::Global => "global",
-            };
-            let priority = resolved.todo.priority.as_db_str();
             let status = match resolved.todo.work.status {
-                crate::db::todos::TodoStatus::NotStarted => "not started",
-                crate::db::todos::TodoStatus::InProgress => "in progress",
-                crate::db::todos::TodoStatus::Completed => "complete",
+                crate::db::todos::TodoStatus::NotStarted
+                | crate::db::todos::TodoStatus::InProgress => "open",
+                crate::db::todos::TodoStatus::Completed => "completed",
             };
-            entries.push(format!(
-                "{project_name} / {feature_name} / {session_label}\n{} · {priority} · {scope} · {status}",
-                resolved.todo.title,
-            ));
+            entries.insert(
+                session_id,
+                format!("{}\nState: {status}", resolved.todo.title),
+            );
         }
-        self.active_todos_sidebar_cache = (!entries.is_empty()).then(|| entries.join("\n\n"));
+        self.active_todos_sidebar_cache = entries;
     }
 
     // ----- already-started prompt -----------------------------------------
@@ -2647,54 +2634,6 @@ impl App {
             return;
         };
         self.mode = AppMode::Viewing(state.view);
-    }
-
-    /// Explicitly remove the current embedded session's TODO reference. This
-    /// never changes the TODO's completion state.
-    pub(crate) fn clear_active_todo_reference(&mut self) {
-        let cleared = match &self.mode {
-            AppMode::Viewing(view) => self
-                .store
-                .projects
-                .iter_mut()
-                .find(|project| project.name == view.project_name)
-                .and_then(|project| {
-                    project
-                        .features
-                        .iter_mut()
-                        .find(|feature| feature.name == view.feature_name)
-                })
-                .and_then(|feature| {
-                    feature
-                        .sessions
-                        .iter_mut()
-                        .find(|session| session.tmux_window == view.window)
-                })
-                .and_then(|session| {
-                    session
-                        .todo_reference
-                        .as_ref()
-                        .is_some_and(|reference| reference.launched_from_todo_menu)
-                        .then(|| {
-                            session.todo_reference = None;
-                        })
-                })
-                .is_some(),
-            _ => false,
-        };
-
-        if !cleared {
-            self.push_toast_warning("This session has no TODO reference to clear");
-            return;
-        }
-        if let Err(e) = self.save() {
-            self.log_warn(
-                "todos",
-                format!("cleared TODO reference but couldn't persist it: {e}"),
-            );
-        }
-        self.refresh_active_todos_sidebar_cache();
-        self.push_toast_success("Cleared this session's TODO reference");
     }
 
     /// Sort items into display order: open first, then by manual `sort_order`.

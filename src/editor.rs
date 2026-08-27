@@ -163,8 +163,7 @@ impl TextEditor {
         // Step back onto the last real character so Normal-mode commands
         // like `x`/`l` work immediately instead of no-oping until the user
         // first presses `h`.
-        if editor.cursor > 0 && editor.cursor >= editor.text.len() && !editor.text.ends_with('\n')
-        {
+        if editor.cursor > 0 && editor.cursor >= editor.text.len() && !editor.text.ends_with('\n') {
             editor.cursor = editor.prev_boundary(editor.cursor);
         }
         editor
@@ -1673,7 +1672,10 @@ mod tests {
         // basic Normal-mode commands work immediately.
         assert_eq!(editor.cursor(), 11);
         let outcome = editor.handle_key(key(KeyCode::Char('x')));
-        assert!(outcome.text_changed, "x should delete the char under cursor");
+        assert!(
+            outcome.text_changed,
+            "x should delete the char under cursor"
+        );
         assert_eq!(editor.text(), "fix this bu");
     }
 

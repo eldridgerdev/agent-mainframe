@@ -190,6 +190,11 @@ Capture, authentication, workflow, artifact, and PR-body failures print an
 actionable `warning:` and return success by default so a larger PR workflow can
 continue. Pass `--strict` when the caller needs a nonzero exit status instead.
 
+The runner installs the Codex CLI so a fresh scratch instance can pass AMF's
+harness setup for UI-only scenarios. Scenarios that launch an agent still need
+the corresponding provider credentials and harness-specific setup available
+to the workflow.
+
 ## Scenario format
 
 A scenario file is newline-delimited steps. Each line is a `|`-separated

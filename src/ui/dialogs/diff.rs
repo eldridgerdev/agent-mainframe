@@ -235,7 +235,14 @@ const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("{ / }", "Previous / next comment, across every file"),
             ("Ctrl+E", "Cycle severity while an editor is open"),
             ("", "(blocker / suggestion / nit / question / praise)"),
-            ("Tab", "Submit an open editor  ·  Esc cancels it"),
+            (
+                "Ctrl+T",
+                "Toggle Vim for every editor in this review session",
+            ),
+            ("", "(starts off; enabling Vim enters Normal mode)"),
+            ("Tab", "Submit an open editor in either keymap"),
+            ("Ctrl+Q", "Cancel an open editor in either keymap"),
+            ("Esc", "Cancel plain editing; Vim Insert enters Normal mode"),
         ],
     ),
     (
@@ -2578,6 +2585,12 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
             Span::raw("/"),
             key("Esc"),
             Span::raw(" exit cursor  "),
+            key("Ctrl+T"),
+            Span::raw(if state.vim_enabled {
+                " editor vim: on  "
+            } else {
+                " editor vim: off  "
+            }),
             key("q"),
             Span::raw(" finish"),
         ]);
@@ -2657,6 +2670,19 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
             }),
         ));
     }
+    second_line.push(key("Ctrl+T"));
+    second_line.push(Span::styled(
+        if state.vim_enabled {
+            " editor vim: on  "
+        } else {
+            " editor vim: off  "
+        },
+        Style::default().fg(if state.vim_enabled {
+            theme.info.to_color()
+        } else {
+            theme.text_muted.to_color()
+        }),
+    ));
     second_line.push(key("q"));
     second_line.push(Span::raw(" review summary → finish  "));
     second_line.push(key("Esc"));
@@ -3006,9 +3032,9 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
     hint_spans.extend([
         key("Ctrl+T"),
         Span::raw(if vim.is_some() {
-            " vim off  "
+            " session vim off  "
         } else {
-            " vim on  "
+            " session vim on  "
         }),
         key("Ctrl+J/K"),
         Span::raw(" scroll"),
@@ -4705,6 +4731,72 @@ mod tests {
 
         assert!(rendered.contains("File Comment — a.rs"));
         assert!(rendered.contains("Write feedback for the agent. Markdown is fine."));
+    }
+
+    #[test]
+    fn review_footer_reports_session_vim_state() {
+        let (mut state, _) = single_added_line_review_state();
+        let theme = Theme::default();
+
+        let plain = review_hint_lines(&state, &theme);
+        assert!(line_text(&plain[1]).contains("editor vim: off"));
+
+        state.toggle_feedback_vim();
+        let vim = review_hint_lines(&state, &theme);
+        assert!(line_text(&vim[1]).contains("editor vim: on"));
+    }
+
+    #[test]
+    fn active_review_editor_reports_normal_mode_and_session_toggle() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut state, _) = single_added_line_review_state();
+        state.editing_file_comment = true;
+        state.toggle_feedback_vim();
+        let backend = TestBackend::new(120, 36);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw_diff_viewer(frame, &mut state, &Theme::default()))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("[Vim Normal]"));
+        assert!(rendered.contains("session vim off"));
+    }
+
+    #[test]
+    fn review_help_documents_session_vim_submit_and_cancel_controls() {
+        let comments = REVIEW_HELP_SECTIONS
+            .iter()
+            .find(|(title, _)| *title == "Comments")
+            .expect("Comments help section")
+            .1;
+
+        assert!(comments.iter().any(|(key, text)| {
+            *key == "Ctrl+T" && text.contains("every editor in this review session")
+        }));
+        assert!(
+            comments
+                .iter()
+                .any(|(key, text)| *key == "Tab" && text.contains("either keymap"))
+        );
+        assert!(
+            comments
+                .iter()
+                .any(|(key, text)| *key == "Ctrl+Q" && text.contains("Cancel"))
+        );
+        assert!(
+            comments
+                .iter()
+                .any(|(_, text)| text.contains("enabling Vim enters Normal mode"))
+        );
     }
 
     #[test]

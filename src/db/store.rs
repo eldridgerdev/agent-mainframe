@@ -375,12 +375,12 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
                 label: row.get(2)?,
                 tmux_window: row.get(3)?,
                 claude_session_id: row.get(4)?,
-                todo_reference: row
-                    .get::<_, Option<String>>(11)?
-                    .map(|todo_id| TodoSessionReference {
+                todo_reference: row.get::<_, Option<String>>(11)?.map(|todo_id| {
+                    TodoSessionReference {
                         todo_id,
                         launched_from_todo_menu: row.get::<_, i64>(12).unwrap_or(0) != 0,
-                    }),
+                    }
+                }),
                 token_usage_source: row
                     .get::<_, Option<String>>(5)?
                     .as_deref()
@@ -565,7 +565,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         session.command,
                         session.on_stop,
                         session.pre_check,
-                        session.todo_reference.as_ref().map(|reference| &reference.todo_id),
+                        session
+                            .todo_reference
+                            .as_ref()
+                            .map(|reference| &reference.todo_id),
                         session
                             .todo_reference
                             .as_ref()

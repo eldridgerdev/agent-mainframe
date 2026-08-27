@@ -143,54 +143,6 @@ fn plan_sidebar_text(app: &App, feature: &Feature) -> String {
         .unwrap_or_else(|| "No plan selected".to_string())
 }
 
-/// Render every TODO-menu-originated session reference from current persisted
-/// TODO data. A reference keeps only the stable TODO id, so a moved item is
-/// shown in its new scope without rewriting any session record.
-fn active_todos_sidebar_text(app: &App) -> Option<String> {
-    let mut entries = Vec::new();
-    for (project, feature, session) in app.store.projects.iter().flat_map(|project| {
-        project.features.iter().flat_map(move |feature| {
-            feature
-                .sessions
-                .iter()
-                .map(move |session| (project, feature, session))
-        })
-    }) {
-        let Some(reference) = session
-            .todo_reference
-            .as_ref()
-            .filter(|reference| reference.launched_from_todo_menu)
-        else {
-            continue;
-        };
-        let Some(resolved) = app.resolve_todo_by_id(&reference.todo_id) else {
-            continue;
-        };
-        let scope = match &resolved.list.scope {
-            crate::db::todos::TodoScope::Worktree { .. } => "worktree",
-            crate::db::todos::TodoScope::Project { .. } => "project",
-            crate::db::todos::TodoScope::Global => "global",
-        };
-        let priority = resolved.todo.priority.as_db_str();
-        let status = match resolved.todo.work.status {
-            crate::db::todos::TodoStatus::NotStarted => "not started",
-            crate::db::todos::TodoStatus::InProgress => "in progress",
-            crate::db::todos::TodoStatus::Completed => "complete",
-        };
-        entries.push(format!(
-            "{} / {} / {}\n{} · {} · {} · {}",
-            project.name,
-            feature.name,
-            session.label,
-            resolved.todo.title,
-            priority,
-            scope,
-            status,
-        ));
-    }
-    (!entries.is_empty()).then(|| entries.join("\n\n"))
-}
-
 fn build_agent_sidebar_data(
     app: &App,
     view: &crate::app::ViewState,
@@ -254,7 +206,17 @@ fn build_agent_sidebar_data(
             n => format!("Waiting for {n} inputs"),
         },
     };
-    let active_todos_text = active_todos_sidebar_text(app);
+    // Section content is global (resolved from the cache, prefixed with
+    // project / feature / label). The header affordance, however, only acts
+    // on the *current* session, so it is shown only when that session itself
+    // carries a menu-launched TODO reference.
+    let active_todos_text = app.active_todos_sidebar_cache.clone();
+    let active_todo_affordance = session.is_some_and(|session| {
+        session
+            .todo_reference
+            .as_ref()
+            .is_some_and(|reference| reference.launched_from_todo_menu)
+    });
 
     match sidebar_kind {
         SessionKind::Opencode => build_opencode_sidebar_data(
@@ -267,6 +229,7 @@ fn build_agent_sidebar_data(
             context_snapshot,
             context_hint_visible,
             active_todos_text,
+            active_todo_affordance,
         ),
         SessionKind::Claude => build_claude_sidebar_data(
             app,
@@ -278,6 +241,7 @@ fn build_agent_sidebar_data(
             context_snapshot,
             context_hint_visible,
             active_todos_text,
+            active_todo_affordance,
         ),
         SessionKind::Codex => build_codex_sidebar_data(
             app,
@@ -289,6 +253,7 @@ fn build_agent_sidebar_data(
             context_snapshot,
             context_hint_visible,
             active_todos_text,
+            active_todo_affordance,
         ),
         SessionKind::Pi => build_pi_sidebar_data(
             app,
@@ -300,6 +265,7 @@ fn build_agent_sidebar_data(
             context_snapshot,
             context_hint_visible,
             active_todos_text,
+            active_todo_affordance,
         ),
         _ => None,
     }
@@ -316,6 +282,7 @@ fn build_opencode_sidebar_data(
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
     active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
     let usage_line = session
@@ -363,6 +330,7 @@ fn build_opencode_sidebar_data(
             .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
         todos_text,
         active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -382,6 +350,7 @@ fn build_claude_sidebar_data(
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
     active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -415,6 +384,7 @@ fn build_claude_sidebar_data(
         work_text,
         todos_text,
         active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -434,6 +404,7 @@ fn build_codex_sidebar_data(
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
     active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -476,6 +447,7 @@ fn build_codex_sidebar_data(
         work_text,
         todos_text: None,
         active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -495,6 +467,7 @@ fn build_pi_sidebar_data(
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
     active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -519,6 +492,7 @@ fn build_pi_sidebar_data(
         work_text,
         todos_text: None,
         active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),

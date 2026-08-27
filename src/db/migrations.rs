@@ -751,13 +751,14 @@ SET status = CASE WHEN done != 0 THEN 'completed' ELSE 'not_started' END,
 /// A TODO reference belongs to an AMF agent session, rather than to the TODO's
 /// lifecycle/work-state link.  Existing sessions predate this explicit launch
 /// provenance and therefore remain unreferenced.
+///
+/// No index on `todo_id`: sessions are always loaded by `feature_id` and the
+/// reverse lookup (clearing references for a deleted TODO) walks the in-memory
+/// store, so an index would be dead weight.
 const MIGRATION_029: &str = "
 ALTER TABLE feature_sessions ADD COLUMN todo_id TEXT;
 ALTER TABLE feature_sessions
     ADD COLUMN todo_launched_from_menu INTEGER NOT NULL DEFAULT 0;
-CREATE INDEX IF NOT EXISTS idx_feature_sessions_todo_reference
-    ON feature_sessions(todo_id)
-    WHERE todo_id IS NOT NULL;
 ";
 
 #[cfg(test)]

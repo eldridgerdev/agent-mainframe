@@ -17,8 +17,8 @@ use uuid::Uuid;
 use crate::app::{
     App, AppMode, Selection, StartIntent, TodoDeleteDisposition, TodoImplementChoice,
     TodoImplementChoiceState, TodoLaunchAction, TodoLaunchStep, TodoPane, TodoPaneKind,
-    TodoPlanDestination, TodoPlanOrigin, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
-    TodoReferenceCompletionState, TodosHostReassignState,
+    TodoPlanDestination, TodoPlanOrigin, TodoReferenceCompletionState, TodoScopeMoveState,
+    TodoSpawnTargetState, TodoViewState, TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority, TodoScope, TodoStatus, TodoWorkState};
 
@@ -1574,7 +1574,7 @@ impl App {
                 .projects
                 .get_mut(pi)
                 .and_then(|project| project.features.get_mut(fi))
-            .and_then(|feature| feature.sessions.get_mut(si))
+                .and_then(|feature| feature.sessions.get_mut(si))
             else {
                 if reserved_here {
                     self.todos_rollback_launch_best_effort(&todo.id);
@@ -1597,6 +1597,7 @@ impl App {
                     format!("started TODO agent but couldn't save its TODO reference: {e}"),
                 );
             }
+            self.refresh_active_todos_sidebar_cache();
         }
         if let Err(e) = self.todos_mark_in_progress(&todo.id, Some(&session_id)) {
             if reserved_here {
@@ -2304,13 +2305,69 @@ impl App {
     }
 
     /// Resolve a referenced TODO at its current scope, even when it moved
-    /// after the agent session was launched.
-    #[allow(dead_code)] // consumed by the forthcoming Active TODO sidebar
+    /// after the agent session was launched. Consumed by the Active TODO
+    /// sidebar section via `App::active_todos_sidebar_cache`.
     pub(crate) fn resolve_todo_by_id(
         &self,
         todo_id: &str,
     ) -> Option<crate::db::todos::ResolvedTodo> {
         self.db.as_ref()?.resolve_todo_by_id(todo_id).ok()?
+    }
+
+    /// Rebuild the cached "Active TODOs" sidebar text from current persisted
+    /// TODO data. Each TODO-menu-originated session reference resolves two
+    /// SQLite queries, so this runs on status sync and after local mutations
+    /// that change references — never per frame (see
+    /// `App::active_todos_sidebar_cache`).
+    pub(crate) fn refresh_active_todos_sidebar_cache(&mut self) {
+        // First pass borrows only the store; the DB resolution runs afterwards
+        // so it does not have to co-exist with the session iterator.
+        let referenced: Vec<(String, String, String, String)> = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| {
+                project.features.iter().flat_map(move |feature| {
+                    feature.sessions.iter().filter_map(move |session| {
+                        session
+                            .todo_reference
+                            .as_ref()
+                            .filter(|reference| reference.launched_from_todo_menu)
+                            .map(|reference| {
+                                (
+                                    project.name.clone(),
+                                    feature.name.clone(),
+                                    session.label.clone(),
+                                    reference.todo_id.clone(),
+                                )
+                            })
+                    })
+                })
+            })
+            .collect();
+
+        let mut entries = Vec::new();
+        for (project_name, feature_name, session_label, todo_id) in referenced {
+            let Some(resolved) = self.resolve_todo_by_id(&todo_id) else {
+                continue;
+            };
+            let scope = match &resolved.list.scope {
+                crate::db::todos::TodoScope::Worktree { .. } => "worktree",
+                crate::db::todos::TodoScope::Project { .. } => "project",
+                crate::db::todos::TodoScope::Global => "global",
+            };
+            let priority = resolved.todo.priority.as_db_str();
+            let status = match resolved.todo.work.status {
+                crate::db::todos::TodoStatus::NotStarted => "not started",
+                crate::db::todos::TodoStatus::InProgress => "in progress",
+                crate::db::todos::TodoStatus::Completed => "complete",
+            };
+            entries.push(format!(
+                "{project_name} / {feature_name} / {session_label}\n{} · {priority} · {scope} · {status}",
+                resolved.todo.title,
+            ));
+        }
+        self.active_todos_sidebar_cache = (!entries.is_empty()).then(|| entries.join("\n\n"));
     }
 
     // ----- already-started prompt -----------------------------------------
@@ -2530,10 +2587,19 @@ impl App {
             return;
         };
 
-        self.mode = AppMode::ConfirmTodoReferenceCompletion(TodoReferenceCompletionState {
-            view,
-            todo_id,
-        });
+        // Completion resolves the referenced item through SQLite; without a
+        // database there is nothing to complete from this surface (the
+        // in-memory panes only exist while the TODOs overlay is open). Refuse
+        // here rather than opening a confirm prompt that can never succeed.
+        if self.db.is_none() {
+            self.push_toast_warning(
+                "TODO persistence is unavailable; open the TODOs overlay to change status",
+            );
+            return;
+        }
+
+        self.mode =
+            AppMode::ConfirmTodoReferenceCompletion(TodoReferenceCompletionState { view, todo_id });
     }
 
     /// Complete the confirmed referenced TODO, retaining the session reference
@@ -2555,15 +2621,21 @@ impl App {
             if todo.work.status == TodoStatus::Completed {
                 return Ok("Referenced TODO was already complete");
             }
-            todo.work.status = TodoStatus::Completed;
+            // Route the status change through `TodoWorkState` so this shares
+            // the manual-completion contract (association retained, same as
+            // `cycle_manually`) rather than hand-writing the field.
+            todo.work.complete();
             db.update_todo(&todo)?;
             Ok("Marked referenced TODO complete")
         })();
 
         self.mode = AppMode::Viewing(state.view);
+        self.refresh_active_todos_sidebar_cache();
         match outcome {
             Ok(message) => self.push_toast_success(message),
-            Err(error) => self.push_toast_error(format!("Couldn't complete referenced TODO: {error}")),
+            Err(error) => {
+                self.push_toast_error(format!("Couldn't complete referenced TODO: {error}"))
+            }
         }
         Ok(())
     }
@@ -2621,6 +2693,7 @@ impl App {
                 format!("cleared TODO reference but couldn't persist it: {e}"),
             );
         }
+        self.refresh_active_todos_sidebar_cache();
         self.push_toast_success("Cleared this session's TODO reference");
     }
 

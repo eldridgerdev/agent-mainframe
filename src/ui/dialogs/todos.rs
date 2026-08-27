@@ -10,8 +10,8 @@ use super::super::dashboard::centered_rect;
 use crate::app::{
     TodoDeleteDisposition, TodoDeleteDispositionState, TodoEditTarget, TodoEditor,
     TodoImplementChoice, TodoImplementChoiceState, TodoLaunchAction, TodoLaunchStep, TodoPane,
-    TodoPaneKind, TodoQuickCaptureState, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
-    TodoReferenceCompletionState, TodosHostReassignState,
+    TodoPaneKind, TodoQuickCaptureState, TodoReferenceCompletionState, TodoScopeMoveState,
+    TodoSpawnTargetState, TodoViewState, TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority, TodoStatus};
 use crate::theme::Theme;

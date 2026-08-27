@@ -138,6 +138,14 @@ impl TodoWorkState {
     pub fn clear_missing_session(&mut self) {
         self.agent_session_id = None;
     }
+
+    /// Mark the work completed, retaining any session association for the same
+    /// reason [`Self::cycle_manually`] does. Completion and the manual `i`
+    /// cycle are the only supported ways for `status` to reach `Completed`;
+    /// callers outside the overlay use this instead of writing the field.
+    pub fn complete(&mut self) {
+        self.status = TodoStatus::Completed;
+    }
 }
 
 /// Priority of a [`Todo`], persisted as a short token (`high`/`med`/`low`).

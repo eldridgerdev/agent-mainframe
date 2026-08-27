@@ -192,6 +192,15 @@ Capture, authentication, workflow, artifact, and PR-body failures print an
 actionable `warning:` and return success by default so a larger PR workflow can
 continue. Pass `--strict` when the caller needs a nonzero exit status instead.
 
+### Deployment safeguards
+
+Only the GitHub account `eldridgerdev` may execute the screenshot workflow, and
+all requests share one global concurrency group. Agents therefore must use that
+account's authenticated `gh` session. The `screenshot-pages` GitHub environment
+holds the Cloudflare token; configure it with a required reviewer and disable
+administrator bypassing so the deployment job cannot access that token until a
+reviewer approves it. This is deliberately stricter than the capture job.
+
 The runner installs the Codex CLI so a fresh scratch instance can pass AMF's
 harness setup for UI-only scenarios. Scenarios that launch an agent still need
 the corresponding provider credentials and harness-specific setup available

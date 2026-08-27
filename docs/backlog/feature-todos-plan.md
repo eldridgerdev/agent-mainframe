@@ -533,20 +533,20 @@ at the destination picker, and after cancelling back to the list in
 
 Shipped. TODO-menu-launched agent sessions now retain a stable reference to
 their originating item. The embedded-session sidebar resolves the current
-TODO after scope moves, shows one entry per session (including shared
-references and completed items), and offers confirmed completion plus an
-explicit manual-clear action. Deleting a TODO clears its session references;
-completion leaves them visible.
+TODO after scope moves and shows only the viewed session's TODO title and
+open/completed state. Confirmed completion leaves the reference visible;
+starting another TODO in that session replaces it. Deleting a TODO clears its
+session references.
 
 - [x] Persist TODO identity and TODO-menu launch provenance on sessions.
 - [x] Resolve moved TODOs by stable identity and maintain references across
       move, completion, and deletion paths.
-- [x] Render the hidden-empty Active TODO sidebar section with status,
-      priority, scope, session context, and completion hint.
-- [x] Add confirmation, cancellation, completion feedback, and explicit
-      manual-clear controls to embedded-session handling and help.
-- [x] Add focused persistence, completion, clearing, resolution, deletion,
-      and sidebar rendering coverage.
+- [x] Render the hidden-empty Active TODO sidebar section with title,
+      open/completed state, and completion hint.
+- [x] Add confirmation, cancellation, and completion feedback to
+      embedded-session handling and help.
+- [x] Add focused persistence, completion, resolution, deletion, and sidebar
+      rendering coverage.
 
 **Automated validation:** `cargo check`, `cargo clippy -- -D warnings`, and
 the full 2,334-test suite pass. Interactive multi-session spawning and

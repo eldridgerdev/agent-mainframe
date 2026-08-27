@@ -12,14 +12,13 @@ are tagged.
 
 ### Added
 
-- **TODO-launched agent sessions now keep their TODO visible in the agent
-  sidebar.** Each eligible session shows the TODO's title, priority, scope,
-  and current status, including completed items. From the embedded session,
-  press `Ctrl+Space`, then `z` to confirm completion, or `Z` to explicitly
-  clear the reference. TODO references follow items when they move between
-  scopes and are removed when an item is deleted. No migration is required;
-  existing sessions simply have no reference until launched from the TODO
-  menu.
+- **TODO-launched agent sessions now keep their own TODO visible in the agent
+  sidebar.** The box shows only that TODO's title and whether it is open or
+  completed, and it remains visible after completion. From the embedded
+  session, press `Ctrl+Space`, then `z` to confirm completion. References
+  follow TODOs when they move between scopes and are removed when an item is
+  deleted. No migration is required; existing sessions simply have no
+  reference until launched from the TODO menu.
 
 - **AMF now warns when the agent session you are viewing is nearing its
   context limit.** At the warning or critical threshold, the agent sidebar

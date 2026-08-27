@@ -20467,10 +20467,10 @@ fn referenced_todo_completion_updates_db_and_retains_reference() {
     // re-resolved from SQLite per frame.
     let cached = app
         .active_todos_sidebar_cache
-        .as_deref()
-        .expect("completion refreshes the Active TODOs cache");
+        .get("session-todo")
+        .expect("completion refreshes this session's active TODO cache");
     assert!(cached.contains("finish sidebar"));
-    assert!(cached.ends_with("complete"));
+    assert!(cached.ends_with("State: completed"));
 }
 
 #[test]
@@ -20519,52 +20519,6 @@ fn request_todo_reference_completion_without_db_warns_instead_of_opening_dialog(
         app.toasts
             .iter()
             .any(|toast| toast.message.contains("persistence is unavailable"))
-    );
-}
-
-#[test]
-fn clearing_referenced_todo_is_explicit_and_does_not_complete_it() {
-    let mut app = App::new_for_test(
-        store_with_feature(ProjectStatus::Active),
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    );
-    app.store.projects[0].features[0]
-        .sessions
-        .push(FeatureSession {
-            id: "session-todo".into(),
-            kind: SessionKind::Claude,
-            label: "Agent".into(),
-            tmux_window: "claude".into(),
-            claude_session_id: None,
-            todo_reference: Some(TodoSessionReference {
-                todo_id: "todo-1".into(),
-                launched_from_todo_menu: true,
-            }),
-            token_usage_source: None,
-            token_usage_source_match: None,
-            created_at: Utc::now(),
-            command: None,
-            on_stop: None,
-            pre_check: None,
-            status_text: None,
-            token_usage: None,
-        });
-    app.mode = AppMode::Viewing(ViewState::new(
-        "my-project".into(),
-        "my-feat".into(),
-        "amf-my-feat".into(),
-        "claude".into(),
-        "Agent".into(),
-        SessionKind::Claude,
-        VibeMode::default(),
-        false,
-    ));
-    app.clear_active_todo_reference();
-    assert!(
-        app.store.projects[0].features[0].sessions[0]
-            .todo_reference
-            .is_none()
     );
 }
 

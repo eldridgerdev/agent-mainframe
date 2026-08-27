@@ -903,12 +903,12 @@ pub struct App {
     pub codex_sidebar_metadata_rx: std::sync::mpsc::Receiver<CodexSidebarMetadataResult>,
     pub codex_sidebar_metadata_inflight: std::collections::HashSet<String>,
     pub opencode_sidebar_cache: HashMap<String, opencode_storage::OpencodeSidebarData>,
-    /// Rendered "Active TODOs" sidebar section, rebuilt on status sync and
-    /// after any local mutation that affects it (completion, clear, delete,
+    /// Rendered per-session active-TODO sidebar text, rebuilt on status sync and
+    /// after any local mutation that affects it (completion, deletion,
     /// spawn) rather than on every frame. Resolving it runs two SQLite
-    /// queries per TODO-referenced session across all projects, and
+    /// queries per TODO-referenced session, and
     /// `build_agent_sidebar_data` is rebuilt up to ~20x/sec in Viewing mode.
-    pub active_todos_sidebar_cache: Option<String>,
+    pub active_todos_sidebar_cache: HashMap<String, String>,
     sidebar_load_tx: Sender<SidebarLoadResult>,
     sidebar_load_rx: Receiver<SidebarLoadResult>,
     /// Finished Learning Mode answers, delivered from the per-question
@@ -2401,7 +2401,7 @@ impl App {
             codex_sidebar_metadata_rx,
             codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             opencode_sidebar_cache: HashMap::new(),
-            active_todos_sidebar_cache: None,
+            active_todos_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
             learning_answer_tx,
@@ -2650,7 +2650,7 @@ impl App {
             codex_sidebar_metadata_rx,
             codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             opencode_sidebar_cache: HashMap::new(),
-            active_todos_sidebar_cache: None,
+            active_todos_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
             learning_answer_tx,

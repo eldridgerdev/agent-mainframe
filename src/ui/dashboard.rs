@@ -206,11 +206,11 @@ fn build_agent_sidebar_data(
             n => format!("Waiting for {n} inputs"),
         },
     };
-    // Section content is global (resolved from the cache, prefixed with
-    // project / feature / label). The header affordance, however, only acts
-    // on the *current* session, so it is shown only when that session itself
-    // carries a menu-launched TODO reference.
-    let active_todos_text = app.active_todos_sidebar_cache.clone();
+    // Resolve sidebar content by the viewed session's stable identity. A
+    // TODO reference from another harness must not make this session show an
+    // unrelated TODO box.
+    let active_todos_text =
+        session.and_then(|session| app.active_todos_sidebar_cache.get(&session.id).cloned());
     let active_todo_affordance = session.is_some_and(|session| {
         session
             .todo_reference

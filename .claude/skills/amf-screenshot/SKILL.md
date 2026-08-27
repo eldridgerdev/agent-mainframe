@@ -3,9 +3,9 @@ name: amf:screenshot
 description: >
   Capture screenshots (PNG) or a GIF of AMF's own TUI running in an
   isolated, throwaway instance, as visual proof a feature/UI change
-  works, then publish them as a small viewable Artifact gallery page
-  (a terminal often won't render PNGs/GIFs inline, so the raw files
-  alone aren't a usable deliverable). Use only when the user explicitly
+  works, then, when explicitly requested, publish them to a private
+  Cloudflare Pages review gallery. A terminal often will not render
+  PNGs/GIFs inline, so raw files alone are not a usable deliverable. Use only when the user explicitly
   asks for visual proof ("show me a screenshot of X", "prove the
   dashboard renders Y") — not automatically after every UI change.
 allowed-tools: Bash(scripts/dev/screenshot/*) Bash(python3 *) Bash(mkdir *) Bash(cat *) Bash(ls *) Write Read Skill Artifact
@@ -132,15 +132,16 @@ frame.
 ## Step 5: publish the private Cloudflare Pages gallery to the PR
 
 The repository's selected publication backend is a Cloudflare Pages preview.
-The branch and any reusable scenario must be pushed before dispatching it, and
-`gh` must be authenticated with permission to run Actions, read artifacts, and
-edit the PR. Run:
+Publication is a real PR-body write: do it only when the user explicitly asks.
+The branch and scenario must be pushed, the target PR must be open, and `gh`
+must be authenticated as `eldridgerdev`. Run:
 
 ```bash
 scripts/dev/screenshot/publish-pages.sh \
   --pr <number> \
   --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
-  --ref <pushed-branch>
+  --ref <pushed-branch> \
+  --strict
 ```
 
 Add `--gif` only when the user asks for animation. The command runs the
@@ -153,5 +154,10 @@ a 14-day internal artifact; no screenshot files are committed.
 The command prints an actionable `warning:` and exits successfully by default
 when capture, authentication, workflow, artifact, or PR-body update fails, so
 the surrounding PR workflow can continue. Use `--strict` when a nonzero exit
-is required. The Claude-specific `Artifact` tool may still be used for a
-secondary in-conversation preview, but it is not the PR publication mechanism.
+is required; agents publishing proof must use it. The workflow permits only
+the `eldridgerdev` actor and serializes all requests. The protected
+`screenshot-pages` environment may wait for a required human approval before
+the deployment job receives Cloudflare credentials. Do not bypass that gate;
+report that approval is pending and do not claim publication completed. The
+Claude-specific `Artifact` tool may still be used for a secondary
+in-conversation preview, but never put its raw ANSI/text output in the PR.

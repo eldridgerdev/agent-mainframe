@@ -678,3 +678,13 @@ debug log with level ERROR.
 - ratatui 0.29, crossterm 0.28, vt100 0.15
 - clap 4 (derive), serde 1, serde_json 1
 - uuid 1 (v4), dirs 6, anyhow 1, chrono 0.4 (serde)
+
+## Screenshot proof publication
+
+Use `amf:screenshot` only for an explicit user request for visual proof. To
+publish to an open PR, require separate explicit authorization and run
+`scripts/dev/screenshot/publish-pages.sh --strict` only after the ref and
+scenario are pushed. The command requires the `eldridgerdev` GitHub identity,
+updates only the marked PR-body section, and may wait for the protected
+`screenshot-pages` environment to be approved. Never bypass that approval or
+place raw ANSI/text captures or Actions artifact URLs in the PR.

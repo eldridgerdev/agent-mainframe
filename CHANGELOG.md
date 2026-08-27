@@ -22,12 +22,22 @@ are tagged.
   includes OpenCode and Pi, which don't expose this today), the line is
   simply left out.
 
+- **Final-review PR-triage comment and suggestion editors can now use Vim
+  mode for the whole review session.** Press `Ctrl+T` to toggle it for every
+  editor; enabling starts in Normal mode, while `Tab` submits and `Ctrl+Q`
+  cancels from either keymap. Vim mode starts off for each new review, so
+  existing plain-editor behavior is unchanged.
+
 ### Fixed
 
 - Fixed the new usage line above being unreadable when its row was
   selected in the add-session picker, in themes (including the default)
   where the selection highlight and the line's muted text color matched.
   It now switches to the brighter selected-row text color.
+
+### Migration
+
+- No migration is required. The Vim toggle is transient and is not persisted.
 
 ## [v0.40.0] - 2026-08-26
 

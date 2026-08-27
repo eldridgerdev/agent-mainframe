@@ -129,27 +129,26 @@ Only after the text checks pass, Read **one or two representative
 PNGs** as images to confirm layout/colors look right — not every
 frame.
 
-## Step 5: publish the GitHub Actions artifact to the PR
+## Step 5: publish the private Cloudflare Pages gallery to the PR
 
-The repository's selected publication backend is a GitHub Actions artifact.
+The repository's selected publication backend is a Cloudflare Pages preview.
 The branch and any reusable scenario must be pushed before dispatching it, and
 `gh` must be authenticated with permission to run Actions, read artifacts, and
 edit the PR. Run:
 
 ```bash
-scripts/dev/screenshot/publish-artifact.sh \
+scripts/dev/screenshot/publish-pages.sh \
   --pr <number> \
   --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
   --ref <pushed-branch>
 ```
 
 Add `--gif` only when the user asks for animation. The command runs the
-isolated harness on GitHub, downloads the resulting artifact locally, and
-replaces only the PR section delimited by
+isolated harness on GitHub, deploys a private Pages gallery, and replaces only
+the PR section delimited by
 `<!-- amf:screenshots:start -->`/`<!-- amf:screenshots:end -->`. The PR link
-opens the artifact page; after downloading it, `gallery.html` provides the
-self-contained visual gallery. The artifact contains PNG/GIF files, ANSI/text
-captures, and `capture-metadata.json`; no screenshot files are committed.
+opens the Cloudflare Access-protected gallery. Raw ANSI/text captures remain in
+a 14-day internal artifact; no screenshot files are committed.
 
 The command prints an actionable `warning:` and exits successfully by default
 when capture, authentication, workflow, artifact, or PR-body update fails, so

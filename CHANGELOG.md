@@ -10,7 +10,18 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.41.0] - 2026-08-27
+
 ### Added
+
+- **The embedded session sidebar now shows a Usage box.** Directly under
+  Status, it lists the current harness's account-level rate-limit windows —
+  the same 5h/7d figures the dashboard status bar shows — so you can check
+  your remaining headroom without leaving the session. It appears once the
+  usage numbers are known and is left out for harnesses that don't report
+  usage (OpenCode, Pi).
 
 - **Plan-mode multiple-choice questions now take your own free-text answer.**
   Every select question in the guided plan interview shows a "Your own answer"

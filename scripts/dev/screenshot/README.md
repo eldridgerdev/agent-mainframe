@@ -148,46 +148,44 @@ default output directory are removed on exit; pass `--keep` or use an explicit
 `--out-dir` when captures must survive teardown. The driver always tears down
 its isolated tmux session.
 
-## Publish evidence to a PR with a GitHub Actions artifact
+## Publish private browser-viewable evidence to a PR
 
 For agent-driven publication, use the repository publisher after the branch and
 scenario have been pushed:
 
 ```bash
-scripts/dev/screenshot/publish-artifact.sh \
+scripts/dev/screenshot/publish-pages.sh \
     --pr <number> \
     --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
     --ref <pushed-branch>
 ```
 
-Add `--gif` when an animation is wanted, `--geometry 160x44` when the scenario
-needs another fixed size, and `--out-dir /tmp/amf-proof` when the downloaded
-artifact should be kept at a known local path. The invoking agent needs an
-authenticated `gh` CLI session with permission to dispatch Actions, read the
-artifact, and edit the PR. The scenario, seed files, and config file are
-repository-relative and must exist on the pushed ref; screenshots themselves
-never need to be committed.
+Add `--gif` when an animation is wanted and `--geometry 160x44` when the
+scenario needs another fixed size. The invoking agent needs an authenticated
+`gh` CLI session with permission to dispatch Actions and edit the PR. The
+scenario must exist on the pushed ref; screenshots never need to be committed.
 
 The workflow must already be present on the repository's default branch before
 the command can dispatch it; the capture itself may target any pushed ref.
 
-The command dispatches `.github/workflows/amf-screenshot-artifact.yml`, which
-builds AMF on an isolated GitHub runner, runs `amf-capture.sh`, renders PNGs,
-optionally assembles a GIF, and uploads these files as one 14-day artifact:
+The command dispatches `.github/workflows/amf-screenshot-artifact.yml`. Its
+unprivileged capture job builds AMF on an isolated runner, runs
+`amf-capture.sh`, and renders PNGs. A separate `screenshot-pages` deployment
+job does not check out or execute the requested ref; it receives only rendered
+images via a 14-day internal artifact, creates a script-free gallery with a
+restrictive Content Security Policy, and deploys it to the dedicated
+Cloudflare Pages preview branch `pr-<number>`.
 
 - numbered `.ansi` captures and escape-free `.txt` assertion twins;
 - rendered PNG frames and, when requested, `capture.gif`;
 - `capture-metadata.json`; and
 - a self-contained `gallery.html` with images embedded in the HTML.
 
-After the run succeeds, the publisher downloads the artifact, writes a local
-`pr-description.md` fragment, and replaces only the PR body region between
-`<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->`. The PR
-contains a run-specific artifact-page link rather than inline image URLs;
-open or download the artifact and view `gallery.html` for the visual proof.
-Repeated runs replace the marked link with the newest run while preserving all
-other PR body content. Older artifacts remain available until their normal
-expiry.
+After success, the publisher replaces only the PR body region between
+`<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->` with the
+stable private Pages URL. Cloudflare Access must protect the Pages preview
+wildcard; raw ANSI/text captures remain in the internal artifact. Repeated
+runs update the same branch alias while preserving all other PR body content.
 
 Capture, authentication, workflow, artifact, and PR-body failures print an
 actionable `warning:` and return success by default so a larger PR workflow can

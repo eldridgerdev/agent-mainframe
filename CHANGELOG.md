@@ -12,6 +12,22 @@ are tagged.
 
 ### Added
 
+- **Plan-mode multiple-choice questions now take your own free-text answer.**
+  Every select question in the guided plan interview shows a "Your own answer"
+  box beneath the options. Press `e` to type into it; you can answer purely
+  with your own text, or pick option(s) *and* add elaboration. `Enter` in the
+  box commits it and returns focus to the option list without submitting the
+  question; `Esc` discards the edit; `Enter` on the option list still submits.
+  Press `Backspace` to clear a pick and answer with custom text alone.
+  There is a 500-character limit (multi-line allowed) shown as a `used/500`
+  counter. A question with nothing picked and a blank custom answer stays
+  unanswered, exactly as before. The submitted answer is a single plain
+  string — picked labels, then ` — ` and your text — so the AI rounds and the
+  saved plan treat it like any other answer, and revisiting the question
+  restores the selection and the custom text rather than a flat string. Visual
+  proof regenerable via
+  `scripts/dev/screenshot/scenarios/plan-interview-custom-answer.txt`.
+
 - **TODO-launched agent sessions now keep their own TODO visible in the agent
   sidebar.** The box shows only that TODO's title and whether it is open or
   completed, and it remains visible after completion. From the embedded
@@ -54,7 +70,11 @@ are tagged.
 
 ### Migration
 
-- No migration is required. The Vim toggle is transient and is not persisted.
+- Schema migration 030 runs automatically on first launch, adding a
+  `custom_answers` column to the `plan_interviews` table so custom
+  plan-interview answers survive a resumed or re-run interview. Existing
+  rows backfill to "no custom answer"; no user action is required.
+- The Vim toggle is transient and is not persisted.
 
 ## [v0.40.0] - 2026-08-26
 

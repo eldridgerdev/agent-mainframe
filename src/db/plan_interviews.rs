@@ -64,6 +64,12 @@ pub struct PlanInterviewRecord {
     pub brief: String,
     pub questions: Vec<PlanQuestion>,
     pub answers: Vec<Option<String>>,
+    /// The free-text custom answer attached to each choice question, positionally
+    /// paired with `questions` (and `None` for a question with none, including
+    /// every free-text question). Stored apart from `answers` so a resumed or
+    /// re-run interview can restore the radio selection and the elaboration
+    /// together rather than re-presenting a flat string.
+    pub custom_answers: Vec<Option<String>>,
     /// The synthesized plan. `None` for a draft abandoned before synthesis.
     pub plan: Option<String>,
     /// AI-adaptive rounds already spent. Persisted rather than derived from
@@ -92,6 +98,20 @@ impl PlanInterviewRecord {
             .as_deref()
             .filter(|answer| !answer.trim().is_empty())
     }
+
+    /// The free-text custom answer recorded for `question_id`, matched by the
+    /// same stable-slug lookup as [`Self::answer_for`]. `None` when the question
+    /// was never asked or carried no custom text.
+    pub fn custom_answer_for(&self, question_id: &str) -> Option<&str> {
+        let index = self
+            .questions
+            .iter()
+            .position(|question| question.id == question_id)?;
+        self.custom_answers
+            .get(index)?
+            .as_deref()
+            .filter(|custom| !custom.trim().is_empty())
+    }
 }
 
 /// Load a feature's interview at `stage`, or `None` if it has none.
@@ -107,7 +127,7 @@ pub fn load(
     let row = conn
         .query_row(
             "SELECT feature_name, brief, questions, answers, plan,
-                    ai_rounds_completed, created_at, updated_at
+                    ai_rounds_completed, created_at, updated_at, custom_answers
              FROM plan_interviews WHERE feature_id = ?1 AND stage = ?2",
             params![feature_id, stage.as_db_str()],
             |row| {
@@ -120,6 +140,7 @@ pub fn load(
                     row.get::<_, i64>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
                 ))
             },
         )
@@ -134,6 +155,7 @@ pub fn load(
         ai_rounds_completed,
         created_at,
         updated_at,
+        custom_answers_json,
     )) = row
     else {
         return Ok(None);
@@ -151,6 +173,14 @@ pub fn load(
     // build, or by a question set that changed underneath a draft, is squared
     // up here rather than at each call site.
     answers.resize(questions.len(), None);
+    // Custom answers gained a column after the table shipped; MIGRATION_030
+    // backfills `'[]'`, and a rebuilt-but-shorter list is squared up the same
+    // way `answers` is.
+    let mut custom_answers: Vec<Option<String>> = serde_json::from_str(&custom_answers_json)
+        .with_context(|| {
+            format!("stored plan-interview custom answers for feature {feature_id} are unreadable")
+        })?;
+    custom_answers.resize(questions.len(), None);
 
     Ok(Some(PlanInterviewRecord {
         feature_id: feature_id.to_string(),
@@ -159,6 +189,7 @@ pub fn load(
         brief,
         questions,
         answers,
+        custom_answers,
         plan,
         ai_rounds_completed: ai_rounds_completed.max(0) as usize,
         created_at,
@@ -174,17 +205,21 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
     let mut answers = record.answers.clone();
     answers.resize(record.questions.len(), None);
     let answers = serde_json::to_string(&answers)?;
+    let mut custom_answers = record.custom_answers.clone();
+    custom_answers.resize(record.questions.len(), None);
+    let custom_answers = serde_json::to_string(&custom_answers)?;
 
     conn.execute(
         "INSERT INTO plan_interviews
             (feature_id, stage, feature_name, brief, questions, answers, plan,
-             ai_rounds_completed, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))
+             ai_rounds_completed, created_at, updated_at, custom_answers)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9)
          ON CONFLICT(feature_id, stage) DO UPDATE SET
             feature_name        = excluded.feature_name,
             brief               = excluded.brief,
             questions           = excluded.questions,
             answers             = excluded.answers,
+            custom_answers      = excluded.custom_answers,
             plan                = excluded.plan,
             ai_rounds_completed = excluded.ai_rounds_completed,
             updated_at          = datetime('now')",
@@ -197,6 +232,7 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             answers,
             record.plan,
             record.ai_rounds_completed as i64,
+            custom_answers,
         ],
     )?;
     Ok(())

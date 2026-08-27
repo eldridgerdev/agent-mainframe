@@ -8,14 +8,28 @@
 # The submitted answer is one plain string: picked labels, then " -- "
 # and the custom text.
 #
-# Requires --seed scenarios-local seed-project.json (a scratch git repo
-# whose amf.json sets skip_builtin_questions and adds one required
-# select question) and --seed-feature seed-feature.json for the same
-# project (plan_mode false, so `P` runs a fresh on-demand interview).
+# Self-contained: it enables the Codex harness in the isolated registry,
+# then `seed-custom-answer-fixture.sh` creates a throwaway repo whose
+# amf.json opts out of the built-in questions and adds one REQUIRED
+# select question, plus a feature to run `P` against (plan_mode false,
+# so `P` runs a fresh on-demand interview).
 #
 # Deliberately aborts before accepting: accepting runs a real headless
 # synthesis call, which costs tokens and is covered by unit tests.
 
+# Enable Codex in the isolated harness registry (rows: Claude, Opencode,
+# Codex, Pi -- so j j lands on Codex; Enter runs its availability check).
+key:A
+wait:400
+key:j
+key:j
+key:Enter
+wait:1200
+key:c
+wait:500
+
+run:AMF_BIN="$AMF_BIN" "$SCRIPT_DIR/seed-custom-answer-fixture.sh" >/dev/null
+wait:1400
 note:The seeded project has one feature and no plan yet.
 shot:dashboard-seeded
 

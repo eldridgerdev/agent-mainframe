@@ -13,8 +13,8 @@ def main(database: str) -> None:
     workdir = "."
     conn.execute(
         "INSERT INTO features "
-        "(id, project_id, name, branch, workdir, tmux_session, mode, agent, status, collapsed, created_at, last_accessed) "
-        "VALUES (?, ?, 'sidebar-todo-proof', 'sidebar-todo-proof', ?, "
+        "(id, project_id, name, branch, workdir, is_worktree, tmux_session, mode, agent, status, collapsed, created_at, last_accessed) "
+        "VALUES (?, ?, 'sidebar-todo-proof', 'sidebar-todo-proof', ?, 1, "
         "'amf-sidebar-todo-proof-sidebar-todo-proof', 'vibe', 'codex', 'active', 0, datetime('now'), datetime('now'))",
         (feature_id, project_id, workdir),
     )
@@ -23,6 +23,12 @@ def main(database: str) -> None:
         "(id, feature_id, kind, label, tmux_window, todo_id, todo_launched_from_menu, created_at) "
         "VALUES (?, ?, 'codex', 'Codex 1', 'codex', 'sidebar-todo', 1, datetime('now'))",
         (session_id, feature_id),
+    )
+    conn.execute(
+        "INSERT INTO feature_sessions "
+        "(id, feature_id, kind, label, tmux_window, created_at, sort_order) "
+        "VALUES ('sidebar-todos-session', ?, 'todos', 'TODOs', '', datetime('now'), 1)",
+        (feature_id,),
     )
 
     conn.execute(

@@ -33,3 +33,12 @@ key:z|wait:700
 shot:active-todo-completion-confirmation
 key:Enter|wait:700
 shot:active-todo-completed
+
+# Return to the dashboard, open this feature's native TODOs session, and show
+# the same item marked complete in the TODO feature itself.
+key:C-q|wait:750
+key:/|wait:500
+text:TODOs|wait:500
+key:Enter|wait:750
+key:Enter|wait:1000
+shot:todo-feature-completed

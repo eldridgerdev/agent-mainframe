@@ -32,6 +32,17 @@ are required and AMF opens the fixture pane immediately. Screenshot CI uses
 this mode so a scenario can prove review presentation and the post disclosure
 without any authenticated Claude/Codex harness.
 
+For a local visual check, the repository scenario supplies those fields from
+the environment and opens the fixture in the isolated screenshot harness:
+
+```bash
+AMF_SCREENSHOT_PR_NUMBER=123 \
+GITHUB_REPOSITORY=owner/repository \
+scripts/dev/screenshot/amf-capture.sh \
+  --scenario scripts/dev/screenshot/scenarios/ai-review-completed-fixture.txt \
+  --out-dir /tmp/amf-ai-review-fixture
+```
+
 ## Create Project
 
 Use [`create-project.template.json`](create-project.template.json) as the contract reference.

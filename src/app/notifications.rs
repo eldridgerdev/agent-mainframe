@@ -10,8 +10,8 @@ use crate::app::attention::AttentionState;
 use crate::app::toast::input_request_toast_message;
 use crate::app::util::latest_prompt_path;
 use crate::automation::{
-    CREATE_BATCH_FEATURES_ACTION, CREATE_FEATURE_ACTION, CREATE_PROJECT_ACTION, SEED_AI_REVIEW_ACTION,
-    CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
+    CREATE_BATCH_FEATURES_ACTION, CREATE_FEATURE_ACTION, CREATE_PROJECT_ACTION,
+    CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest, SEED_AI_REVIEW_ACTION,
     SeedAiReviewRequest, automation_error_response,
 };
 use crate::token_tracking::{TokenUsageSource, provider_for_session_kind};
@@ -886,13 +886,25 @@ impl App {
                         ),
                     }
                 }
-                SEED_AI_REVIEW_ACTION => match serde_json::from_value::<SeedAiReviewRequest>(raw.clone()) {
-                    Ok(request) => match self.seed_ai_review_from_request(&request) {
-                        Ok(response) => serde_json::to_value(response).unwrap_or_else(|err| automation_error_response(SEED_AI_REVIEW_ACTION, format!("Failed to serialize response: {err}"))),
-                        Err(err) => automation_error_response(SEED_AI_REVIEW_ACTION, err.to_string()),
-                    },
-                    Err(err) => automation_error_response(SEED_AI_REVIEW_ACTION, format!("Invalid automation payload: {err}")),
-                },
+                SEED_AI_REVIEW_ACTION => {
+                    match serde_json::from_value::<SeedAiReviewRequest>(raw.clone()) {
+                        Ok(request) => match self.seed_ai_review_from_request(&request) {
+                            Ok(response) => serde_json::to_value(response).unwrap_or_else(|err| {
+                                automation_error_response(
+                                    SEED_AI_REVIEW_ACTION,
+                                    format!("Failed to serialize response: {err}"),
+                                )
+                            }),
+                            Err(err) => {
+                                automation_error_response(SEED_AI_REVIEW_ACTION, err.to_string())
+                            }
+                        },
+                        Err(err) => automation_error_response(
+                            SEED_AI_REVIEW_ACTION,
+                            format!("Invalid automation payload: {err}"),
+                        ),
+                    }
+                }
                 _ => automation_error_response(
                     if action.is_empty() {
                         "unknown"

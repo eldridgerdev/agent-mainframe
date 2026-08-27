@@ -889,7 +889,10 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
             let socket = ipc::socket_path();
             let outbound = serde_json::to_string(&request.ipc_payload())?;
             let reply = ipc::send_wait(&socket, &outbound, Duration::from_millis(timeout_ms))?;
-            println!("{}", serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string()));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string())
+            );
             Ok(())
         }
     }

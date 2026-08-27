@@ -1,4 +1,4 @@
-name: AMF screenshot artifact
+name: AMF screenshot Pages preview
 
 on:
   workflow_dispatch:
@@ -13,6 +13,10 @@ on:
         type: string
       pr_number:
         description: Pull request receiving the artifact link
+        required: true
+        type: string
+      summary:
+        description: One-sentence explanation of the flow being proved
         required: true
         type: string
       geometry:
@@ -44,11 +48,23 @@ on:
 
 run-name: AMF screenshot ${{ inputs.request_id }} (PR #${{ inputs.pr_number }})
 
+# One capture/deploy at a time prevents a collaborator from creating a burst of
+# Pages deployments or consuming a fleet of runners. Do not cancel an active
+# visual proof run: it may already be awaiting human environment approval.
+concurrency:
+  group: amf-screenshot-pages
+  cancel-in-progress: false
+
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   capture:
+    # workflow_dispatch requires write access, but screenshot publication is
+    # intentionally narrower: agents must use the owner's authenticated gh
+    # session. Add a separate explicitly reviewed identity here if needed.
+    if: github.actor == 'eldridgerdev'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -85,6 +101,11 @@ jobs:
           SEED: ${{ inputs.seed }}
           SEED_FEATURE: ${{ inputs.seed_feature }}
           CONFIG_FILE: ${{ inputs.config }}
+          # This token is read-only and is used only for optional GitHub reads
+          # in screenshot scenarios. AI-review fixtures must not start a live
+          # credentialed agent review in CI.
+          GH_TOKEN: ${{ github.token }}
+          AMF_SCREENSHOT_PR_NUMBER: ${{ inputs.pr_number }}
           OUT_DIR: ${{ runner.temp }}/amf-screenshot-output
         run: |
           set -euo pipefail
@@ -129,3 +150,88 @@ jobs:
           path: ${{ runner.temp }}/amf-screenshot-output
           if-no-files-found: error
           retention-days: 14
+
+  publish_pages:
+    needs: capture
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: screenshot-pages
+    steps:
+      # Do not check out inputs.ref here. That ref is allowed to run capture
+      # code, but this job has the Cloudflare deployment credentials.
+      - name: Download capture handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: amf-screenshot-pr-${{ inputs.pr_number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/capture
+
+      - name: Build restricted static gallery
+        env:
+          INPUT_DIR: ${{ runner.temp }}/capture
+          OUTPUT_DIR: ${{ runner.temp }}/pages
+          PR_NUMBER: ${{ inputs.pr_number }}
+          FLOW_SUMMARY: ${{ inputs.summary }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          python3 - <<'PY'
+          import base64
+          import html
+          import json
+          import os
+          from pathlib import Path
+
+          source = Path(os.environ["INPUT_DIR"])
+          destination = Path(os.environ["OUTPUT_DIR"])
+          images = sorted(source.glob("*.png"))
+          gifs = sorted(source.glob("*.gif"))
+          allowed = images + gifs
+          if not allowed:
+              raise SystemExit("no rendered screenshots available for Pages")
+          if any(path.stat().st_size > 10 * 1024 * 1024 for path in allowed):
+              raise SystemExit("refusing to publish an image larger than 10 MiB")
+
+          notes = {}
+          notes_path = source / "capture-notes.jsonl"
+          if notes_path.exists():
+              for line in notes_path.read_text(encoding="utf-8").splitlines():
+                  try:
+                      item = json.loads(line)
+                      notes[str(item.get("file", ""))] = str(item.get("note", ""))[:600]
+                  except json.JSONDecodeError:
+                      continue
+          figures = []
+          for path in allowed:
+              encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+              mime = "image/png" if path.suffix == ".png" else "image/gif"
+              label = html.escape(path.stem.replace("-", " "))
+              note = html.escape(notes.get(path.with_suffix(".ansi").name, ""))
+              proof = f'<p><strong>What this proves:</strong> {note}</p>' if note else ""
+              figures.append(
+                  f'<figure><img src="data:{mime};base64,{encoded}" alt="{label}">'
+                  f'<figcaption><strong>Step {len(figures) + 1}:</strong> {label}{proof}</figcaption></figure>'
+              )
+          pr = html.escape(os.environ["PR_NUMBER"])
+          summary = html.escape(os.environ["FLOW_SUMMARY"][:600])
+          (destination / "index.html").write_text(
+              "<!doctype html><meta charset=utf-8>"
+              f"<title>AMF screenshot proof — PR #{pr}</title>"
+              "<style>body{margin:2rem auto;max-width:1100px;padding:0 1rem;background:#16181d;color:#e6e6e6;font:15px system-ui,sans-serif}.flow{margin:1rem 0 2rem;padding:1rem;border-left:3px solid #6ea8fe;background:#20242c}figure{margin:0 0 2rem}img{display:block;width:100%;height:auto;border:1px solid #424955;border-radius:8px}figcaption{padding:.65rem 0;color:#c7ced8}figcaption p{margin:.4rem 0 0}</style>"
+              f"<h1>AMF screenshot proof — PR #{pr}</h1><section class=flow><strong>Flow under review</strong><p>{summary}</p></section><h2>Evidence walkthrough</h2>" + "".join(figures),
+              encoding="utf-8",
+          )
+          PY
+          cat > "$OUTPUT_DIR/_headers" <<'EOF'
+          /*
+            Content-Security-Policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+            Referrer-Policy: no-referrer
+            X-Content-Type-Options: nosniff
+            X-Frame-Options: DENY
+          EOF
+
+      - name: Deploy preview to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy ${{ runner.temp }}/pages --project-name=${{ vars.CF_PAGES_PROJECT }} --branch=pr-${{ inputs.pr_number }}

@@ -7,8 +7,13 @@ use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
 use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
 use super::*;
-use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
+use crate::automation::{
+    CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest, SeedAiReviewFinding,
+    SeedAiReviewRequest,
+};
+use crate::db::todos::{TodoPriority, TodoStatus};
 use crate::extension::{ExtensionConfig, FeaturePreset, HookConfig, HookPrompt, LifecycleHooks};
+use crate::project::TodoSessionReference;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::sync::{
@@ -1348,6 +1353,7 @@ fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
         label: label.to_string(),
         tmux_window: label.to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: Utc::now(),
@@ -7842,6 +7848,7 @@ fn session_picker_enter_opens_name_step_with_default_label() {
         label: "Codex 1".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: Utc::now(),
@@ -9664,6 +9671,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             label: "Claude 1".to_string(),
             tmux_window: "claude".to_string(),
             claude_session_id: Some("resume-me".to_string()),
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: now,
@@ -9679,6 +9687,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             label: "Terminal 1".to_string(),
             tmux_window: "terminal".to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: now,
@@ -9806,6 +9815,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         label: "Dev Servers".to_string(),
         tmux_window: "custom".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -9869,6 +9879,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         label: "Codex".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -9938,6 +9949,7 @@ fn store_with_single_agent_session(
         label: window.to_string(),
         tmux_window: window.to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -10087,6 +10099,7 @@ fn sync_session_status_shows_agent_token_usage() {
         label: "Claude 1".to_string(),
         tmux_window: "claude".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: Some(TokenUsageSource {
             provider: TokenUsageProvider::Claude,
             id: "claude-123".to_string(),
@@ -10401,6 +10414,11 @@ fn session_status_sync_refreshes_all_context_harnesses_and_excludes_terminal() {
                 .get(),
             percentage
         );
+        let context_state = app.context_states.get(&session_id).unwrap();
+        assert!(
+            app.context_hint_states
+                .is_eligible(&session_id, Some(context_state))
+        );
     }
     assert!(!app.context_states.contains_key(&terminal_amf_id));
 }
@@ -10437,6 +10455,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         label: "Codex".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at,
@@ -10566,6 +10585,7 @@ fn sync_session_status_does_not_infer_stale_codex_usage_for_new_session() {
         label: "Codex".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: Some(TokenUsageSource {
             provider: TokenUsageProvider::Codex,
             id: "old-codex".to_string(),
@@ -10674,6 +10694,7 @@ fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
         label: "Codex 1".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at,
@@ -10776,6 +10797,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         label: "Claude".to_string(),
         tmux_window: "claude".to_string(),
         claude_session_id: Some("claude-session-1".to_string()),
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at,
@@ -11951,6 +11973,7 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
             label: "Claude".to_string(),
             tmux_window: "claude".to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -12485,6 +12508,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         label: "Claude 1".to_string(),
         tmux_window: "claude".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -12713,6 +12737,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         label: "Claude 1".to_string(),
         tmux_window: "claude".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -19653,6 +19678,34 @@ fn todos_delete_requires_confirmation() {
 }
 
 #[test]
+fn deleting_a_todo_clears_all_session_sidebar_references_to_it() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "doomed");
+    app.todos_commit_edit().unwrap();
+    let todo_id = match &app.mode {
+        AppMode::Todos(state) => state.panes[0].todos[0].id.clone(),
+        _ => unreachable!(),
+    };
+
+    let session = app.store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "TODO agent".to_string());
+    session.todo_reference = Some(crate::project::TodoSessionReference {
+        todo_id,
+        launched_from_todo_menu: true,
+    });
+
+    app.todos_request_delete();
+    app.todos_confirm_delete().unwrap();
+
+    assert!(
+        app.store.projects[0].features[0].sessions[0]
+            .todo_reference
+            .is_none()
+    );
+}
+
+#[test]
 fn todos_edit_scratchpad_banner() {
     let mut app = todos_app();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('b'))).unwrap();
@@ -19738,6 +19791,7 @@ fn push_agent_session(app: &mut App, id: &str) -> String {
             label: "Claude".to_string(),
             tmux_window: "claude".to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -20332,13 +20386,13 @@ fn accepted_older_plan_reserves_not_started_work_but_blocks_completed_work() {
 }
 
 #[test]
-fn duplicate_spawn_for_in_progress_todo_is_blocked_without_side_effects() {
+fn ordinary_duplicate_spawn_for_in_progress_todo_is_blocked_without_side_effects() {
     let mut app = todos_app();
     let mut todo = sample_todo("a", false);
     todo.work.status = crate::db::todos::TodoStatus::InProgress;
     let before = todo.work.clone();
 
-    app.spawn_todo_agent(0, 0, &todo, true).unwrap();
+    app.spawn_todo_agent(0, 0, &todo, false).unwrap();
 
     assert_eq!(todo.work, before);
     assert!(app.toasts.iter().any(|toast| {
@@ -20346,6 +20400,175 @@ fn duplicate_spawn_for_in_progress_todo_is_blocked_without_side_effects() {
             && toast.message.contains("another agent was not launched")
     }));
     assert!(app.store.projects[0].features[0].sessions.is_empty());
+}
+
+#[test]
+fn referenced_todo_completion_updates_db_and_retains_reference() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db = crate::db::AmfDb::open(tmp.path()).unwrap();
+    let list = db
+        .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+        .unwrap();
+    let todo = db
+        .add_todo(&list.id, "finish sidebar", None, TodoPriority::High)
+        .unwrap();
+    app.db = Some(db);
+    app.store.projects[0].features[0]
+        .sessions
+        .push(FeatureSession {
+            id: "session-todo".into(),
+            kind: SessionKind::Claude,
+            label: "Agent".into(),
+            tmux_window: "claude".into(),
+            claude_session_id: None,
+            todo_reference: Some(TodoSessionReference {
+                todo_id: todo.id.clone(),
+                launched_from_todo_menu: true,
+            }),
+            token_usage_source: None,
+            token_usage_source_match: None,
+            created_at: Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+            token_usage: None,
+        });
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".into(),
+        "my-feat".into(),
+        "amf-my-feat".into(),
+        "claude".into(),
+        "Agent".into(),
+        SessionKind::Claude,
+        VibeMode::default(),
+        false,
+    ));
+    app.request_todo_reference_completion();
+    app.confirm_todo_reference_completion().unwrap();
+
+    let loaded = app
+        .db
+        .as_ref()
+        .unwrap()
+        .find_todo_by_id(&todo.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.work.status, TodoStatus::Completed);
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    assert!(
+        app.store.projects[0].features[0].sessions[0]
+            .todo_reference
+            .is_some()
+    );
+    // The sidebar text is served from a cache refreshed on completion, not
+    // re-resolved from SQLite per frame.
+    let cached = app
+        .active_todos_sidebar_cache
+        .as_deref()
+        .expect("completion refreshes the Active TODOs cache");
+    assert!(cached.contains("finish sidebar"));
+    assert!(cached.ends_with("complete"));
+}
+
+#[test]
+fn request_todo_reference_completion_without_db_warns_instead_of_opening_dialog() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store.projects[0].features[0]
+        .sessions
+        .push(FeatureSession {
+            id: "session-todo".into(),
+            kind: SessionKind::Claude,
+            label: "Agent".into(),
+            tmux_window: "claude".into(),
+            claude_session_id: None,
+            todo_reference: Some(TodoSessionReference {
+                todo_id: "todo-1".into(),
+                launched_from_todo_menu: true,
+            }),
+            token_usage_source: None,
+            token_usage_source_match: None,
+            created_at: Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+            token_usage: None,
+        });
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".into(),
+        "my-feat".into(),
+        "amf-my-feat".into(),
+        "claude".into(),
+        "Agent".into(),
+        SessionKind::Claude,
+        VibeMode::default(),
+        false,
+    ));
+
+    app.request_todo_reference_completion();
+
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|toast| toast.message.contains("persistence is unavailable"))
+    );
+}
+
+#[test]
+fn clearing_referenced_todo_is_explicit_and_does_not_complete_it() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store.projects[0].features[0]
+        .sessions
+        .push(FeatureSession {
+            id: "session-todo".into(),
+            kind: SessionKind::Claude,
+            label: "Agent".into(),
+            tmux_window: "claude".into(),
+            claude_session_id: None,
+            todo_reference: Some(TodoSessionReference {
+                todo_id: "todo-1".into(),
+                launched_from_todo_menu: true,
+            }),
+            token_usage_source: None,
+            token_usage_source_match: None,
+            created_at: Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+            token_usage: None,
+        });
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".into(),
+        "my-feat".into(),
+        "amf-my-feat".into(),
+        "claude".into(),
+        "Agent".into(),
+        SessionKind::Claude,
+        VibeMode::default(),
+        false,
+    ));
+    app.clear_active_todo_reference();
+    assert!(
+        app.store.projects[0].features[0].sessions[0]
+            .todo_reference
+            .is_none()
+    );
 }
 
 #[test]
@@ -21831,6 +22054,51 @@ fn open_ai_review_for_pr_reopens_cached_findings_and_summary() {
             assert_eq!(state.summary.as_deref(), Some("Cached review summary."));
         }
         _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
+fn seed_ai_review_fixture_persists_and_opens_without_running_an_agent() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    let workdir = tempfile::tempdir().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+
+    let response = app
+        .seed_ai_review_from_request(&SeedAiReviewRequest {
+            pr_number: 55,
+            head_sha: "fixture-sha".to_string(),
+            summary: "Deterministic completed review.".to_string(),
+            findings: vec![SeedAiReviewFinding {
+                body: "A deterministic finding.".to_string(),
+                ..Default::default()
+            }],
+            open: true,
+            workdir: Some(workdir.path().to_path_buf()),
+            repository: Some("owner/repository".to_string()),
+            head_ref: Some("fixture-branch".to_string()),
+        })
+        .unwrap();
+
+    assert!(response.ok);
+    assert!(response.opened);
+    assert_eq!(response.finding_count, 1);
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.pr.number, 55);
+            assert_eq!(state.pr.head_sha, "fixture-sha");
+            assert_eq!(state.findings[0].body, "A deterministic finding.");
+            assert_eq!(
+                state.summary.as_deref(),
+                Some("Deterministic completed review.")
+            );
+        }
+        _ => panic!("expected seeded AI Review pane"),
     }
 }
 
@@ -25508,6 +25776,7 @@ fn a_waiting_session_still_counts_toward_dormancy_and_the_agent_gate() {
             tmux_window: "claude".to_string(),
             command: None,
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             on_stop: None,

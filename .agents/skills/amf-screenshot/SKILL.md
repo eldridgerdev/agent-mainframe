@@ -30,11 +30,21 @@ Write one step per line. Separate multiple steps on a line with `|`:
 - `key:<name>` sends a tmux key such as `Enter`, `j`, or `Escape`.
 - `text:<literal>` types literal text.
 - `wait:<ms>` waits for a redraw or asynchronous operation.
+- `note:<text>` explains what the immediately following `shot:` proves; use a
+  complete reviewer-facing sentence.
 - `shot:<label>` captures numbered `.ansi` and plain-text `.txt` files.
 
-Add a shot at each frame that materially demonstrates the requested behavior. Prefer a scratch scenario file unless it is broadly reusable.
+Add a shot at each frame that materially demonstrates the requested behavior.
+Put a `note:` immediately before every published shot—state the visible state
+and why it proves the flow. Prefer a scratch scenario file unless it is broadly
+reusable.
 
 When the scenario needs existing data, pass `--seed` and optionally `--seed-feature`. Use the payload shapes in `scripts/dev/screenshot/scenarios/seed-project.json`, `seed-feature.json`, and `docs/automation/`.
+
+For a screenshot of an already-completed AI Review, use
+`scenarios/ai-review-completed-fixture.txt`. It uses AMF's deterministic
+`seed-ai-review` fixture; CI must never start a live `A` review or depend on a
+logged-in Claude/Codex harness for visual proof.
 
 ## Capture and render
 
@@ -60,32 +70,38 @@ Match `--cols` and `--rows` to the capture geometry. Pass `--gif` to the driver 
 Search the escape-free `.txt` twins for the expected dialog titles, labels, entered text, and status messages. Do not read `.ansi` files into context. Then use the local image viewer on one or two representative PNGs to check layout, clipping, and color.
 
 When the branch and scenario are pushed and the user wants the proof attached to
-the PR, run the repository's agent-driven publisher:
+an **open** PR, run the repository's agent-driven publisher:
 
 ```bash
-scripts/dev/screenshot/publish-artifact.sh \
+scripts/dev/screenshot/publish-pages.sh \
   --pr <number> \
   --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
-  --ref <pushed-branch>
+  --summary "One sentence explaining the complete flow under review" \
+  --ref <pushed-branch> \
+  --strict
 ```
 
 Add `--gif` only when the user asks for animation. The command dispatches the
-GitHub Actions artifact workflow, waits for the isolated capture, downloads the
-artifact, and replaces only the PR body section between
+private Cloudflare Pages workflow and replaces only the PR body section between
 `<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->`. The
-artifact contains the PNG/GIF files, ANSI/text captures,
-`capture-metadata.json`, and a self-contained `gallery.html`; screenshots are
-never committed to the branch. The artifact link is run-specific and retained
-for 14 days.
+Pages gallery is restricted by Cloudflare Access; raw ANSI/text captures remain
+in a 14-day internal artifact and screenshots are never committed to the branch.
+The gallery index displays the flow summary first, followed by ordered frames
+with their `note:` explanation under **What this proves**.
 
-Capture, authentication, workflow, artifact, and PR-body failures emit an
-actionable `warning:` and return success by default so the surrounding PR work
-can continue. Pass `--strict` if a nonzero exit is required.
+Publication is a real external write and must be explicitly requested. The
+publisher accepts only the `eldridgerdev` GitHub identity; it rejects another
+`gh` login before dispatching. It serializes requests, and the
+`screenshot-pages` environment may wait for a required human approval before
+the deployment job can read its Cloudflare token. Never bypass that gate. If
+approval or publication does not finish, report the actionable warning and do
+not claim that the PR has visual proof.
 
 Return the publication result as the primary result:
 
-- Link the PR and GitHub Actions artifact page.
-- Mention the local downloaded output directory and its `gallery.html`.
+- Link the PR and private Cloudflare Pages gallery.
+- Say when a Pages approval is still pending; do not expose artifact URLs or
+  raw ANSI/text captures in the PR.
 - If no PR publication was requested, link every local PNG or GIF in story order and give each one a short caption describing what it proves.
 
 Do not claim the UI is proven when the text assertions or representative visual inspection fail. Fix the scenario or implementation and rerun the capture first.

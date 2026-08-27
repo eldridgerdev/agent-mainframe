@@ -529,6 +529,11 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
         }
     }
 
+    // Hint eligibility follows the normalized current-window snapshots. The
+    // cumulative token usage above remains a separate billing/status value and
+    // must not be used to infer context occupancy.
+    app.context_hint_states.sync_all(&app.context_states);
+
     if result.sources_discovered
         && let Err(err) = app.save()
     {
@@ -1186,6 +1191,10 @@ impl App {
                 format!("failed to reconcile TODO agent associations: {e}"),
             );
         }
+
+        // Rebuild the Active TODOs sidebar text here rather than per frame:
+        // each referenced session costs two SQLite queries to resolve.
+        self.refresh_active_todos_sidebar_cache();
     }
 
     #[allow(dead_code)] // exercised only by unit tests

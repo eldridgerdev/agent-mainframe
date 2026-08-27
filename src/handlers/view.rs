@@ -428,6 +428,12 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('v') => {
             app.toggle_expanded_todos_in_view();
         }
+        KeyCode::Char('z') => {
+            app.request_todo_reference_completion();
+        }
+        KeyCode::Char('Z') => {
+            app.clear_active_todo_reference();
+        }
         KeyCode::Char('N') => {
             app.open_todo_quick_capture();
         }
@@ -438,7 +444,14 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             app.open_current_plan_from_view()?;
         }
         KeyCode::Char('F') => {
-            app.open_fresh_context_prompt_from_view();
+            if app.context_hint_is_visible_in_current_view() {
+                app.open_fresh_context_prompt_from_view_with_context_hint();
+            } else {
+                app.open_fresh_context_prompt_from_view();
+            }
+        }
+        KeyCode::Char('X') => {
+            app.dismiss_context_hint_from_view();
         }
         KeyCode::Char('A') => {
             // Harness setup is an intermediate destination, not the end of
@@ -817,6 +830,30 @@ mod tests {
     }
 
     #[test]
+    fn context_hint_prefills_the_same_editable_fresh_context_prompt() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.open_fresh_context_prompt_from_view_with_prefill(
+            "Inspect the persisted work and continue.".into(),
+        );
+
+        match &app.mode {
+            AppMode::FreshContextPrompt(state) => {
+                assert_eq!(
+                    state.source,
+                    crate::app::FreshContextPromptSource::ContextHint
+                );
+                assert_eq!(state.input, "Inspect the persisted work and continue.");
+            }
+            other => panic!(
+                "expected FreshContextPrompt, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    #[test]
     fn leader_shift_f_esc_cancels_back_to_the_session_view_unchanged() {
         let repo = init_repo_with_branch_change();
         let mut app = app_for_fresh_context_test(repo.path());
@@ -861,6 +898,58 @@ mod tests {
         assert!(text.ends_with("Grill me with any questions to clarify before implementing"));
 
         assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+        assert_eq!(
+            app.store.projects[0].features[0].sessions[1].label,
+            "Fresh Context"
+        );
+    }
+
+    #[test]
+    fn context_hint_f_starts_one_fresh_session_with_the_generated_continuation() {
+        let repo = init_repo_with_branch_change();
+        std::fs::write(repo.path().join("AMF_PLAN.md"), "# Plan\n").unwrap();
+        let mut app = app_for_fresh_context_test(repo.path());
+        app.store.projects[0].features[0].summary = Some("Finish the sidebar work.".into());
+        app.latest_prompt_cache
+            .insert("amf-feature".into(), "Add the context hint.".into());
+        let original_session_id = app.store.projects[0].features[0].sessions[0].id.clone();
+        let now = chrono::Utc::now();
+        let mut context = crate::context_tracking::SessionContextState::default();
+        context
+            .accept_sample(
+                crate::context_tracking::ContextUsageSample {
+                    used_tokens: 85_000,
+                    context_limit: Some(100_000),
+                    provenance: crate::context_tracking::ContextProvenance::Direct,
+                    sampled_at: now,
+                    checked_at: now,
+                    reset: crate::context_tracking::ContextResetMetadata::default(),
+                },
+                crate::context_tracking::ContextThresholds::default(),
+            )
+            .unwrap();
+        app.context_states
+            .insert(original_session_id.clone(), context);
+        app.context_hint_states.sync_all(&app.context_states);
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+        assert!(matches!(app.mode, AppMode::FreshContextPrompt(_)));
+        crate::handlers::handle_fresh_context_prompt_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        let text = composed_text(&app);
+        assert!(text.contains("Read AMF_PLAN.md for full context on this feature."));
+        assert!(text.contains("Changed/new files to look at:"));
+        assert!(text.contains("Feature summary: Finish the sidebar work."));
+        assert!(text.contains("Latest known prompt: Add the context hint."));
+        assert!(text.contains("Inspect the current work and continue from persisted artifacts"));
+        assert_eq!(app.store.projects.len(), 1);
+        assert_eq!(app.store.projects[0].features.len(), 1);
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+        assert_eq!(
+            app.store.projects[0].features[0].sessions[0].id,
+            original_session_id
+        );
         assert_eq!(
             app.store.projects[0].features[0].sessions[1].label,
             "Fresh Context"

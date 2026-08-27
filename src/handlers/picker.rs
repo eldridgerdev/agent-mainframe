@@ -1105,6 +1105,7 @@ mod tests {
                 label: "Codex".into(),
                 tmux_window: "codex".into(),
                 claude_session_id: None,
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,

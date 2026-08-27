@@ -9,6 +9,8 @@ use ratatui::{
 };
 
 use crate::app::{TextSelection, ViewState};
+use crate::context_display::format_context_indicator;
+use crate::context_tracking::SessionContextSnapshot;
 use crate::project::{SessionKind, VibeMode};
 use crate::theme::Theme;
 
@@ -29,6 +31,8 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("d", "Diff viewer (all changes / commit)"),
     ("m", "Markdown viewer"),
     ("n", "Open current plan"),
+    ("F", "Fresh context"),
+    ("X", "Dismiss context hint"),
     ("b", "Show / hide sidebar"),
     ("v", "Expand / collapse todos"),
     ("V", "Check pending diff review"),
@@ -65,9 +69,18 @@ pub(crate) struct AgentSidebarData {
     pub prompt_text: String,
     pub work_text: Option<String>,
     pub todos_text: Option<String>,
+    /// TODO-menu-originated session references, resolved from AMF's TODO DB.
+    /// The section content is global (every reference across all projects).
+    pub active_todos_text: Option<String>,
+    /// Whether the *currently viewed* session itself carries a menu-launched
+    /// TODO reference. `leader z` / `leader Z` only act on the current
+    /// session, so the header affordance is shown only when this is true.
+    pub active_todo_affordance: bool,
     pub summary_text: String,
     pub pr_triage_text: Option<String>,
     pub plan_text: String,
+    pub context_snapshot: Option<SessionContextSnapshot>,
+    pub context_hint_visible: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,10 +89,10 @@ struct ContentLayout {
     sidebar: Option<Rect>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SidebarSection<'a> {
+#[derive(Debug, Clone)]
+struct SidebarSection {
     title: &'static str,
-    body: &'a str,
+    body: String,
     constraint: Constraint,
 }
 
@@ -557,9 +570,13 @@ fn draw_agent_sidebar(
         prompt_text: String::new(),
         work_text: None,
         todos_text: None,
+        active_todos_text: None,
+        active_todo_affordance: false,
         summary_text: String::new(),
         pr_triage_text: None,
         plan_text: String::new(),
+        context_snapshot: None,
+        context_hint_visible: false,
     };
     let data = data.unwrap_or(&fallback);
     let sections_with_content = sidebar_sections(data, inner.width);
@@ -608,9 +625,31 @@ fn draw_agent_sidebar(
                 .alignment(Alignment::Right),
             );
         }
+        if sidebar_section.title == "Fresh Context" {
+            block = block.title_top(
+                Line::from(Span::styled(
+                    " <leader F> ",
+                    Style::default().fg(theme.text_muted.to_color()),
+                ))
+                .alignment(Alignment::Right),
+            );
+        }
+        // `leader z` / `leader Z` act only on the viewed session, so the
+        // header hint is shown only when that session has its own reference —
+        // not merely because some other session's reference populated the
+        // (globally-scoped) section body.
+        if sidebar_section.title == "Active TODOs" && data.active_todo_affordance {
+            block = block.title_top(
+                Line::from(Span::styled(
+                    " <leader z complete · Z clear> ",
+                    Style::default().fg(theme.text_muted.to_color()),
+                ))
+                .alignment(Alignment::Right),
+            );
+        }
         let paragraph = Paragraph::new(styled_sidebar_lines(
             sidebar_section.title,
-            sidebar_section.body,
+            sidebar_section.body.as_str(),
             theme,
         ))
         .wrap(Wrap { trim: false })
@@ -620,13 +659,13 @@ fn draw_agent_sidebar(
     }
 }
 
-fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<SidebarSection<'a>> {
+fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarSection> {
     let mut sections = Vec::new();
 
     if !data.status_text.trim().is_empty() {
         sections.push(SidebarSection {
             title: "Status",
-            body: data.status_text.as_str(),
+            body: data.status_text.clone(),
             constraint: Constraint::Length(status_section_height(&data.status_text, section_width)),
         });
     }
@@ -638,15 +677,33 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
     {
         sections.push(SidebarSection {
             title: "Usage",
-            body: usage_text,
+            body: usage_text.to_string(),
             constraint: Constraint::Length(usage_section_height(usage_text, section_width)),
+        });
+    }
+
+    if data.context_hint_visible
+        && let Some(snapshot) = data.context_snapshot.as_ref()
+    {
+        let indicator = format_context_indicator(snapshot);
+        let body = format!(
+            "Usage: {}\nAction: Fresh context: <leader F>\nDismiss: <leader X>",
+            indicator.text
+        );
+        // Three labelled lines that each wrap to two inner lines at the
+        // default 32-column sidebar width -- the ceiling has to clear five so
+        // the `Dismiss` action is never the row that gets clipped.
+        sections.push(SidebarSection {
+            title: "Fresh Context",
+            constraint: Constraint::Length(sidebar_section_height(&body, section_width, 2, 6)),
+            body,
         });
     }
 
     if !data.plan_text.trim().is_empty() {
         sections.push(SidebarSection {
             title: "Plan",
-            body: data.plan_text.as_str(),
+            body: data.plan_text.clone(),
             constraint: Constraint::Length(sidebar_section_height(
                 &data.plan_text,
                 section_width,
@@ -663,7 +720,7 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
     {
         sections.push(SidebarSection {
             title: "PR Triage",
-            body: pr_triage_text,
+            body: pr_triage_text.to_string(),
             constraint: Constraint::Length(sidebar_section_height(
                 pr_triage_text,
                 section_width,
@@ -678,14 +735,14 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
     if let Some(work_text) = data.work_text.as_deref() {
         sections.push(SidebarSection {
             title: "Work",
-            body: work_text,
+            body: work_text.to_string(),
             constraint: Constraint::Length(sidebar_section_height(work_text, section_width, 2, 6)),
         });
     }
     if !is_opencode && !data.summary_text.trim().is_empty() {
         sections.push(SidebarSection {
             title: "Summary",
-            body: data.summary_text.as_str(),
+            body: data.summary_text.clone(),
             constraint: Constraint::Length(summary_section_height(
                 &data.summary_text,
                 section_width,
@@ -695,14 +752,14 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
     if !data.prompt_text.trim().is_empty() {
         sections.push(SidebarSection {
             title: "Prompt",
-            body: data.prompt_text.as_str(),
+            body: data.prompt_text.clone(),
             constraint: Constraint::Length(prompt_section_height(&data.prompt_text, section_width)),
         });
     }
     if let Some(todos_text) = data.todos_text.as_deref() {
         sections.push(SidebarSection {
             title: "Todos",
-            body: todos_text,
+            body: todos_text.to_string(),
             constraint: Constraint::Length(sidebar_section_height(
                 todos_text,
                 section_width,
@@ -711,10 +768,22 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
             )),
         });
     }
+    if let Some(active_todos_text) = data.active_todos_text.as_deref() {
+        sections.push(SidebarSection {
+            title: "Active TODOs",
+            body: active_todos_text.to_string(),
+            constraint: Constraint::Length(sidebar_section_height(
+                active_todos_text,
+                section_width,
+                2,
+                10,
+            )),
+        });
+    }
     if is_opencode && !data.summary_text.trim().is_empty() {
         sections.push(SidebarSection {
             title: "Summary",
-            body: data.summary_text.as_str(),
+            body: data.summary_text.clone(),
             constraint: Constraint::Length(summary_section_height(
                 &data.summary_text,
                 section_width,
@@ -742,9 +811,11 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
         "Prompt" => theme.secondary.to_color(),
         "Work" => theme.primary.to_color(),
         "Todos" => theme.success.to_color(),
+        "Active TODOs" => theme.success.to_color(),
         "Summary" => theme.info.to_color(),
         "PR Triage" => theme.info.to_color(),
         "Plan" => theme.warning.to_color(),
+        "Fresh Context" => theme.danger.to_color(),
         _ => theme.border.to_color(),
     }
 }
@@ -785,6 +856,14 @@ fn summary_section_height(body: &str, section_width: u16) -> u16 {
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
     body.lines()
         .map(|line| {
+            if title == "Active TODOs" && line.ends_with(" · complete") {
+                return Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default()
+                        .fg(theme.success.to_color())
+                        .add_modifier(Modifier::DIM),
+                ));
+            }
             // Progress bar: "████░░░░ 2/5"
             if title == "Todos" && (line.starts_with('█') || line.starts_with('░')) {
                 let split = line.find('░').unwrap_or(line.len());
@@ -1326,6 +1405,25 @@ mod tests {
         )
     }
 
+    fn context_snapshot(
+        percentage: u8,
+        band: crate::context_tracking::ContextBand,
+        provenance: crate::context_tracking::ContextProvenance,
+        freshness: crate::context_tracking::ContextFreshness,
+    ) -> SessionContextSnapshot {
+        SessionContextSnapshot {
+            used_tokens: u64::from(percentage) * 1_000,
+            context_limit: std::num::NonZeroU64::new(100_000).unwrap(),
+            percentage: crate::context_tracking::ContextPercentage::clamped(i64::from(percentage)),
+            band,
+            provenance,
+            freshness,
+            sampled_at: chrono::Utc::now(),
+            checked_at: chrono::Utc::now(),
+            reset: crate::context_tracking::ContextResetMetadata::default(),
+        }
+    }
+
     #[test]
     fn claude_sidebar_width_is_reserved_when_view_is_wide_enough() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Claude), 120);
@@ -1342,6 +1440,39 @@ mod tests {
     fn non_sidebar_sessions_keep_full_width() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Terminal), 120);
         assert_eq!(width, 120);
+    }
+
+    #[test]
+    fn active_todo_section_is_hidden_when_empty_and_keeps_completed_entries() {
+        let mut data = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: String::new(),
+            usage_text: None,
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
+        };
+        assert!(
+            sidebar_sections(&data, 30)
+                .iter()
+                .all(|section| section.title != "Active TODOs")
+        );
+
+        data.active_todos_text =
+            Some("Project / Feature / TODO agent\nShip it · high · project · complete".to_string());
+        let active = sidebar_sections(&data, 30)
+            .into_iter()
+            .find(|section| section.title == "Active TODOs")
+            .expect("referenced TODOs should render a dedicated section");
+        assert!(active.body.ends_with("complete"));
     }
 
     #[test]
@@ -1382,9 +1513,13 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         let sections = sidebar_sections(&sidebar, 30);
@@ -1406,9 +1541,13 @@ mod tests {
             prompt_text: String::new(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: String::new(),
             pr_triage_text: None,
             plan_text: "Current: AMF_PLAN.md".into(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         let titles: Vec<&str> = sidebar_sections(&sidebar, 30)
@@ -1433,9 +1572,13 @@ mod tests {
             prompt_text: "Preview: keep going".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: Some("○ one\n○ two".into()),
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: Some("1 open PR".into()),
             plan_text: "Current: AMF_PLAN.md".into(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         let titles: Vec<&str> = sidebar_sections(&sidebar, 30)
@@ -1463,9 +1606,13 @@ mod tests {
             prompt_text: String::new(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: String::new(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         assert!(
@@ -1485,9 +1632,13 @@ mod tests {
             prompt_text: String::new(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: String::new(),
             pr_triage_text: None,
             plan_text: "Current: docs/accepted.md".into(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         let sections = sidebar_sections(&sidebar, 30);
@@ -1497,6 +1648,135 @@ mod tests {
             .expect("plan child row should be present");
 
         assert_eq!(plan.body, "Current: docs/accepted.md");
+    }
+
+    #[test]
+    fn fresh_context_section_uses_the_shared_indicator_and_action_wording() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Ready".into(),
+            usage_text: None,
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: Some(context_snapshot(
+                70,
+                crate::context_tracking::ContextBand::Warning,
+                crate::context_tracking::ContextProvenance::Direct,
+                crate::context_tracking::ContextFreshness::Fresh,
+            )),
+            context_hint_visible: true,
+        };
+
+        let sections = sidebar_sections(&sidebar, 30);
+        let context = sections
+            .iter()
+            .find(|section| section.title == "Fresh Context")
+            .expect("eligible context should have a dedicated section");
+
+        assert_eq!(
+            context.body,
+            "Usage: Ctx 70% WARNING · 70,000\nAction: Fresh context: <leader F>\nDismiss: <leader X>"
+        );
+        assert!(matches!(
+            context.constraint,
+            Constraint::Length(height) if height >= 4
+        ));
+    }
+
+    #[test]
+    fn fresh_context_section_wraps_without_disappearing_in_a_narrow_sidebar() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: String::new(),
+            usage_text: None,
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: Some(context_snapshot(
+                85,
+                crate::context_tracking::ContextBand::Critical,
+                crate::context_tracking::ContextProvenance::Estimated,
+                crate::context_tracking::ContextFreshness::Stale,
+            )),
+            context_hint_visible: true,
+        };
+
+        let sections = sidebar_sections(&sidebar, 16);
+        let context = sections
+            .iter()
+            .find(|section| section.title == "Fresh Context")
+            .expect("eligible context should remain present when wrapped");
+
+        assert!(context.body.contains("Ctx ~85% CRITICAL STALE · 85,000"));
+        assert!(context.body.contains("Fresh context: <leader F>"));
+        assert!(matches!(
+            context.constraint,
+            Constraint::Length(height) if height >= 4
+        ));
+    }
+
+    #[test]
+    fn fresh_context_section_keeps_room_for_dismiss_at_default_sidebar_width() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: String::new(),
+            usage_text: None,
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: Some(context_snapshot(
+                70,
+                crate::context_tracking::ContextBand::Warning,
+                crate::context_tracking::ContextProvenance::Direct,
+                crate::context_tracking::ContextFreshness::Fresh,
+            )),
+            context_hint_visible: true,
+        };
+
+        let section_width = 32;
+        let sections = sidebar_sections(&sidebar, section_width);
+        let context = sections
+            .iter()
+            .find(|section| section.title == "Fresh Context")
+            .expect("eligible context should have a dedicated section");
+
+        // How many inner rows the body actually needs once wrapped at this
+        // width -- the section must be tall enough to show every one of them,
+        // borders included, or the last line (`Dismiss`) is clipped.
+        let inner_width = usize::from(section_width - 2);
+        let needed_inner_lines: u16 = context
+            .body
+            .lines()
+            .map(|line| (line.chars().count().max(1)).div_ceil(inner_width) as u16)
+            .sum();
+        assert!(needed_inner_lines >= 5, "body should wrap past four lines");
+
+        let Constraint::Length(height) = context.constraint else {
+            panic!("fresh context section uses a fixed height");
+        };
+        assert!(
+            height >= needed_inner_lines + 2,
+            "height {height} clips a body needing {needed_inner_lines} inner lines"
+        );
     }
 
     #[test]
@@ -1512,9 +1792,13 @@ mod tests {
                     .into(),
             ),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         let sections = sidebar_sections(&sidebar, 30);
@@ -1560,9 +1844,13 @@ mod tests {
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -1606,9 +1894,13 @@ mod tests {
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: Some("PR: #321 · 4 open\nStatus: Working".into()),
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -1652,9 +1944,13 @@ mod tests {
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -1694,9 +1990,13 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -1738,9 +2038,13 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -1769,7 +2073,7 @@ mod tests {
 
     #[test]
     fn leader_menu_lists_sidebar_toggle_command() {
-        let backend = TestBackend::new(120, 24);
+        let backend = TestBackend::new(120, 28);
         let mut terminal = Terminal::new(backend).unwrap();
         let view = sample_view(crate::project::SessionKind::Claude);
         let theme = Theme::default();
@@ -1798,6 +2102,7 @@ mod tests {
         assert!(rendered.contains("Show / hide sidebar"));
         assert!(rendered.contains("Bookmark picker"));
         assert!(rendered.contains("Open current plan"));
+        assert!(rendered.contains("Fresh context"));
         assert!(rendered.contains("Jump to bookmark slot"));
         assert!(rendered.contains("Check pending diff revie"));
         // compose_intercept is Some(false): the menu offers the way
@@ -1861,9 +2166,13 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -1908,9 +2217,13 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -1959,9 +2272,13 @@ mod tests {
                     .into(),
             ),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Small summary.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -2003,9 +2320,13 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -2047,9 +2368,13 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: String::new(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal
@@ -2091,9 +2416,13 @@ mod tests {
             prompt_text: String::new(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
         };
 
         terminal

@@ -9,6 +9,7 @@ use ratatui::{
 use crate::app::attention::AttentionState;
 use crate::app::util::{ClaudeTaskState, read_claude_task_state};
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
+use crate::context_tracking::SessionContextSnapshot;
 use crate::project::{
     Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch, VibeMode,
 };
@@ -167,6 +168,19 @@ fn build_agent_sidebar_data(
                 .find(|session| session.kind == sidebar_kind)
         });
 
+    let (context_snapshot, context_hint_visible) = session
+        .and_then(|session| app.context_states.get(&session.id))
+        .map(|context| {
+            (
+                context.snapshot.clone(),
+                session.is_some_and(|session| {
+                    app.context_hint_states
+                        .is_eligible(&session.id, Some(context))
+                }),
+            )
+        })
+        .unwrap_or((None, false));
+
     let waiting_count = app
         .pending_inputs
         .iter()
@@ -192,22 +206,72 @@ fn build_agent_sidebar_data(
             n => format!("Waiting for {n} inputs"),
         },
     };
+    // Section content is global (resolved from the cache, prefixed with
+    // project / feature / label). The header affordance, however, only acts
+    // on the *current* session, so it is shown only when that session itself
+    // carries a menu-launched TODO reference.
+    let active_todos_text = app.active_todos_sidebar_cache.clone();
+    let active_todo_affordance = session.is_some_and(|session| {
+        session
+            .todo_reference
+            .as_ref()
+            .is_some_and(|reference| reference.launched_from_todo_menu)
+    });
 
     match sidebar_kind {
-        SessionKind::Opencode => {
-            build_opencode_sidebar_data(app, project, feature, session, view, status_line)
-        }
-        SessionKind::Claude => {
-            build_claude_sidebar_data(app, project, feature, session, view, status_line)
-        }
-        SessionKind::Codex => {
-            build_codex_sidebar_data(app, project, feature, session, view, status_line)
-        }
-        SessionKind::Pi => build_pi_sidebar_data(app, project, feature, session, view, status_line),
+        SessionKind::Opencode => build_opencode_sidebar_data(
+            app,
+            project,
+            feature,
+            session,
+            view,
+            status_line,
+            context_snapshot,
+            context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
+        ),
+        SessionKind::Claude => build_claude_sidebar_data(
+            app,
+            project,
+            feature,
+            session,
+            view,
+            status_line,
+            context_snapshot,
+            context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
+        ),
+        SessionKind::Codex => build_codex_sidebar_data(
+            app,
+            project,
+            feature,
+            session,
+            view,
+            status_line,
+            context_snapshot,
+            context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
+        ),
+        SessionKind::Pi => build_pi_sidebar_data(
+            app,
+            project,
+            feature,
+            session,
+            view,
+            status_line,
+            context_snapshot,
+            context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
+        ),
         _ => None,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_opencode_sidebar_data(
     app: &App,
     project: &Project,
@@ -215,6 +279,10 @@ fn build_opencode_sidebar_data(
     session: Option<&FeatureSession>,
     view: &crate::app::ViewState,
     status_line: String,
+    context_snapshot: Option<SessionContextSnapshot>,
+    context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
     let usage_line = session
@@ -262,12 +330,17 @@ fn build_opencode_sidebar_data(
             .or(work_text)
             .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
         todos_text,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
+        context_snapshot,
+        context_hint_visible,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_claude_sidebar_data(
     app: &App,
     project: &Project,
@@ -275,6 +348,10 @@ fn build_claude_sidebar_data(
     session: Option<&FeatureSession>,
     view: &crate::app::ViewState,
     status_line: String,
+    context_snapshot: Option<SessionContextSnapshot>,
+    context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -308,12 +385,17 @@ fn build_claude_sidebar_data(
         prompt_text,
         work_text,
         todos_text,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
+        context_snapshot,
+        context_hint_visible,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_codex_sidebar_data(
     app: &App,
     project: &Project,
@@ -321,6 +403,10 @@ fn build_codex_sidebar_data(
     session: Option<&FeatureSession>,
     view: &crate::app::ViewState,
     status_line: String,
+    context_snapshot: Option<SessionContextSnapshot>,
+    context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -363,12 +449,17 @@ fn build_codex_sidebar_data(
         prompt_text,
         work_text,
         todos_text: None,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
+        context_snapshot,
+        context_hint_visible,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_pi_sidebar_data(
     app: &App,
     project: &Project,
@@ -376,6 +467,10 @@ fn build_pi_sidebar_data(
     session: Option<&FeatureSession>,
     view: &crate::app::ViewState,
     status_line: String,
+    context_snapshot: Option<SessionContextSnapshot>,
+    context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -400,9 +495,13 @@ fn build_pi_sidebar_data(
         prompt_text,
         work_text,
         todos_text: None,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
+        context_snapshot,
+        context_hint_visible,
     })
 }
 
@@ -1628,6 +1727,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_todo_delete_disposition_dialog(frame, state, &app.theme);
     }
 
+    if let AppMode::ConfirmTodoReferenceCompletion(state) = &app.mode {
+        super::dialogs::draw_todo_reference_completion_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::RenamingSession(state) = &app.mode {
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
     }
@@ -2017,6 +2120,7 @@ mod tests {
             label: "Codex".into(),
             tmux_window: "codex".into(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: Some(TokenUsageSource {
                 provider: TokenUsageProvider::Codex,
                 id: session_id.into(),
@@ -2044,6 +2148,7 @@ mod tests {
             label: label.into(),
             tmux_window: window.into(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: chrono::Utc::now(),
@@ -2132,6 +2237,28 @@ mod tests {
             VibeMode::Vibeless,
             false,
         )
+    }
+
+    fn sidebar_context(
+        used_tokens: u64,
+        provenance: crate::context_tracking::ContextProvenance,
+    ) -> crate::context_tracking::SessionContextState {
+        let now = chrono::Utc::now();
+        let mut state = crate::context_tracking::SessionContextState::default();
+        state
+            .accept_sample(
+                crate::context_tracking::ContextUsageSample {
+                    used_tokens,
+                    context_limit: Some(100_000),
+                    provenance,
+                    sampled_at: now,
+                    checked_at: now,
+                    reset: crate::context_tracking::ContextResetMetadata::default(),
+                },
+                crate::context_tracking::ContextThresholds::default(),
+            )
+            .unwrap();
+        state
     }
 
     #[test]
@@ -2252,6 +2379,77 @@ mod tests {
             assert!(second.status_text.contains("Input: 2.0k tokens"));
             assert!(!second.status_text.contains("Input: 1.0k tokens"));
         }
+    }
+
+    #[test]
+    fn sidebar_data_resolves_direct_estimated_stale_and_reset_context_for_selected_session() {
+        let mut app = sidebar_usage_app(SessionKind::Codex);
+        let direct = sidebar_context(70_000, crate::context_tracking::ContextProvenance::Direct);
+        let mut estimated = sidebar_context(
+            85_000,
+            crate::context_tracking::ContextProvenance::Estimated,
+        );
+        estimated.mark_unavailable(chrono::Utc::now());
+        app.context_states.insert("session-1".into(), direct);
+        app.context_states.insert("session-2".into(), estimated);
+        app.context_hint_states.sync_all(&app.context_states);
+
+        let first = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-1", "Agent 1"),
+        )
+        .unwrap();
+        assert_eq!(
+            first
+                .context_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.provenance),
+            Some(crate::context_tracking::ContextProvenance::Direct)
+        );
+        assert!(first.context_hint_visible);
+
+        let second = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-2", "Agent 2"),
+        )
+        .unwrap();
+        let second_snapshot = second.context_snapshot.as_ref().unwrap();
+        assert_eq!(
+            second_snapshot.provenance,
+            crate::context_tracking::ContextProvenance::Estimated
+        );
+        assert_eq!(
+            second_snapshot.freshness,
+            crate::context_tracking::ContextFreshness::Stale
+        );
+        assert!(second.context_hint_visible);
+
+        app.context_states.remove("session-2");
+        app.context_hint_states.sync_all(&app.context_states);
+        let unavailable = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-2", "Agent 2"),
+        )
+        .unwrap();
+        assert!(unavailable.context_snapshot.is_none());
+        assert!(!unavailable.context_hint_visible);
+
+        let reset_event = crate::context_tracking::ContextResetEvent {
+            reason: crate::context_tracking::ContextResetReason::Compaction,
+            detected_at: chrono::Utc::now(),
+        };
+        app.context_states
+            .get_mut("session-1")
+            .unwrap()
+            .begin_reset(None, reset_event);
+        app.context_hint_states.sync_all(&app.context_states);
+        let reset_pending = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-1", "Agent 1"),
+        )
+        .unwrap();
+        assert!(reset_pending.context_snapshot.is_none());
+        assert!(!reset_pending.context_hint_visible);
     }
 
     #[test]
@@ -3004,6 +3202,7 @@ mod tests {
                 label: "Claude".into(),
                 tmux_window: "claude".into(),
                 claude_session_id: Some("claude-session".into()),
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -3113,6 +3312,7 @@ mod tests {
                 label: "Claude".into(),
                 tmux_window: "claude".into(),
                 claude_session_id: Some("claude-session".into()),
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -3222,6 +3422,7 @@ mod tests {
                 label: "Opencode".into(),
                 tmux_window: "opencode".into(),
                 claude_session_id: None,
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,

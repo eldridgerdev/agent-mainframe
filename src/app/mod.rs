@@ -10,6 +10,7 @@ mod codex_sessions;
 pub mod commands;
 mod compose;
 mod config_wizard;
+mod context_hints;
 mod context_settings;
 mod diff;
 pub(crate) mod dormant;
@@ -902,6 +903,12 @@ pub struct App {
     pub codex_sidebar_metadata_rx: std::sync::mpsc::Receiver<CodexSidebarMetadataResult>,
     pub codex_sidebar_metadata_inflight: std::collections::HashSet<String>,
     pub opencode_sidebar_cache: HashMap<String, opencode_storage::OpencodeSidebarData>,
+    /// Rendered "Active TODOs" sidebar section, rebuilt on status sync and
+    /// after any local mutation that affects it (completion, clear, delete,
+    /// spawn) rather than on every frame. Resolving it runs two SQLite
+    /// queries per TODO-referenced session across all projects, and
+    /// `build_agent_sidebar_data` is rebuilt up to ~20x/sec in Viewing mode.
+    pub active_todos_sidebar_cache: Option<String>,
     sidebar_load_tx: Sender<SidebarLoadResult>,
     sidebar_load_rx: Receiver<SidebarLoadResult>,
     /// Finished Learning Mode answers, delivered from the per-question
@@ -920,6 +927,8 @@ pub struct App {
     pub token_tracker: SessionTokenTracker,
     /// Transient context-window telemetry keyed by AMF session ID.
     pub context_states: HashMap<String, SessionContextState>,
+    /// Transient context-hint dismissal state keyed by AMF session ID.
+    pub(crate) context_hint_states: context_hints::ContextHintStates,
     pub context_collector: SessionContextCollector,
     pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
     /// Background refresh and last-known values for the dashboard's open-PR
@@ -2392,6 +2401,7 @@ impl App {
             codex_sidebar_metadata_rx,
             codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             opencode_sidebar_cache: HashMap::new(),
+            active_todos_sidebar_cache: None,
             sidebar_load_tx,
             sidebar_load_rx,
             learning_answer_tx,
@@ -2403,6 +2413,7 @@ impl App {
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             context_states: HashMap::new(),
+            context_hint_states: context_hints::ContextHintStates::default(),
             context_collector: SessionContextCollector::default(),
             session_status_bg: None,
             active_pr_bg: None,
@@ -2639,6 +2650,7 @@ impl App {
             codex_sidebar_metadata_rx,
             codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             opencode_sidebar_cache: HashMap::new(),
+            active_todos_sidebar_cache: None,
             sidebar_load_tx,
             sidebar_load_rx,
             learning_answer_tx,
@@ -2650,6 +2662,7 @@ impl App {
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             context_states: HashMap::new(),
+            context_hint_states: context_hints::ContextHintStates::default(),
             context_collector: SessionContextCollector::default(),
             session_status_bg: None,
             active_pr_bg: None,

@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use super::super::dashboard::centered_rect;
-use crate::app::FreshContextPromptState;
+use crate::app::{FreshContextPromptSource, FreshContextPromptState};
 use crate::theme::Theme;
 
 const CURSOR: &str = "\u{2588}";
@@ -48,9 +48,18 @@ pub fn draw_fresh_context_prompt_dialog(
     ]));
     frame.render_widget(prompt_line, chunks[0]);
 
+    let caption_text = match state.source {
+        FreshContextPromptSource::Manual => {
+            " A new session in this feature will start with your plan, changed files, \
+             and this instruction already loaded."
+        }
+        FreshContextPromptSource::ContextHint => {
+            " A generated continuation is loaded below. Edit it before starting \
+             the fresh session."
+        }
+    };
     let caption = Paragraph::new(Line::from(Span::styled(
-        " A new session in this feature will start with your plan, changed files, \
-         and this instruction already loaded.",
+        caption_text,
         Style::default().fg(theme.text_muted.to_color()),
     )))
     .wrap(Wrap { trim: true });

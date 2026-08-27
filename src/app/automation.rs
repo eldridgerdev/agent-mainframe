@@ -6,7 +6,7 @@ use super::*;
 use crate::automation::{
     AutomationHookPrompt, BatchFeatureAutomationResult, CreateBatchFeaturesRequest,
     CreateBatchFeaturesResponse, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
-    CreateProjectResponse,
+    CreateProjectResponse, SeedAiReviewRequest, SeedAiReviewResponse,
 };
 use crate::extension::merge_project_extension_config;
 use crate::project::{normalized_feature_name, tmux_session_name, worktree_name};
@@ -544,5 +544,88 @@ impl App {
             response_features,
             message,
         ))
+    }
+
+    pub fn seed_ai_review_from_request(
+        &mut self,
+        request: &SeedAiReviewRequest,
+    ) -> Result<SeedAiReviewResponse> {
+        if request.pr_number == 0 || request.head_sha.trim().is_empty() {
+            bail!("pr_number and head_sha are required")
+        }
+        if request.summary.trim().is_empty() {
+            bail!("summary is required")
+        }
+        if request.findings.iter().any(|finding| finding.body.trim().is_empty()) {
+            bail!("every fixture finding needs a body")
+        }
+        let (workdir, owner, repo) = if request.open {
+            let workdir = request
+                .workdir
+                .as_ref()
+                .filter(|path| path.exists())
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("open fixtures require an existing workdir"))?;
+            let repository = request
+                .repository
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("open fixtures require repository as owner/name"))?;
+            let (owner, repo) = repository
+                .split_once('/')
+                .filter(|(owner, repo)| !owner.is_empty() && !repo.is_empty() && !repo.contains('/'))
+                .ok_or_else(|| anyhow::anyhow!("repository must be owner/name"))?;
+            (Some(workdir), Some(owner.to_string()), Some(repo.to_string()))
+        } else {
+            (None, None, None)
+        };
+        let findings = request
+            .findings
+            .iter()
+            .map(|finding| crate::app::ai_review::AiReviewFinding {
+                path: finding.path.clone(),
+                line: finding.line,
+                side: finding.side,
+                body: finding.body.clone(),
+                diff_hunk: finding.diff_hunk.clone(),
+                skipped: finding.skipped,
+                published: finding.published,
+            })
+            .collect::<Vec<_>>();
+        let count = findings.len();
+        let entry = crate::app::ai_review::AiReviewCacheEntry {
+            findings,
+            last_run: Some(crate::app::ai_review::AiReviewRun {
+                ran_at: chrono::Local::now(),
+                outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(count),
+            }),
+            summary: Some(request.summary.clone()),
+        };
+        self.db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AI review cache database is unavailable"))?
+            .save_ai_review_cache(request.pr_number, &request.head_sha, &entry)?;
+        if let (Some(workdir), Some(owner), Some(repo)) = (workdir, owner, repo) {
+            self.open_ai_review_for_pr(
+                workdir,
+                crate::github::PrRef {
+                    number: request.pr_number,
+                    head_sha: request.head_sha.clone(),
+                    url: format!("https://github.com/{owner}/{repo}/pull/{}", request.pr_number),
+                    owner,
+                    repo,
+                    head_ref: request.head_ref.clone().unwrap_or_default(),
+                },
+            );
+        }
+        Ok(SeedAiReviewResponse {
+            msg_type: crate::automation::AUTOMATION_RESULT_TYPE,
+            action: crate::automation::SEED_AI_REVIEW_ACTION,
+            ok: true,
+            pr_number: request.pr_number,
+            head_sha: request.head_sha.clone(),
+            finding_count: count,
+            opened: request.open,
+            message: format!("Seeded {count} deterministic AI-review finding(s)"),
+        })
     }
 }

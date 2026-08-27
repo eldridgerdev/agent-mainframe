@@ -9,6 +9,67 @@ pub const AUTOMATION_RESULT_TYPE: &str = "automation-result";
 pub const CREATE_PROJECT_ACTION: &str = "create_project";
 pub const CREATE_FEATURE_ACTION: &str = "create_feature";
 pub const CREATE_BATCH_FEATURES_ACTION: &str = "create_batch_features";
+pub const SEED_AI_REVIEW_ACTION: &str = "seed_ai_review";
+
+/// Deterministic fixture data for the AI Review pane. This is intentionally an
+/// automation-only test seam: it never launches a model or contacts GitHub.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SeedAiReviewRequest {
+    pub pr_number: u32,
+    pub head_sha: String,
+    pub summary: String,
+    pub findings: Vec<SeedAiReviewFinding>,
+    /// Open the completed fixture directly after persisting it. This is for
+    /// deterministic visual tests; it deliberately does not resolve a PR or
+    /// start a review.
+    pub open: bool,
+    pub workdir: Option<PathBuf>,
+    pub repository: Option<String>,
+    pub head_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SeedAiReviewFinding {
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    pub side: Option<crate::diff::DiffSide>,
+    pub body: String,
+    pub diff_hunk: Option<String>,
+    pub skipped: bool,
+    pub published: bool,
+}
+
+impl SeedAiReviewRequest {
+    pub fn ipc_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": AUTOMATION_REQUEST_TYPE,
+            "action": SEED_AI_REVIEW_ACTION,
+            "pr_number": self.pr_number,
+            "head_sha": self.head_sha,
+            "summary": self.summary,
+            "findings": self.findings,
+            "open": self.open,
+            "workdir": self.workdir,
+            "repository": self.repository,
+            "head_ref": self.head_ref,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SeedAiReviewResponse {
+    #[serde(rename = "type")]
+    pub msg_type: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    pub pr_number: u32,
+    pub head_sha: String,
+    pub finding_count: usize,
+    pub opened: bool,
+    pub message: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

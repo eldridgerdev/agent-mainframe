@@ -650,9 +650,12 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
             "Usage: {}\nAction: Fresh context: <leader F>\nDismiss: <leader X>",
             indicator.text
         );
+        // Three labelled lines that each wrap to two inner lines at the
+        // default 32-column sidebar width -- the ceiling has to clear five so
+        // the `Dismiss` action is never the row that gets clipped.
         sections.push(SidebarSection {
             title: "Fresh Context",
-            constraint: Constraint::Length(sidebar_section_height(&body, section_width, 2, 4)),
+            constraint: Constraint::Length(sidebar_section_height(&body, section_width, 2, 6)),
             body,
         });
     }
@@ -1521,6 +1524,54 @@ mod tests {
             context.constraint,
             Constraint::Length(height) if height >= 4
         ));
+    }
+
+    #[test]
+    fn fresh_context_section_keeps_room_for_dismiss_at_default_sidebar_width() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: String::new(),
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: Some(context_snapshot(
+                70,
+                crate::context_tracking::ContextBand::Warning,
+                crate::context_tracking::ContextProvenance::Direct,
+                crate::context_tracking::ContextFreshness::Fresh,
+            )),
+            context_hint_visible: true,
+        };
+
+        let section_width = 32;
+        let sections = sidebar_sections(&sidebar, section_width);
+        let context = sections
+            .iter()
+            .find(|section| section.title == "Fresh Context")
+            .expect("eligible context should have a dedicated section");
+
+        // How many inner rows the body actually needs once wrapped at this
+        // width -- the section must be tall enough to show every one of them,
+        // borders included, or the last line (`Dismiss`) is clipped.
+        let inner_width = usize::from(section_width - 2);
+        let needed_inner_lines: u16 = context
+            .body
+            .lines()
+            .map(|line| (line.chars().count().max(1)).div_ceil(inner_width) as u16)
+            .sum();
+        assert!(needed_inner_lines >= 5, "body should wrap past four lines");
+
+        let Constraint::Length(height) = context.constraint else {
+            panic!("fresh context section uses a fixed height");
+        };
+        assert!(
+            height >= needed_inner_lines + 2,
+            "height {height} clips a body needing {needed_inner_lines} inner lines"
+        );
     }
 
     #[test]

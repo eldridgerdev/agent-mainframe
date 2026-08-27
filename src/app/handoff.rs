@@ -16,6 +16,14 @@ const FRESH_CONTEXT_CLARIFY_ASK: &str =
     "Grill me with any questions to clarify before implementing";
 const FRESH_CONTEXT_CONTINUATION_INSTRUCTION: &str = "Inspect the current work and continue from persisted artifacts, preserving the feature's existing intent";
 
+/// Caps on the material folded into a seeded continuation prompt. A branch
+/// with hundreds of changed files, or a multi-page prior prompt, would
+/// otherwise produce a composer seed far larger than anything a person would
+/// type -- these keep the useful signal (a sample of the diff, the gist of the
+/// last prompt) without letting the seed grow without bound.
+const MAX_CHANGED_FILES_LISTED: usize = 20;
+const MAX_PROMPT_SOURCE_CHARS: usize = 600;
+
 impl App {
     /// Open the fresh-context instruction prompt over the current session
     /// view (`Ctrl+Space` then `Shift+F`). Collecting the instruction first
@@ -55,7 +63,7 @@ impl App {
             .map(|snapshot| changed_file_paths(&snapshot))
             .unwrap_or_default();
         let feature_summary = feature.summary.as_deref();
-        let latest_prompt = self.latest_prompt_for_session(&feature.tmux_session);
+        let latest_prompt = self.continuation_latest_prompt(feature, &view.window);
         let prefill = build_fresh_context_prompt(
             relative_plan.as_deref(),
             &changed_files,
@@ -64,6 +72,45 @@ impl App {
             FRESH_CONTEXT_CONTINUATION_INSTRUCTION,
         );
         self.open_fresh_context_prompt_from_view_with_prefill(prefill);
+    }
+
+    /// Latest known prompt to fold into a continuation seed for the session
+    /// currently being viewed (identified by its tmux window, not the
+    /// feature). Codex keeps a per-session prompt cache, so a view of one of
+    /// several Codex sessions gets that session's own prompt. When no
+    /// session-scoped prompt is available the feature-wide cache is only
+    /// trusted if a single agent session makes it unambiguous -- otherwise
+    /// the seed would risk quoting a sibling session's prompt, so it's
+    /// omitted.
+    fn continuation_latest_prompt<'a>(
+        &'a self,
+        feature: &'a Feature,
+        view_window: &str,
+    ) -> Option<&'a str> {
+        let session = feature
+            .sessions
+            .iter()
+            .find(|session| session.tmux_window == view_window);
+
+        let codex_session_prompt = session
+            .and_then(|session| session.token_usage_source.as_ref())
+            .filter(|source| {
+                source.provider == crate::token_tracking::TokenUsageProvider::Codex
+            })
+            .and_then(|source| self.cached_codex_session_prompt(&feature.workdir, &source.id));
+        if codex_session_prompt.is_some() {
+            return codex_session_prompt;
+        }
+
+        let agent_session_count = feature
+            .sessions
+            .iter()
+            .filter(|session| session.kind.is_agent_harness())
+            .count();
+        if agent_session_count > 1 {
+            return None;
+        }
+        self.latest_prompt_for_session(&feature.tmux_session)
     }
 
     fn open_fresh_context_prompt_with_prefill(
@@ -230,6 +277,17 @@ fn changed_file_paths(snapshot: &DiffSnapshot) -> Vec<String> {
         .collect()
 }
 
+/// Clamp a free-text source (a feature summary, a prior prompt) to
+/// [`MAX_PROMPT_SOURCE_CHARS`], appending an ellipsis when it had to be cut,
+/// so one oversized field can't blow up the seeded prompt.
+fn truncate_prompt_source(text: &str) -> String {
+    if text.chars().count() <= MAX_PROMPT_SOURCE_CHARS {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(MAX_PROMPT_SOURCE_CHARS).collect();
+    format!("{}\u{2026}", kept.trim_end())
+}
+
 /// Build the fresh-context prompt per the brief's template, using the user's
 /// own `instruction` in place of the brief's "(insert new prompt here)"
 /// placeholder. Either input section is omitted when there's nothing to say
@@ -247,22 +305,30 @@ fn build_fresh_context_prompt(
         prompt.push_str(&format!("Read {plan} for full context on this feature. "));
     }
     if !changed_files.is_empty() {
-        prompt.push_str(&format!(
-            "Changed/new files to look at: {}. ",
-            changed_files.join(", ")
-        ));
+        let listed = changed_files.len().min(MAX_CHANGED_FILES_LISTED);
+        let mut files_line = changed_files[..listed].join(", ");
+        if let Some(remaining) = changed_files.len().checked_sub(listed).filter(|n| *n > 0) {
+            files_line.push_str(&format!(", and {remaining} more"));
+        }
+        prompt.push_str(&format!("Changed/new files to look at: {files_line}. "));
     }
     if let Some(summary) = feature_summary
         .map(str::trim)
         .filter(|summary| !summary.is_empty())
     {
-        prompt.push_str(&format!("Feature summary: {summary}. "));
+        prompt.push_str(&format!(
+            "Feature summary: {}. ",
+            truncate_prompt_source(summary)
+        ));
     }
     if let Some(latest_prompt) = latest_prompt
         .map(str::trim)
         .filter(|latest_prompt| !latest_prompt.is_empty())
     {
-        prompt.push_str(&format!("Latest known prompt: {latest_prompt}. "));
+        prompt.push_str(&format!(
+            "Latest known prompt: {}. ",
+            truncate_prompt_source(latest_prompt)
+        ));
     }
     prompt.push_str(instruction);
     prompt.push(' ');
@@ -401,6 +467,39 @@ mod tests {
             prompt,
             format!("{FRESH_CONTEXT_CONTINUATION_INSTRUCTION} {FRESH_CONTEXT_CLARIFY_ASK}")
         );
+    }
+
+    #[test]
+    fn changed_files_list_is_capped_with_an_and_more_suffix() {
+        let files: Vec<String> = (0..50).map(|n| format!("src/file_{n}.rs")).collect();
+        let prompt = build_fresh_context_prompt(None, &files, None, None, "Continue.");
+
+        assert!(prompt.contains("src/file_0.rs"));
+        assert!(prompt.contains(&format!(
+            "src/file_{}.rs, and 30 more. ",
+            MAX_CHANGED_FILES_LISTED - 1
+        )));
+        assert!(!prompt.contains("src/file_20.rs"));
+    }
+
+    #[test]
+    fn oversized_summary_and_latest_prompt_are_truncated() {
+        let long_summary = "s".repeat(MAX_PROMPT_SOURCE_CHARS + 200);
+        let long_prompt = "p".repeat(MAX_PROMPT_SOURCE_CHARS + 200);
+        let prompt = build_fresh_context_prompt(
+            None,
+            &[],
+            Some(&long_summary),
+            Some(&long_prompt),
+            FRESH_CONTEXT_CONTINUATION_INSTRUCTION,
+        );
+
+        // Each source contributes at most the cap plus the ellipsis, so the
+        // whole seed stays within a bounded envelope rather than scaling with
+        // the inputs.
+        assert!(prompt.contains(&format!("{}\u{2026}", "s".repeat(MAX_PROMPT_SOURCE_CHARS))));
+        assert!(prompt.contains(&format!("{}\u{2026}", "p".repeat(MAX_PROMPT_SOURCE_CHARS))));
+        assert!(prompt.len() < 2 * (MAX_PROMPT_SOURCE_CHARS + 64) + 512);
     }
 
     #[test]

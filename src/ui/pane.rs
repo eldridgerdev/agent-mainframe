@@ -518,6 +518,24 @@ fn draw_startup_loading(
     frame.render_widget(paragraph, panel);
 }
 
+/// The "Active TODO" section draws its title on the top-left of its border and
+/// the completion hint on the top-right of the same border. The two labels are
+/// `" Active TODO "` (13 cols) and `" <leader z complete> "` (21 cols); below
+/// this width the section border (two columns narrower than the sidebar `area`)
+/// cannot hold both and ratatui overlays the hint onto the title. 42 leaves a
+/// margin over the 34-column minimum.
+const ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH: u16 = 42;
+
+/// Whether the `<leader z complete>` affordance can be shown on a sidebar
+/// section's border. `sidebar_width` is `draw_agent_sidebar`'s `area.width`
+/// (the full sidebar, borders included). Pure so the threshold is testable
+/// without a `Frame`.
+fn active_todo_hint_visible(section_title: &str, affordance: bool, sidebar_width: u16) -> bool {
+    section_title == "Active TODO"
+        && affordance
+        && sidebar_width >= ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH
+}
+
 fn draw_agent_sidebar(
     frame: &mut Frame,
     area: Rect,
@@ -628,10 +646,10 @@ fn draw_agent_sidebar(
                 .alignment(Alignment::Right),
             );
         }
-        // A narrow sidebar cannot fit both border titles; ratatui overlays the
-        // right-aligned hint onto "Active TODO". Keep the title legible and
-        // show the affordance only when there is room for both.
-        if sidebar_section.title == "Active TODO" && data.active_todo_affordance && area.width >= 42
+        // A narrow sidebar cannot fit both border labels; ratatui overlays the
+        // right-aligned hint onto "Active TODO". Show the affordance only when
+        // there is room for both (see ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH).
+        if active_todo_hint_visible(sidebar_section.title, data.active_todo_affordance, area.width)
         {
             block = block.title_top(
                 Line::from(Span::styled(
@@ -1448,6 +1466,27 @@ mod tests {
             .find(|section| section.title == "Active TODO")
             .expect("referenced TODOs should render a dedicated section");
         assert!(active.body.ends_with("State: completed"));
+    }
+
+    #[test]
+    fn active_todo_hint_needs_room_for_both_border_labels() {
+        // Too narrow: the title and the right-aligned hint would collide.
+        assert!(!active_todo_hint_visible("Active TODO", true, 30));
+        assert!(!active_todo_hint_visible(
+            "Active TODO",
+            true,
+            ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH - 1
+        ));
+        // Wide enough: both labels fit on the border.
+        assert!(active_todo_hint_visible(
+            "Active TODO",
+            true,
+            ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH
+        ));
+        assert!(active_todo_hint_visible("Active TODO", true, 120));
+        // Only the Active TODO section, and only when the affordance is live.
+        assert!(!active_todo_hint_visible("Active TODO", false, 120));
+        assert!(!active_todo_hint_visible("Prompt", true, 120));
     }
 
     #[test]

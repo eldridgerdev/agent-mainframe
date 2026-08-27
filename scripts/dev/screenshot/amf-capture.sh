@@ -368,7 +368,7 @@ if [[ "$first_screen" == "Configure Agent Harnesses" ]]; then
             fi
             harness_resolved=""
         done
-        if [[ "$harness_resolved" == "(installed)" ]]; then
+        if [[ "$harness_resolved" == *"(installed)" ]]; then
             harness_installed=1
             break
         fi

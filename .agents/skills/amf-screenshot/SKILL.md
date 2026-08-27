@@ -55,14 +55,37 @@ python3 scripts/dev/screenshot/render_ansi.py <capture>.ansi \
 
 Match `--cols` and `--rows` to the capture geometry. Pass `--gif` to the driver only when the user asks for a GIF or animation; the driver then renders the frames and assembles the GIF itself.
 
-## Verify and deliver
+## Publish and deliver
 
 Search the escape-free `.txt` twins for the expected dialog titles, labels, entered text, and status messages. Do not read `.ansi` files into context. Then use the local image viewer on one or two representative PNGs to check layout, clipping, and color.
 
-Return the visual files as the primary result:
+When the branch and scenario are pushed and the user wants the proof attached to
+the PR, run the repository's agent-driven publisher:
 
-- Embed representative PNGs in the final response with Markdown image syntax using absolute local paths so the Codex client can display them.
-- Link every PNG or GIF with an absolute local file link, in story order, and give each one a short caption describing what it proves.
-- Mention the scenario and output directory so the capture is reproducible.
+```bash
+scripts/dev/screenshot/publish-artifact.sh \
+  --pr <number> \
+  --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+  --ref <pushed-branch>
+```
+
+Add `--gif` only when the user asks for animation. The command dispatches the
+GitHub Actions artifact workflow, waits for the isolated capture, downloads the
+artifact, and replaces only the PR body section between
+`<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->`. The
+artifact contains the PNG/GIF files, ANSI/text captures,
+`capture-metadata.json`, and a self-contained `gallery.html`; screenshots are
+never committed to the branch. The artifact link is run-specific and retained
+for 14 days.
+
+Capture, authentication, workflow, artifact, and PR-body failures emit an
+actionable `warning:` and return success by default so the surrounding PR work
+can continue. Pass `--strict` if a nonzero exit is required.
+
+Return the publication result as the primary result:
+
+- Link the PR and GitHub Actions artifact page.
+- Mention the local downloaded output directory and its `gallery.html`.
+- If no PR publication was requested, link every local PNG or GIF in story order and give each one a short caption describing what it proves.
 
 Do not claim the UI is proven when the text assertions or representative visual inspection fail. Fix the scenario or implementation and rerun the capture first.

@@ -112,6 +112,89 @@ Each flag:
 Also respected: the `AMF_SHOT_DIR` env var overrides the scratch root
 parent (default `/tmp/amf-shots`).
 
+## Capture contract
+
+The driver and the two Python helpers have deliberately separate output
+contracts:
+
+- `amf-capture.sh` always captures terminal state as numbered
+  `<NNN>-<label>.ansi` files using `tmux capture-pane -e -p`. It also writes a
+  same-named `.txt` file from `capture-pane -p`; the text twin is escape-free
+  and is intended for cheap content assertions. The default smoke test writes
+  two shots, while a scenario writes one shot for each `shot:` step.
+- Ordinary capture runs do **not** render PNGs. To render one capture, invoke
+  `render_ansi.py` separately and choose the output path:
+
+  ```bash
+  python3 scripts/dev/screenshot/render_ansi.py \
+      /tmp/amf-shots/<run>/shots/001-dashboard-ready.ansi \
+      --out /tmp/amf-shots/<run>/dashboard-ready.png \
+      --cols 120 --rows 40
+  ```
+
+- `amf-capture.sh --gif [path]` is the convenience path: after all shots are
+  captured, it renders every numbered `.ansi` file to a same-directory `.png`
+  using the requested `--geometry`, then calls `assemble_gif.py` to produce
+  `capture.gif` (or the optional path). Thus `--gif` produces both the PNG
+  frames and the GIF; it is the only driver flag that performs PNG rendering.
+- `assemble_gif.py` is also usable directly, but expects one or more existing
+  PNG paths in display order. It writes a looping GIF with Pillow's native
+  `save_all=True`/`append_images=...` behavior and defaults to 800 ms per frame;
+  `--duration-ms` overrides that delay.
+
+The normal deliverable is therefore a directory of `.ansi`/`.txt` captures
+unless PNG rendering was requested explicitly. A run's scratch root and its
+default output directory are removed on exit; pass `--keep` or use an explicit
+`--out-dir` when captures must survive teardown. The driver always tears down
+its isolated tmux session.
+
+## Publish evidence to a PR with a GitHub Actions artifact
+
+For agent-driven publication, use the repository publisher after the branch and
+scenario have been pushed:
+
+```bash
+scripts/dev/screenshot/publish-artifact.sh \
+    --pr <number> \
+    --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+    --ref <pushed-branch>
+```
+
+Add `--gif` when an animation is wanted, `--geometry 160x44` when the scenario
+needs another fixed size, and `--out-dir /tmp/amf-proof` when the downloaded
+artifact should be kept at a known local path. The invoking agent needs an
+authenticated `gh` CLI session with permission to dispatch Actions, read the
+artifact, and edit the PR. The scenario, seed files, and config file are
+repository-relative and must exist on the pushed ref; screenshots themselves
+never need to be committed.
+
+The command dispatches `.github/workflows/amf-screenshot-artifact.yml`, which
+builds AMF on an isolated GitHub runner, runs `amf-capture.sh`, renders PNGs,
+optionally assembles a GIF, and uploads these files as one 14-day artifact:
+
+- numbered `.ansi` captures and escape-free `.txt` assertion twins;
+- rendered PNG frames and, when requested, `capture.gif`;
+- `capture-metadata.json`; and
+- a self-contained `gallery.html` with images embedded in the HTML.
+
+After the run succeeds, the publisher downloads the artifact, writes a local
+`pr-description.md` fragment, and replaces only the PR body region between
+`<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->`. The PR
+contains a run-specific artifact-page link rather than inline image URLs;
+open or download the artifact and view `gallery.html` for the visual proof.
+Repeated runs replace the marked link with the newest run while preserving all
+other PR body content. Older artifacts remain available until their normal
+expiry.
+
+Capture, authentication, workflow, artifact, and PR-body failures print an
+actionable `warning:` and return success by default so a larger PR workflow can
+continue. Pass `--strict` when the caller needs a nonzero exit status instead.
+
+The runner installs the Codex CLI so a fresh scratch instance can pass AMF's
+harness setup for UI-only scenarios. Scenarios that launch an agent still need
+the corresponding provider credentials and harness-specific setup available
+to the workflow.
+
 ## Scenario format
 
 A scenario file is newline-delimited steps. Each line is a `|`-separated

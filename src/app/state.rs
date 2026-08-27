@@ -936,6 +936,10 @@ pub struct DiffViewerState {
     pub feedback_editing: bool,
     /// True while the user is typing general (non-file) review feedback.
     pub editing_general: bool,
+    /// Session-scoped keymap preference for every final-review comment,
+    /// suggestion, rejection, and general-feedback editor. Fresh review
+    /// sessions start plain; the preference is intentionally not persisted.
+    pub vim_enabled: bool,
     /// Active editor, shared by the per-file rejection editor and the
     /// general-feedback editor (only one is open at a time). Vim-capable so
     /// reviewers can write multi-paragraph / list feedback.
@@ -1114,6 +1118,30 @@ pub struct VerdictUndo {
 pub const VERDICT_UNDO_LIMIT: usize = 50;
 
 impl DiffViewerState {
+    /// Replace the shared review editor with a fresh instance that follows the
+    /// session keymap. Vim editors always enter Normal mode; either keymap gets
+    /// fresh cursor and undo state while retaining the supplied text.
+    pub(crate) fn reset_feedback_editor(&mut self, text: String) {
+        self.feedback_editor = if self.vim_enabled {
+            TextEditor::with_vim_normal(text)
+        } else {
+            TextEditor::new(text)
+        };
+    }
+
+    /// Toggle Vim for this review session and immediately apply it to the
+    /// active shared editor. Rebuilding is intentional: the text survives, but
+    /// keymap-specific cursor, pending-command, register, and undo state do not
+    /// cross the keymap boundary.
+    pub(crate) fn toggle_feedback_vim(&mut self) -> bool {
+        self.vim_enabled = !self.vim_enabled;
+        let text = self.feedback_editor.text().to_string();
+        self.reset_feedback_editor(text);
+        self.feedback_scroll = 0;
+        self.feedback_sync_to_cursor = true;
+        self.vim_enabled
+    }
+
     pub fn new(from_view: ViewState, workdir: PathBuf) -> Self {
         Self {
             from_view,
@@ -1149,6 +1177,7 @@ impl DiffViewerState {
             finish_confirm: false,
             feedback_editing: false,
             editing_general: false,
+            vim_enabled: false,
             feedback_editor: TextEditor::new(String::new()),
             feedback_scroll: 0,
             feedback_sync_to_cursor: true,

@@ -4,8 +4,7 @@
 # private XDG state.
 
 run:$AMF_BIN automation create-project --file scripts/dev/screenshot/scenarios/sidebar-todo-proof-project.json
-run:$AMF_BIN automation create-feature --file scripts/dev/screenshot/scenarios/sidebar-todo-proof-feature.json
-run:if ! tmux has-session -t amf-sidebar-todo-proof-sidebar-todo-proof 2>/dev/null; then tmux new-session -d -s amf-sidebar-todo-proof-sidebar-todo-proof -c "$PWD"; fi
+run:if ! tmux has-session -t amf-sidebar-todo-proof-sidebar-todo-proof 2>/dev/null; then tmux new-session -d -s amf-sidebar-todo-proof-sidebar-todo-proof -n codex -c "$PWD"; fi
 run:python3 scripts/dev/screenshot/seed-sidebar-todo.py "$XDG_CONFIG_HOME/amf/amf.db"
 
 # Automation runs after the TUI has loaded, so restart it against the seeded
@@ -20,10 +19,10 @@ run:for i in {1..50}; do tmux capture-pane -p -t "$SESSION" > "$XDG_STATE_HOME/s
 # pre-respawn frame).
 wait:7000
 
-# Search reaches the agent session directly, including while its project tree
-# is collapsed. This avoids incidental tree-navigation frames in the proof.
+# Search reaches the Codex session directly, including while its project tree
+# is collapsed. Codex is enabled in the isolated CI workspace.
 key:/|wait:500
-text:Claude 1|wait:500
+text:Codex 1|wait:500
 key:Enter|wait:750
 key:Enter|wait:1000
 shot:active-todo-open

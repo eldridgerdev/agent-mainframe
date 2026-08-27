@@ -8,15 +8,22 @@ import sys
 def main(database: str) -> None:
     conn = sqlite3.connect(database)
     project_id = conn.execute("SELECT id FROM projects LIMIT 1").fetchone()[0]
-    feature_id, workdir = conn.execute(
-        "SELECT id, workdir FROM features LIMIT 1"
-    ).fetchone()
-    session_id = conn.execute(
-        "SELECT id FROM feature_sessions WHERE feature_id = ? "
-        "AND kind IN ('claude', 'opencode', 'codex', 'pi') "
-        "ORDER BY sort_order, rowid LIMIT 1",
-        (feature_id,),
-    ).fetchone()[0]
+    feature_id = "sidebar-todo-feature"
+    session_id = "sidebar-todo-session"
+    workdir = "."
+    conn.execute(
+        "INSERT INTO features "
+        "(id, project_id, name, branch, workdir, tmux_session, mode, agent, status, collapsed, created_at, last_accessed) "
+        "VALUES (?, ?, 'sidebar-todo-proof', 'sidebar-todo-proof', ?, "
+        "'amf-sidebar-todo-proof-sidebar-todo-proof', 'vibe', 'codex', 'active', 0, datetime('now'), datetime('now'))",
+        (feature_id, project_id, workdir),
+    )
+    conn.execute(
+        "INSERT INTO feature_sessions "
+        "(id, feature_id, kind, label, tmux_window, todo_id, todo_launched_from_menu, created_at) "
+        "VALUES (?, ?, 'codex', 'Codex 1', 'codex', 'sidebar-todo', 1, datetime('now'))",
+        (session_id, feature_id),
+    )
 
     conn.execute(
         "INSERT INTO todo_lists "

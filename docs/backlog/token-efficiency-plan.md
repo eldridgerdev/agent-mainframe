@@ -1,6 +1,6 @@
 # Token-efficient agent sessions
 
-- **Status:** Backlog
+- **Status:** Partial
 - **Owner:** unassigned
 - **Relates to:** [per-session agent usage](per-session-usage-plan.md),
   [plan-mode interview](plan-mode-interview-plan.md),
@@ -507,15 +507,20 @@ Acceptance criteria:
       (`w`, `src/app/context_settings.rs`, `src/context_tracking.rs`).
       Cumulative token/dollar usage thresholds and per-utility-call budgets
       are still open.
-- [ ] Add dashboard/sidebar warnings and deduplicate repeated alerts.
+- [x] Add a selected-session sidebar warning when context pressure reaches
+      the warning or critical band, with a dismiss-and-rearm lifecycle.
+      Dashboard-wide alerts and broader repeated-alert deduplication remain
+      open.
 - [ ] Introduce a capability-driven resume/compact/fresh dialog.
 - [ ] Make normal restart semantics consistent across Claude, Codex,
       and opencode.
 - [x] Add a leader command for fresh-session rotation (`Ctrl+Space` then
       `F`, `src/app/handoff.rs`): starts a new agent session in the same
-      feature/worktree, seeded with a plan-plus-changed-files prompt.
-      Compact rotation, and binding the prompt to the structured handoff
-      schema in P3 below, are still open.
+      feature/worktree, seeded with an editable prompt built from the
+      effective plan, changed files, feature summary, latest prompt, and a
+      conservative inspect-and-continue instruction. Context-pressure hints
+      can open the same workflow directly. Compact rotation and the full
+      structured-handoff schema in P3 below are still open.
 - [ ] Add tests for unknown context limits, threshold crossings, exact
       versus inferred sources, and unsupported compaction.
 
@@ -529,6 +534,11 @@ Acceptance criteria:
 - Compaction/fresh actions are never triggered silently.
 
 ### P3 — Structured handoffs and fork repair
+
+The context-pressure feature now provides a bounded, editable seeded
+continuation prompt for the selected feature. The provider-neutral persisted
+handoff format and selectable `None` / `Structured` / `Full` modes below
+remain future work.
 
 - [ ] Define the provider-neutral handoff schema and gitignored storage
       location.

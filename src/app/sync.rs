@@ -529,6 +529,11 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
         }
     }
 
+    // Hint eligibility follows the normalized current-window snapshots. The
+    // cumulative token usage above remains a separate billing/status value and
+    // must not be used to infer context occupancy.
+    app.context_hint_states.sync_all(&app.context_states);
+
     if result.sources_discovered
         && let Err(err) = app.save()
     {

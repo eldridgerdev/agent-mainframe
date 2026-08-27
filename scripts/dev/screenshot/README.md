@@ -183,9 +183,10 @@ Cloudflare Pages preview branch `pr-<number>`.
 
 After success, the publisher replaces only the PR body region between
 `<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->` with the
-stable private Pages URL. Cloudflare Access must protect the Pages preview
-wildcard; raw ANSI/text captures remain in the internal artifact. Repeated
-runs update the same branch alias while preserving all other PR body content.
+stable private Pages URL. In the Pages project, enable **Settings > General >
+Enable access policy** before publishing evidence; raw ANSI/text captures remain
+in the internal artifact. Repeated runs update the same branch alias while
+preserving all other PR body content.
 
 Capture, authentication, workflow, artifact, and PR-body failures print an
 actionable `warning:` and return success by default so a larger PR workflow can

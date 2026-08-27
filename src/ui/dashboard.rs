@@ -323,6 +323,7 @@ fn build_opencode_sidebar_data(
             opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
             model_text.as_deref(),
         ),
+        usage_text: sidebar_usage_text(app, &SessionKind::Opencode),
         model_text,
         prompt_text,
         work_text: pending_diff_review_work_text(app, project, feature)
@@ -379,6 +380,7 @@ fn build_claude_sidebar_data(
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Claude,
         status_text,
+        usage_text: sidebar_usage_text(app, &SessionKind::Claude),
         model_text,
         prompt_text,
         work_text,
@@ -442,6 +444,7 @@ fn build_codex_sidebar_data(
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Codex,
         status_text,
+        usage_text: sidebar_usage_text(app, &SessionKind::Codex),
         model_text,
         prompt_text,
         work_text,
@@ -487,6 +490,7 @@ fn build_pi_sidebar_data(
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Pi,
         status_text,
+        usage_text: sidebar_usage_text(app, &SessionKind::Pi),
         model_text,
         prompt_text,
         work_text,
@@ -997,6 +1001,15 @@ fn format_sidebar_usage(status: &str) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+/// Body for the sidebar's **Usage** box: this harness's account-level
+/// rate-limit windows, read from the same cached `UsageData` the dashboard
+/// status bar uses. `None` (box omitted) when the harness has no usage
+/// source or nothing has been fetched yet.
+fn sidebar_usage_text(app: &App, kind: &SessionKind) -> Option<String> {
+    let windows = crate::usage::usage_windows_for_session_kind(kind, &app.usage.get_data());
+    crate::usage::format_sidebar_usage_windows(&windows)
 }
 
 fn draw_view_pane(

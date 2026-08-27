@@ -206,6 +206,17 @@ fn build_agent_sidebar_data(
             n => format!("Waiting for {n} inputs"),
         },
     };
+    // Section content is global (resolved from the cache, prefixed with
+    // project / feature / label). The header affordance, however, only acts
+    // on the *current* session, so it is shown only when that session itself
+    // carries a menu-launched TODO reference.
+    let active_todos_text = app.active_todos_sidebar_cache.clone();
+    let active_todo_affordance = session.is_some_and(|session| {
+        session
+            .todo_reference
+            .as_ref()
+            .is_some_and(|reference| reference.launched_from_todo_menu)
+    });
 
     match sidebar_kind {
         SessionKind::Opencode => build_opencode_sidebar_data(
@@ -217,6 +228,8 @@ fn build_agent_sidebar_data(
             status_line,
             context_snapshot,
             context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
         ),
         SessionKind::Claude => build_claude_sidebar_data(
             app,
@@ -227,6 +240,8 @@ fn build_agent_sidebar_data(
             status_line,
             context_snapshot,
             context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
         ),
         SessionKind::Codex => build_codex_sidebar_data(
             app,
@@ -237,6 +252,8 @@ fn build_agent_sidebar_data(
             status_line,
             context_snapshot,
             context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
         ),
         SessionKind::Pi => build_pi_sidebar_data(
             app,
@@ -247,6 +264,8 @@ fn build_agent_sidebar_data(
             status_line,
             context_snapshot,
             context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
         ),
         _ => None,
     }
@@ -262,6 +281,8 @@ fn build_opencode_sidebar_data(
     status_line: String,
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
     let usage_line = session
@@ -308,6 +329,8 @@ fn build_opencode_sidebar_data(
             .or(work_text)
             .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
         todos_text,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -326,6 +349,8 @@ fn build_claude_sidebar_data(
     status_line: String,
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -358,6 +383,8 @@ fn build_claude_sidebar_data(
         prompt_text,
         work_text,
         todos_text,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -376,6 +403,8 @@ fn build_codex_sidebar_data(
     status_line: String,
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -417,6 +446,8 @@ fn build_codex_sidebar_data(
         prompt_text,
         work_text,
         todos_text: None,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -435,6 +466,8 @@ fn build_pi_sidebar_data(
     status_line: String,
     context_snapshot: Option<SessionContextSnapshot>,
     context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -458,6 +491,8 @@ fn build_pi_sidebar_data(
         prompt_text,
         work_text,
         todos_text: None,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
@@ -1679,6 +1714,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_todo_delete_disposition_dialog(frame, state, &app.theme);
     }
 
+    if let AppMode::ConfirmTodoReferenceCompletion(state) = &app.mode {
+        super::dialogs::draw_todo_reference_completion_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::RenamingSession(state) = &app.mode {
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
     }
@@ -2068,6 +2107,7 @@ mod tests {
             label: "Codex".into(),
             tmux_window: "codex".into(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: Some(TokenUsageSource {
                 provider: TokenUsageProvider::Codex,
                 id: session_id.into(),
@@ -2095,6 +2135,7 @@ mod tests {
             label: label.into(),
             tmux_window: window.into(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: chrono::Utc::now(),
@@ -3148,6 +3189,7 @@ mod tests {
                 label: "Claude".into(),
                 tmux_window: "claude".into(),
                 claude_session_id: Some("claude-session".into()),
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -3257,6 +3299,7 @@ mod tests {
                 label: "Claude".into(),
                 tmux_window: "claude".into(),
                 claude_session_id: Some("claude-session".into()),
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -3366,6 +3409,7 @@ mod tests {
                 label: "Opencode".into(),
                 tmux_window: "opencode".into(),
                 claude_session_id: None,
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,

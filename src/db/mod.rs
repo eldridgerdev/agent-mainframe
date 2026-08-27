@@ -454,6 +454,12 @@ impl AmfDb {
         todos::find_todo_by_id(&self.conn, todo_id)
     }
 
+    /// Resolve a TODO by its stable id together with the scope of the list
+    /// that currently owns it.  This follows TODO moves automatically.
+    pub fn resolve_todo_by_id(&self, todo_id: &str) -> Result<Option<todos::ResolvedTodo>> {
+        todos::resolve_todo_by_id(&self.conn, todo_id)
+    }
+
     pub fn add_todo(
         &self,
         list_id: &str,

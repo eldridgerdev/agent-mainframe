@@ -1191,6 +1191,10 @@ impl App {
                 format!("failed to reconcile TODO agent associations: {e}"),
             );
         }
+
+        // Rebuild the Active TODOs sidebar text here rather than per frame:
+        // each referenced session costs two SQLite queries to resolve.
+        self.refresh_active_todos_sidebar_cache();
     }
 
     #[allow(dead_code)] // exercised only by unit tests

@@ -1,0 +1,9 @@
+shot:dashboard
+key:?|wait:200
+key:PageDown|wait:200
+key:PageDown|wait:200
+key:PageDown|wait:200
+key:PageDown|wait:200
+key:PageDown|wait:200
+key:PageDown|wait:200
+shot:active-todo-commands

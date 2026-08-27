@@ -239,6 +239,8 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ),
         ("b", "Show/hide sidebar"),
         ("v", "Expand/collapse todos"),
+        ("Ctrl+Space z", "Complete this session's referenced TODO"),
+        ("Ctrl+Space Z", "Clear this session's TODO reference"),
         ("N", "Quick-capture a TODO for this worktree"),
         ("t / T", "Cycle next/prev session"),
         ("w", "Session switcher"),

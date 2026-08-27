@@ -209,3 +209,15 @@ pub fn handle_todo_delete_disposition_key(app: &mut App, key: KeyCode) -> Result
     }
     Ok(())
 }
+
+/// Key dispatch for completing an embedded agent session's referenced TODO.
+pub fn handle_todo_reference_completion_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('y') | KeyCode::Enter => app.confirm_todo_reference_completion()?,
+        KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
+            app.cancel_todo_reference_completion()
+        }
+        _ => {}
+    }
+    Ok(())
+}

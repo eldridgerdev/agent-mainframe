@@ -64,6 +64,13 @@ pub(crate) struct AgentSidebarData {
     pub prompt_text: String,
     pub work_text: Option<String>,
     pub todos_text: Option<String>,
+    /// TODO-menu-originated session references, resolved from AMF's TODO DB.
+    /// The section content is global (every reference across all projects).
+    pub active_todos_text: Option<String>,
+    /// Whether the *currently viewed* session itself carries a menu-launched
+    /// TODO reference. `leader z` / `leader Z` only act on the current
+    /// session, so the header affordance is shown only when this is true.
+    pub active_todo_affordance: bool,
     pub summary_text: String,
     pub pr_triage_text: Option<String>,
     pub plan_text: String,
@@ -557,6 +564,8 @@ fn draw_agent_sidebar(
         prompt_text: String::new(),
         work_text: None,
         todos_text: None,
+        active_todos_text: None,
+        active_todo_affordance: false,
         summary_text: String::new(),
         pr_triage_text: None,
         plan_text: String::new(),
@@ -614,6 +623,19 @@ fn draw_agent_sidebar(
             block = block.title_top(
                 Line::from(Span::styled(
                     " <leader F> ",
+                    Style::default().fg(theme.text_muted.to_color()),
+                ))
+                .alignment(Alignment::Right),
+            );
+        }
+        // `leader z` / `leader Z` act only on the viewed session, so the
+        // header hint is shown only when that session has its own reference —
+        // not merely because some other session's reference populated the
+        // (globally-scoped) section body.
+        if sidebar_section.title == "Active TODOs" && data.active_todo_affordance {
+            block = block.title_top(
+                Line::from(Span::styled(
+                    " <leader z complete · Z clear> ",
                     Style::default().fg(theme.text_muted.to_color()),
                 ))
                 .alignment(Alignment::Right),
@@ -728,6 +750,18 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
             )),
         });
     }
+    if let Some(active_todos_text) = data.active_todos_text.as_deref() {
+        sections.push(SidebarSection {
+            title: "Active TODOs",
+            body: active_todos_text.to_string(),
+            constraint: Constraint::Length(sidebar_section_height(
+                active_todos_text,
+                section_width,
+                2,
+                10,
+            )),
+        });
+    }
     if is_opencode && !data.summary_text.trim().is_empty() {
         sections.push(SidebarSection {
             title: "Summary",
@@ -758,6 +792,7 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
         "Prompt" => theme.secondary.to_color(),
         "Work" => theme.primary.to_color(),
         "Todos" => theme.success.to_color(),
+        "Active TODOs" => theme.success.to_color(),
         "Summary" => theme.info.to_color(),
         "PR Triage" => theme.info.to_color(),
         "Plan" => theme.warning.to_color(),
@@ -798,6 +833,14 @@ fn summary_section_height(body: &str, section_width: u16) -> u16 {
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
     body.lines()
         .map(|line| {
+            if title == "Active TODOs" && line.ends_with(" · complete") {
+                return Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default()
+                        .fg(theme.success.to_color())
+                        .add_modifier(Modifier::DIM),
+                ));
+            }
             // Progress bar: "████░░░░ 2/5"
             if title == "Todos" && (line.starts_with('█') || line.starts_with('░')) {
                 let split = line.find('░').unwrap_or(line.len());
@@ -1377,6 +1420,38 @@ mod tests {
     }
 
     #[test]
+    fn active_todo_section_is_hidden_when_empty_and_keeps_completed_entries() {
+        let mut data = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: String::new(),
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
+        };
+        assert!(
+            sidebar_sections(&data, 30)
+                .iter()
+                .all(|section| section.title != "Active TODOs")
+        );
+
+        data.active_todos_text =
+            Some("Project / Feature / TODO agent\nShip it · high · project · complete".to_string());
+        let active = sidebar_sections(&data, 30)
+            .into_iter()
+            .find(|section| section.title == "Active TODOs")
+            .expect("referenced TODOs should render a dedicated section");
+        assert!(active.body.ends_with("complete"));
+    }
+
+    #[test]
     fn status_section_height_is_compact_for_short_status_text() {
         assert_eq!(status_section_height("Activity: Ready", 30), 3);
         assert_eq!(
@@ -1413,6 +1488,8 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1438,6 +1515,8 @@ mod tests {
             prompt_text: String::new(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: String::new(),
             pr_triage_text: None,
             plan_text: "Current: docs/accepted.md".into(),
@@ -1463,6 +1542,8 @@ mod tests {
             prompt_text: String::new(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: String::new(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1500,6 +1581,8 @@ mod tests {
             prompt_text: String::new(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: String::new(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1535,6 +1618,8 @@ mod tests {
             prompt_text: String::new(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: String::new(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1586,6 +1671,8 @@ mod tests {
                     .into(),
             ),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1635,6 +1722,8 @@ mod tests {
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1682,6 +1771,8 @@ mod tests {
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: Some("PR: #321 · 4 open\nStatus: Working".into()),
             plan_text: String::new(),
@@ -1729,6 +1820,8 @@ mod tests {
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1772,6 +1865,8 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: None,
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1817,6 +1912,8 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1942,6 +2039,8 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -1990,6 +2089,8 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -2042,6 +2143,8 @@ mod tests {
                     .into(),
             ),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Small summary.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -2087,6 +2190,8 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -2132,6 +2237,8 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: String::new(),
             pr_triage_text: None,
             plan_text: String::new(),
@@ -2177,6 +2284,8 @@ mod tests {
             prompt_text: String::new(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
             pr_triage_text: None,
             plan_text: String::new(),

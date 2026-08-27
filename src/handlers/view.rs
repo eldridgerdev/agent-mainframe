@@ -428,6 +428,12 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('v') => {
             app.toggle_expanded_todos_in_view();
         }
+        KeyCode::Char('z') => {
+            app.request_todo_reference_completion();
+        }
+        KeyCode::Char('Z') => {
+            app.clear_active_todo_reference();
+        }
         KeyCode::Char('N') => {
             app.open_todo_quick_capture();
         }

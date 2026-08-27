@@ -138,6 +138,14 @@ impl TodoWorkState {
     pub fn clear_missing_session(&mut self) {
         self.agent_session_id = None;
     }
+
+    /// Mark the work completed, retaining any session association for the same
+    /// reason [`Self::cycle_manually`] does. Completion and the manual `i`
+    /// cycle are the only supported ways for `status` to reach `Completed`;
+    /// callers outside the overlay use this instead of writing the field.
+    pub fn complete(&mut self) {
+        self.status = TodoStatus::Completed;
+    }
 }
 
 /// Priority of a [`Todo`], persisted as a short token (`high`/`med`/`low`).
@@ -283,6 +291,15 @@ pub struct Todo {
     pub linked_feature_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// A TODO resolved by its stable identity together with the list that
+/// currently owns it.  This deliberately derives scope at read time: moving a
+/// TODO changes its list, not its identity or any session references to it.
+#[derive(Debug, Clone)]
+pub struct ResolvedTodo {
+    pub todo: Todo,
+    pub list: TodoList,
 }
 
 impl Todo {
@@ -482,6 +499,19 @@ pub fn find_todo_by_id(conn: &Connection, todo_id: &str) -> Result<Option<Todo>>
         })
     })?;
     rows.next().transpose().map_err(Into::into)
+}
+
+/// Resolve a TODO and its current scope without requiring the caller to retain
+/// its old list id.  A missing list is treated like a missing TODO rather than
+/// exposing a partial, stale reference.
+pub fn resolve_todo_by_id(conn: &Connection, todo_id: &str) -> Result<Option<ResolvedTodo>> {
+    let Some(todo) = find_todo_by_id(conn, todo_id)? else {
+        return Ok(None);
+    };
+    let Some(list) = load_list_by_id(conn, &todo.list_id)? else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedTodo { todo, list }))
 }
 
 /// Load every item in `list_id`, sorted by status (completed last), then
@@ -1070,11 +1100,12 @@ mod tests {
         db.move_todo(&todo.id, &dst.id).unwrap();
 
         let found = db
-            .find_todo_by_id(&todo.id)
+            .resolve_todo_by_id(&todo.id)
             .unwrap()
             .expect("resolved by id alone, without knowing it moved");
-        assert_eq!(found.list_id, dst.id);
-        assert_eq!(found.title, "port me");
+        assert_eq!(found.todo.list_id, dst.id);
+        assert_eq!(found.todo.title, "port me");
+        assert_eq!(found.list.scope, TodoScope::Global);
 
         assert!(db.find_todo_by_id("no-such-id").unwrap().is_none());
     }

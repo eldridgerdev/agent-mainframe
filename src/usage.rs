@@ -210,7 +210,7 @@ pub fn format_usage_summary(windows: &[UsageWindow]) -> Option<String> {
     let parts: Vec<String> = windows
         .iter()
         .map(|w| {
-            let pct = w.percent_remaining.round().max(0.0) as i64;
+            let pct = w.percent_remaining.round().clamp(0.0, 100.0) as i64;
             match w.reset_at {
                 Some(reset_at) if reset_at > now => {
                     format!(
@@ -225,6 +225,33 @@ pub fn format_usage_summary(windows: &[UsageWindow]) -> Option<String> {
         })
         .collect();
     Some(parts.join("   "))
+}
+
+/// Multi-line variant of [`format_usage_summary`] for the narrow embedded
+/// session sidebar (~28 inner columns): one window per line, e.g.
+/// `5h  62% left · 3h`. Returns `None` for an empty slice so the sidebar
+/// omits the whole box rather than rendering an empty one.
+pub fn format_sidebar_usage_windows(windows: &[UsageWindow]) -> Option<String> {
+    if windows.is_empty() {
+        return None;
+    }
+    let now = Utc::now();
+    let lines: Vec<String> = windows
+        .iter()
+        .map(|w| {
+            let pct = w.percent_remaining.round().clamp(0.0, 100.0) as i64;
+            match w.reset_at {
+                Some(reset_at) if reset_at > now => format!(
+                    "{}  {}% left · {}",
+                    w.label,
+                    pct,
+                    format_reset_duration(reset_at - now)
+                ),
+                _ => format!("{}  {}% left", w.label, pct),
+            }
+        })
+        .collect();
+    Some(lines.join("\n"))
 }
 
 fn format_reset_duration(remaining: chrono::Duration) -> String {
@@ -1460,6 +1487,75 @@ mod usage_window_tests {
     #[test]
     fn format_usage_summary_omits_when_empty() {
         assert_eq!(format_usage_summary(&[]), None);
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_omits_when_empty() {
+        assert_eq!(format_sidebar_usage_windows(&[]), None);
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_is_one_line_per_window() {
+        let windows = vec![
+            UsageWindow {
+                label: "5h",
+                percent_remaining: 62.4,
+                reset_at: Some(Utc::now() + chrono::Duration::hours(3)),
+            },
+            UsageWindow {
+                label: "7d",
+                percent_remaining: 90.0,
+                reset_at: None,
+            },
+        ];
+
+        let text = format_sidebar_usage_windows(&windows).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        // Reset clause is a live duration off `Utc::now()`; pin the stable part.
+        assert!(lines[0].starts_with("5h  62% left · "));
+        assert_eq!(lines[1], "7d  90% left");
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_drops_past_reset_and_clamps_negative() {
+        let windows = vec![UsageWindow {
+            label: "5h",
+            percent_remaining: -3.0,
+            reset_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        }];
+
+        assert_eq!(
+            format_sidebar_usage_windows(&windows).unwrap(),
+            "5h  0% left"
+        );
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_clamps_percentage_above_100() {
+        // A fresh window the source reports slightly over 100 must not
+        // render as "101% left".
+        let windows = vec![UsageWindow {
+            label: "5h",
+            percent_remaining: 100.6,
+            reset_at: None,
+        }];
+
+        assert_eq!(
+            format_sidebar_usage_windows(&windows).unwrap(),
+            "5h  100% left"
+        );
+    }
+
+    #[test]
+    fn format_usage_summary_clamps_percentage_above_100() {
+        let windows = vec![UsageWindow {
+            label: "7d",
+            percent_remaining: 103.2,
+            reset_at: None,
+        }];
+
+        assert_eq!(format_usage_summary(&windows).unwrap(), "7d 100% left");
     }
 
     #[test]

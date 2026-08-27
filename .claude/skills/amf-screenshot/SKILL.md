@@ -69,11 +69,15 @@ comments ignored):
 - `text:<literal>` — literal typed text (`text:my-feature-name`)
 - `wait:<ms>` — sleep, use after keys that trigger a redraw or async
   work (harness checks, status sync)
+- `note:<text>` — a complete sentence explaining what the immediately following
+  `shot:` proves to a reviewer
 - `shot:<label>` — capture the pane now, written as
   `NNN-<label>.ansi`
 
 Put a `shot:` at every point worth showing (before the change, mid
-interaction, after the change lands) rather than just first/last.
+interaction, after the change lands) rather than just first/last. Put a
+reviewer-facing `note:` immediately before every shot so the published index
+explains the visible state and why it matters.
 Author the file under `scripts/dev/screenshot/scenarios/` if it's
 worth keeping as a reusable example, otherwise a scratch path (e.g.
 your scratchpad dir) is fine for a one-off.
@@ -98,6 +102,11 @@ Relevant flags:
   default deliverable.
 - `--keep` — preserve the scratch root instead of deleting it on exit
   (useful while iterating on a scenario).
+
+For a screenshot of an already-completed AI Review, use
+`scenarios/ai-review-completed-fixture.txt`. It uses AMF's deterministic
+`seed-ai-review` fixture; CI must never start a live `A` review or depend on a
+logged-in Claude/Codex harness for visual proof.
 
 This produces, per `shot:` step, a numbered `.ansi` dump and a
 plain-text `.txt` twin (same capture, no escape codes) in `--out-dir`
@@ -140,6 +149,7 @@ must be authenticated as `eldridgerdev`. Run:
 scripts/dev/screenshot/publish-pages.sh \
   --pr <number> \
   --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+  --summary "One sentence explaining the complete flow under review" \
   --ref <pushed-branch> \
   --strict
 ```
@@ -150,6 +160,8 @@ the PR section delimited by
 `<!-- amf:screenshots:start -->`/`<!-- amf:screenshots:end -->`. The PR link
 opens the Cloudflare Access-protected gallery. Raw ANSI/text captures remain in
 a 14-day internal artifact; no screenshot files are committed.
+The gallery starts with `--summary`, then presents an ordered walkthrough whose
+**What this proves** captions come from the scenario's `note:` entries.
 
 The command prints an actionable `warning:` and exits successfully by default
 when capture, authentication, workflow, artifact, or PR-body update fails, so

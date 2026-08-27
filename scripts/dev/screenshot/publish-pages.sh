@@ -11,11 +11,14 @@ PR_NUMBER=""
 SCENARIO=""
 REF=""
 PROJECT="${CF_PAGES_PROJECT:-}"
+SUMMARY=""
 ALLOWED_ACTOR="eldridgerdev"
 GEOMETRY="120x40"
 GIF=false
+SEED=""
+SEED_FEATURE=""
+CONFIG_FILE=""
 STRICT=0
-SUMMARY=""
 
 usage() {
   cat <<EOF
@@ -26,11 +29,14 @@ from main; only its capture job checks out --ref. Failures warn by default.
 
   --pr <number>          Pull request to update (required)
   --scenario <file>      Repository-relative scenario (required)
+  --summary <text>       What the evidence flow proves (required)
   --ref <branch>         Pushed ref to capture (default: current branch)
   --pages-project <name> Pages project (default: CF_PAGES_PROJECT variable)
   --geometry <WxH>       Capture geometry (default: 120x40)
-  --summary <text>       One-sentence explanation shown in the gallery
   --gif                  Include an animated GIF
+  --seed <file>          Repository-relative project seed payload
+  --seed-feature <file>  Repository-relative feature seed payload
+  --config <file>        Repository-relative AMF config payload
   --strict               Return nonzero on failure
 EOF
 }
@@ -40,11 +46,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr) PR_NUMBER="${2:-}"; shift 2 ;;
     --scenario) SCENARIO="${2:-}"; shift 2 ;;
+    --summary) SUMMARY="${2:-}"; shift 2 ;;
     --ref) REF="${2:-}"; shift 2 ;;
     --pages-project) PROJECT="${2:-}"; shift 2 ;;
     --geometry) GEOMETRY="${2:-}"; shift 2 ;;
-    --summary) SUMMARY="${2:-}"; shift 2 ;;
     --gif) GIF=true; shift ;;
+    --seed) SEED="${2:-}"; shift 2 ;;
+    --seed-feature) SEED_FEATURE="${2:-}"; shift 2 ;;
+    --config) CONFIG_FILE="${2:-}"; shift 2 ;;
     --strict) STRICT=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) warn "unknown argument: $1" ;;
@@ -54,6 +63,7 @@ done
 [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || warn "--pr must be numeric"
 [[ "$GEOMETRY" =~ ^[0-9]+x[0-9]+$ ]] || warn "--geometry must look like WxH"
 [[ -n "$SCENARIO" ]] || warn "--scenario is required"
+[[ -n "$SUMMARY" && ${#SUMMARY} -le 600 ]] || warn "--summary is required and must be 600 characters or fewer"
 command -v gh >/dev/null 2>&1 || warn "GitHub CLI (gh) is not installed"
 cd "$REPO_ROOT" || warn "cannot enter repository root"
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || warn "could not resolve GitHub repository"
@@ -61,19 +71,25 @@ ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
 [[ "$ACTOR" == "$ALLOWED_ACTOR" ]] || warn "authenticated gh user '$ACTOR' is not allowed to publish Pages previews"
 REF="${REF:-$(git branch --show-current)}"
 [[ -n "$REF" ]] || warn "detached HEAD; pass --ref with a pushed branch"
-SUMMARY="${SUMMARY:-Visual proof for $SCENARIO}"
 [[ -n "$PROJECT" ]] || PROJECT="$(gh variable get CF_PAGES_PROJECT --repo "$REPO" 2>/dev/null || true)"
 [[ "$PROJECT" =~ ^[a-z0-9-]+$ ]] || warn "set CF_PAGES_PROJECT or pass --pages-project"
 
 scenario_abs="$(realpath "$SCENARIO" 2>/dev/null)" || warn "scenario must exist"
 case "$scenario_abs" in "$REPO_ROOT"/*) SCENARIO="${scenario_abs#"$REPO_ROOT/"}" ;; *) warn "scenario must be inside repository" ;; esac
+optional_inputs=()
+for pair in "seed:$SEED" "seed_feature:$SEED_FEATURE" "config:$CONFIG_FILE"; do
+  key="${pair%%:*}"; value="${pair#*:}"
+  if [[ -n "$value" ]]; then
+    absolute="$(realpath "$value" 2>/dev/null)" || warn "$key must exist"
+    case "$absolute" in "$REPO_ROOT"/*) optional_inputs+=(--raw-field "$key=${absolute#"$REPO_ROOT/"}") ;; *) warn "$key must be inside repository" ;; esac
+  fi
+done
 
 request_id="$(date +%Y%m%d-%H%M%S)-$$"
 if ! gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$WORKFLOW_REF" \
   --raw-field "ref=$REF" --raw-field "scenario=$SCENARIO" \
-  --raw-field "pr_number=$PR_NUMBER" --raw-field "geometry=$GEOMETRY" \
-  --raw-field "gif=$GIF" --raw-field "request_id=$request_id" \
-  --raw-field "summary=$SUMMARY"; then
+  --raw-field "pr_number=$PR_NUMBER" --raw-field "summary=$SUMMARY" --raw-field "geometry=$GEOMETRY" \
+  --raw-field "gif=$GIF" --raw-field "request_id=$request_id" "${optional_inputs[@]}"; then
   warn "could not dispatch the Pages workflow; ensure main is pushed and gh is authenticated"
 fi
 

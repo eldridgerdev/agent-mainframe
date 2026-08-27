@@ -157,6 +157,7 @@ scenario have been pushed:
 scripts/dev/screenshot/publish-pages.sh \
     --pr <number> \
     --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+    --summary "One sentence explaining the complete flow under review" \
     --ref <pushed-branch>
 ```
 
@@ -188,6 +189,12 @@ Enable access policy** before publishing evidence; raw ANSI/text captures remain
 in the internal artifact. Repeated runs update the same branch alias while
 preserving all other PR body content.
 
+To make the index useful without downloading anything, add a `note:` step
+immediately before every `shot:` in the scenario. The note is a concise,
+reviewer-facing sentence describing the visible state and what it proves. The
+required `--summary` describes the overall flow. Pages renders the summary and
+an ordered walkthrough with each note under **What this proves**.
+
 Capture, authentication, workflow, artifact, and PR-body failures print an
 actionable `warning:` and return success by default so a larger PR workflow can
 continue. Pass `--strict` when the caller needs a nonzero exit status instead.
@@ -216,6 +223,8 @@ list of one or more of:
 - `text:<text>` — `tmux send-keys -l` with literal text (special
   characters are not interpreted as key names).
 - `wait:<ms>` — sleep this many milliseconds before the next step.
+- `note:<text>` — a reviewer-facing sentence explaining what the next `shot:`
+  proves; it is shown in the private Pages gallery, not sent as terminal input.
 - `shot:<label>` — `capture-pane -e -p` the current pane to
   `NNN-<label>.ansi` in the output dir (`NNN` is a zero-padded, per-run
   step counter, not tied to the line number). Each shot also writes an
@@ -239,6 +248,12 @@ list of one or more of:
   Button 64 is wheel up, 0 is a left press, 3 a release.
   `scenarios/plan-review-mouse-scroll.txt` is a worked example.
 
+  `scenarios/ai-review-completed-fixture.txt` is the approved exception for a
+  completed AI Review visual: it calls `seed-ai-review-fixture.sh`, which
+  writes deterministic cache data and opens the pane without invoking an
+  agent, spending tokens, or calling GitHub. Do not replace it with a live
+  `A` review in CI.
+
 Blank lines and lines starting with `#` are skipped, so comments can
 explain what a step does or which real keybinding it exercises. Multiple
 `|`-delimited parts run in order on one line, e.g.:
@@ -261,6 +276,8 @@ And two seed payloads for use with `--seed`, mirroring the
 
 - `seed-project.json` — a `create-project` payload (has a `path` key).
 - `seed-feature.json` — a `create-feature` payload (has a `branch` key).
+- `ai-review-completed-fixture.txt` — shows a completed AI review and its
+  post-confirmation disclosure using the deterministic fixture helper.
 
 Copy any of these as a starting point for a new scenario or seed file.
 

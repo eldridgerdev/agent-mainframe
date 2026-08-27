@@ -1421,6 +1421,39 @@ mod tests {
     }
 
     #[test]
+    fn usage_section_stays_under_status_with_every_other_section_populated() {
+        // The insertion point is right after the Status push and before
+        // every other block, so no populated section can wedge between
+        // Status and Usage.
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Ready".into(),
+            usage_text: Some("5h  62% left · 3h\n7d  90% left".into()),
+            model_text: Some("Model: claude".into()),
+            prompt_text: "Preview: keep going".into(),
+            work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: Some("○ one\n○ two".into()),
+            summary_text: "Sidebar ready.".into(),
+            pr_triage_text: Some("1 open PR".into()),
+            plan_text: "Current: AMF_PLAN.md".into(),
+        };
+
+        let titles: Vec<&str> = sidebar_sections(&sidebar, 30)
+            .iter()
+            .map(|section| section.title)
+            .collect();
+
+        assert_eq!(titles.first(), Some(&"Status"));
+        assert_eq!(titles.get(1), Some(&"Usage"));
+        // Sanity: the other optional sections really are present, just later.
+        assert!(titles.contains(&"Plan"));
+        assert!(titles.contains(&"PR Triage"));
+        assert!(titles.contains(&"Work"));
+        assert!(titles.contains(&"Prompt"));
+        assert!(titles.contains(&"Todos"));
+    }
+
+    #[test]
     fn usage_section_is_omitted_when_absent() {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,

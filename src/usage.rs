@@ -210,7 +210,7 @@ pub fn format_usage_summary(windows: &[UsageWindow]) -> Option<String> {
     let parts: Vec<String> = windows
         .iter()
         .map(|w| {
-            let pct = w.percent_remaining.round().max(0.0) as i64;
+            let pct = w.percent_remaining.round().clamp(0.0, 100.0) as i64;
             match w.reset_at {
                 Some(reset_at) if reset_at > now => {
                     format!(
@@ -239,7 +239,7 @@ pub fn format_sidebar_usage_windows(windows: &[UsageWindow]) -> Option<String> {
     let lines: Vec<String> = windows
         .iter()
         .map(|w| {
-            let pct = w.percent_remaining.round().max(0.0) as i64;
+            let pct = w.percent_remaining.round().clamp(0.0, 100.0) as i64;
             match w.reset_at {
                 Some(reset_at) if reset_at > now => format!(
                     "{}  {}% left · {}",
@@ -1529,6 +1529,33 @@ mod usage_window_tests {
             format_sidebar_usage_windows(&windows).unwrap(),
             "5h  0% left"
         );
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_clamps_percentage_above_100() {
+        // A fresh window the source reports slightly over 100 must not
+        // render as "101% left".
+        let windows = vec![UsageWindow {
+            label: "5h",
+            percent_remaining: 100.6,
+            reset_at: None,
+        }];
+
+        assert_eq!(
+            format_sidebar_usage_windows(&windows).unwrap(),
+            "5h  100% left"
+        );
+    }
+
+    #[test]
+    fn format_usage_summary_clamps_percentage_above_100() {
+        let windows = vec![UsageWindow {
+            label: "7d",
+            percent_remaining: 103.2,
+            reset_at: None,
+        }];
+
+        assert_eq!(format_usage_summary(&windows).unwrap(), "7d 100% left");
     }
 
     #[test]

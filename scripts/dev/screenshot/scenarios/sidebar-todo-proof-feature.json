@@ -1,0 +1,13 @@
+{
+  "project_name": "sidebar-todo-proof",
+  "branch": "sidebar-todo-proof",
+  "agent": "claude",
+  "mode": "vibe",
+  "review": false,
+  "plan_mode": false,
+  "create_terminal": true,
+  "use_worktree": false,
+  "enable_chrome": false,
+  "hook_choice": null,
+  "dry_run": false
+}

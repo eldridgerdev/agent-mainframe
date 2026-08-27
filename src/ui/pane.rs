@@ -628,7 +628,11 @@ fn draw_agent_sidebar(
                 .alignment(Alignment::Right),
             );
         }
-        if sidebar_section.title == "Active TODO" && data.active_todo_affordance {
+        // A narrow sidebar cannot fit both border titles; ratatui overlays the
+        // right-aligned hint onto "Active TODO". Keep the title legible and
+        // show the affordance only when there is room for both.
+        if sidebar_section.title == "Active TODO" && data.active_todo_affordance && area.width >= 42
+        {
             block = block.title_top(
                 Line::from(Span::styled(
                     " <leader z complete> ",

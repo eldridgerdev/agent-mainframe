@@ -219,7 +219,18 @@ if ! python3 "$SCRIPT_DIR/update_pr_body.py" --body-file "$body_file" \
     --fragment-file "$fragment" --output-file "$updated_body"; then
     warn_or_exit "artifact is ready, but the PR screenshot markers could not be updated: $artifact_url"
 fi
-if ! gh pr edit "$PR_NUMBER" --repo "$REPO" --body-file "$updated_body" >/dev/null 2>&1; then
+# `gh pr edit` currently fails in repositories where the GraphQL response
+# includes the deprecated classic project-cards field. Update the PR through
+# the Issues REST endpoint instead; pull requests share that body API.
+if ! UPDATED_BODY="$updated_body" python3 - <<'PY' |
+import json
+import os
+from pathlib import Path
+
+print(json.dumps({"body": Path(os.environ["UPDATED_BODY"]).read_text(encoding="utf-8")}))
+PY
+    gh api "repos/$REPO/issues/$PR_NUMBER" --method PATCH --input - >/dev/null 2>&1
+then
     warn_or_exit "artifact is ready, but the PR body update failed: $artifact_url"
 fi
 

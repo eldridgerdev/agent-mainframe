@@ -358,11 +358,12 @@ if [[ "$first_screen" == "Configure Agent Harnesses" ]]; then
     # check actually starts (or resolves). Probe each row because a runner
     # may provide Codex, Opencode, or Pi without having Claude installed.
     harness_installed=0
-    for _ in 1 2 3 4; do
+    harness_names=(Claude Opencode Codex Pi)
+    for harness_name in "${harness_names[@]}"; do
         harness_resolved=""
         for _ in 1 2 3 4 5 6; do
             tmux send-keys -t "$SESSION" Enter
-            if harness_resolved="$(wait_for_any 3 "(installed)" "(not found" 2>/dev/null)"; then
+            if harness_resolved="$(wait_for_any 3 "$harness_name (installed)" "$harness_name (not found" 2>/dev/null)"; then
                 break
             fi
             harness_resolved=""

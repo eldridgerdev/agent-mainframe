@@ -44,11 +44,22 @@ on:
 
 run-name: AMF screenshot ${{ inputs.request_id }} (PR #${{ inputs.pr_number }})
 
+# One capture/deploy at a time prevents a collaborator from creating a burst of
+# Pages deployments or consuming a fleet of runners. Do not cancel an active
+# visual proof run: it may already be awaiting human environment approval.
+concurrency:
+  group: amf-screenshot-pages
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   capture:
+    # workflow_dispatch requires write access, but screenshot publication is
+    # intentionally narrower: agents must use the owner's authenticated gh
+    # session. Add a separate explicitly reviewed identity here if needed.
+    if: github.actor == 'eldridgerdev'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

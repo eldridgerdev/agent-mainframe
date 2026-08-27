@@ -11,6 +11,7 @@ PR_NUMBER=""
 SCENARIO=""
 REF=""
 PROJECT="${CF_PAGES_PROJECT:-}"
+ALLOWED_ACTOR="eldridgerdev"
 GEOMETRY="120x40"
 GIF=false
 STRICT=0
@@ -53,6 +54,8 @@ done
 command -v gh >/dev/null 2>&1 || warn "GitHub CLI (gh) is not installed"
 cd "$REPO_ROOT" || warn "cannot enter repository root"
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || warn "could not resolve GitHub repository"
+ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
+[[ "$ACTOR" == "$ALLOWED_ACTOR" ]] || warn "authenticated gh user '$ACTOR' is not allowed to publish Pages previews"
 REF="${REF:-$(git branch --show-current)}"
 [[ -n "$REF" ]] || warn "detached HEAD; pass --ref with a pushed branch"
 [[ -n "$PROJECT" ]] || PROJECT="$(gh variable get CF_PAGES_PROJECT --repo "$REPO" 2>/dev/null || true)"

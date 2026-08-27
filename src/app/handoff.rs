@@ -94,9 +94,7 @@ impl App {
 
         let codex_session_prompt = session
             .and_then(|session| session.token_usage_source.as_ref())
-            .filter(|source| {
-                source.provider == crate::token_tracking::TokenUsageProvider::Codex
-            })
+            .filter(|source| source.provider == crate::token_tracking::TokenUsageProvider::Codex)
             .and_then(|source| self.cached_codex_session_prompt(&feature.workdir, &source.id));
         if codex_session_prompt.is_some() {
             return codex_session_prompt;

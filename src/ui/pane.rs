@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::app::{TextSelection, ViewState};
 use crate::context_display::format_context_indicator;
-use crate::context_tracking::SessionContextSnapshot;
+use crate::context_tracking::{ContextBand, SessionContextSnapshot};
 use crate::project::{SessionKind, VibeMode};
 use crate::theme::Theme;
 
@@ -89,6 +89,26 @@ struct SidebarSection {
     title: &'static str,
     body: String,
     constraint: Constraint,
+    /// Band-driven accent for the section header/border. `None` defers to
+    /// `sidebar_section_color`; the Context section sets it so a calm reading
+    /// and an elevated one differ without a title change.
+    accent_band: Option<ContextBand>,
+}
+
+impl SidebarSection {
+    fn new(title: &'static str, body: String, constraint: Constraint) -> Self {
+        Self {
+            title,
+            body,
+            constraint,
+            accent_band: None,
+        }
+    }
+
+    fn with_accent_band(mut self, band: ContextBand) -> Self {
+        self.accent_band = Some(band);
+        self
+    }
 }
 
 pub(crate) fn viewing_main_width(view: &ViewState, total_width: u16) -> u16 {
@@ -584,7 +604,10 @@ fn draw_agent_sidebar(
         .constraints(constraints)
         .split(inner);
     for (sidebar_section, section) in sections_with_content.iter().zip(sections.iter()) {
-        let accent = sidebar_section_color(sidebar_section.title, theme);
+        let accent = match sidebar_section.accent_band {
+            Some(band) => context_band_color(band, theme),
+            None => sidebar_section_color(sidebar_section.title, theme),
+        };
         let mut block = Block::default()
             .title_top(Line::from(Span::styled(
                 format!(" {} ", sidebar_section.title),
@@ -619,7 +642,7 @@ fn draw_agent_sidebar(
                 .alignment(Alignment::Right),
             );
         }
-        if sidebar_section.title == "Fresh Context" {
+        if sidebar_section.title == "Context" && data.context_hint_visible {
             block = block.title_top(
                 Line::from(Span::styled(
                     " <leader F> ",
@@ -657,42 +680,45 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
     let mut sections = Vec::new();
 
     if !data.status_text.trim().is_empty() {
-        sections.push(SidebarSection {
-            title: "Status",
-            body: data.status_text.clone(),
-            constraint: Constraint::Length(status_section_height(&data.status_text, section_width)),
-        });
+        sections.push(SidebarSection::new(
+            "Status",
+            data.status_text.clone(),
+            Constraint::Length(status_section_height(&data.status_text, section_width)),
+        ));
     }
 
-    if data.context_hint_visible
-        && let Some(snapshot) = data.context_snapshot.as_ref()
-    {
+    if let Some(snapshot) = data.context_snapshot.as_ref() {
         let indicator = format_context_indicator(snapshot);
-        let body = format!(
-            "Usage: {}\nAction: Fresh context: <leader F>\nDismiss: <leader X>",
-            indicator.text
+        // The reading is always shown; the fresh-context call to action is
+        // appended only while the hint is eligible (warning/critical band and
+        // not dismissed). Its three labelled lines each wrap to two inner
+        // lines at the default 32-column sidebar width, so the ceiling has to
+        // clear five for the `Dismiss` row never to be clipped.
+        let (body, min_lines, max_lines) = if data.context_hint_visible {
+            (
+                format!(
+                    "Usage: {}\nAction: Fresh context: <leader F>\nDismiss: <leader X>",
+                    indicator.text
+                ),
+                2,
+                6,
+            )
+        } else {
+            (format!("Usage: {}", indicator.text), 1, 3)
+        };
+        let height = sidebar_section_height(&body, section_width, min_lines, max_lines);
+        sections.push(
+            SidebarSection::new("Context", body, Constraint::Length(height))
+                .with_accent_band(indicator.band),
         );
-        // Three labelled lines that each wrap to two inner lines at the
-        // default 32-column sidebar width -- the ceiling has to clear five so
-        // the `Dismiss` action is never the row that gets clipped.
-        sections.push(SidebarSection {
-            title: "Fresh Context",
-            constraint: Constraint::Length(sidebar_section_height(&body, section_width, 2, 6)),
-            body,
-        });
     }
 
     if !data.plan_text.trim().is_empty() {
-        sections.push(SidebarSection {
-            title: "Plan",
-            body: data.plan_text.clone(),
-            constraint: Constraint::Length(sidebar_section_height(
-                &data.plan_text,
-                section_width,
-                1,
-                2,
-            )),
-        });
+        sections.push(SidebarSection::new(
+            "Plan",
+            data.plan_text.clone(),
+            Constraint::Length(sidebar_section_height(&data.plan_text, section_width, 1, 2)),
+        ));
     }
 
     if let Some(pr_triage_text) = data
@@ -700,77 +726,61 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
         .as_deref()
         .filter(|text| !text.trim().is_empty())
     {
-        sections.push(SidebarSection {
-            title: "PR Triage",
-            body: pr_triage_text.to_string(),
-            constraint: Constraint::Length(sidebar_section_height(
-                pr_triage_text,
-                section_width,
-                2,
-                6,
-            )),
-        });
+        sections.push(SidebarSection::new(
+            "PR Triage",
+            pr_triage_text.to_string(),
+            Constraint::Length(sidebar_section_height(pr_triage_text, section_width, 2, 6)),
+        ));
     }
 
     let is_opencode = matches!(data.agent_kind, SessionKind::Opencode);
 
     if let Some(work_text) = data.work_text.as_deref() {
-        sections.push(SidebarSection {
-            title: "Work",
-            body: work_text.to_string(),
-            constraint: Constraint::Length(sidebar_section_height(work_text, section_width, 2, 6)),
-        });
+        sections.push(SidebarSection::new(
+            "Work",
+            work_text.to_string(),
+            Constraint::Length(sidebar_section_height(work_text, section_width, 2, 6)),
+        ));
     }
     if !is_opencode && !data.summary_text.trim().is_empty() {
-        sections.push(SidebarSection {
-            title: "Summary",
-            body: data.summary_text.clone(),
-            constraint: Constraint::Length(summary_section_height(
-                &data.summary_text,
-                section_width,
-            )),
-        });
+        sections.push(SidebarSection::new(
+            "Summary",
+            data.summary_text.clone(),
+            Constraint::Length(summary_section_height(&data.summary_text, section_width)),
+        ));
     }
     if !data.prompt_text.trim().is_empty() {
-        sections.push(SidebarSection {
-            title: "Prompt",
-            body: data.prompt_text.clone(),
-            constraint: Constraint::Length(prompt_section_height(&data.prompt_text, section_width)),
-        });
+        sections.push(SidebarSection::new(
+            "Prompt",
+            data.prompt_text.clone(),
+            Constraint::Length(prompt_section_height(&data.prompt_text, section_width)),
+        ));
     }
     if let Some(todos_text) = data.todos_text.as_deref() {
-        sections.push(SidebarSection {
-            title: "Todos",
-            body: todos_text.to_string(),
-            constraint: Constraint::Length(sidebar_section_height(
-                todos_text,
-                section_width,
-                2,
-                13,
-            )),
-        });
+        sections.push(SidebarSection::new(
+            "Todos",
+            todos_text.to_string(),
+            Constraint::Length(sidebar_section_height(todos_text, section_width, 2, 13)),
+        ));
     }
     if let Some(active_todos_text) = data.active_todos_text.as_deref() {
-        sections.push(SidebarSection {
-            title: "Active TODOs",
-            body: active_todos_text.to_string(),
-            constraint: Constraint::Length(sidebar_section_height(
+        sections.push(SidebarSection::new(
+            "Active TODOs",
+            active_todos_text.to_string(),
+            Constraint::Length(sidebar_section_height(
                 active_todos_text,
                 section_width,
                 2,
                 10,
             )),
-        });
+        ));
     }
     if is_opencode && !data.summary_text.trim().is_empty() {
-        sections.push(SidebarSection {
-            title: "Summary",
-            body: data.summary_text.clone(),
-            constraint: Constraint::Length(summary_section_height(
-                &data.summary_text,
-                section_width,
-            )),
-        });
+        sections.push(SidebarSection::new(
+            "Summary",
+            data.summary_text.clone(),
+            Constraint::Length(summary_section_height(&data.summary_text, section_width)),
+        ));
     }
 
     sections
@@ -796,8 +806,20 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
         "Summary" => theme.info.to_color(),
         "PR Triage" => theme.info.to_color(),
         "Plan" => theme.warning.to_color(),
-        "Fresh Context" => theme.danger.to_color(),
+        // The Context section normally carries an explicit band accent; this
+        // is only the fallback if that is ever missing.
+        "Context" => theme.success.to_color(),
         _ => theme.border.to_color(),
+    }
+}
+
+/// Band -> accent color for the Context section, matching the session-row
+/// indicator styling in `ui::list`.
+fn context_band_color(band: ContextBand, theme: &Theme) -> Color {
+    match band {
+        ContextBand::Normal => theme.success.to_color(),
+        ContextBand::Warning => theme.warning.to_color(),
+        ContextBand::Critical => theme.danger.to_color(),
     }
 }
 
@@ -1559,17 +1581,84 @@ mod tests {
         let sections = sidebar_sections(&sidebar, 30);
         let context = sections
             .iter()
-            .find(|section| section.title == "Fresh Context")
+            .find(|section| section.title == "Context")
             .expect("eligible context should have a dedicated section");
 
         assert_eq!(
             context.body,
             "Usage: Ctx 70% WARNING · 70,000\nAction: Fresh context: <leader F>\nDismiss: <leader X>"
         );
+        assert_eq!(
+            context.accent_band,
+            Some(crate::context_tracking::ContextBand::Warning)
+        );
         assert!(matches!(
             context.constraint,
             Constraint::Length(height) if height >= 4
         ));
+    }
+
+    #[test]
+    fn context_section_shows_a_bare_reading_in_the_normal_band() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Ready".into(),
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: Some(context_snapshot(
+                42,
+                crate::context_tracking::ContextBand::Normal,
+                crate::context_tracking::ContextProvenance::Direct,
+                crate::context_tracking::ContextFreshness::Fresh,
+            )),
+            // No warning/critical pressure: the fresh-context call to action
+            // is absent, but the reading itself is still shown.
+            context_hint_visible: false,
+        };
+
+        let context = sidebar_sections(&sidebar, 30)
+            .into_iter()
+            .find(|section| section.title == "Context")
+            .expect("a snapshot always renders a Context section");
+
+        assert_eq!(context.body, "Usage: Ctx 42% · 42,000");
+        assert!(!context.body.contains("<leader F>"));
+        assert_eq!(
+            context.accent_band,
+            Some(crate::context_tracking::ContextBand::Normal)
+        );
+    }
+
+    #[test]
+    fn context_section_is_absent_without_a_snapshot() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Ready".into(),
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
+        };
+
+        assert!(
+            sidebar_sections(&sidebar, 30)
+                .iter()
+                .all(|section| section.title != "Context")
+        );
     }
 
     #[test]
@@ -1598,7 +1687,7 @@ mod tests {
         let sections = sidebar_sections(&sidebar, 16);
         let context = sections
             .iter()
-            .find(|section| section.title == "Fresh Context")
+            .find(|section| section.title == "Context")
             .expect("eligible context should remain present when wrapped");
 
         assert!(context.body.contains("Ctx ~85% CRITICAL STALE · 85,000"));
@@ -1636,7 +1725,7 @@ mod tests {
         let sections = sidebar_sections(&sidebar, section_width);
         let context = sections
             .iter()
-            .find(|section| section.title == "Fresh Context")
+            .find(|section| section.title == "Context")
             .expect("eligible context should have a dedicated section");
 
         // How many inner rows the body actually needs once wrapped at this

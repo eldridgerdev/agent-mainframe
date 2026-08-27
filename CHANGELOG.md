@@ -21,14 +21,17 @@ are tagged.
   existing sessions simply have no reference until launched from the TODO
   menu.
 
-- **AMF now warns when the agent session you are viewing is nearing its
-  context limit.** At the warning or critical threshold, the agent sidebar
-  shows the current usage and offers `Ctrl+Space`, then `F` to open a new
-  session in the same feature with an editable continuation prompt. Press
-  `Ctrl+Space`, then `X` to dismiss the hint while the pressure remains;
-  it reappears after the session clears or resets. Estimated and stale
-  readings stay labeled, while unavailable or reset-pending readings do not
-  invent a percentage. No migration is required.
+- **The agent sidebar now always shows the viewed session's context usage.**
+  A `Context` section appears for every Claude, Codex, or opencode session
+  that has a reading, in every band — a calm green line like
+  `Usage: Ctx 42% · 42,000` while there is headroom, turning amber then red
+  as pressure rises. At the warning or critical threshold the same section
+  adds `Ctrl+Space`, then `F` to open a new session in the same feature with
+  an editable continuation prompt; `Ctrl+Space`, then `X` dismisses that call
+  to action while leaving the reading in place, and it returns after the
+  session clears or resets. Estimated and stale readings stay labeled, while
+  unavailable or reset-pending readings do not invent a percentage. No
+  migration is required.
 
 - **Harness pickers now show how much rate-limit headroom you have left,
   right where you choose a harness.** When creating a feature (Harness

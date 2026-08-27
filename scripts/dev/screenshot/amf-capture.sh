@@ -39,6 +39,7 @@ Options:
                           text:<text>  tmux send-keys -l literal text
                                        (e.g. text:my feature name)
                           wait:<ms>    sleep this many milliseconds
+                          note:<text>  explain what the next shot proves
                           shot:<label> capture-pane -> NNN-<label>.ansi
                                        (+ escape-free NNN-<label>.txt)
                           run:<cmd>    eval an arbitrary shell command
@@ -292,6 +293,7 @@ tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" -c "$SHOT_ROOT" \
     "$AMF_BIN"
 
 step=0
+shot_note=""
 shot() {
     local label="$1"
     step=$((step + 1))
@@ -301,6 +303,12 @@ shot() {
     # Plain-text twin: escape-free, so an agent can grep/read it to verify
     # content far more cheaply than reading the .ansi or the rendered PNG.
     tmux capture-pane -p -t "$SESSION" >"${file%.ansi}.txt"
+    NOTE="$shot_note" CAPTURE_FILE="${file##*/}" python3 - "$OUT_DIR/capture-notes.jsonl" <<'PY'
+import json, os, sys
+with open(sys.argv[1], "a", encoding="utf-8") as out:
+    out.write(json.dumps({"file": os.environ["CAPTURE_FILE"], "note": os.environ["NOTE"]}) + "\n")
+PY
+    shot_note=""
     echo "shot: $file" >&2
 }
 
@@ -461,6 +469,13 @@ run_scenario() {
                 wait:*)
                     local ms="${part#wait:}"
                     sleep "$(awk "BEGIN { printf \"%.3f\", $ms / 1000 }")"
+                    ;;
+                note:*)
+                    shot_note="${part#note:}"
+                    if (( ${#shot_note} > 600 )); then
+                        echo "error: note: must be 600 characters or fewer" >&2
+                        return 1
+                    fi
                     ;;
                 shot:*)
                     shot "${part#shot:}"

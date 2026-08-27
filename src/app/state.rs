@@ -11,7 +11,10 @@ use crate::editor::TextEditor;
 use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
 };
-use crate::plan_interview::{PlanQuestion, PlanQuestionKind, QuestionSource};
+use crate::plan_interview::{
+    CUSTOM_ANSWER_MAX_LEN, PlanQuestion, PlanQuestionKind, QuestionSource, serialize_choice_answer,
+    split_choice_answer,
+};
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 use crate::worktree::WorktreeInfo;
@@ -5583,7 +5586,26 @@ pub struct PlanInterviewState {
     pub brief: String,
     pub answers: Vec<Option<String>>,
     pub editor: TextEditor,
-    pub selected_option: usize,
+    /// The highlighted/picked option for the current choice question, or `None`
+    /// when nothing is picked — the state a user is in when they answer purely
+    /// with custom text. Parallel `selected_option`/`editor` are transient
+    /// scratch for the question on screen; the durable record is `answers` (the
+    /// serialized combined string) and `custom_answers` (the raw custom text).
+    pub selected_option: Option<usize>,
+    /// Raw free-text custom answer per question, positionally paired with
+    /// `questions`. Empty for a question with no custom text and for every
+    /// free-text question. Kept alongside `answers` so revisiting a choice
+    /// question restores the radio selection *and* the custom text rather than
+    /// a flat editable string, and persisted so a resumed/re-run interview can
+    /// do the same.
+    pub custom_answers: Vec<String>,
+    /// Whether the inline custom-answer editor (the `editor` buffer, reused for
+    /// a choice question) currently has focus. `e` opens it; committing or
+    /// cancelling returns focus to the option list without submitting.
+    pub custom_answer_focused: bool,
+    /// The custom-answer buffer captured when the editor was opened, restored
+    /// verbatim if the edit is cancelled with `Esc`.
+    pub custom_answer_backup: Option<String>,
     /// Where the accepted plan is written (`<workdir>/AMF_PLAN.md`). Held
     /// separately from `pending_launch` because an on-demand interview has an
     /// existing feature's workdir and no launch at all.
@@ -5684,6 +5706,10 @@ pub struct PlanInterviewState {
     /// previous one ([`Self::prior_answer_state`]) and
     /// [`Self::restore_prior_answer`] can put it back.
     pub prior_answers: HashMap<String, String>,
+    /// The custom-text half of a re-run's pre-filled choice answers, keyed by
+    /// question id, so [`Self::restore_prior_answer`] can put back both the
+    /// selection and the elaboration the previous interview accepted.
+    pub prior_custom_answers: HashMap<String, String>,
     /// The live session an accepted on-demand plan is being offered to. Only
     /// set in [`PlanInterviewPhase::KickoffHandoff`], which is only reached
     /// after the plan file is already on disk.
@@ -5775,7 +5801,10 @@ impl PlanInterviewState {
             brief: String::new(),
             answers: vec![None; answer_count],
             editor: TextEditor::new(String::new()),
-            selected_option: 0,
+            selected_option: None,
+            custom_answers: vec![String::new(); answer_count],
+            custom_answer_focused: false,
+            custom_answer_backup: None,
             workdir,
             pending_launch,
             abort_confirmation: false,
@@ -5812,6 +5841,7 @@ impl PlanInterviewState {
             resume_draft: None,
             prior_brief: None,
             prior_answers: HashMap::new(),
+            prior_custom_answers: HashMap::new(),
             kickoff_handoff: None,
             todo_origin: None,
         }
@@ -5908,41 +5938,52 @@ impl PlanInterviewState {
     ///
     /// Matching by id is not enough on its own for a select question: config can
     /// rewrite the same id's options, leaving a stored answer that names a choice
-    /// the question no longer offers. Such an answer is dropped rather than
-    /// pre-filled, because it is unselectable in the UI and would otherwise reach
-    /// the AI rounds and synthesis attached to the current question text.
+    /// the question no longer offers. That part of the answer is dropped rather
+    /// than pre-filled, because it is unselectable in the UI and would otherwise
+    /// reach the AI rounds and synthesis attached to the current question text.
+    /// A choice answer's custom-text half survives an option rewrite; only the
+    /// selection is re-validated.
     fn adopt_recorded_answers(&mut self, record: &PlanInterviewRecord) {
-        self.answers = self
-            .questions
-            .iter()
-            .map(|question| {
-                record
-                    .answer_for(&question.id)
-                    .filter(|answer| question.accepts_answer(answer))
-                    .map(str::to_string)
-            })
-            .collect();
-
+        // Carried AI questions are appended first so the structured pass below
+        // covers them too — the record still holds their options, answer, and
+        // custom text under the same id.
         let known: HashSet<&str> = self.questions.iter().map(|q| q.id.as_str()).collect();
-        let carried: Vec<(PlanQuestion, Option<String>)> = record
+        let carried: Vec<PlanQuestion> = record
             .questions
             .iter()
-            .enumerate()
-            .filter(|(_, question)| {
+            .filter(|question| {
                 matches!(question.source, QuestionSource::Ai { .. })
                     && !known.contains(question.id.as_str())
             })
-            .map(|(index, question)| {
-                (
-                    question.clone(),
-                    record.answers.get(index).cloned().flatten(),
-                )
+            .cloned()
+            .collect();
+        self.questions.extend(carried);
+
+        let adopted: Vec<(Option<String>, String)> = self
+            .questions
+            .iter()
+            .map(|question| {
+                let Some(raw) = record.answer_for(&question.id) else {
+                    return (None, String::new());
+                };
+                match &question.kind {
+                    PlanQuestionKind::FreeText => (Some(raw.to_string()), String::new()),
+                    PlanQuestionKind::Select(options) => {
+                        let stored_custom = record.custom_answer_for(&question.id);
+                        let (indices, custom) =
+                            split_choice_answer(raw, stored_custom, options);
+                        let labels: Vec<&str> = indices
+                            .iter()
+                            .filter_map(|&index| options.get(index))
+                            .map(String::as_str)
+                            .collect();
+                        (serialize_choice_answer(&labels, &custom), custom)
+                    }
+                }
             })
             .collect();
-        for (question, answer) in carried {
-            self.questions.push(question);
-            self.answers.push(answer);
-        }
+        self.answers = adopted.iter().map(|(answer, _)| answer.clone()).collect();
+        self.custom_answers = adopted.into_iter().map(|(_, custom)| custom).collect();
     }
 
     /// Adopt the feature's last accepted interview as this run's starting point,
@@ -5973,6 +6014,15 @@ impl PlanInterviewState {
             .filter_map(|(question, answer)| {
                 answer.clone().map(|answer| (question.id.clone(), answer))
             })
+            .collect();
+        // The custom-text half of a pre-filled choice answer, so Ctrl+R can put
+        // back the elaboration as well as the selection.
+        self.prior_custom_answers = self
+            .questions
+            .iter()
+            .zip(self.custom_answers.iter())
+            .filter(|(_, custom)| !custom.trim().is_empty())
+            .map(|(question, custom)| (question.id.clone(), custom.clone()))
             .collect();
 
         self.brief = self.prior_brief.clone().unwrap_or_default();
@@ -6006,8 +6056,20 @@ impl PlanInterviewState {
             .map(|question| self.prior_answers.get(&question.id).cloned())
             .collect();
         self.answers = baseline;
+        self.custom_answers = self
+            .questions
+            .iter()
+            .map(|question| {
+                self.prior_custom_answers
+                    .get(&question.id)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
         self.question_index = 0;
-        self.selected_option = 0;
+        self.selected_option = None;
+        self.custom_answer_focused = false;
+        self.custom_answer_backup = None;
         self.phase = PlanInterviewPhase::Brief;
         self.editor = TextEditor::new(self.brief.clone());
         true
@@ -6016,20 +6078,30 @@ impl PlanInterviewState {
     /// How the step on screen compares with the previously accepted answer for
     /// it, or `None` when there is no previous answer to compare against.
     pub fn prior_answer_state(&self) -> Option<PriorAnswerState> {
-        let (prior, current) = match self.phase {
-            PlanInterviewPhase::Brief => (self.prior_brief.as_deref()?, self.editor.text()),
+        let (prior, current): (String, String) = match self.phase {
+            PlanInterviewPhase::Brief => (
+                self.prior_brief.as_deref()?.to_string(),
+                self.editor.text().to_string(),
+            ),
             PlanInterviewPhase::StaticQuestions => {
                 let question = self.questions.get(self.question_index)?;
-                let prior = self.prior_answers.get(&question.id)?.as_str();
+                let prior = self.prior_answers.get(&question.id)?.clone();
                 match &question.kind {
-                    PlanQuestionKind::FreeText => (prior, self.editor.text()),
-                    PlanQuestionKind::Select(options) => (
-                        prior,
-                        options
-                            .get(self.selected_option)
+                    PlanQuestionKind::FreeText => (prior, self.editor.text().to_string()),
+                    // The whole choice answer — selection plus custom text —
+                    // compared as the one serialized string it is stored as, so
+                    // adding an elaboration to a kept option reads as "changed".
+                    PlanQuestionKind::Select(options) => {
+                        let labels: Vec<&str> = self
+                            .selected_option
+                            .and_then(|index| options.get(index))
                             .map(String::as_str)
-                            .unwrap_or_default(),
-                    ),
+                            .into_iter()
+                            .collect();
+                        let current = serialize_choice_answer(&labels, self.editor.text())
+                            .unwrap_or_default();
+                        (prior, current)
+                    }
                 }
             }
             _ => return None,
@@ -6072,18 +6144,23 @@ impl PlanInterviewState {
                         self.editor = TextEditor::new(prior);
                         true
                     }
-                    // Adoption keeps only answers the question still offers, so
-                    // this normally finds one. The lookup stays defensive: an
-                    // answer with nothing to select is reported as "nothing
+                    // Restore both halves the previous interview accepted: the
+                    // radio selection and the custom-text elaboration. Adoption
+                    // keeps only a selection the question still offers, so an
+                    // answer that survives as neither is reported as "nothing
                     // restored" rather than moving the highlight to option 0.
                     PlanQuestionKind::Select(options) => {
-                        match options.iter().position(|option| *option == prior) {
-                            Some(index) => {
-                                self.selected_option = index;
-                                true
-                            }
-                            None => false,
+                        let prior_custom = self.prior_custom_answers.get(&id).map(String::as_str);
+                        let (indices, custom) =
+                            split_choice_answer(&prior, prior_custom, options);
+                        if indices.is_empty() && custom.trim().is_empty() {
+                            return false;
                         }
+                        self.selected_option = indices.first().copied();
+                        self.editor = TextEditor::new(custom);
+                        self.custom_answer_focused = false;
+                        self.custom_answer_backup = None;
+                        true
                     }
                 }
             }
@@ -6104,6 +6181,14 @@ impl PlanInterviewState {
             brief: self.brief.clone(),
             questions: self.questions.clone(),
             answers: self.answers.clone(),
+            // The custom-text half of every choice answer, so a resumed or
+            // re-run interview can restore the selection and the elaboration
+            // together. Blank entries persist as `None`.
+            custom_answers: self
+                .custom_answers
+                .iter()
+                .map(|custom| (!custom.trim().is_empty()).then(|| custom.clone()))
+                .collect(),
             // A draft holds the plan only once one has been generated, so
             // resuming after synthesis does not silently re-spend those tokens.
             plan: self.synthesized_plan.clone(),
@@ -6465,6 +6550,8 @@ impl PlanInterviewState {
         }
         let first_new_index = self.questions.len();
         self.answers.extend(new_questions.iter().map(|_| None));
+        self.custom_answers
+            .extend(new_questions.iter().map(|_| String::new()));
         self.questions.extend(new_questions);
         self.phase = PlanInterviewPhase::StaticQuestions;
         self.question_index = first_new_index;
@@ -6479,33 +6566,38 @@ impl PlanInterviewState {
         }
     }
 
-    pub fn select_previous_option(&mut self) {
-        let option_count = self
-            .current_question()
+    fn current_option_count(&self) -> usize {
+        self.current_question()
             .and_then(|question| match &question.kind {
                 PlanQuestionKind::Select(options) => Some(options.len()),
                 PlanQuestionKind::FreeText => None,
             })
-            .unwrap_or(0);
-        if option_count > 0 {
-            self.selected_option = self
-                .selected_option
-                .checked_sub(1)
-                .unwrap_or(option_count - 1);
+            .unwrap_or(0)
+    }
+
+    /// Move the option highlight up, wrapping. From "nothing picked" this lands
+    /// on the last option — the arrows always settle on a real choice; leaving
+    /// the options untouched is how a user answers with custom text alone.
+    pub fn select_previous_option(&mut self) {
+        let option_count = self.current_option_count();
+        if option_count == 0 {
+            return;
         }
+        self.selected_option = Some(match self.selected_option {
+            None | Some(0) => option_count - 1,
+            Some(index) => index - 1,
+        });
     }
 
     pub fn select_next_option(&mut self) {
-        let option_count = self
-            .current_question()
-            .and_then(|question| match &question.kind {
-                PlanQuestionKind::Select(options) => Some(options.len()),
-                PlanQuestionKind::FreeText => None,
-            })
-            .unwrap_or(0);
-        if option_count > 0 {
-            self.selected_option = (self.selected_option + 1) % option_count;
+        let option_count = self.current_option_count();
+        if option_count == 0 {
+            return;
         }
+        self.selected_option = Some(match self.selected_option {
+            None => 0,
+            Some(index) => (index + 1) % option_count,
+        });
     }
 
     /// Save the current input and move to the next interview step.
@@ -6580,7 +6672,9 @@ impl PlanInterviewState {
                 self.save_current_draft();
                 self.phase = PlanInterviewPhase::Brief;
                 self.editor = TextEditor::new(self.brief.clone());
-                self.selected_option = 0;
+                self.selected_option = None;
+                self.custom_answer_focused = false;
+                self.custom_answer_backup = None;
                 true
             }
             PlanInterviewPhase::StaticQuestions => {
@@ -6684,7 +6778,23 @@ impl PlanInterviewState {
                     Some(text.to_string())
                 }
             }
-            PlanQuestionKind::Select(options) => options.get(self.selected_option).cloned(),
+            // A choice answer is the picked option label(s) and the trimmed
+            // custom text, combined into one plain string. Nothing picked and
+            // blank custom text records as no answer — which the gate below
+            // blocks for a required question, exactly as for free text.
+            PlanQuestionKind::Select(options) => {
+                let custom = self.editor.text().trim().to_string();
+                if let Some(slot) = self.custom_answers.get_mut(self.question_index) {
+                    *slot = custom.clone();
+                }
+                let labels: Vec<&str> = self
+                    .selected_option
+                    .and_then(|index| options.get(index))
+                    .map(String::as_str)
+                    .into_iter()
+                    .collect();
+                serialize_choice_answer(&labels, &custom)
+            }
         };
         if answer.is_none() && !question.optional && !allow_empty_optional {
             return Err(PlanInterviewAdvanceError::AnswerRequired);
@@ -6710,24 +6820,125 @@ impl PlanInterviewState {
         }
     }
 
+    /// Load the answer stored for the question now on screen into the transient
+    /// `selected_option` / `editor` scratch. For a choice question this rebuilds
+    /// the structured control from the serialized string and the stored custom
+    /// text, so revisiting an answered question shows the radio selection and
+    /// the custom-text box — never a flat editable string.
     fn load_current_answer(&mut self) {
         let existing = self
             .answers
             .get(self.question_index)
-            .and_then(|answer| answer.as_deref());
+            .and_then(|answer| answer.clone());
+        let stored_custom = self
+            .custom_answers
+            .get(self.question_index)
+            .cloned()
+            .unwrap_or_default();
+        self.custom_answer_focused = false;
+        self.custom_answer_backup = None;
         match self.questions.get(self.question_index).map(|q| &q.kind) {
             Some(PlanQuestionKind::FreeText) => {
-                self.editor = TextEditor::new(existing.unwrap_or_default().to_string());
-                self.selected_option = 0;
+                self.editor = TextEditor::new(existing.unwrap_or_default());
+                self.selected_option = None;
             }
             Some(PlanQuestionKind::Select(options)) => {
-                self.editor = TextEditor::new(String::new());
-                self.selected_option = existing
-                    .and_then(|answer| options.iter().position(|option| option == answer))
-                    .unwrap_or(0);
+                let stored = (!stored_custom.is_empty()).then_some(stored_custom.as_str());
+                let (indices, custom) = match existing.as_deref() {
+                    Some(combined) => split_choice_answer(combined, stored, options),
+                    None => (Vec::new(), stored_custom.clone()),
+                };
+                self.selected_option = indices.first().copied();
+                self.editor = TextEditor::new(custom);
             }
             None => {}
         }
+    }
+
+    /// Open the inline custom-answer editor for the choice question on screen.
+    /// The current buffer is stashed so `Esc` can restore it; `false` when the
+    /// phase or question is wrong or the editor is already focused.
+    pub fn open_custom_answer_editor(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::StaticQuestions || self.custom_answer_focused {
+            return false;
+        }
+        if !matches!(
+            self.current_question().map(|q| &q.kind),
+            Some(PlanQuestionKind::Select(_))
+        ) {
+            return false;
+        }
+        self.custom_answer_backup = Some(self.editor.text().to_string());
+        self.custom_answer_focused = true;
+        true
+    }
+
+    /// Commit the custom-answer edit: trim the buffer, record it, and return
+    /// focus to the option list without submitting the question. The serialized
+    /// answer is refreshed too, so a draft persisted right after a commit
+    /// round-trips even though the question has not been advanced through.
+    pub fn commit_custom_answer(&mut self) {
+        if !self.custom_answer_focused {
+            return;
+        }
+        let trimmed = self.editor.text().trim().to_string();
+        self.editor = TextEditor::new(trimmed.clone());
+        if let Some(slot) = self.custom_answers.get_mut(self.question_index) {
+            *slot = trimmed.clone();
+        }
+        let recorded = match self.questions.get(self.question_index).map(|q| &q.kind) {
+            Some(PlanQuestionKind::Select(options)) => {
+                let labels: Vec<&str> = self
+                    .selected_option
+                    .and_then(|index| options.get(index))
+                    .map(String::as_str)
+                    .into_iter()
+                    .collect();
+                Some(serialize_choice_answer(&labels, &trimmed))
+            }
+            _ => None,
+        };
+        if let Some(answer) = recorded
+            && let Some(slot) = self.answers.get_mut(self.question_index)
+        {
+            *slot = answer;
+        }
+        self.custom_answer_focused = false;
+        self.custom_answer_backup = None;
+    }
+
+    /// Abandon the custom-answer edit, restoring the buffer captured when it was
+    /// opened.
+    pub fn cancel_custom_answer(&mut self) {
+        if !self.custom_answer_focused {
+            return;
+        }
+        let restore = self.custom_answer_backup.take().unwrap_or_default();
+        self.editor = TextEditor::new(restore);
+        self.custom_answer_focused = false;
+    }
+
+    /// Forward a key to the focused custom-answer editor, enforcing the
+    /// character cap by reverting any edit that would exceed it (a paste, or a
+    /// keystroke at the limit).
+    pub fn custom_answer_handle_key(&mut self, key: crossterm::event::KeyEvent) {
+        if !self.custom_answer_focused {
+            return;
+        }
+        let before = self.editor.text().to_string();
+        self.editor.handle_key(key);
+        if self.editor.text().chars().count() > CUSTOM_ANSWER_MAX_LEN {
+            self.editor = TextEditor::new(before);
+        }
+    }
+
+    /// Whether the question on screen is a choice question (so the custom-answer
+    /// box is shown and `e` is bound).
+    pub fn current_question_is_choice(&self) -> bool {
+        matches!(
+            self.current_question().map(|q| &q.kind),
+            Some(PlanQuestionKind::Select(_))
+        )
     }
 }
 
@@ -6848,6 +7059,13 @@ pub enum VisibleItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key_char(c: char) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
 
     // ── SessionFilter::next ───────────────────────────────────
 
@@ -7227,15 +7445,118 @@ mod tests {
         state.editor = TextEditor::new("A useful feature".into());
         state.advance().unwrap();
 
+        // From "nothing picked" the up-arrow wraps to the last option.
         state.select_previous_option();
-        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.selected_option, Some(1));
         state.advance().unwrap();
         assert_eq!(state.answers[0].as_deref(), Some("Session"));
 
         assert!(state.back());
-        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.selected_option, Some(1));
         state.select_next_option();
-        assert_eq!(state.selected_option, 0);
+        assert_eq!(state.selected_option, Some(0));
+    }
+
+    #[test]
+    fn plan_interview_choice_question_takes_a_custom_answer_with_or_without_a_pick() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            "feat-1".into(),
+            vec![question],
+            None,
+        );
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        // Custom text alone answers a required choice question.
+        assert!(state.open_custom_answer_editor());
+        state.custom_answer_handle_key(key_char('t'));
+        state.custom_answer_handle_key(key_char('u'));
+        state.custom_answer_handle_key(key_char('i'));
+        state.commit_custom_answer();
+        assert!(!state.custom_answer_focused);
+        assert_eq!(state.selected_option, None);
+        state.advance().unwrap();
+        assert_eq!(state.answers[0].as_deref(), Some("tui"));
+
+        // Revisiting re-presents the structured control: no pick, custom text
+        // back in the box.
+        assert!(state.back());
+        assert_eq!(state.selected_option, None);
+        assert_eq!(state.editor.text(), "tui");
+
+        // Pick an option and keep the elaboration: the two combine.
+        state.select_next_option();
+        assert_eq!(state.selected_option, Some(0));
+        state.advance().unwrap();
+        assert_eq!(state.answers[0].as_deref(), Some("Dashboard — tui"));
+
+        // And that round-trips back to selection + custom text.
+        assert!(state.back());
+        assert_eq!(state.selected_option, Some(0));
+        assert_eq!(state.editor.text(), "tui");
+    }
+
+    #[test]
+    fn plan_interview_blank_custom_answer_and_no_pick_stays_unanswered() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            "feat-1".into(),
+            vec![question],
+            None,
+        );
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        // Nothing picked, custom text blank: a required question blocks submit.
+        assert_eq!(state.advance(), Err(PlanInterviewAdvanceError::AnswerRequired));
+        assert_eq!(state.answers[0], None);
+
+        // Esc restores the buffer the editor opened with.
+        assert!(state.open_custom_answer_editor());
+        state.custom_answer_handle_key(key_char('x'));
+        state.cancel_custom_answer();
+        assert_eq!(state.editor.text(), "");
+        assert!(!state.custom_answer_focused);
+    }
+
+    #[test]
+    fn plan_interview_custom_answer_enforces_the_length_cap() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where?".into(),
+            kind: PlanQuestionKind::Select(vec!["A".into(), "B".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: true,
+        };
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            "feat-1".into(),
+            vec![question],
+            None,
+        );
+        state.editor = TextEditor::new("brief".into());
+        state.advance().unwrap();
+
+        assert!(state.open_custom_answer_editor());
+        state.editor = TextEditor::new("x".repeat(CUSTOM_ANSWER_MAX_LEN));
+        // One more character is rejected; the buffer is left at the cap.
+        state.custom_answer_handle_key(key_char('y'));
+        assert_eq!(state.editor.text().chars().count(), CUSTOM_ANSWER_MAX_LEN);
     }
 
     /// A record whose select answer names an option the question no longer
@@ -7308,10 +7629,11 @@ mod tests {
         assert!(state.resume_from_draft());
 
         assert_eq!(state.answers[0], None);
-        // The question is unanswered again, so the resume lands on it.
+        // The question is unanswered again, so the resume lands on it with
+        // nothing picked.
         assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
         assert_eq!(state.question_index, 0);
-        assert_eq!(state.selected_option, 0);
+        assert_eq!(state.selected_option, None);
     }
 
     /// A select answer the rewritten options still contain is pre-filled, and on
@@ -7327,7 +7649,7 @@ mod tests {
         assert_eq!(state.answers[0].as_deref(), Some("Session"));
         state.phase = PlanInterviewPhase::StaticQuestions;
         state.load_current_answer();
-        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.selected_option, Some(1));
         assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
     }
 
@@ -7376,6 +7698,7 @@ mod tests {
             brief: "Ship the interview.".into(),
             questions,
             answers,
+            custom_answers: Vec::new(),
             plan: None,
             ai_rounds_completed: 0,
             created_at: String::new(),

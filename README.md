@@ -158,6 +158,12 @@ review and edit the resulting plan, ask an agent to improve it, or cancel it.
 AMF does not save the plan or launch the feature until you accept it. Press `P`
 on an existing feature to run the interview again.
 
+Multiple-choice questions in the interview also take your own answer: press `e`
+to type into the "Your own answer" box under the options. You can answer with
+your own text alone or add it alongside a picked option; `Enter` in the box
+returns to the options without submitting, and `Enter` on the option list
+submits.
+
 ## Essential controls
 
 ### Dashboard

@@ -22093,7 +22093,10 @@ fn seed_ai_review_fixture_persists_and_opens_without_running_an_agent() {
             assert_eq!(state.pr.number, 55);
             assert_eq!(state.pr.head_sha, "fixture-sha");
             assert_eq!(state.findings[0].body, "A deterministic finding.");
-            assert_eq!(state.summary.as_deref(), Some("Deterministic completed review."));
+            assert_eq!(
+                state.summary.as_deref(),
+                Some("Deterministic completed review.")
+            );
         }
         _ => panic!("expected seeded AI Review pane"),
     }

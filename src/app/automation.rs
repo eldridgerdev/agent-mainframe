@@ -556,7 +556,11 @@ impl App {
         if request.summary.trim().is_empty() {
             bail!("summary is required")
         }
-        if request.findings.iter().any(|finding| finding.body.trim().is_empty()) {
+        if request
+            .findings
+            .iter()
+            .any(|finding| finding.body.trim().is_empty())
+        {
             bail!("every fixture finding needs a body")
         }
         let (workdir, owner, repo) = if request.open {
@@ -572,9 +576,15 @@ impl App {
                 .ok_or_else(|| anyhow::anyhow!("open fixtures require repository as owner/name"))?;
             let (owner, repo) = repository
                 .split_once('/')
-                .filter(|(owner, repo)| !owner.is_empty() && !repo.is_empty() && !repo.contains('/'))
+                .filter(|(owner, repo)| {
+                    !owner.is_empty() && !repo.is_empty() && !repo.contains('/')
+                })
                 .ok_or_else(|| anyhow::anyhow!("repository must be owner/name"))?;
-            (Some(workdir), Some(owner.to_string()), Some(repo.to_string()))
+            (
+                Some(workdir),
+                Some(owner.to_string()),
+                Some(repo.to_string()),
+            )
         } else {
             (None, None, None)
         };
@@ -610,7 +620,10 @@ impl App {
                 crate::github::PrRef {
                     number: request.pr_number,
                     head_sha: request.head_sha.clone(),
-                    url: format!("https://github.com/{owner}/{repo}/pull/{}", request.pr_number),
+                    url: format!(
+                        "https://github.com/{owner}/{repo}/pull/{}",
+                        request.pr_number
+                    ),
                     owner,
                     repo,
                     head_ref: request.head_ref.clone().unwrap_or_default(),

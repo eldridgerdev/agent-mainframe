@@ -15,6 +15,7 @@ ALLOWED_ACTOR="eldridgerdev"
 GEOMETRY="120x40"
 GIF=false
 STRICT=0
+SUMMARY=""
 
 usage() {
   cat <<EOF
@@ -28,6 +29,7 @@ from main; only its capture job checks out --ref. Failures warn by default.
   --ref <branch>         Pushed ref to capture (default: current branch)
   --pages-project <name> Pages project (default: CF_PAGES_PROJECT variable)
   --geometry <WxH>       Capture geometry (default: 120x40)
+  --summary <text>       One-sentence explanation shown in the gallery
   --gif                  Include an animated GIF
   --strict               Return nonzero on failure
 EOF
@@ -41,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --ref) REF="${2:-}"; shift 2 ;;
     --pages-project) PROJECT="${2:-}"; shift 2 ;;
     --geometry) GEOMETRY="${2:-}"; shift 2 ;;
+    --summary) SUMMARY="${2:-}"; shift 2 ;;
     --gif) GIF=true; shift ;;
     --strict) STRICT=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -58,6 +61,7 @@ ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
 [[ "$ACTOR" == "$ALLOWED_ACTOR" ]] || warn "authenticated gh user '$ACTOR' is not allowed to publish Pages previews"
 REF="${REF:-$(git branch --show-current)}"
 [[ -n "$REF" ]] || warn "detached HEAD; pass --ref with a pushed branch"
+SUMMARY="${SUMMARY:-Visual proof for $SCENARIO}"
 [[ -n "$PROJECT" ]] || PROJECT="$(gh variable get CF_PAGES_PROJECT --repo "$REPO" 2>/dev/null || true)"
 [[ "$PROJECT" =~ ^[a-z0-9-]+$ ]] || warn "set CF_PAGES_PROJECT or pass --pages-project"
 
@@ -68,7 +72,8 @@ request_id="$(date +%Y%m%d-%H%M%S)-$$"
 if ! gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$WORKFLOW_REF" \
   --raw-field "ref=$REF" --raw-field "scenario=$SCENARIO" \
   --raw-field "pr_number=$PR_NUMBER" --raw-field "geometry=$GEOMETRY" \
-  --raw-field "gif=$GIF" --raw-field "request_id=$request_id"; then
+  --raw-field "gif=$GIF" --raw-field "request_id=$request_id" \
+  --raw-field "summary=$SUMMARY"; then
   warn "could not dispatch the Pages workflow; ensure main is pushed and gh is authenticated"
 fi
 

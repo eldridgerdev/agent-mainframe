@@ -60,13 +60,14 @@ Match `--cols` and `--rows` to the capture geometry. Pass `--gif` to the driver 
 Search the escape-free `.txt` twins for the expected dialog titles, labels, entered text, and status messages. Do not read `.ansi` files into context. Then use the local image viewer on one or two representative PNGs to check layout, clipping, and color.
 
 When the branch and scenario are pushed and the user wants the proof attached to
-the PR, run the repository's agent-driven publisher:
+an **open** PR, run the repository's agent-driven publisher:
 
 ```bash
 scripts/dev/screenshot/publish-pages.sh \
   --pr <number> \
   --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
-  --ref <pushed-branch>
+  --ref <pushed-branch> \
+  --strict
 ```
 
 Add `--gif` only when the user asks for animation. The command dispatches the
@@ -75,13 +76,19 @@ private Cloudflare Pages workflow and replaces only the PR body section between
 Pages gallery is restricted by Cloudflare Access; raw ANSI/text captures remain
 in a 14-day internal artifact and screenshots are never committed to the branch.
 
-Capture, authentication, workflow, artifact, and PR-body failures emit an
-actionable `warning:` and return success by default so the surrounding PR work
-can continue. Pass `--strict` if a nonzero exit is required.
+Publication is a real external write and must be explicitly requested. The
+publisher accepts only the `eldridgerdev` GitHub identity; it rejects another
+`gh` login before dispatching. It serializes requests, and the
+`screenshot-pages` environment may wait for a required human approval before
+the deployment job can read its Cloudflare token. Never bypass that gate. If
+approval or publication does not finish, report the actionable warning and do
+not claim that the PR has visual proof.
 
 Return the publication result as the primary result:
 
 - Link the PR and private Cloudflare Pages gallery.
+- Say when a Pages approval is still pending; do not expose artifact URLs or
+  raw ANSI/text captures in the PR.
 - If no PR publication was requested, link every local PNG or GIF in story order and give each one a short caption describing what it proves.
 
 Do not claim the UI is proven when the text assertions or representative visual inspection fail. Fix the scenario or implementation and rerun the capture first.

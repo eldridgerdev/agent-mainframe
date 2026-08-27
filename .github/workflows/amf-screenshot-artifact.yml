@@ -1,0 +1,128 @@
+name: AMF screenshot artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Pushed branch or ref containing the scenario and code
+        required: true
+        type: string
+      scenario:
+        description: Repository-relative scenario file
+        required: true
+        type: string
+      pr_number:
+        description: Pull request receiving the artifact link
+        required: true
+        type: string
+      geometry:
+        description: Capture geometry, for example 120x40
+        required: false
+        default: 120x40
+        type: string
+      gif:
+        description: Also assemble an animated GIF
+        required: false
+        default: false
+        type: boolean
+      request_id:
+        description: Unique request identifier used by the invoking agent
+        required: true
+        type: string
+      seed:
+        description: Optional repository-relative project seed JSON
+        required: false
+        type: string
+      seed_feature:
+        description: Optional repository-relative feature seed JSON
+        required: false
+        type: string
+      config:
+        description: Optional repository-relative AMF config JSON
+        required: false
+        type: string
+
+run-name: AMF screenshot ${{ inputs.request_id }} (PR #${{ inputs.pr_number }})
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install capture dependencies
+        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu tmux
+
+      - name: Install Pillow
+        run: |
+          python3 -m venv "$RUNNER_TEMP/amf-screenshot-venv"
+          "$RUNNER_TEMP/amf-screenshot-venv/bin/pip" install --disable-pip-version-check Pillow
+          echo "$RUNNER_TEMP/amf-screenshot-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Build AMF
+        run: cargo build --locked
+
+      - name: Capture and prepare artifact
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          CAPTURE_REF: ${{ inputs.ref }}
+          GEOMETRY: ${{ inputs.geometry }}
+          GIF_REQUESTED: ${{ inputs.gif }}
+          SEED: ${{ inputs.seed }}
+          SEED_FEATURE: ${{ inputs.seed_feature }}
+          CONFIG_FILE: ${{ inputs.config }}
+          OUT_DIR: ${{ runner.temp }}/amf-screenshot-output
+        run: |
+          set -euo pipefail
+          [[ "$GEOMETRY" =~ ^[0-9]+x[0-9]+$ ]]
+          [[ -f "$SCENARIO" ]]
+          mkdir -p "$OUT_DIR"
+
+          args=(--amf-bin "$GITHUB_WORKSPACE/target/debug/amf"
+                --scenario "$SCENARIO" --out-dir "$OUT_DIR"
+                --geometry "$GEOMETRY")
+          [[ -n "$SEED" ]] && args+=(--seed "$SEED")
+          [[ -n "$SEED_FEATURE" ]] && args+=(--seed-feature "$SEED_FEATURE")
+          [[ -n "$CONFIG_FILE" ]] && args+=(--config "$CONFIG_FILE")
+          [[ "$GIF_REQUESTED" == "true" ]] && args+=(--gif)
+          scripts/dev/screenshot/amf-capture.sh "${args[@]}"
+
+          if [[ "$GIF_REQUESTED" != "true" ]]; then
+            cols="${GEOMETRY%x*}"
+            rows="${GEOMETRY#*x}"
+            shopt -s nullglob
+            ansi_files=("$OUT_DIR"/*.ansi)
+            shopt -u nullglob
+            for ansi in "${ansi_files[@]}"; do
+              python3 scripts/dev/screenshot/render_ansi.py "$ansi" \
+                --out "${ansi%.ansi}.png" --cols "$cols" --rows "$rows"
+            done
+          fi
+
+          python3 scripts/dev/screenshot/build_gallery.py \
+            --input-dir "$OUT_DIR" --out "$OUT_DIR/gallery.html" \
+            --repository "$GITHUB_REPOSITORY" --ref "$CAPTURE_REF" \
+            --sha "$GITHUB_SHA" --scenario "$SCENARIO" \
+            --geometry "$GEOMETRY" --pr-number "$PR_NUMBER" \
+            --run-id "$GITHUB_RUN_ID" \
+            --artifact-name "amf-screenshot-pr-${PR_NUMBER}-${GITHUB_RUN_ID}" \
+            --retention-days 14
+
+      - name: Upload screenshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: amf-screenshot-pr-${{ inputs.pr_number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/amf-screenshot-output
+          if-no-files-found: error
+          retention-days: 14

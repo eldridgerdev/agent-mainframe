@@ -129,36 +129,30 @@ Only after the text checks pass, Read **one or two representative
 PNGs** as images to confirm layout/colors look right — not every
 frame.
 
-## Step 5: publish an Artifact gallery (the deliverable)
+## Step 5: publish the GitHub Actions artifact to the PR
 
-Raw file paths are not the deliverable — most terminal environments
-don't render PNGs/GIFs inline for the user, so finish by publishing a
-small, self-contained HTML page with the shots embedded. Do this every
-time this skill runs, not just when asked.
+The repository's selected publication backend is a GitHub Actions artifact.
+The branch and any reusable scenario must be pushed before dispatching it, and
+`gh` must be authenticated with permission to run Actions, read artifacts, and
+edit the PR. Run:
 
-1. **Load the `artifact-design` skill** before writing the HTML (the
-   `Artifact` tool requires it). Treat this as a utilitarian proof
-   page, not a landing page: a short title naming the feature, one line
-   of context (branch, PR number, what was seeded — whatever grounds
-   the shots), then one `<figure>` per shot in story order, each with a
-   caption that says what's notable in that frame. No hero, no
-   flourish — a plain terminal-window chrome around each image (a
-   title-bar strip is enough) suits the subject better than decoration.
-2. **Base64-encode each PNG/GIF** (`python3 -c "import base64; ..."`),
-   writing the encoded string to a scratch `.b64` file — don't paste it
-   into the HTML through Edit/Write. A multi-shot gallery is tens to
-   hundreds of KB of base64; pushing that through the conversation
-   burns context for no benefit.
-3. **Write the HTML with placeholder tokens** (`IMG_1`, `IMG_2`, …) in
-   the `<img src="data:image/png;base64,IMG_1">` slots (or
-   `image/gif` for a `--gif` run), then substitute the real base64 in
-   directly on disk with a small Python `str.replace` script — the
-   encoded data itself never needs to pass through the model.
-4. **Publish with the `Artifact` tool** (`file_path` pointing at the
-   HTML, a `favicon` emoji fitting the feature, a one-line
-   `description`). If re-running this skill again for the *same*
-   feature/PR in the same conversation, reuse the same `file_path` so
-   republishing updates the existing URL instead of minting a new one.
-5. **Return the artifact URL as the primary deliverable.** Mention the
-   on-disk PNG/GIF paths too (useful if the user wants the raw files),
-   but the URL is what answers "show me."
+```bash
+scripts/dev/screenshot/publish-artifact.sh \
+  --pr <number> \
+  --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+  --ref <pushed-branch>
+```
+
+Add `--gif` only when the user asks for animation. The command runs the
+isolated harness on GitHub, downloads the resulting artifact locally, and
+replaces only the PR section delimited by
+`<!-- amf:screenshots:start -->`/`<!-- amf:screenshots:end -->`. The PR link
+opens the artifact page; after downloading it, `gallery.html` provides the
+self-contained visual gallery. The artifact contains PNG/GIF files, ANSI/text
+captures, and `capture-metadata.json`; no screenshot files are committed.
+
+The command prints an actionable `warning:` and exits successfully by default
+when capture, authentication, workflow, artifact, or PR-body update fails, so
+the surrounding PR workflow can continue. Use `--strict` when a nonzero exit
+is required. The Claude-specific `Artifact` tool may still be used for a
+secondary in-conversation preview, but it is not the PR publication mechanism.

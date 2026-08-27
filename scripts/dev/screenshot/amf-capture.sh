@@ -222,6 +222,10 @@ if [[ -z "$AMF_BIN" ]]; then
         echo "amf binary not found, building (cargo build -j 2)..." >&2
         (cd "$REPO_ROOT" && cargo build -j 2)
     fi
+elif [[ "$AMF_BIN" != /* ]]; then
+    # tmux starts the pane in the scratch root, so resolve the documented
+    # repository-relative override before handing it to new-session.
+    AMF_BIN="$REPO_ROOT/$AMF_BIN"
 fi
 if [[ ! -x "$AMF_BIN" ]]; then
     echo "error: amf binary not found or not executable: $AMF_BIN" >&2

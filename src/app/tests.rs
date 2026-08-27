@@ -10401,6 +10401,11 @@ fn session_status_sync_refreshes_all_context_harnesses_and_excludes_terminal() {
                 .get(),
             percentage
         );
+        let context_state = app.context_states.get(&session_id).unwrap();
+        assert!(
+            app.context_hint_states
+                .is_eligible(&session_id, Some(context_state))
+        );
     }
     assert!(!app.context_states.contains_key(&terminal_amf_id));
 }

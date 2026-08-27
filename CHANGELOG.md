@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **AMF now warns when the agent session you are viewing is nearing its
+  context limit.** At the warning or critical threshold, the agent sidebar
+  shows the current usage and offers `Ctrl+Space`, then `F` to open a new
+  session in the same feature with an editable continuation prompt. Press
+  `Ctrl+Space`, then `X` to dismiss the hint while the pressure remains;
+  it reappears after the session clears or resets. Estimated and stale
+  readings stay labeled, while unavailable or reset-pending readings do not
+  invent a percentage. No migration is required.
+
 - **Harness pickers now show how much rate-limit headroom you have left,
   right where you choose a harness.** When creating a feature (Harness
   step) or adding a session (`s`), a Claude or Codex option now shows a

@@ -3209,12 +3209,20 @@ pub struct TodoQuickCaptureState {
 /// session (`Ctrl+Space` then `Shift+F`, `crate::app::handoff`), so the
 /// seeded prompt is complete on arrival instead of asking the user to type
 /// over a placeholder in the new session's compose box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshContextPromptSource {
+    Manual,
+    ContextHint,
+}
+
 pub struct FreshContextPromptState {
     pub view: ViewState,
     /// Feature the fresh session will be created in, shown in the dialog.
     pub feature_name: String,
     /// The instruction being typed.
     pub input: String,
+    /// Whether the input came from the context-hint continuation generator.
+    pub source: FreshContextPromptSource,
 }
 
 /// Prompt shown when the feature that hosts a project's TODO list is deleted

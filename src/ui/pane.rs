@@ -655,8 +655,11 @@ fn draw_agent_sidebar(
         // A narrow sidebar cannot fit both border labels; ratatui overlays the
         // right-aligned hint onto "Active TODO". Show the affordance only when
         // there is room for both (see ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH).
-        if active_todo_hint_visible(sidebar_section.title, data.active_todo_affordance, area.width)
-        {
+        if active_todo_hint_visible(
+            sidebar_section.title,
+            data.active_todo_affordance,
+            area.width,
+        ) {
             block = block.title_top(
                 Line::from(Span::styled(
                     " <leader z complete> ",

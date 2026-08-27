@@ -971,10 +971,19 @@ pub fn split_choice_answer(
     options: &[String],
 ) -> (Vec<usize>, String) {
     let match_labels = |labels_part: &str| -> Vec<usize> {
-        if labels_part.trim().is_empty() {
+        let trimmed = labels_part.trim();
+        if trimmed.is_empty() {
             return Vec::new();
         }
-        labels_part
+        // An option label may itself contain `", "` (e.g. `"Yes, always"`).
+        // Match the whole string against the options first so such a label is
+        // recovered intact — this is what the pre-feature `o == answer` did —
+        // and only fall back to comma-splitting when the whole string is not
+        // itself an option.
+        if let Some(index) = options.iter().position(|option| option == trimmed) {
+            return vec![index];
+        }
+        trimmed
             .split(", ")
             .filter_map(|label| {
                 let label = label.trim();
@@ -1725,6 +1734,29 @@ mod tests {
         assert_eq!(
             split_choice_answer(&combined, Some("one\ntwo"), &options),
             (vec![0], "one\ntwo".to_string())
+        );
+    }
+
+    #[test]
+    fn split_choice_answer_recovers_an_option_label_that_contains_a_comma() {
+        let options = vec![
+            "Yes, always".to_string(),
+            "No".to_string(),
+            "Ask each time".to_string(),
+        ];
+
+        // Legacy / selection-only row: the whole stored string is the label,
+        // so splitting it on ", " must not fragment it into non-matches.
+        assert_eq!(
+            split_choice_answer("Yes, always", None, &options),
+            (vec![0], String::new())
+        );
+
+        // Same label carried alongside a separately stored custom text.
+        let combined = serialize_choice_answer(&["Yes, always"], "with caveats").unwrap();
+        assert_eq!(
+            split_choice_answer(&combined, Some("with caveats"), &options),
+            (vec![0], "with caveats".to_string())
         );
     }
 

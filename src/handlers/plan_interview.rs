@@ -210,6 +210,17 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.message = None;
             }
         }
+        // Back to "nothing picked" — the arrows only move between real options,
+        // so without this a stray j/k/arrow commits a pick that cannot be
+        // undone within the question. Nothing picked is a valid answer (custom
+        // text alone).
+        KeyCode::Backspace | KeyCode::Delete if is_select && key.modifiers.is_empty() => {
+            if let AppMode::PlanInterview(state) = &mut app.mode
+                && state.clear_option_selection()
+            {
+                app.message = None;
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') if is_select => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 state.select_previous_option();

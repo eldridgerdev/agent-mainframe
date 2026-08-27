@@ -292,9 +292,12 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
         ];
         if state.current_question_is_choice() {
             // `e` opens the always-present custom-answer box; `Enter` on the
-            // option list still submits the whole question.
+            // option list still submits the whole question. `Backspace` clears
+            // a pick so the answer can be custom text alone.
             spans.push(hint("e", theme));
             spans.push(Span::raw(" edit custom answer  "));
+            spans.push(hint("Backspace", theme));
+            spans.push(Span::raw(" clear pick  "));
         }
         spans.extend([
             hint("Ctrl+B", theme),

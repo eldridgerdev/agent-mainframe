@@ -6600,6 +6600,19 @@ impl PlanInterviewState {
         });
     }
 
+    /// Return a choice question to the "nothing picked" state. Because the arrow
+    /// keys only ever move between real options, this is the sole way back once
+    /// a pick has been made — and "nothing picked" is a real answer: it is how a
+    /// user submits with custom text alone. Returns `false` when the current
+    /// question is not a choice or nothing was picked.
+    pub fn clear_option_selection(&mut self) -> bool {
+        if self.current_option_count() == 0 || self.selected_option.is_none() {
+            return false;
+        }
+        self.selected_option = None;
+        true
+    }
+
     /// Save the current input and move to the next interview step.
     pub fn advance(&mut self) -> Result<(), PlanInterviewAdvanceError> {
         match self.phase {
@@ -7455,6 +7468,32 @@ mod tests {
         assert_eq!(state.selected_option, Some(1));
         state.select_next_option();
         assert_eq!(state.selected_option, Some(0));
+    }
+
+    #[test]
+    fn plan_interview_clear_option_selection_returns_to_nothing_picked() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        // No-op with nothing picked.
+        assert!(!state.clear_option_selection());
+
+        state.select_next_option();
+        assert_eq!(state.selected_option, Some(0));
+
+        // A stray pick can be undone in place.
+        assert!(state.clear_option_selection());
+        assert_eq!(state.selected_option, None);
+        assert!(!state.clear_option_selection());
     }
 
     #[test]

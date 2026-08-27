@@ -109,6 +109,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("Alt+Enter", "Insert a newline (free-text answers)"),
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
         (
+            "Backspace",
+            "Clear the picked option (back to nothing picked; lets you answer with custom text alone)",
+        ),
+        (
             "e",
             "Type your own answer to a select question (submitted with any picked option; Enter still submits)",
         ),

@@ -2329,6 +2329,12 @@ pub struct AiReviewState {
     /// pass as `findings`, and loaded from the same cache row. Older cache
     /// entries may not have one.
     pub summary: Option<String>,
+    /// Harness/model/token/cost provenance of the run that produced
+    /// `findings`, loaded from the same cache row and refreshed by each `A`
+    /// pass. `None` before the first run this SHA, for a legacy cache row, or
+    /// when the latest run errored. Surfaced in the pane and attached to the
+    /// posted GitHub review.
+    pub attribution: Option<crate::app::ai_review::AiReviewAttribution>,
     /// Index into `findings` of the highlighted finding.
     pub selected: usize,
     /// Scroll offset (in lines) for the detail pane of the selected finding.

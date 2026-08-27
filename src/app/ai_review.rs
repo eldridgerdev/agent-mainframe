@@ -47,27 +47,171 @@ const AI_FINDING_HEADING_PREFIX: &str = "### ";
 /// lines this finding is about."
 const AI_FINDING_HUNK_CONTEXT_LINES: usize = 6;
 
-/// Attribution for an AI review finding posted as an inline GitHub comment.
-fn append_ai_review_attribution(body: &str) -> String {
-    format!(
-        "{}\n\n{}",
-        body.trim_end(),
-        super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
-    )
+/// Provenance for one AI Review pass: which harness and model produced it, and
+/// the run's token usage and estimated cost. Captured from the headless run
+/// ([`run_ai_pr_review`]), persisted with the findings ([`AiReviewCacheEntry`]),
+/// and surfaced everywhere the review appears — the in-app pane and the posted
+/// GitHub comment — so a review carries one consistent attribution instead of
+/// the bare "— AI review via AMF" marker.
+///
+/// Every field past the harness is best-effort: a harness that reports no
+/// usage degrades to model-only attribution rather than showing a fabricated
+/// `$0.00`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiReviewAttribution {
+    /// Display name of the harness that ran the review. Always set for a run
+    /// AMF dispatched; `None` only for a legacy cache row written before
+    /// attribution existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Model the run used; `None` means the harness's default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    /// Preformatted USD cost (`token_tracking::format_token_cost`, so the same
+    /// configured rates and rounding as AMF's usage meters), or `None` when
+    /// the harness reported no usage to price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost: Option<String>,
 }
 
-/// Guarantee the footer survives into the posted body even though the
+impl AiReviewAttribution {
+    /// Build from a completed run. `usage` is the harness's last reported
+    /// `(input, output)` token counts, absent when it reported none.
+    pub fn from_run(
+        harness: &AgentKind,
+        model: Option<&str>,
+        usage: Option<(u64, u64)>,
+        pricing: &crate::token_tracking::TokenPricingConfig,
+    ) -> Self {
+        let estimated_cost = usage.map(|(input_tokens, output_tokens)| {
+            crate::token_tracking::format_token_cost(
+                &session_usage_from_counts(input_tokens, output_tokens),
+                pricing,
+            )
+        });
+        Self {
+            harness: Some(harness.display_name().to_string()),
+            model: model.map(str::to_string),
+            input_tokens: usage.map(|(input, _)| input),
+            output_tokens: usage.map(|(_, output)| output),
+            estimated_cost,
+        }
+    }
+
+    /// Whether any token usage was reported for this run.
+    pub fn has_usage(&self) -> bool {
+        self.input_tokens.is_some() || self.output_tokens.is_some()
+    }
+
+    fn model_label(&self) -> &str {
+        self.model.as_deref().unwrap_or("harness default")
+    }
+
+    /// `harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.08`,
+    /// dropping the token clause when usage is unknown and the cost clause when
+    /// it could not be priced. Plain text — used by the in-app pane and, inside
+    /// [`Self::disclosure_line`], the posted comment.
+    pub fn plain_label(&self) -> String {
+        let mut parts = vec![
+            format!(
+                "harness {}",
+                self.harness.as_deref().unwrap_or("unreported")
+            ),
+            format!("model {}", self.model_label()),
+        ];
+        if let (Some(input), Some(output)) = (self.input_tokens, self.output_tokens) {
+            parts.push(format!(
+                "~{} in / ~{} out",
+                crate::token_tracking::format_token_count(input),
+                crate::token_tracking::format_token_count(output)
+            ));
+        }
+        if let Some(cost) = &self.estimated_cost {
+            parts.push(format!("est. {cost}"));
+        }
+        parts.join(" · ")
+    }
+
+    /// GitHub-flavored Markdown disclosure line inserted just above the stable
+    /// [`AI_REVIEW_ATTRIBUTION_FOOTER`] in a posted review, mirroring the
+    /// reply-flow disclosure ([`super::pr_review::ReplyGenerationMetadata::disclosure`]).
+    pub fn disclosure_line(&self) -> String {
+        format!("_AI review · {}_", self.plain_label())
+    }
+}
+
+fn session_usage_from_counts(
+    input_tokens: u64,
+    output_tokens: u64,
+) -> crate::token_tracking::SessionTokenUsage {
+    crate::token_tracking::SessionTokenUsage {
+        // Only the token counts feed `format_token_cost`; the source label is
+        // never read for pricing.
+        source: crate::token_tracking::TokenUsageSource {
+            provider: crate::token_tracking::TokenUsageProvider::Claude,
+            id: "ai-review".to_string(),
+        },
+        input_tokens,
+        output_tokens,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: input_tokens.saturating_add(output_tokens),
+    }
+}
+
+/// Attribution for an AI review finding or summary posted to GitHub: the
+/// stable `— AI review via AMF` marker, preceded by a
+/// [`AiReviewAttribution::disclosure_line`] (model, tokens, estimated cost)
+/// when a run's provenance is available. Legacy callers with no attribution
+/// still get the bare marker.
+fn append_ai_review_attribution(body: &str, attribution: Option<&AiReviewAttribution>) -> String {
+    match attribution {
+        Some(attribution) => format!(
+            "{}\n\n{}\n\n{}",
+            body.trim_end(),
+            attribution.disclosure_line(),
+            super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
+        ),
+        None => format!(
+            "{}\n\n{}",
+            body.trim_end(),
+            super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
+        ),
+    }
+}
+
+/// Guarantee the attribution survives into the posted body even though the
 /// confirm dialog's summary editor is free-form text the user can edit —
-/// including deleting the footer [`build_ai_review`] seeded it with. Called
-/// right before [`GhCli::create_review`] rather than trusted from dialog
-/// build time, so an edited-out footer is restored instead of silently
-/// publishing an unattributed review.
-fn ensure_ai_review_attribution(body: &str) -> String {
+/// including deleting the disclosure line and footer [`build_ai_review`]
+/// seeded it with. Called right before [`GhCli::create_review`] rather than
+/// trusted from dialog build time, so an edited-out attribution is restored
+/// instead of silently publishing an unattributed review. Any existing
+/// trailing marker (and a recognized disclosure line above it) is stripped
+/// first so the attribution is never doubled.
+fn ensure_ai_review_attribution(body: &str, attribution: Option<&AiReviewAttribution>) -> String {
+    append_ai_review_attribution(strip_ai_review_attribution(body), attribution)
+}
+
+/// Remove a trailing [`AI_REVIEW_ATTRIBUTION_FOOTER`] and, if present directly
+/// above it, a disclosure line matching `attribution` — leaving the editable
+/// core body.
+fn strip_ai_review_attribution(body: &str) -> &str {
+    let footer = super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
     let trimmed = body.trim_end();
-    if trimmed.ends_with(super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER) {
-        trimmed.to_string()
-    } else {
-        append_ai_review_attribution(trimmed)
+    let core = trimmed.strip_suffix(footer).map_or(trimmed, str::trim_end);
+    // Drop a trailing italic `_AI review · …_` disclosure line, whatever its
+    // (model/token/cost) contents, so a re-priced run doesn't stack lines.
+    match core.rsplit_once('\n') {
+        Some((head, last)) if last.trim_start().starts_with("_AI review · ") => head.trim_end(),
+        _ if core.trim_start().starts_with("_AI review · ") && core.trim_end().ends_with('_') => {
+            ""
+        }
+        _ => core,
     }
 }
 
@@ -142,6 +286,10 @@ pub struct AiReviewOutcome {
     /// for legacy cache entries created before summary validation.
     pub summary: Option<String>,
     pub raw_output: String,
+    /// Which harness/model produced this pass, and what it cost. Filled in by
+    /// [`run_ai_pr_review`] after the run; [`process_ai_review_output`] leaves
+    /// it at its default since it only sees the response text.
+    pub attribution: AiReviewAttribution,
 }
 
 /// Record of the most recent `A` run, persisted alongside the findings in
@@ -206,6 +354,11 @@ pub struct AiReviewCacheEntry {
     /// keeps cache rows written before this field was introduced readable.
     #[serde(default)]
     pub summary: Option<String>,
+    /// Harness/model/token/cost provenance of the run that produced
+    /// `findings`. `None` for cache rows written before attribution existed,
+    /// or for a run whose latest outcome was an error.
+    #[serde(default)]
+    pub attribution: Option<AiReviewAttribution>,
 }
 
 impl AiReviewCacheEntry {
@@ -513,9 +666,13 @@ fn diff_hunk_for_location(
 /// silently dropped. Inline comments carry their own attribution footer since
 /// they can surface on their own (e.g. the Files-changed view) without the
 /// review summary in sight; the summary already self-identifies.
+///
+/// `attribution`, when present, adds the model/token/cost disclosure line
+/// above the stable marker on both the summary and every inline comment.
 fn build_ai_review(
     findings: &[&AiReviewFinding],
     generated_summary: Option<&str>,
+    attribution: Option<&AiReviewAttribution>,
 ) -> (String, Vec<GhPrReviewComment>) {
     let mut inline = Vec::new();
     let mut general = Vec::new();
@@ -536,7 +693,7 @@ fn build_ai_review(
                     },
                     start_line: None,
                     start_side: None,
-                    body: append_ai_review_attribution(&f.body),
+                    body: append_ai_review_attribution(&f.body, attribution),
                 })
             }
             (Some(path), _, _) => general.push(format!("- **{path}**: {}", f.body)),
@@ -553,7 +710,7 @@ fn build_ai_review(
         body.push_str(&general.join("\n"));
     }
     if generated_summary.is_some() {
-        body = append_ai_review_attribution(&body);
+        body = append_ai_review_attribution(&body, attribution);
     }
     (body, inline)
 }
@@ -631,6 +788,7 @@ fn process_ai_review_output(output: String, diff: &str) -> Result<AiReviewOutcom
         findings,
         summary,
         raw_output: output,
+        attribution: AiReviewAttribution::default(),
     })
 }
 
@@ -641,6 +799,7 @@ fn process_ai_review_output(output: String, diff: &str) -> Result<AiReviewOutcom
 /// `model`, when set (`AppConfig::review_model_for(ReviewAction::PrReview)`),
 /// picks the review's model independent of whichever model the feature's
 /// interactive session runs.
+#[allow(clippy::too_many_arguments)]
 fn run_ai_pr_review(
     harness: AgentKind,
     workdir: PathBuf,
@@ -648,6 +807,7 @@ fn run_ai_pr_review(
     memory: String,
     skill: Option<String>,
     model: Option<String>,
+    pricing: crate::token_tracking::TokenPricingConfig,
     tx: std::sync::mpsc::Sender<AiReviewProgress>,
 ) {
     let prompt = ai_review_prompt(&diff, &memory, skill.as_deref());
@@ -655,6 +815,13 @@ fn run_ai_pr_review(
         token_estimate: super::pr_review::estimate_tokens(&prompt),
     });
 
+    // The harness reports usage as one or more `Usage` events during the run;
+    // the last one is the run total. Recorded here as well as forwarded so the
+    // completed `AiReviewOutcome` carries the model/token/cost attribution,
+    // not just the transient running screen.
+    let last_usage: std::sync::Arc<std::sync::Mutex<Option<(u64, u64)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let usage_sink = std::sync::Arc::clone(&last_usage);
     let progress_tx = tx.clone();
     let result = HeadlessRunner::run_with_progress(
         &harness,
@@ -669,15 +836,26 @@ fn run_ai_pr_review(
                 crate::headless::HeadlessProgress::Usage {
                     input_tokens,
                     output_tokens,
-                } => AiReviewProgress::Usage {
-                    input_tokens,
-                    output_tokens,
-                },
+                } => {
+                    if let Ok(mut slot) = usage_sink.lock() {
+                        *slot = Some((input_tokens, output_tokens));
+                    }
+                    AiReviewProgress::Usage {
+                        input_tokens,
+                        output_tokens,
+                    }
+                }
             };
             let _ = progress_tx.send(progress);
         },
     )
-    .and_then(|output| process_ai_review_output(output, &diff));
+    .and_then(|output| process_ai_review_output(output, &diff))
+    .map(|mut outcome| {
+        let usage = last_usage.lock().ok().and_then(|slot| *slot);
+        outcome.attribution =
+            AiReviewAttribution::from_run(&harness, model.as_deref(), usage, &pricing);
+        outcome
+    });
     let _ = tx.send(AiReviewProgress::Done(result));
 }
 
@@ -744,15 +922,21 @@ impl App {
                 .ok()
                 .flatten()
         });
-        let (findings, summary, last_run) = match cached {
-            Some(entry) => (entry.findings, entry.summary, entry.last_run),
-            None => (Vec::new(), None, None),
+        let (findings, summary, last_run, attribution) = match cached {
+            Some(entry) => (
+                entry.findings,
+                entry.summary,
+                entry.last_run,
+                entry.attribution,
+            ),
+            None => (Vec::new(), None, None, None),
         };
         self.mode = AppMode::AiReview(AiReviewState {
             workdir,
             pr,
             findings,
             summary,
+            attribution,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
@@ -869,6 +1053,7 @@ impl App {
             findings: state.findings.clone(),
             last_run: state.last_run.clone(),
             summary: state.summary.clone(),
+            attribution: state.attribution.clone(),
         };
         let saved = match self.db.as_ref() {
             Some(db) => {
@@ -1193,13 +1378,23 @@ impl App {
             &std::fs::read_to_string(&memory_paths.global).unwrap_or_default(),
         );
         let skill = self.config.ai_review_skill.clone();
+        let pricing = self.config.token_pricing.clone();
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.ai_review_bg = Some(rx);
         self.ai_review_pending = Some(origin.clone());
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || match GhCli::pr_diff(&thread_workdir, number) {
-            Ok(diff) => run_ai_pr_review(harness, thread_workdir, diff, memory, skill, model, tx),
+            Ok(diff) => run_ai_pr_review(
+                harness,
+                thread_workdir,
+                diff,
+                memory,
+                skill,
+                model,
+                pricing,
+                tx,
+            ),
             Err(e) => {
                 let _ = tx.send(AiReviewProgress::Done(Err(e)));
             }
@@ -1579,6 +1774,7 @@ impl App {
                             // PR Triage, not here.
                             base.findings = outcome.findings;
                             base.summary = outcome.summary;
+                            base.attribution = Some(outcome.attribution);
                             base.selected = 0;
                             base.detail_scroll = 0;
                             base.last_run = Some(AiReviewRun {
@@ -1714,8 +1910,12 @@ impl App {
     /// Open the post-to-GitHub confirm dialog (`W`) for every kept
     /// (not-skipped, not-already-published) finding.
     pub fn ai_review_open_post_confirm(&mut self) {
-        let (findings, generated_summary): (Vec<AiReviewFinding>, Option<String>) = match &self.mode
-        {
+        #[allow(clippy::type_complexity)]
+        let (findings, generated_summary, attribution): (
+            Vec<AiReviewFinding>,
+            Option<String>,
+            Option<AiReviewAttribution>,
+        ) = match &self.mode {
             AppMode::AiReview(state) if state.post_confirm.is_none() => {
                 let findings: Vec<AiReviewFinding> = state
                     .findings
@@ -1736,7 +1936,7 @@ impl App {
                 } else {
                     state.summary.clone()
                 };
-                (findings, generated_summary)
+                (findings, generated_summary, state.attribution.clone())
             }
             _ => return,
         };
@@ -1745,7 +1945,8 @@ impl App {
             return;
         }
         let refs: Vec<&AiReviewFinding> = findings.iter().collect();
-        let (summary, inline) = build_ai_review(&refs, generated_summary.as_deref());
+        let (summary, inline) =
+            build_ai_review(&refs, generated_summary.as_deref(), attribution.as_ref());
 
         if let AppMode::AiReview(state) = &mut self.mode {
             state.post_confirm = Some(AiReviewPostConfirmState {
@@ -1813,7 +2014,10 @@ impl App {
                     state.workdir.clone(),
                     state.pr.clone(),
                     post.inline.clone(),
-                    ensure_ai_review_attribution(post.editor.text().trim()),
+                    ensure_ai_review_attribution(
+                        post.editor.text().trim(),
+                        state.attribution.as_ref(),
+                    ),
                     state
                         .findings
                         .iter()
@@ -2356,7 +2560,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         )
         .unwrap();
         let refs: Vec<&AiReviewFinding> = outcome.findings.iter().collect();
-        let (_, inline) = build_ai_review(&refs, outcome.summary.as_deref());
+        let (_, inline) = build_ai_review(&refs, outcome.summary.as_deref(), None);
 
         assert_eq!(inline.len(), 2);
         assert_eq!((inline[0].side, inline[0].line), ("LEFT", 19));
@@ -2428,6 +2632,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let (summary, inline) = build_ai_review(
             &[&anchored, &general],
             Some("The patch has an anchored and a broad risk."),
+            None,
         );
         assert_eq!(inline.len(), 1);
         assert_eq!(inline[0].path, "src/lib.rs");
@@ -2445,7 +2650,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             "fix this",
             Some("@@ -1 +1 @@"),
         );
-        let (summary, inline) = build_ai_review(&[&anchored], None);
+        let (summary, inline) = build_ai_review(&[&anchored], None, None);
         assert_eq!(inline.len(), 1);
         assert_eq!(summary, "AI review, via AMF.");
     }
@@ -2456,7 +2661,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         // time — GitHub would reject the whole review if this were posted
         // inline, so it must fold into the summary instead.
         let unmatched = finding(Some("src/lib.rs"), Some(999), "miscounted line", None);
-        let (summary, inline) = build_ai_review(&[&unmatched], None);
+        let (summary, inline) = build_ai_review(&[&unmatched], None, None);
         assert!(inline.is_empty());
         assert!(summary.contains("miscounted line"));
     }
@@ -2475,6 +2680,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
                 outcome: AiReviewRunOutcome::Findings(3),
             }),
             summary: Some("One finding remains.".to_string()),
+            attribution: None,
         };
 
         assert_eq!(entry.publishable_finding_count(), 1);
@@ -2487,22 +2693,73 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
 
     #[test]
     fn append_ai_review_attribution_appends_footer_and_trims_trailing_whitespace() {
-        let body = append_ai_review_attribution("finding text  \n\n");
+        let body = append_ai_review_attribution("finding text  \n\n", None);
         assert_eq!(body, "finding text\n\n— AI review via AMF");
     }
 
+    fn sample_attribution() -> AiReviewAttribution {
+        AiReviewAttribution {
+            harness: Some("claude".to_string()),
+            model: Some("sonnet".to_string()),
+            input_tokens: Some(12_300),
+            output_tokens: Some(4_500),
+            estimated_cost: Some("$0.10".to_string()),
+        }
+    }
+
     #[test]
-    fn ensure_ai_review_attribution_restores_a_footer_the_user_deleted() {
+    fn append_ai_review_attribution_inserts_disclosure_line_above_the_marker() {
+        let attribution = sample_attribution();
+        let body = append_ai_review_attribution("finding text", Some(&attribution));
+        assert_eq!(
+            body,
+            "finding text\n\n_AI review · harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.10_\n\n— AI review via AMF"
+        );
+    }
+
+    #[test]
+    fn attribution_disclosure_degrades_when_usage_and_cost_are_missing() {
+        let attribution = AiReviewAttribution {
+            harness: Some("codex".to_string()),
+            model: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost: None,
+        };
+        assert_eq!(
+            attribution.disclosure_line(),
+            "_AI review · harness codex · model harness default_"
+        );
+        assert!(!attribution.has_usage());
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_restores_a_marker_the_user_deleted() {
         // The summary body is editable right up to `W`; a user who trims the
-        // seeded footer while editing must still get an attributed post.
-        let body = ensure_ai_review_attribution("Fixed the summary text.");
+        // seeded attribution while editing must still get an attributed post.
+        let body = ensure_ai_review_attribution("Fixed the summary text.", None);
         assert_eq!(body, "Fixed the summary text.\n\n— AI review via AMF");
     }
 
     #[test]
-    fn ensure_ai_review_attribution_does_not_duplicate_an_existing_footer() {
-        let body = ensure_ai_review_attribution("Summary.\n\n— AI review via AMF");
+    fn ensure_ai_review_attribution_does_not_duplicate_an_existing_marker() {
+        let body = ensure_ai_review_attribution("Summary.\n\n— AI review via AMF", None);
         assert_eq!(body, "Summary.\n\n— AI review via AMF");
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_replaces_a_stale_disclosure_line() {
+        // A re-priced run must not stack a second `_AI review · …_` line on
+        // top of the one the dialog was seeded with.
+        let attribution = sample_attribution();
+        let seeded = append_ai_review_attribution("Summary.", Some(&attribution));
+        let repriced = AiReviewAttribution {
+            estimated_cost: Some("$0.20".to_string()),
+            ..sample_attribution()
+        };
+        let body = ensure_ai_review_attribution(&seeded, Some(&repriced));
+        assert_eq!(body.matches("_AI review · ").count(), 1);
+        assert!(body.ends_with("est. $0.20_\n\n— AI review via AMF"));
     }
 
     #[test]
@@ -2521,7 +2778,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             outdated: false,
             file_level: false,
             diff_hunk: None,
-            body: append_ai_review_attribution("fix this"),
+            body: append_ai_review_attribution("fix this", None),
             snippet: String::new(),
             in_reply_to: Some(2),
             thread_id: None,

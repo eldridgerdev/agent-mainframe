@@ -14091,6 +14091,7 @@ fn sample_ai_review_state(
         pr,
         findings: Vec::new(),
         summary: None,
+        attribution: None,
         selected: 0,
         detail_scroll: 0,
         detail_content_lines: 0,
@@ -21609,6 +21610,7 @@ fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
             findings: vec![],
             summary: Some("No actionable issues found.".to_string()),
             raw_output: String::new(),
+            attribution: crate::app::ai_review::AiReviewAttribution::default(),
         },
     )))
     .unwrap();
@@ -21663,6 +21665,7 @@ fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
             ],
             summary: Some("Two correctness risks need attention.".to_string()),
             raw_output: "review output".to_string(),
+            attribution: crate::app::ai_review::AiReviewAttribution::default(),
         },
     )))
     .unwrap();
@@ -21697,6 +21700,70 @@ fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
 }
 
 #[test]
+fn completed_ai_review_carries_run_attribution_into_the_pane_and_cache() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    app.open_ai_review_from_triage();
+    let origin = match &app.mode {
+        AppMode::AiReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let pr = origin.pr.clone();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        progress: crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
+        },
+    });
+    let attribution = crate::app::ai_review::AiReviewAttribution {
+        harness: Some("claude".to_string()),
+        model: Some("sonnet".to_string()),
+        input_tokens: Some(9_000),
+        output_tokens: Some(1_200),
+        estimated_cost: Some("$0.05".to_string()),
+    };
+    tx.send(crate::app::ai_review::AiReviewProgress::Done(Ok(
+        crate::app::ai_review::AiReviewOutcome {
+            findings: vec![sample_ai_review_finding("first")],
+            summary: Some("One risk.".to_string()),
+            raw_output: "review output".to_string(),
+            attribution: attribution.clone(),
+        },
+    )))
+    .unwrap();
+
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.attribution.as_ref(), Some(&attribution));
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_ai_review_cache(pr.number, &pr.head_sha)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cached.attribution.as_ref(), Some(&attribution));
+}
+
+#[test]
 fn completed_zero_ai_review_updates_visible_triage_immediately() {
     let store = store_with_feature(ProjectStatus::Active);
     let mut app = App::new_for_test(
@@ -21719,6 +21786,7 @@ fn completed_zero_ai_review_updates_visible_triage_immediately() {
             findings: vec![],
             summary: Some("No actionable issues found.".to_string()),
             raw_output: "## Summary\nNo actionable issues found.".to_string(),
+            attribution: crate::app::ai_review::AiReviewAttribution::default(),
         },
     )))
     .unwrap();
@@ -21860,6 +21928,7 @@ fn escape_keeps_ai_review_running_through_triage_return_and_completion() {
             findings: vec![],
             summary: Some("No actionable issues found.".to_string()),
             raw_output: "## Summary\nNo actionable issues found.".to_string(),
+            attribution: crate::app::ai_review::AiReviewAttribution::default(),
         },
     )))
     .unwrap();
@@ -22038,6 +22107,7 @@ fn open_ai_review_for_pr_reopens_cached_findings_and_summary() {
                     outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(1),
                 }),
                 summary: Some("Cached review summary.".to_string()),
+                attribution: None,
             },
         )
         .unwrap();
@@ -22086,6 +22156,7 @@ fn pr_triage_zero_result_survives_reopen_and_restart_but_not_new_head() {
                 findings: vec![],
                 last_run: Some(zero_run.clone()),
                 summary: None,
+                attribution: None,
             },
         )
         .unwrap();
@@ -22206,6 +22277,62 @@ fn ai_review_post_dialog_is_seeded_with_generated_summary_and_attribution() {
             assert!(body.starts_with("The patch has one correctness risk."));
             assert!(body.contains("A general finding"));
             assert!(body.ends_with("— AI review via AMF"));
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
+fn ai_review_post_dialog_seeds_the_model_token_cost_disclosure_when_a_run_recorded_it() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        let mut anchored = sample_ai_review_finding("An anchored finding");
+        anchored.path = Some("src/lib.rs".to_string());
+        anchored.line = Some(10);
+        anchored.side = Some(crate::diff::DiffSide::New);
+        anchored.diff_hunk = Some("@@ -1 +1 @@".to_string());
+        state.findings = vec![anchored];
+        state.summary = Some("One risk.".to_string());
+        state.last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(1),
+        });
+        state.attribution = Some(crate::app::ai_review::AiReviewAttribution {
+            harness: Some("claude".to_string()),
+            model: Some("sonnet".to_string()),
+            input_tokens: Some(12_300),
+            output_tokens: Some(4_500),
+            estimated_cost: Some("$0.10".to_string()),
+        });
+    }
+
+    app.ai_review_open_post_confirm();
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            let post = state.post_confirm.as_ref().unwrap();
+            let body = post.editor.text();
+            assert!(
+                body.contains(
+                    "_AI review · harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.10_"
+                ),
+                "summary should carry the disclosure line: {body}"
+            );
+            assert!(body.ends_with("— AI review via AMF"));
+            // The same disclosure rides along on every inline comment body.
+            assert!(
+                post.inline[0]
+                    .body
+                    .contains("_AI review · harness claude · model sonnet"),
+                "inline comment should carry the disclosure: {}",
+                post.inline[0].body
+            );
         }
         _ => panic!("expected AI Review pane"),
     }

@@ -67,6 +67,7 @@ mod tests {
 
     fn entry(body: &str) -> AiReviewCacheEntry {
         AiReviewCacheEntry {
+            attribution: None,
             findings: vec![AiReviewFinding {
                 path: Some("src/lib.rs".into()),
                 line: Some(42),
@@ -135,6 +136,27 @@ mod tests {
         });
         let entry: AiReviewCacheEntry = serde_json::from_value(legacy).unwrap();
         assert!(entry.summary.is_none());
+        assert!(entry.attribution.is_none());
+    }
+
+    #[test]
+    fn attribution_roundtrips_through_the_cache_json() {
+        let (_tmp, db) = open_temp_db();
+        let mut e = entry("guard this");
+        e.attribution = Some(crate::app::ai_review::AiReviewAttribution {
+            harness: Some("claude".into()),
+            model: Some("sonnet".into()),
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            estimated_cost: Some("$0.01".into()),
+        });
+        db.save_ai_review_cache(9, "sha", &e).unwrap();
+
+        let loaded = db.load_ai_review_cache(9, "sha").unwrap().unwrap();
+        let attribution = loaded.attribution.unwrap();
+        assert_eq!(attribution.model.as_deref(), Some("sonnet"));
+        assert_eq!(attribution.input_tokens, Some(1_000));
+        assert_eq!(attribution.estimated_cost.as_deref(), Some("$0.01"));
     }
 
     #[test]

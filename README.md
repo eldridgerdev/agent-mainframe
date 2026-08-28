@@ -314,7 +314,12 @@ When `f` or `B` targets a dedicated session, AMF lets you name it so multiple
 PR Triage agents can run simultaneously; leave the name blank to reuse the
 default `PR Triage` session.
 An unchanged AI-drafted reply discloses the harness, best-effort model,
-estimated tokens, and estimated cost of the session that wrote it.
+estimated tokens, and estimated cost of the session that wrote it. AMF's own
+AI review (`W`) carries the same attribution: once a run finishes, the pane
+shows which harness and model produced it and the run's token usage and
+estimated cost, and that line is included above the `— AI review via AMF`
+marker on the posted summary and every inline comment. A harness that reports
+no usage degrades to model-only attribution rather than showing a fake `$0.00`.
 
 To seed review memory from earlier reviews, open the PR picker and press `b`.
 If `G` opened the feature's pull request directly, press `g` from PR Triage to

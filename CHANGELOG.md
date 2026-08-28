@@ -10,6 +10,21 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **AMF's own AI review (`W`) now carries model, token, and cost
+  attribution.** After a run completes, the AI Review pane shows a line
+  naming the harness and model that produced the findings plus the run's
+  input/output tokens and estimated cost. The same disclosure is inserted
+  above the `— AI review via AMF` marker on the posted GitHub summary and on
+  every inline comment, so a reader on the PR can tell which model reviewed
+  their code and roughly what it cost. It uses the same configured pricing
+  and rounding as AMF's other usage meters, and matches the disclosure
+  already shown on AI-drafted PR Triage replies. A harness that reports no
+  token usage degrades to model-only attribution rather than showing a
+  fabricated `$0.00`; a review generated before this change keeps the bare
+  marker.
+
 ### Changed
 
 - **The agent sidebar now always shows the viewed session's context usage,
@@ -24,6 +39,12 @@ are tagged.
   session clears or resets. Estimated and stale readings stay labeled, while
   unavailable or reset-pending readings do not invent a percentage. No
   migration is required.
+
+### Migration
+
+- The AI review attribution adds an optional field to the existing
+  `ai_review_cache` JSON rows; older cache entries load unchanged and simply
+  show no attribution until the next run.
 
 ## [v0.41.0] - 2026-08-27
 
@@ -87,6 +108,19 @@ are tagged.
   editor; enabling starts in Normal mode, while `Tab` submits and `Ctrl+Q`
   cancels from either keymap. Vim mode starts off for each new review, so
   existing plain-editor behavior is unchanged.
+
+- **AMF's own AI review (`W`) now carries model, token, and cost
+  attribution.** After a run completes, the AI Review pane shows a line
+  naming the harness and model that produced the findings plus the run's
+  input/output tokens and estimated cost. The same disclosure is inserted
+  above the `— AI review via AMF` marker on the posted GitHub summary and on
+  every inline comment, so a reader on the PR can tell which model reviewed
+  their code and roughly what it cost. It uses the same configured pricing
+  and rounding as AMF's other usage meters, and matches the disclosure
+  already shown on AI-drafted PR Triage replies. A harness that reports no
+  token usage degrades to model-only attribution rather than showing a
+  fabricated `$0.00`; a review generated before this change keeps the bare
+  marker.
 
 ### Fixed
 

@@ -836,6 +836,7 @@ mod tests {
             },
             findings: Vec::new(),
             summary: None,
+            attribution: None,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,

@@ -1,0 +1,99 @@
+# plan-interview-custom-answer: proves the plan-mode custom-answer box.
+#
+# A plain-text answer field now sits beneath the choices on every
+# plan-interview select question. The user can type their own answer on
+# its own or alongside a picked option; `e` focuses the box, Enter
+# commits it back to the option list WITHOUT submitting the question,
+# Esc restores the buffer, and there is a used/500 character counter.
+# The submitted answer is one plain string: picked labels, then " -- "
+# and the custom text.
+#
+# Self-contained: it enables the Codex harness in the isolated registry,
+# then `seed-custom-answer-fixture.sh` creates a throwaway repo whose
+# amf.json opts out of the built-in questions and adds one REQUIRED
+# select question, plus a feature to run `P` against (plan_mode false,
+# so `P` runs a fresh on-demand interview).
+#
+# Deliberately aborts before accepting: accepting runs a real headless
+# synthesis call, which costs tokens and is covered by unit tests.
+
+# Enable Codex in the isolated harness registry (rows: Claude, Opencode,
+# Codex, Pi -- so j j lands on Codex; Enter runs its availability check).
+key:A
+wait:400
+key:j
+key:j
+key:Enter
+wait:1200
+key:c
+wait:500
+
+run:AMF_BIN="$AMF_BIN" "$SCRIPT_DIR/seed-custom-answer-fixture.sh" >/dev/null
+wait:1400
+note:The seeded project has one feature and no plan yet.
+shot:dashboard-seeded
+
+# Select the feature row -- the interview plans one feature's workdir.
+key:j
+wait:300
+
+# `P` opens the on-demand interview. It reads the project's amf.json, so
+# the only question asked is the configured required select question.
+key:P
+wait:700
+note:The plan interview opens on the feature brief, unchanged by this feature.
+shot:interview-brief
+
+text:Show a short, word-boundary-truncated preview of the accepted plan.
+wait:300
+key:Enter
+wait:600
+note:THE FRAME. The select question now carries a bordered "Your own answer" box beneath the options, with a "press e to type your own answer" hint and a 0/500 counter. The options header reads "Options -- none picked".
+shot:select-question-with-custom-box
+
+# Enter on the option list with nothing picked and a blank custom answer
+# is blocked, because the configured question is required.
+key:Enter
+wait:400
+note:Nothing picked and no custom text: a required question blocks submit, exactly as it does for a free-text answer.
+shot:blank-answer-blocked
+
+# `e` focuses the custom-answer box: the border brightens and the footer
+# switches to the editor's own keys.
+key:e
+wait:400
+note:`e` focuses the inline custom-answer editor. The footer now reads "Enter done (back to options, not submitted) / Alt+Enter newline / Esc cancel edit".
+shot:custom-editor-focused
+
+text:Fold it into the existing status-bar row, right-aligned.
+wait:300
+note:The counter tracks the typed length (NN/500) as the custom answer is written.
+shot:custom-text-with-counter
+
+# Enter commits the edit and returns focus to the option list -- it does
+# NOT submit the question.
+key:Enter
+wait:400
+note:Committing returns focus to the options without submitting. Nothing is picked, so this is a custom-text-only answer; the box shows it collapsed to one line behind an `e` marker.
+shot:committed-custom-only
+
+# Now also pick an option: the two combine.
+key:j
+wait:300
+note:Picking an option keeps the custom text. The submitted answer will be the label plus " -- " plus the custom text -- one plain string.
+shot:option-and-custom-combined
+
+# Enter on the option list submits the whole question. It was the only
+# question, so the interview moves to the optional-AI consent step.
+key:Enter
+wait:600
+note:Enter on the option list submits the combined selection-plus-custom answer and the interview advances.
+shot:combined-answer-submitted
+
+# Abort without accepting (accepting spends tokens).
+key:Escape
+wait:400
+key:y
+wait:600
+note:Aborting is non-destructive: the feature still has no plan.
+shot:dashboard-unchanged

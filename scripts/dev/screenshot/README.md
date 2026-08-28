@@ -112,6 +112,107 @@ Each flag:
 Also respected: the `AMF_SHOT_DIR` env var overrides the scratch root
 parent (default `/tmp/amf-shots`).
 
+## Capture contract
+
+The driver and the two Python helpers have deliberately separate output
+contracts:
+
+- `amf-capture.sh` always captures terminal state as numbered
+  `<NNN>-<label>.ansi` files using `tmux capture-pane -e -p`. It also writes a
+  same-named `.txt` file from `capture-pane -p`; the text twin is escape-free
+  and is intended for cheap content assertions. The default smoke test writes
+  two shots, while a scenario writes one shot for each `shot:` step.
+- Ordinary capture runs do **not** render PNGs. To render one capture, invoke
+  `render_ansi.py` separately and choose the output path:
+
+  ```bash
+  python3 scripts/dev/screenshot/render_ansi.py \
+      /tmp/amf-shots/<run>/shots/001-dashboard-ready.ansi \
+      --out /tmp/amf-shots/<run>/dashboard-ready.png \
+      --cols 120 --rows 40
+  ```
+
+- `amf-capture.sh --gif [path]` is the convenience path: after all shots are
+  captured, it renders every numbered `.ansi` file to a same-directory `.png`
+  using the requested `--geometry`, then calls `assemble_gif.py` to produce
+  `capture.gif` (or the optional path). Thus `--gif` produces both the PNG
+  frames and the GIF; it is the only driver flag that performs PNG rendering.
+- `assemble_gif.py` is also usable directly, but expects one or more existing
+  PNG paths in display order. It writes a looping GIF with Pillow's native
+  `save_all=True`/`append_images=...` behavior and defaults to 800 ms per frame;
+  `--duration-ms` overrides that delay.
+
+The normal deliverable is therefore a directory of `.ansi`/`.txt` captures
+unless PNG rendering was requested explicitly. A run's scratch root and its
+default output directory are removed on exit; pass `--keep` or use an explicit
+`--out-dir` when captures must survive teardown. The driver always tears down
+its isolated tmux session.
+
+## Publish private browser-viewable evidence to a PR
+
+For agent-driven publication, use the repository publisher after the branch and
+scenario have been pushed:
+
+```bash
+scripts/dev/screenshot/publish-pages.sh \
+    --pr <number> \
+    --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+    --summary "One sentence explaining the complete flow under review" \
+    --ref <pushed-branch>
+```
+
+Add `--gif` when an animation is wanted and `--geometry 160x44` when the
+scenario needs another fixed size. The invoking agent needs an authenticated
+`gh` CLI session with permission to dispatch Actions and edit the PR. The
+scenario must exist on the pushed ref; screenshots never need to be committed.
+
+The workflow must already be present on the repository's default branch before
+the command can dispatch it; the capture itself may target any pushed ref.
+
+The command dispatches `.github/workflows/amf-screenshot-artifact.yml`. Its
+unprivileged capture job builds AMF on an isolated runner, runs
+`amf-capture.sh`, and renders PNGs. A separate `screenshot-pages` deployment
+job does not check out or execute the requested ref; it receives only rendered
+images via a 14-day internal artifact, creates a script-free gallery with a
+restrictive Content Security Policy, and deploys it to the dedicated
+Cloudflare Pages preview branch `pr-<number>`.
+
+- numbered `.ansi` captures and escape-free `.txt` assertion twins;
+- rendered PNG frames and, when requested, `capture.gif`;
+- `capture-metadata.json`; and
+- a self-contained `gallery.html` with images embedded in the HTML.
+
+After success, the publisher replaces only the PR body region between
+`<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->` with the
+stable private Pages URL. In the Pages project, enable **Settings > General >
+Enable access policy** before publishing evidence; raw ANSI/text captures remain
+in the internal artifact. Repeated runs update the same branch alias while
+preserving all other PR body content.
+
+To make the index useful without downloading anything, add a `note:` step
+immediately before every `shot:` in the scenario. The note is a concise,
+reviewer-facing sentence describing the visible state and what it proves. The
+required `--summary` describes the overall flow. Pages renders the summary and
+an ordered walkthrough with each note under **What this proves**.
+
+Capture, authentication, workflow, artifact, and PR-body failures print an
+actionable `warning:` and return success by default so a larger PR workflow can
+continue. Pass `--strict` when the caller needs a nonzero exit status instead.
+
+### Deployment safeguards
+
+Only the GitHub account `eldridgerdev` may execute the screenshot workflow, and
+all requests share one global concurrency group. Agents therefore must use that
+account's authenticated `gh` session. The `screenshot-pages` GitHub environment
+holds the Cloudflare token; configure it with a required reviewer and disable
+administrator bypassing so the deployment job cannot access that token until a
+reviewer approves it. This is deliberately stricter than the capture job.
+
+The runner installs the Codex CLI so a fresh scratch instance can pass AMF's
+harness setup for UI-only scenarios. Scenarios that launch an agent still need
+the corresponding provider credentials and harness-specific setup available
+to the workflow.
+
 ## Scenario format
 
 A scenario file is newline-delimited steps. Each line is a `|`-separated
@@ -122,6 +223,8 @@ list of one or more of:
 - `text:<text>` — `tmux send-keys -l` with literal text (special
   characters are not interpreted as key names).
 - `wait:<ms>` — sleep this many milliseconds before the next step.
+- `note:<text>` — a reviewer-facing sentence explaining what the next `shot:`
+  proves; it is shown in the private Pages gallery, not sent as terminal input.
 - `shot:<label>` — `capture-pane -e -p` the current pane to
   `NNN-<label>.ansi` in the output dir (`NNN` is a zero-padded, per-run
   step counter, not tied to the line number). Each shot also writes an
@@ -145,6 +248,12 @@ list of one or more of:
   Button 64 is wheel up, 0 is a left press, 3 a release.
   `scenarios/plan-review-mouse-scroll.txt` is a worked example.
 
+  `scenarios/ai-review-completed-fixture.txt` is the approved exception for a
+  completed AI Review visual: it calls `seed-ai-review-fixture.sh`, which
+  writes deterministic cache data and opens the pane without invoking an
+  agent, spending tokens, or calling GitHub. Do not replace it with a live
+  `A` review in CI.
+
 Blank lines and lines starting with `#` are skipped, so comments can
 explain what a step does or which real keybinding it exercises. Multiple
 `|`-delimited parts run in order on one line, e.g.:
@@ -167,6 +276,8 @@ And two seed payloads for use with `--seed`, mirroring the
 
 - `seed-project.json` — a `create-project` payload (has a `path` key).
 - `seed-feature.json` — a `create-feature` payload (has a `branch` key).
+- `ai-review-completed-fixture.txt` — shows a completed AI review and its
+  post-confirmation disclosure using the deterministic fixture helper.
 
 Copy any of these as a starting point for a new scenario or seed file.
 

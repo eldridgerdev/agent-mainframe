@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::setup::{
     ensure_notification_hooks, ensure_plan_mode_instructions, ensure_review_claude_md,
@@ -395,6 +395,24 @@ impl App {
         &mut self,
         prepared: PreparedFeatureLaunch,
     ) -> Result<()> {
+        self.finish_feature_launch_with_resource_approval(prepared, false)
+    }
+
+    /// Finish a launch whose resource confirmation has already been answered.
+    /// The approved bit reaches the start primitive so the resumed operation
+    /// cannot park again or fall back to the creation-time warning toast.
+    pub(crate) fn finish_feature_launch_resource_approved(
+        &mut self,
+        prepared: PreparedFeatureLaunch,
+    ) -> Result<()> {
+        self.finish_feature_launch_with_resource_approval(prepared, true)
+    }
+
+    fn finish_feature_launch_with_resource_approval(
+        &mut self,
+        prepared: PreparedFeatureLaunch,
+        resource_approved: bool,
+    ) -> Result<()> {
         let existing_pending = self
             .store
             .projects
@@ -489,9 +507,11 @@ impl App {
             .position(|p| p.name == prepared.project_name)
         {
             let fi = self.store.projects[pi].features.len().saturating_sub(1);
-            // A machine at the agent cap gets the feature without its agent
-            // rather than a modal in the middle of the creation flow.
-            started = self.autostart_allowed(&prepared.branch);
+            // Ordinary automation and creation paths cannot be parked mid-flow,
+            // so they leave the feature stopped and explain how to start it.
+            // An accepted plan can preserve its state in the resource dialog;
+            // confirmation resumes here with approval already granted.
+            started = resource_approved || self.autostart_allowed(&prepared.branch);
             if started {
                 // `autostart_allowed` above is this path's gate.
                 self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
@@ -1277,6 +1297,15 @@ impl App {
             return Ok(());
         }
 
+        // Deleting the worktree takes its TODO list with it, so unfinished
+        // work in that list is settled before anything destructive runs. The
+        // prompt is blocking: nothing is killed or removed until it is
+        // answered, and cancelling leaves the feature intact.
+        if let Some(disposition) = self.pending_todo_disposition(&project_name, &feature_name) {
+            self.mode = AppMode::TodoDeleteDisposition(disposition);
+            return Ok(());
+        }
+
         let (tmux_session, is_worktree, repo, workdir, agent, audit_details) = if let Some(project) =
             self.store.find_project(&project_name)
             && let Some(feature) = project.features.iter().find(|f| f.name == feature_name)
@@ -1389,12 +1418,21 @@ impl App {
     }
 
     pub fn complete_deleting_feature(&mut self) -> Result<()> {
-        let (project_name, feature_name, tmux_session, feature_id, had_error, error_msg) = {
+        let (
+            project_name,
+            feature_name,
+            tmux_session,
+            repo,
+            feature_identity,
+            had_error,
+            error_msg,
+        ) = {
             match &self.mode {
                 AppMode::DeletingFeatureInProgress(s) => (
                     s.project_name.clone(),
                     s.feature_name.clone(),
                     s.tmux_session.clone(),
+                    s.repo.clone(),
                     self.store
                         .find_project(&s.project_name)
                         .and_then(|project| {
@@ -1402,7 +1440,7 @@ impl App {
                                 .features
                                 .iter()
                                 .find(|feature| feature.name == s.feature_name)
-                                .map(|feature| feature.id.clone())
+                                .map(|feature| (feature.id.clone(), feature.branch.clone()))
                         }),
                     s.error.is_some(),
                     s.error.clone(),
@@ -1424,6 +1462,7 @@ impl App {
             return Ok(());
         }
 
+        let feature_id = feature_identity.as_ref().map(|(id, _)| id.clone());
         self.clear_sidebar_state_for_session(&tmux_session);
         if let Some(feature_id) = feature_id.as_deref() {
             // The worktree is going away, so an editor still open on it is
@@ -1435,6 +1474,9 @@ impl App {
                 let _ = db.delete_feature_statuses(feature_id);
                 let _ = db.delete_launched_editors_for_feature(feature_id);
             }
+        }
+        if let Some((feature_id, branch)) = feature_identity.as_ref() {
+            self.clear_pr_association_for_deleted_feature(feature_id, &repo, branch);
         }
         self.delete_plan_interviews_for_deleted_feature(&project_name, &feature_name, &feature_id);
         self.clear_todo_links_to_deleted_feature(feature_id.as_deref());
@@ -1570,17 +1612,25 @@ impl App {
                 } else {
                     self.clear_sidebar_state_for_session(&deletion.tmux_session);
                     // Resolved before the removal below, since that is the only
-                    // place the feature's id still exists.
-                    let feature_id =
-                        self.store
-                            .find_project(&deletion.project_name)
-                            .and_then(|project| {
-                                project
-                                    .features
-                                    .iter()
-                                    .find(|feature| feature.name == deletion.feature_name)
-                                    .map(|feature| feature.id.clone())
-                            });
+                    // place the feature's id and branch still exist.
+                    let feature_identity = self
+                        .store
+                        .find_project(&deletion.project_name)
+                        .and_then(|project| {
+                            project
+                                .features
+                                .iter()
+                                .find(|feature| feature.name == deletion.feature_name)
+                                .map(|feature| (feature.id.clone(), feature.branch.clone()))
+                        });
+                    let feature_id = feature_identity.as_ref().map(|(id, _)| id.clone());
+                    if let Some((feature_id, branch)) = feature_identity.as_ref() {
+                        self.clear_pr_association_for_deleted_feature(
+                            feature_id,
+                            &deletion.repo,
+                            branch,
+                        );
+                    }
                     self.delete_plan_interviews_for_deleted_feature(
                         &deletion.project_name,
                         &deletion.feature_name,
@@ -1596,6 +1646,33 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Evict every dashboard cache entry tied to a successfully deleted
+    /// feature. The persisted terminal result is keyed by repository + branch,
+    /// so it must be removed before that branch name can identify future work.
+    pub(crate) fn clear_pr_association_for_deleted_feature(
+        &mut self,
+        feature_id: &str,
+        repo: &Path,
+        branch: &str,
+    ) {
+        self.active_prs.remove(feature_id);
+        self.terminal_prs.remove(feature_id);
+        self.confirmed_no_terminal_pr.remove(feature_id);
+
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let repo = repo.to_string_lossy();
+        if let Err(error) = db.delete_pr_terminal_state(&repo, branch) {
+            self.log_warn(
+                "github",
+                format!(
+                    "failed to clear terminal PR association for deleted feature {feature_id} ({branch}): {error}"
+                ),
+            );
+        }
     }
 
     pub fn start_fork_feature(&mut self) {

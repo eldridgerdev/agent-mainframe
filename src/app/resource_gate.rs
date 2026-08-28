@@ -9,7 +9,7 @@
 //! all.
 
 use crate::app::{App, AppConfig};
-use crate::app::{AppMode, PendingStart, ResourceConfirmState, ViewState};
+use crate::app::{AppMode, PendingPlanLaunch, PendingStart, ResourceConfirmState, ViewState};
 use crate::resources::limits::{self, LiveHarnesses};
 use crate::resources::mem::{self, MemorySnapshot};
 
@@ -222,45 +222,81 @@ impl App {
             StartPreconditions::NeedsConfirm {
                 over_limit,
                 low_memory,
-            } => {
-                if let Some(over) = over_limit {
-                    self.log_warn(
-                        "limits",
-                        format!(
-                            "{} already running (limit {}) - asking before starting another",
-                            agents_running(over.active),
-                            over.limit
-                        ),
-                    );
-                }
-                if let Some(low) = low_memory {
-                    self.log_warn(
-                        "limits",
-                        format!(
-                            "{} MiB available, below the {} MiB warn threshold ({})",
-                            low.snapshot.available_mb,
-                            low.threshold_mb,
-                            low.snapshot.source.label()
-                        ),
-                    );
-                }
-                // Only worth gathering when memory is what tripped -- it is
-                // an explanation of the shortfall, not a second limit.
-                let open_editors = if low_memory.is_some() {
-                    self.open_tracked_editors()
-                } else {
-                    Vec::new()
-                };
-                self.mode = AppMode::ConfirmResourceStart(Box::new(ResourceConfirmState {
-                    over_limit,
-                    low_memory,
-                    open_editors,
-                    pending,
-                    from_view: None,
-                }));
-                true
-            }
+            } => self.open_resource_confirmation(pending, over_limit, low_memory, None),
         }
+    }
+
+    /// Gate an accepted plan launch while retaining the complete review state.
+    /// Unlike generic creation autostart, this path has enough state to pause
+    /// safely and can therefore use the interactive resource confirmation.
+    pub(crate) fn gate_plan_launch(&mut self, pending: PendingPlanLaunch) -> bool {
+        let StartPreconditions::NeedsConfirm {
+            over_limit,
+            low_memory,
+        } = self.check_start_preconditions()
+        else {
+            return false;
+        };
+
+        let interview = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::PlanInterview(interview) => interview,
+            other => {
+                self.mode = other;
+                return false;
+            }
+        };
+        self.open_resource_confirmation(
+            PendingStart::PlannedFeature(Box::new(pending)),
+            over_limit,
+            low_memory,
+            Some(interview),
+        )
+    }
+
+    fn open_resource_confirmation(
+        &mut self,
+        pending: PendingStart,
+        over_limit: Option<OverLimit>,
+        low_memory: Option<LowMemory>,
+        plan_interview: Option<crate::app::PlanInterviewState>,
+    ) -> bool {
+        if let Some(over) = over_limit {
+            self.log_warn(
+                "limits",
+                format!(
+                    "{} already running (limit {}) - asking before starting another",
+                    agents_running(over.active),
+                    over.limit
+                ),
+            );
+        }
+        if let Some(low) = low_memory {
+            self.log_warn(
+                "limits",
+                format!(
+                    "{} MiB available, below the {} MiB warn threshold ({})",
+                    low.snapshot.available_mb,
+                    low.threshold_mb,
+                    low.snapshot.source.label()
+                ),
+            );
+        }
+        // Only worth gathering when memory is what tripped -- it is an
+        // explanation of the shortfall, not a second limit.
+        let open_editors = if low_memory.is_some() {
+            self.open_tracked_editors()
+        } else {
+            Vec::new()
+        };
+        self.mode = AppMode::ConfirmResourceStart(Box::new(ResourceConfirmState {
+            over_limit,
+            low_memory,
+            open_editors,
+            pending,
+            from_view: None,
+            plan_interview,
+        }));
+        true
     }
 
     /// Whether a freshly-created feature may auto-start its agent.
@@ -341,6 +377,7 @@ impl App {
             PendingStart::SwitchViewToFeature { pi, fi } => {
                 self.switch_view_to_feature_approved(pi, fi)
             }
+            PendingStart::PlannedFeature(pending) => self.resume_accepted_plan_launch(*pending),
         };
 
         // Returning to the view the start came from is what the ungated path
@@ -361,7 +398,17 @@ impl App {
         else {
             return;
         };
-        if let Some(view) = state.from_view {
+        let ResourceConfirmState {
+            from_view,
+            plan_interview,
+            ..
+        } = *state;
+        if let Some(interview) = plan_interview {
+            self.mode = AppMode::PlanInterview(interview);
+            self.message = Some("Planned feature start cancelled; plan kept for review".into());
+            return;
+        }
+        if let Some(view) = from_view {
             self.mode = AppMode::Viewing(view);
         }
         self.push_toast_info("Start cancelled");

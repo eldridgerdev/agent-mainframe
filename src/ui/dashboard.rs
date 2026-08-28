@@ -9,6 +9,7 @@ use ratatui::{
 use crate::app::attention::AttentionState;
 use crate::app::util::{ClaudeTaskState, read_claude_task_state};
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
+use crate::context_tracking::SessionContextSnapshot;
 use crate::project::{
     Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch, VibeMode,
 };
@@ -44,32 +45,44 @@ fn pr_triage_badge_span(app: &App, view: &crate::app::ViewState) -> Option<Span<
         return None;
     }
     let feature = app.feature_for_view(view)?;
-    let pr = app.active_pr_for_feature(&feature.id)?;
-    let working = app
-        .dedicated_review_session_working_for_workdir(&feature.workdir)
-        .unwrap_or(false);
-    let ai_review_running = app.ai_review_running_for_workdir(&feature.workdir);
-    let mut label = match pr.unresolved_threads {
-        Some(0) => format!(" [PR #{} · 0 open", pr.number),
-        Some(count) => format!(" [PR #{} · {} open", pr.number, count),
-        None => format!(" [PR #{}", pr.number),
-    };
-    if working {
-        label.push_str(" · ● working");
+    if let Some(pr) = app.active_pr_for_feature(&feature.id) {
+        let working = app
+            .dedicated_review_session_working_for_workdir(&feature.workdir)
+            .unwrap_or(false);
+        let ai_review_running = app.ai_review_running_for_workdir(&feature.workdir);
+        let mut label = match pr.unresolved_threads {
+            Some(0) => format!(" [PR #{} · 0 open", pr.number),
+            Some(count) => format!(" [PR #{} · {} open", pr.number, count),
+            None => format!(" [PR #{}", pr.number),
+        };
+        if working {
+            label.push_str(" · ● working");
+        }
+        if ai_review_running {
+            label.push_str(" · AI review");
+        }
+        label.push_str("] ");
+        let color = if working || ai_review_running {
+            app.theme.warning.to_color()
+        } else if pr.unresolved_threads == Some(0) {
+            app.theme.success.to_color()
+        } else {
+            app.theme.info.to_color()
+        };
+        return Some(Span::styled(
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
     }
-    if ai_review_running {
-        label.push_str(" · AI review");
-    }
-    label.push_str("] ");
-    let color = if working || ai_review_running {
-        app.theme.warning.to_color()
-    } else if pr.unresolved_threads == Some(0) {
-        app.theme.success.to_color()
-    } else {
-        app.theme.info.to_color()
+    // No open PR: a merged or closed one is finished work, not "no PR" —
+    // show that instead of nothing (D3 in AMF_PLAN.md).
+    let pr = app.terminal_pr_for_feature(&feature.id)?;
+    let color = match pr.state {
+        crate::github::TerminalPrState::Merged => app.theme.pr_merged.to_color(),
+        crate::github::TerminalPrState::Closed => app.theme.pr_closed.to_color(),
     };
     Some(Span::styled(
-        label,
+        format!(" [PR #{} {}] ", pr.number, pr.state.label()),
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     ))
 }
@@ -97,21 +110,37 @@ fn draw_badge_row(frame: &mut Frame, area: Rect, badge_spans: Vec<Span<'static>>
 /// `draw()`'s `AppMode::Viewing` arm) — shown instead of the badge when the
 /// sidebar is visible, so the two never compete for the same header space.
 fn pr_triage_sidebar_text(app: &App, feature: &Feature) -> Option<String> {
-    let pr = app.active_pr_for_feature(&feature.id)?;
-    let mut lines = vec![match pr.unresolved_threads {
-        Some(count) => format!("PR: #{} · {count} open", pr.number),
-        None => format!("PR: #{}", pr.number),
-    }];
-    if app
-        .dedicated_review_session_working_for_workdir(&feature.workdir)
-        .unwrap_or(false)
-    {
-        lines.push("Status: Working".to_string());
+    if let Some(pr) = app.active_pr_for_feature(&feature.id) {
+        let mut lines = vec![match pr.unresolved_threads {
+            Some(count) => format!("PR: #{} · {count} open", pr.number),
+            None => format!("PR: #{}", pr.number),
+        }];
+        if app
+            .dedicated_review_session_working_for_workdir(&feature.workdir)
+            .unwrap_or(false)
+        {
+            lines.push("Status: Working".to_string());
+        }
+        if app.ai_review_running_for_workdir(&feature.workdir) {
+            lines.push("AI review: Running".to_string());
+        }
+        return Some(lines.join("\n"));
     }
-    if app.ai_review_running_for_workdir(&feature.workdir) {
-        lines.push("AI review: Running".to_string());
-    }
-    Some(lines.join("\n"))
+    let pr = app.terminal_pr_for_feature(&feature.id)?;
+    Some(format!("PR: #{} {}", pr.number, pr.state.label()))
+}
+
+/// Reads the sidebar's plan status line from the background-loaded cache
+/// (`App::sidebar_effective_plan_cache`) rather than resolving it here.
+/// Resolution touches the filesystem (`is_file`, and `canonicalize` for a
+/// manually selected plan) and this is called from `build_agent_sidebar_data`
+/// on every `draw()` of the pane view — up to ~20x/sec while in Viewing
+/// mode — so it must stay off the render thread.
+fn plan_sidebar_text(app: &App, feature: &Feature) -> String {
+    app.sidebar_effective_plan_cache
+        .get(&feature.tmux_session)
+        .cloned()
+        .unwrap_or_else(|| "No plan selected".to_string())
 }
 
 fn build_agent_sidebar_data(
@@ -139,6 +168,19 @@ fn build_agent_sidebar_data(
                 .find(|session| session.kind == sidebar_kind)
         });
 
+    let (context_snapshot, context_hint_visible) = session
+        .and_then(|session| app.context_states.get(&session.id))
+        .map(|context| {
+            (
+                context.snapshot.clone(),
+                session.is_some_and(|session| {
+                    app.context_hint_states
+                        .is_eligible(&session.id, Some(context))
+                }),
+            )
+        })
+        .unwrap_or((None, false));
+
     let waiting_count = app
         .pending_inputs
         .iter()
@@ -164,21 +206,72 @@ fn build_agent_sidebar_data(
             n => format!("Waiting for {n} inputs"),
         },
     };
+    // Resolve sidebar content by the viewed session's stable identity. A
+    // TODO reference from another harness must not make this session show an
+    // unrelated TODO box.
+    let active_todos_text =
+        session.and_then(|session| app.active_todos_sidebar_cache.get(&session.id).cloned());
+    let active_todo_affordance = session.is_some_and(|session| {
+        session
+            .todo_reference
+            .as_ref()
+            .is_some_and(|reference| reference.launched_from_todo_menu)
+    });
 
     match sidebar_kind {
-        SessionKind::Opencode => {
-            build_opencode_sidebar_data(app, project, feature, session, view, status_line)
-        }
-        SessionKind::Claude => {
-            build_claude_sidebar_data(app, project, feature, session, view, status_line)
-        }
-        SessionKind::Codex => {
-            build_codex_sidebar_data(app, project, feature, session, view, status_line)
-        }
+        SessionKind::Opencode => build_opencode_sidebar_data(
+            app,
+            project,
+            feature,
+            session,
+            view,
+            status_line,
+            context_snapshot,
+            context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
+        ),
+        SessionKind::Claude => build_claude_sidebar_data(
+            app,
+            project,
+            feature,
+            session,
+            view,
+            status_line,
+            context_snapshot,
+            context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
+        ),
+        SessionKind::Codex => build_codex_sidebar_data(
+            app,
+            project,
+            feature,
+            session,
+            view,
+            status_line,
+            context_snapshot,
+            context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
+        ),
+        SessionKind::Pi => build_pi_sidebar_data(
+            app,
+            project,
+            feature,
+            session,
+            view,
+            status_line,
+            context_snapshot,
+            context_hint_visible,
+            active_todos_text,
+            active_todo_affordance,
+        ),
         _ => None,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_opencode_sidebar_data(
     app: &App,
     project: &Project,
@@ -186,6 +279,10 @@ fn build_opencode_sidebar_data(
     session: Option<&FeatureSession>,
     view: &crate::app::ViewState,
     status_line: String,
+    context_snapshot: Option<SessionContextSnapshot>,
+    context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
     let usage_line = session
@@ -226,17 +323,24 @@ fn build_opencode_sidebar_data(
             opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
             model_text.as_deref(),
         ),
+        usage_text: sidebar_usage_text(app, &SessionKind::Opencode),
         model_text,
         prompt_text,
         work_text: pending_diff_review_work_text(app, project, feature)
             .or(work_text)
             .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
         todos_text,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
+        plan_text: plan_sidebar_text(app, feature),
+        context_snapshot,
+        context_hint_visible,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_claude_sidebar_data(
     app: &App,
     project: &Project,
@@ -244,6 +348,10 @@ fn build_claude_sidebar_data(
     session: Option<&FeatureSession>,
     view: &crate::app::ViewState,
     status_line: String,
+    context_snapshot: Option<SessionContextSnapshot>,
+    context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -272,15 +380,22 @@ fn build_claude_sidebar_data(
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Claude,
         status_text,
+        usage_text: sidebar_usage_text(app, &SessionKind::Claude),
         model_text,
         prompt_text,
         work_text,
         todos_text,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
+        plan_text: plan_sidebar_text(app, feature),
+        context_snapshot,
+        context_hint_visible,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_codex_sidebar_data(
     app: &App,
     project: &Project,
@@ -288,6 +403,10 @@ fn build_codex_sidebar_data(
     session: Option<&FeatureSession>,
     view: &crate::app::ViewState,
     status_line: String,
+    context_snapshot: Option<SessionContextSnapshot>,
+    context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
 ) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
@@ -325,12 +444,64 @@ fn build_codex_sidebar_data(
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Codex,
         status_text,
+        usage_text: sidebar_usage_text(app, &SessionKind::Codex),
         model_text,
         prompt_text,
         work_text,
         todos_text: None,
+        active_todos_text,
+        active_todo_affordance,
         summary_text,
         pr_triage_text: pr_triage_sidebar_text(app, feature),
+        plan_text: plan_sidebar_text(app, feature),
+        context_snapshot,
+        context_hint_visible,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_pi_sidebar_data(
+    app: &App,
+    project: &Project,
+    feature: &Feature,
+    session: Option<&FeatureSession>,
+    view: &crate::app::ViewState,
+    status_line: String,
+    context_snapshot: Option<SessionContextSnapshot>,
+    context_hint_visible: bool,
+    active_todos_text: Option<String>,
+    active_todo_affordance: bool,
+) -> Option<super::pane::AgentSidebarData> {
+    let usage_line = session
+        .and_then(|session| session.status_text.as_deref())
+        .map(format_sidebar_usage);
+    let prompt_text =
+        sidebar_prompt_text(None, app.latest_prompt_for_session(&feature.tmux_session));
+    let work_text = pending_diff_review_work_text(app, project, feature)
+        .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
+    let summary_text = compose_sidebar_summary_text(None, feature.summary.clone());
+    let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
+    let model_text = app.sidebar_model_cache.get(&feature.tmux_session).cloned();
+    let status_text = append_model_status_line(
+        compose_sidebar_status_text(activity_line, usage_line, None),
+        model_text.as_deref(),
+    );
+
+    Some(super::pane::AgentSidebarData {
+        agent_kind: SessionKind::Pi,
+        status_text,
+        usage_text: sidebar_usage_text(app, &SessionKind::Pi),
+        model_text,
+        prompt_text,
+        work_text,
+        todos_text: None,
+        active_todos_text,
+        active_todo_affordance,
+        summary_text,
+        pr_triage_text: pr_triage_sidebar_text(app, feature),
+        plan_text: plan_sidebar_text(app, feature),
+        context_snapshot,
+        context_hint_visible,
     })
 }
 
@@ -832,6 +1003,15 @@ fn format_sidebar_usage(status: &str) -> String {
     }
 }
 
+/// Body for the sidebar's **Usage** box: this harness's account-level
+/// rate-limit windows, read from the same cached `UsageData` the dashboard
+/// status bar uses. `None` (box omitted) when the harness has no usage
+/// source or nothing has been fetched yet.
+fn sidebar_usage_text(app: &App, kind: &SessionKind) -> Option<String> {
+    let windows = crate::usage::usage_windows_for_session_kind(kind, &app.usage.get_data());
+    crate::usage::format_sidebar_usage_windows(&windows)
+}
+
 fn draw_view_pane(
     frame: &mut Frame,
     app: &App,
@@ -920,6 +1100,7 @@ fn mode_view_context(mode: &AppMode) -> Option<&crate::app::ViewState> {
         AppMode::SteeringPrompt(state) => Some(&state.view),
         AppMode::Compose(state) => Some(&state.view),
         AppMode::TodoQuickCapture(state) => Some(&state.view),
+        AppMode::FreshContextPrompt(state) => Some(&state.view),
         AppMode::SessionPicker(state) => state.from_view.as_ref(),
         AppMode::DiffReviewPrompt(state) => state.return_to_view.as_ref(),
         AppMode::LatestPrompt(state) => Some(&state.view),
@@ -1019,9 +1200,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // Resolved here, before the `&mut app.mode` borrow: the companion
         // feature's name/harness/mode live on the store, not the pane state.
         let triage_feature_summary = app.pr_review_triage_feature_summary();
-        let ai_review_running = match &app.mode {
-            AppMode::PrReview(state) => app.ai_review_running_for_workdir(&state.workdir),
-            _ => false,
+        let ai_review_status = match &app.mode {
+            AppMode::PrReview(state) => app.ai_review_triage_status(state),
+            _ => crate::app::ai_review::AiReviewTriageStatus::NotRun,
         };
         // Same pattern: resolved off `app` before the `&mut app.mode` borrow —
         // but only while the "add to memory" dialog is actually open, since
@@ -1044,7 +1225,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     pricing: &app.config.token_pricing,
                 },
                 dedicated_session_working,
-                ai_review_running,
+                &ai_review_status,
                 triage_feature_summary.as_deref(),
                 memory_paths.as_ref(),
             );
@@ -1107,7 +1288,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::Todos(state) = &app.mode {
-        super::dialogs::draw_todos_view(frame, state, &app.theme, app.config.nerd_font);
+        super::dialogs::draw_todos_view_with_visibility(
+            frame,
+            state,
+            &app.theme,
+            app.config.nerd_font,
+            app.todo_project_visible,
+            app.todo_global_visible,
+        );
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
@@ -1324,6 +1512,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    let fresh_context_prompt_from_view = if let AppMode::FreshContextPrompt(state) = &app.mode {
+        Some(state.view.clone())
+    } else {
+        None
+    };
+    if let Some(view) = fresh_context_prompt_from_view.as_ref() {
+        draw_view_pane(frame, app, view, false, false);
+    }
+    if let AppMode::FreshContextPrompt(state) = &app.mode {
+        super::dialogs::draw_fresh_context_prompt_dialog(frame, state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
+        return;
+    }
+
     let steering_from_view = if let AppMode::SteeringPrompt(state) = &app.mode {
         Some(state.view.clone())
     } else {
@@ -1459,11 +1661,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
                 super::dialogs::draw_confirm_supervibe_dialog(frame, &app.theme);
             } else {
+                let usage = app.usage.get_data();
                 super::dialogs::draw_create_feature_dialog(
                     frame,
                     state,
                     state.feature_presets.as_slice(),
                     state.allowed_agents.as_slice(),
+                    &usage,
                     &app.theme,
                 );
             }
@@ -1513,6 +1717,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // viewport, so what the key was pressed in never shows through.
     if let AppMode::TodoImplementChoice(state) = &app.mode {
         super::dialogs::draw_todo_implement_choice_dialog(frame, state, &app.theme);
+    }
+
+    if let AppMode::TodoSpawnTarget(state) = &app.mode {
+        super::dialogs::draw_todo_spawn_target_dialog(frame, state, &app.theme);
+    }
+
+    if let AppMode::TodoDeleteDisposition(state) = &app.mode {
+        super::dialogs::draw_todo_delete_disposition_dialog(frame, state, &app.theme);
+    }
+
+    if let AppMode::ConfirmTodoReferenceCompletion(state) = &app.mode {
+        super::dialogs::draw_todo_reference_completion_dialog(frame, state, &app.theme);
     }
 
     if let AppMode::RenamingSession(state) = &app.mode {
@@ -1586,7 +1802,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::SessionPicker(state) = &app.mode {
-        super::picker::draw_session_picker(frame, state, app.config.nerd_font, &app.theme);
+        let usage = app.usage.get_data();
+        super::picker::draw_session_picker(frame, state, &usage, app.config.nerd_font, &app.theme);
     }
 
     if let AppMode::NamingNewSession(state) = &app.mode {
@@ -1670,6 +1887,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::ConfigWizard(state) = &mut app.mode {
         super::dialogs::draw_config_wizard_dialog(frame, state, &app.theme);
+    }
+
+    if let AppMode::ContextSettings(state) = &app.mode {
+        super::dialogs::draw_context_settings_dialog(frame, state, &app.theme);
     }
 
     draw_mode_context_bar(frame, &app.mode, &app.theme);
@@ -1899,6 +2120,7 @@ mod tests {
             label: "Codex".into(),
             tmux_window: "codex".into(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: Some(TokenUsageSource {
                 provider: TokenUsageProvider::Codex,
                 id: session_id.into(),
@@ -1926,6 +2148,7 @@ mod tests {
             label: label.into(),
             tmux_window: window.into(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: chrono::Utc::now(),
@@ -1977,6 +2200,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         App::new_for_test(
@@ -2013,6 +2237,28 @@ mod tests {
             VibeMode::Vibeless,
             false,
         )
+    }
+
+    fn sidebar_context(
+        used_tokens: u64,
+        provenance: crate::context_tracking::ContextProvenance,
+    ) -> crate::context_tracking::SessionContextState {
+        let now = chrono::Utc::now();
+        let mut state = crate::context_tracking::SessionContextState::default();
+        state
+            .accept_sample(
+                crate::context_tracking::ContextUsageSample {
+                    used_tokens,
+                    context_limit: Some(100_000),
+                    provenance,
+                    sampled_at: now,
+                    checked_at: now,
+                    reset: crate::context_tracking::ContextResetMetadata::default(),
+                },
+                crate::context_tracking::ContextThresholds::default(),
+            )
+            .unwrap();
+        state
     }
 
     #[test]
@@ -2136,6 +2382,128 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_data_resolves_direct_estimated_stale_and_reset_context_for_selected_session() {
+        let mut app = sidebar_usage_app(SessionKind::Codex);
+        let direct = sidebar_context(70_000, crate::context_tracking::ContextProvenance::Direct);
+        let mut estimated = sidebar_context(
+            85_000,
+            crate::context_tracking::ContextProvenance::Estimated,
+        );
+        estimated.mark_unavailable(chrono::Utc::now());
+        app.context_states.insert("session-1".into(), direct);
+        app.context_states.insert("session-2".into(), estimated);
+        app.context_hint_states.sync_all(&app.context_states);
+
+        let first = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-1", "Agent 1"),
+        )
+        .unwrap();
+        assert_eq!(
+            first
+                .context_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.provenance),
+            Some(crate::context_tracking::ContextProvenance::Direct)
+        );
+        assert!(first.context_hint_visible);
+
+        let second = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-2", "Agent 2"),
+        )
+        .unwrap();
+        let second_snapshot = second.context_snapshot.as_ref().unwrap();
+        assert_eq!(
+            second_snapshot.provenance,
+            crate::context_tracking::ContextProvenance::Estimated
+        );
+        assert_eq!(
+            second_snapshot.freshness,
+            crate::context_tracking::ContextFreshness::Stale
+        );
+        assert!(second.context_hint_visible);
+
+        app.context_states.remove("session-2");
+        app.context_hint_states.sync_all(&app.context_states);
+        let unavailable = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-2", "Agent 2"),
+        )
+        .unwrap();
+        assert!(unavailable.context_snapshot.is_none());
+        assert!(!unavailable.context_hint_visible);
+
+        let reset_event = crate::context_tracking::ContextResetEvent {
+            reason: crate::context_tracking::ContextResetReason::Compaction,
+            detected_at: chrono::Utc::now(),
+        };
+        app.context_states
+            .get_mut("session-1")
+            .unwrap()
+            .begin_reset(None, reset_event);
+        app.context_hint_states.sync_all(&app.context_states);
+        let reset_pending = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-1", "Agent 1"),
+        )
+        .unwrap();
+        assert!(reset_pending.context_snapshot.is_none());
+        assert!(!reset_pending.context_hint_visible);
+    }
+
+    #[test]
+    fn plan_sidebar_data_is_available_only_for_agent_harness_views() {
+        for kind in [
+            SessionKind::Claude,
+            SessionKind::Codex,
+            SessionKind::Opencode,
+            SessionKind::Pi,
+        ] {
+            let app = sidebar_usage_app(kind.clone());
+            let sidebar =
+                build_agent_sidebar_data(&app, &sidebar_usage_view(kind, "agent-1", "Agent 1"))
+                    .expect("agent harness should have sidebar data");
+            assert_eq!(sidebar.plan_text, "No plan selected");
+        }
+
+        for kind in [
+            SessionKind::Terminal,
+            SessionKind::Nvim,
+            SessionKind::Vscode,
+            SessionKind::Todos,
+            SessionKind::Custom,
+        ] {
+            let app = sidebar_usage_app(kind.clone());
+            assert!(
+                build_agent_sidebar_data(&app, &sidebar_usage_view(kind, "agent-1", "Agent 1"))
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn plan_sidebar_label_reflects_the_background_loaded_effective_plan() {
+        // The effective plan is resolved off the render thread by the
+        // sidebar-load pipeline (see `App::sidebar_effective_plan_cache`),
+        // not by `build_agent_sidebar_data` itself — populate the cache the
+        // way `poll_sidebar_load_results` would to exercise that plumbing.
+        let mut app = sidebar_usage_app(SessionKind::Codex);
+        app.sidebar_effective_plan_cache.insert(
+            "amf-feature".to_string(),
+            "Current: AMF_PLAN.md".to_string(),
+        );
+
+        let sidebar = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-1", "Agent 1"),
+        )
+        .unwrap();
+
+        assert_eq!(sidebar.plan_text, "Current: AMF_PLAN.md");
+    }
+
+    #[test]
     fn format_codex_usage_source_confidence_uses_inferred_match_label() {
         let mut session = codex_feature_session("sess-current");
         session.token_usage_source_match = Some(TokenUsageSourceMatch::Inferred);
@@ -2171,6 +2539,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         feature.add_session_named(SessionKind::Claude, "Claude 1".to_string());
@@ -2291,6 +2660,7 @@ mod tests {
             pr,
             findings: Vec::new(),
             summary: None,
+            attribution: None,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
@@ -2412,6 +2782,7 @@ mod tests {
             pending_batch: false,
             checked_out_branch: Some(checked_out.to_string()),
             pending_ai_review_findings: 0,
+            ai_review_last_run: None,
         }
     }
 
@@ -2423,7 +2794,12 @@ mod tests {
             Box::new(MockTmuxOps::new()),
             Box::new(MockWorktreeOps::new()),
         );
-        let state = pr_review_state_with_branches("main", "main");
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.pending_ai_review_findings = 3;
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Error("cached failure".to_string()),
+        });
         let workdir = state.workdir.clone();
         app.mode = crate::app::AppMode::PrReview(state);
 
@@ -2442,6 +2818,7 @@ mod tests {
             pr,
             findings: Vec::new(),
             summary: None,
+            attribution: None,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
@@ -2468,6 +2845,8 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("AI review running"));
+        assert!(!rendered.contains("AI review pending"));
+        assert!(!rendered.contains("AI review failed"));
     }
 
     #[test]
@@ -2519,6 +2898,98 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("AI review pending: 3"));
+    }
+
+    #[test]
+    fn pr_review_pane_shows_completed_zero_finding_result() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(0),
+        });
+        app.mode = crate::app::AppMode::PrReview(state);
+
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("[AI review: no findings (now)]"));
+    }
+
+    #[test]
+    fn pr_review_pane_shows_failed_result_without_error_details() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Error(
+                "sensitive worker detail".to_string(),
+            ),
+        });
+        app.mode = crate::app::AppMode::PrReview(state);
+
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("[AI review failed (now)]"));
+        assert!(!rendered.contains("sensitive worker detail"));
+    }
+
+    #[test]
+    fn pending_findings_take_precedence_over_cached_zero_result() {
+        let (store, _feature) = store_with_claude_feature();
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = pr_review_state_with_branches("main", "main");
+        state.pending_ai_review_findings = 2;
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(0),
+        });
+        app.mode = crate::app::AppMode::PrReview(state);
+
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(rendered.contains("AI review pending: 2"));
+        assert!(!rendered.contains("no findings"));
     }
 
     #[test]
@@ -2651,6 +3122,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {
@@ -2732,6 +3204,7 @@ mod tests {
                 label: "Claude".into(),
                 tmux_window: "claude".into(),
                 claude_session_id: Some("claude-session".into()),
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -2756,6 +3229,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {
@@ -2840,6 +3314,7 @@ mod tests {
                 label: "Claude".into(),
                 tmux_window: "claude".into(),
                 claude_session_id: Some("claude-session".into()),
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -2864,6 +3339,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {
@@ -2948,6 +3424,7 @@ mod tests {
                 label: "Opencode".into(),
                 tmux_window: "opencode".into(),
                 claude_session_id: None,
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -2972,6 +3449,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {
@@ -3066,6 +3544,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let project = Project {

@@ -3,12 +3,14 @@ mod batch_creation;
 mod browse;
 mod compose;
 mod config_wizard;
+mod context_settings;
 mod dialog;
 mod diff;
 mod diff_review;
 mod dormant;
 mod feature_creation;
 mod fork;
+mod handoff;
 mod harness;
 mod hooks;
 mod input;
@@ -34,6 +36,7 @@ pub use batch_creation::handle_create_batch_features_key;
 pub use browse::handle_browse_path_key;
 pub use compose::handle_compose_key;
 pub use config_wizard::handle_config_wizard_key;
+pub use context_settings::handle_context_settings_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
@@ -46,6 +49,7 @@ pub use diff_review::handle_diff_review_key;
 pub use dormant::handle_dormant_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
+pub use handoff::handle_fresh_context_prompt_key;
 pub use harness::handle_harness_setup_key;
 pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_running_hook_key};
 pub use input::handle_paste;
@@ -75,8 +79,9 @@ pub use prompt_library::{
 pub use search::handle_search_key;
 pub use skill_picker::handle_skill_picker_key;
 pub use todos::{
-    handle_todo_implement_choice_key, handle_todo_quick_capture_key,
-    handle_todos_host_reassign_key, handle_todos_key,
+    handle_todo_delete_disposition_key, handle_todo_implement_choice_key,
+    handle_todo_quick_capture_key, handle_todo_reference_completion_key,
+    handle_todo_spawn_target_key, handle_todos_host_reassign_key, handle_todos_key,
 };
 pub use view::handle_view_key;
 
@@ -88,8 +93,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::Todos(_) => handle_todos_key(app, key),
         AppMode::Learning(_) => handle_learning_key(app, key),
         AppMode::TodoQuickCapture(_) => handle_todo_quick_capture_key(app, key),
+        AppMode::FreshContextPrompt(_) => handle_fresh_context_prompt_key(app, key),
         AppMode::TodosHostReassign(_) => handle_todos_host_reassign_key(app, key.code),
         AppMode::TodoImplementChoice(_) => handle_todo_implement_choice_key(app, key.code),
+        AppMode::TodoSpawnTarget(_) => handle_todo_spawn_target_key(app, key.code),
+        AppMode::TodoDeleteDisposition(_) => handle_todo_delete_disposition_key(app, key.code),
+        AppMode::ConfirmTodoReferenceCompletion(_) => {
+            handle_todo_reference_completion_key(app, key.code)
+        }
         AppMode::CreatingProject(_) => handle_create_project_key(app, key),
         AppMode::BrowsingPath(_) => handle_browse_path_key(app, key),
         AppMode::CreatingFeature(_) => handle_create_feature_key(app, key.code),
@@ -163,5 +174,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::HarnessSetup(_) => handle_harness_setup_key(app, key.code),
         AppMode::ConfigWizard(_) => handle_config_wizard_key(app, key),
         AppMode::ReviewHarnessPick(_) => handle_review_harness_pick_key(app, key.code),
+        AppMode::ContextSettings(_) => handle_context_settings_key(app, key),
     }
 }

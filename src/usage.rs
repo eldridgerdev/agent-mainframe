@@ -1,7 +1,8 @@
 use crate::debug::{LogLevel, log_to_file, set_user_alert};
 use crate::http_client;
+use crate::project::AgentKind;
 use crate::token_tracking::read_appended_lines;
-use chrono::{Datelike, TimeZone};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -103,6 +104,164 @@ impl Default for UsageData {
             codex: CodexUsageData::default(),
             zai: ZaiUsageData::default(),
         }
+    }
+}
+
+/// One rate-limit window's remaining headroom, for display in harness
+/// pickers. `percent_remaining` is already inverted from the underlying
+/// "utilization"/"used" percentages `UsageData` stores.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageWindow {
+    pub label: &'static str,
+    pub percent_remaining: f64,
+    pub reset_at: Option<DateTime<Utc>>,
+}
+
+/// Read-only view of all known usage windows for a harness, sourced from
+/// the same cached `UsageData` the dashboard status bar reads. Returns an
+/// empty vec when the harness has no usage support (OpenCode, Pi) or no
+/// data has been fetched yet — callers should omit the harness entirely
+/// in that case, never render a placeholder.
+pub fn usage_windows_for(agent: &AgentKind, data: &UsageData) -> Vec<UsageWindow> {
+    let mut windows = Vec::new();
+    match agent {
+        AgentKind::Claude => {
+            if let Some(pct) = data.claude.five_hour_pct {
+                windows.push(UsageWindow {
+                    label: "5h",
+                    percent_remaining: 100.0 - pct,
+                    reset_at: data
+                        .claude
+                        .five_hour_resets
+                        .as_deref()
+                        .and_then(parse_reset),
+                });
+            }
+            if let Some(pct) = data.claude.seven_day_pct {
+                windows.push(UsageWindow {
+                    label: "7d",
+                    percent_remaining: 100.0 - pct,
+                    reset_at: data
+                        .claude
+                        .seven_day_resets
+                        .as_deref()
+                        .and_then(parse_reset),
+                });
+            }
+        }
+        AgentKind::Codex => {
+            if let Some(pct) = data.codex.five_hour_usage_pct {
+                windows.push(UsageWindow {
+                    label: "5h",
+                    percent_remaining: 100.0 - pct,
+                    reset_at: data.codex.five_hour_resets.as_deref().and_then(parse_reset),
+                });
+            }
+            if let Some(pct) = data.codex.weekly_usage_pct {
+                windows.push(UsageWindow {
+                    label: "7d",
+                    percent_remaining: 100.0 - pct,
+                    reset_at: data.codex.weekly_resets.as_deref().and_then(parse_reset),
+                });
+            }
+        }
+        // No usage/quota API is known for these harnesses today; fail
+        // silently rather than guessing at a shape.
+        AgentKind::Opencode | AgentKind::Pi => {}
+    }
+    windows
+}
+
+fn parse_reset(raw: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Same as [`usage_windows_for`] but keyed by `SessionKind`, for callers
+/// (like the add-session picker) that only have a session kind on hand.
+/// Session kinds with no corresponding agent harness (terminal, editor,
+/// TODOs, ...) always report empty.
+pub fn usage_windows_for_session_kind(
+    kind: &crate::project::SessionKind,
+    data: &UsageData,
+) -> Vec<UsageWindow> {
+    use crate::project::SessionKind;
+    let agent = match kind {
+        SessionKind::Claude => AgentKind::Claude,
+        SessionKind::Opencode => AgentKind::Opencode,
+        SessionKind::Codex => AgentKind::Codex,
+        SessionKind::Pi => AgentKind::Pi,
+        _ => return Vec::new(),
+    };
+    usage_windows_for(&agent, data)
+}
+
+/// Renders the secondary usage line shown under a harness option in the
+/// pickers, e.g. `5h 62% left · resets in 3h   7d 90% left`. Shared by
+/// both pickers so the wording/format stays identical. Returns `None`
+/// for an empty window list so callers can skip the line entirely rather
+/// than rendering a blank one.
+pub fn format_usage_summary(windows: &[UsageWindow]) -> Option<String> {
+    if windows.is_empty() {
+        return None;
+    }
+    let now = Utc::now();
+    let parts: Vec<String> = windows
+        .iter()
+        .map(|w| {
+            let pct = w.percent_remaining.round().clamp(0.0, 100.0) as i64;
+            match w.reset_at {
+                Some(reset_at) if reset_at > now => {
+                    format!(
+                        "{} {}% left · resets in {}",
+                        w.label,
+                        pct,
+                        format_reset_duration(reset_at - now)
+                    )
+                }
+                _ => format!("{} {}% left", w.label, pct),
+            }
+        })
+        .collect();
+    Some(parts.join("   "))
+}
+
+/// Multi-line variant of [`format_usage_summary`] for the narrow embedded
+/// session sidebar (~28 inner columns): one window per line, e.g.
+/// `5h  62% left · 3h`. Returns `None` for an empty slice so the sidebar
+/// omits the whole box rather than rendering an empty one.
+pub fn format_sidebar_usage_windows(windows: &[UsageWindow]) -> Option<String> {
+    if windows.is_empty() {
+        return None;
+    }
+    let now = Utc::now();
+    let lines: Vec<String> = windows
+        .iter()
+        .map(|w| {
+            let pct = w.percent_remaining.round().clamp(0.0, 100.0) as i64;
+            match w.reset_at {
+                Some(reset_at) if reset_at > now => format!(
+                    "{}  {}% left · {}",
+                    w.label,
+                    pct,
+                    format_reset_duration(reset_at - now)
+                ),
+                _ => format!("{}  {}% left", w.label, pct),
+            }
+        })
+        .collect();
+    Some(lines.join("\n"))
+}
+
+fn format_reset_duration(remaining: chrono::Duration) -> String {
+    let minutes = remaining.num_minutes().max(1);
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else if minutes < 60 * 24 {
+        format!("{}h", minutes / 60)
+    } else {
+        format!("{}d", minutes / (60 * 24))
     }
 }
 
@@ -1217,4 +1376,219 @@ fn extract_rate_limits_from_json_line(
         .ok()?
         .with_timezone(&chrono::Utc);
     Some((dt_utc, limits))
+}
+
+#[cfg(test)]
+mod usage_window_tests {
+    use super::*;
+
+    #[test]
+    fn claude_reports_all_known_windows_with_reset_times() {
+        let mut data = UsageData::default();
+        data.claude.five_hour_pct = Some(38.0);
+        data.claude.five_hour_resets = Some("2026-08-26T20:00:00Z".to_string());
+        data.claude.seven_day_pct = Some(10.0);
+        data.claude.seven_day_resets = Some("2026-08-30T00:00:00Z".to_string());
+
+        let windows = usage_windows_for(&AgentKind::Claude, &data);
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].label, "5h");
+        assert_eq!(windows[0].percent_remaining, 62.0);
+        assert!(windows[0].reset_at.is_some());
+        assert_eq!(windows[1].label, "7d");
+        assert_eq!(windows[1].percent_remaining, 90.0);
+        assert!(windows[1].reset_at.is_some());
+    }
+
+    #[test]
+    fn missing_window_is_omitted_not_placeholdered() {
+        let mut data = UsageData::default();
+        data.claude.five_hour_pct = Some(50.0);
+        // seven_day_pct left None: unknown, should not appear at all.
+
+        let windows = usage_windows_for(&AgentKind::Claude, &data);
+
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].label, "5h");
+    }
+
+    #[test]
+    fn missing_reset_time_still_reports_the_percentage() {
+        let mut data = UsageData::default();
+        data.claude.five_hour_pct = Some(20.0);
+        data.claude.five_hour_resets = None;
+
+        let windows = usage_windows_for(&AgentKind::Claude, &data);
+
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].percent_remaining, 80.0);
+        assert_eq!(windows[0].reset_at, None);
+    }
+
+    #[test]
+    fn codex_reports_five_hour_and_weekly_windows() {
+        let mut data = UsageData::default();
+        data.codex.five_hour_usage_pct = Some(25.0);
+        data.codex.weekly_usage_pct = Some(70.0);
+        data.codex.weekly_resets = Some("2026-09-01T00:00:00Z".to_string());
+
+        let windows = usage_windows_for(&AgentKind::Codex, &data);
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].label, "5h");
+        assert_eq!(windows[0].percent_remaining, 75.0);
+        assert_eq!(windows[1].label, "7d");
+        assert_eq!(windows[1].percent_remaining, 30.0);
+        assert!(windows[1].reset_at.is_some());
+    }
+
+    #[test]
+    fn opencode_and_pi_have_no_usage_source_and_always_report_empty() {
+        let mut data = UsageData::default();
+        // Even with unrelated fields populated, these harnesses have no
+        // known accessor path — must stay empty, not fall through to
+        // some other harness's numbers.
+        data.claude.five_hour_pct = Some(1.0);
+        data.codex.five_hour_usage_pct = Some(1.0);
+
+        assert!(usage_windows_for(&AgentKind::Opencode, &data).is_empty());
+        assert!(usage_windows_for(&AgentKind::Pi, &data).is_empty());
+    }
+
+    #[test]
+    fn no_cached_data_at_all_reports_empty_for_every_harness() {
+        let data = UsageData::default();
+        for agent in [
+            AgentKind::Claude,
+            AgentKind::Opencode,
+            AgentKind::Codex,
+            AgentKind::Pi,
+        ] {
+            assert!(usage_windows_for(&agent, &data).is_empty());
+        }
+    }
+
+    #[test]
+    fn session_kind_mapping_matches_agent_kind_mapping() {
+        use crate::project::SessionKind;
+
+        let mut data = UsageData::default();
+        data.claude.five_hour_pct = Some(38.0);
+
+        assert_eq!(
+            usage_windows_for_session_kind(&SessionKind::Claude, &data),
+            usage_windows_for(&AgentKind::Claude, &data)
+        );
+        assert!(usage_windows_for_session_kind(&SessionKind::Terminal, &data).is_empty());
+        assert!(usage_windows_for_session_kind(&SessionKind::Todos, &data).is_empty());
+    }
+
+    #[test]
+    fn format_usage_summary_omits_when_empty() {
+        assert_eq!(format_usage_summary(&[]), None);
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_omits_when_empty() {
+        assert_eq!(format_sidebar_usage_windows(&[]), None);
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_is_one_line_per_window() {
+        let windows = vec![
+            UsageWindow {
+                label: "5h",
+                percent_remaining: 62.4,
+                reset_at: Some(Utc::now() + chrono::Duration::hours(3)),
+            },
+            UsageWindow {
+                label: "7d",
+                percent_remaining: 90.0,
+                reset_at: None,
+            },
+        ];
+
+        let text = format_sidebar_usage_windows(&windows).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        // Reset clause is a live duration off `Utc::now()`; pin the stable part.
+        assert!(lines[0].starts_with("5h  62% left · "));
+        assert_eq!(lines[1], "7d  90% left");
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_drops_past_reset_and_clamps_negative() {
+        let windows = vec![UsageWindow {
+            label: "5h",
+            percent_remaining: -3.0,
+            reset_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        }];
+
+        assert_eq!(
+            format_sidebar_usage_windows(&windows).unwrap(),
+            "5h  0% left"
+        );
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_clamps_percentage_above_100() {
+        // A fresh window the source reports slightly over 100 must not
+        // render as "101% left".
+        let windows = vec![UsageWindow {
+            label: "5h",
+            percent_remaining: 100.6,
+            reset_at: None,
+        }];
+
+        assert_eq!(
+            format_sidebar_usage_windows(&windows).unwrap(),
+            "5h  100% left"
+        );
+    }
+
+    #[test]
+    fn format_usage_summary_clamps_percentage_above_100() {
+        let windows = vec![UsageWindow {
+            label: "7d",
+            percent_remaining: 103.2,
+            reset_at: None,
+        }];
+
+        assert_eq!(format_usage_summary(&windows).unwrap(), "7d 100% left");
+    }
+
+    #[test]
+    fn format_usage_summary_joins_multiple_windows_with_reset_times() {
+        let windows = vec![
+            UsageWindow {
+                label: "5h",
+                percent_remaining: 62.0,
+                reset_at: Some(Utc::now() + chrono::Duration::hours(3)),
+            },
+            UsageWindow {
+                label: "7d",
+                percent_remaining: 90.0,
+                reset_at: None,
+            },
+        ];
+
+        let summary = format_usage_summary(&windows).unwrap();
+        assert!(summary.contains("5h 62% left · resets in"));
+        assert!(summary.contains("7d 90% left"));
+        assert!(!summary.contains("7d 90% left · resets"));
+    }
+
+    #[test]
+    fn format_usage_summary_omits_a_reset_time_already_in_the_past() {
+        // A stale/clock-skewed reset shouldn't render as a negative or
+        // nonsensical duration; just drop the reset clause.
+        let windows = vec![UsageWindow {
+            label: "5h",
+            percent_remaining: 10.0,
+            reset_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        }];
+
+        assert_eq!(format_usage_summary(&windows).unwrap(), "5h 10% left");
+    }
 }

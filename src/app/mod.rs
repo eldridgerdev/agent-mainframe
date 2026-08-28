@@ -10,16 +10,20 @@ mod codex_sessions;
 pub mod commands;
 mod compose;
 mod config_wizard;
+mod context_hints;
+mod context_settings;
 mod diff;
 pub(crate) mod dormant;
 pub(crate) mod editor_ops;
 mod feature_ops;
+mod handoff;
 mod hooks;
 pub(crate) mod learning;
 mod navigation;
 mod notifications;
 mod opencode;
 pub(crate) mod opencode_storage;
+pub(crate) mod plan;
 mod plan_interview;
 pub(crate) mod pr_review;
 mod project_ops;
@@ -50,7 +54,7 @@ mod view;
 mod tests;
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -64,6 +68,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
+use crate::context_collectors::SessionContextCollector;
+use crate::context_tracking::SessionContextState;
 use crate::debug::{DebugLog, LogEntry};
 use crate::extension::{
     ExtensionConfig, load_global_extension_config, merge_project_extension_config,
@@ -537,6 +543,22 @@ pub struct AppConfig {
     /// [`Self::low_memory_warn_mb`].
     #[serde(default = "default_waiting_stale_minutes")]
     pub waiting_stale_minutes: u64,
+    /// Overrides the context-window size AMF assumes when a harness's own
+    /// telemetry doesn't report one (Claude falls back to a hardcoded
+    /// 900,000; Codex, OpenCode, and Pi otherwise have no fallback at all —
+    /// see `CLAUDE_DEFAULT_CONTEXT_LIMIT` in `context_collectors.rs`). `None`
+    /// keeps each harness's existing default behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_override: Option<u64>,
+    /// Percentage of the context window at which the severity indicator
+    /// switches from normal to `ContextBand::Warning`.
+    #[serde(default = "default_context_warning_percent")]
+    pub context_warning_percent: u8,
+    /// Percentage of the context window at which the severity indicator
+    /// switches to `ContextBand::Critical`. Must stay greater than
+    /// `context_warning_percent` for the bands to remain meaningful.
+    #[serde(default = "default_context_critical_percent")]
+    pub context_critical_percent: u8,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -615,6 +637,14 @@ fn default_waiting_stale_minutes() -> u64 {
     30
 }
 
+fn default_context_warning_percent() -> u8 {
+    crate::context_tracking::DEFAULT_CONTEXT_WARNING_PERCENT
+}
+
+fn default_context_critical_percent() -> u8 {
+    crate::context_tracking::DEFAULT_CONTEXT_CRITICAL_PERCENT
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum DiffReviewViewer {
     // The native AMF diff viewer is the only supported reviewer. The legacy
@@ -671,6 +701,9 @@ impl Default for AppConfig {
             dormant_idle_minutes: default_dormant_idle_minutes(),
             dormant_last_accessed_hours: default_dormant_last_accessed_hours(),
             waiting_stale_minutes: default_waiting_stale_minutes(),
+            context_window_override: None,
+            context_warning_percent: default_context_warning_percent(),
+            context_critical_percent: default_context_critical_percent(),
         }
     }
 }
@@ -812,6 +845,12 @@ pub struct App {
     /// `todo_origin`, so an unrelated feature created afterwards cannot pick up
     /// a stale brief.
     pub pending_todo_plan_brief: Option<String>,
+    /// Process-lifetime visibility for the project TODO scope. This is shared
+    /// by every TODO view but intentionally resets whenever AMF starts.
+    pub todo_project_visible: bool,
+    /// Process-lifetime visibility for the global TODO scope. This is shared
+    /// by every TODO view but intentionally resets whenever AMF starts.
+    pub todo_global_visible: bool,
     pub message: Option<String>,
     pub toasts: Vec<Toast>,
     pub should_quit: bool,
@@ -849,6 +888,13 @@ pub struct App {
     pub latest_prompt_cache: HashMap<String, String>,
     pub sidebar_model_cache: HashMap<String, String>,
     pub sidebar_plan_cache: HashMap<String, String>,
+    /// The sidebar's "Current: <path>" line for each feature's effective
+    /// plan (see `app::plan::resolve_effective_plan`). Populated by the
+    /// background sidebar-load pipeline, never resolved on the render
+    /// thread — the resolution touches the filesystem (an `is_file` check
+    /// and, for a manual selection, a `canonicalize`), and `draw()` runs
+    /// up to ~20x/sec while a pane is in view.
+    pub sidebar_effective_plan_cache: HashMap<String, String>,
     pub codex_session_title_cache: HashMap<String, Option<String>>,
     pub codex_session_prompt_cache: HashMap<String, Option<String>>,
     pub codex_session_model_cache: HashMap<String, Option<String>>,
@@ -857,6 +903,12 @@ pub struct App {
     pub codex_sidebar_metadata_rx: std::sync::mpsc::Receiver<CodexSidebarMetadataResult>,
     pub codex_sidebar_metadata_inflight: std::collections::HashSet<String>,
     pub opencode_sidebar_cache: HashMap<String, opencode_storage::OpencodeSidebarData>,
+    /// Rendered per-session active-TODO sidebar text, rebuilt on status sync and
+    /// after any local mutation that affects it (completion, deletion,
+    /// spawn) rather than on every frame. Resolving it runs two SQLite
+    /// queries per TODO-referenced session, and
+    /// `build_agent_sidebar_data` is rebuilt up to ~20x/sec in Viewing mode.
+    pub active_todos_sidebar_cache: HashMap<String, String>,
     sidebar_load_tx: Sender<SidebarLoadResult>,
     sidebar_load_rx: Receiver<SidebarLoadResult>,
     /// Finished Learning Mode answers, delivered from the per-question
@@ -873,6 +925,11 @@ pub struct App {
     pending_sidebar_loads: std::collections::HashSet<String>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
+    /// Transient context-window telemetry keyed by AMF session ID.
+    pub context_states: HashMap<String, SessionContextState>,
+    /// Transient context-hint dismissal state keyed by AMF session ID.
+    pub(crate) context_hint_states: context_hints::ContextHintStates,
+    pub context_collector: SessionContextCollector,
     pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
     /// Background refresh and last-known values for the dashboard's open-PR
     /// badges. Rendering only reads `active_prs`; all `gh` calls happen on the
@@ -884,6 +941,23 @@ pub struct App {
     /// at zero once it starts refilling.
     pub(crate) gh_graphql_limited_at: Option<Instant>,
     pub(crate) active_prs: HashMap<String, ActivePrStatus>,
+    /// Last-known terminal (merged/closed) state per feature, keyed by feature
+    /// id like `active_prs`. Unlike `active_prs`, this is a durable fact —
+    /// merged and closed never revert — so it is seeded from
+    /// `pr_terminal_state` at startup (`load_terminal_prs_from_db`) and every
+    /// positive lookup is persisted back, rather than being purely
+    /// session-lived like the open-PR cache.
+    pub(crate) terminal_prs: HashMap<String, crate::github::TerminalPr>,
+    /// Feature ids the terminal sweep has already confirmed have no
+    /// merged/closed PR, keyed like `active_prs`/`terminal_prs`. Session-only
+    /// (never persisted): unlike `terminal_prs`, a `NoPr` result is not a
+    /// durable fact — the branch could still get a PR later — so this exists
+    /// purely to stop `sync_active_prs_background` from re-querying the same
+    /// settled "never had one" answer on every sweep. Cleared the moment a
+    /// branch is observed open again (`apply_active_pr_updates`), so a PR
+    /// that opens and later closes is re-checked rather than staying stuck on
+    /// a stale negative answer.
+    pub(crate) confirmed_no_terminal_pr: HashSet<String>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
     /// Receiver for the background AI-adaptive plan-interview round (a
@@ -1066,6 +1140,7 @@ struct SidebarLoadResult {
     latest_prompt: Option<String>,
     model_text: Option<String>,
     opencode_sidebar: Option<opencode_storage::OpencodeSidebarData>,
+    plan_text: String,
 }
 
 type SidebarLoadTask = Box<dyn FnOnce() + Send + 'static>;
@@ -1228,6 +1303,8 @@ impl App {
         self.toasts.len().hash(&mut hasher);
         self.pending_inputs.len().hash(&mut hasher);
         self.tmux_cursor.hash(&mut hasher);
+        self.todo_project_visible.hash(&mut hasher);
+        self.todo_global_visible.hash(&mut hasher);
 
         match &self.selection {
             Selection::Project(pi) => {
@@ -2288,6 +2365,8 @@ impl App {
             mode: AppMode::Normal,
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
+            todo_project_visible: true,
+            todo_global_visible: true,
             message: None,
             toasts: Vec::new(),
             should_quit: false,
@@ -2313,6 +2392,7 @@ impl App {
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,
+            sidebar_effective_plan_cache: HashMap::new(),
             codex_session_title_cache: HashMap::new(),
             codex_session_prompt_cache: HashMap::new(),
             codex_session_model_cache: HashMap::new(),
@@ -2321,6 +2401,7 @@ impl App {
             codex_sidebar_metadata_rx,
             codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             opencode_sidebar_cache: HashMap::new(),
+            active_todos_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
             learning_answer_tx,
@@ -2331,10 +2412,15 @@ impl App {
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
+            context_states: HashMap::new(),
+            context_hint_states: context_hints::ContextHintStates::default(),
+            context_collector: SessionContextCollector::default(),
             session_status_bg: None,
             active_pr_bg: None,
             gh_graphql_limited_at: None,
             active_prs: HashMap::new(),
+            terminal_prs: HashMap::new(),
+            confirmed_no_terminal_pr: HashSet::new(),
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
@@ -2407,6 +2493,7 @@ impl App {
             }
         }
         app.refresh_fs_watch_paths();
+        app.load_terminal_prs_from_db();
         // A version-mismatched -C client hangs without delivering any
         // events; leaving the observer unset keeps the faster 5s
         // status-sync polling instead of trusting a dead event stream.
@@ -2434,6 +2521,12 @@ impl App {
             if let Ok(entries) = db.load_recent_log(app.debug_log.max_entries()) {
                 app.debug_log.inject_entries(entries);
             }
+        }
+        if let Err(e) = app.reconcile_todo_agent_associations() {
+            app.log_warn(
+                "todos",
+                format!("failed startup TODO association reconciliation: {e}"),
+            );
         }
 
         for message in crate::highlight::validate_startup_parsers() {
@@ -2521,6 +2614,8 @@ impl App {
             mode: AppMode::Normal,
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
+            todo_project_visible: true,
+            todo_global_visible: true,
             message: None,
             toasts: Vec::new(),
             should_quit: false,
@@ -2546,6 +2641,7 @@ impl App {
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,
+            sidebar_effective_plan_cache: HashMap::new(),
             codex_session_title_cache: HashMap::new(),
             codex_session_prompt_cache: HashMap::new(),
             codex_session_model_cache: HashMap::new(),
@@ -2554,6 +2650,7 @@ impl App {
             codex_sidebar_metadata_rx,
             codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             opencode_sidebar_cache: HashMap::new(),
+            active_todos_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
             learning_answer_tx,
@@ -2564,10 +2661,15 @@ impl App {
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
+            context_states: HashMap::new(),
+            context_hint_states: context_hints::ContextHintStates::default(),
+            context_collector: SessionContextCollector::default(),
             session_status_bg: None,
             active_pr_bg: None,
             gh_graphql_limited_at: None,
             active_prs: HashMap::new(),
+            terminal_prs: HashMap::new(),
+            confirmed_no_terminal_pr: HashSet::new(),
             pr_review_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
@@ -2815,6 +2917,9 @@ impl App {
                 self.sidebar_model_cache.remove(&result.tmux_session);
             }
 
+            self.sidebar_effective_plan_cache
+                .insert(result.tmux_session.clone(), result.plan_text);
+
             if let Some(data) = result.opencode_sidebar {
                 self.opencode_sidebar_cache
                     .insert(result.tmux_session, data);
@@ -2831,6 +2936,7 @@ impl App {
         self.latest_prompt_cache.remove(tmux_session);
         self.sidebar_model_cache.remove(tmux_session);
         self.sidebar_plan_cache.remove(tmux_session);
+        self.sidebar_effective_plan_cache.remove(tmux_session);
         self.codex_live_threads.remove(tmux_session);
         self.opencode_sidebar_cache.remove(tmux_session);
         self.prune_codex_sidebar_caches();
@@ -3492,6 +3598,7 @@ struct SidebarLoadRequest {
     workdir: PathBuf,
     preferred_session_kind: Option<SessionKind>,
     preferred_session_id: Option<String>,
+    selected_plan_path: Option<PathBuf>,
 }
 
 impl SidebarLoadRequest {
@@ -3534,6 +3641,7 @@ impl SidebarLoadRequest {
             workdir: feature.workdir.clone(),
             preferred_session_kind,
             preferred_session_id,
+            selected_plan_path: feature.selected_plan_path.clone(),
         }
     }
 
@@ -3548,6 +3656,7 @@ impl SidebarLoadRequest {
             workdir: feature.workdir.clone(),
             preferred_session_kind: Some(SessionKind::Opencode),
             preferred_session_id,
+            selected_plan_path: feature.selected_plan_path.clone(),
         }
     }
 
@@ -3557,6 +3666,8 @@ impl SidebarLoadRequest {
         self.preferred_session_id.hash(&mut hasher);
         session_kind_signature(self.preferred_session_kind.as_ref()).hash(&mut hasher);
         sidebar_prompt_input_signature(&self.workdir).hash(&mut hasher);
+        sidebar_plan_input_signature(&self.workdir, self.selected_plan_path.as_deref())
+            .hash(&mut hasher);
 
         if self.preferred_session_kind == Some(SessionKind::Opencode) {
             opencode_storage::sidebar_input_signature(
@@ -3598,6 +3709,7 @@ impl SidebarLoadRequest {
                 latest_prompt: None,
                 model_text: None,
                 opencode_sidebar: None,
+                plan_text: String::new(),
             };
         }
 
@@ -3627,6 +3739,10 @@ impl SidebarLoadRequest {
             }
             _ => None,
         };
+        let plan_text = crate::app::plan::plan_sidebar_display_text(
+            &self.workdir,
+            self.selected_plan_path.as_deref(),
+        );
 
         SidebarLoadResult {
             tmux_session: self.tmux_session,
@@ -3635,6 +3751,7 @@ impl SidebarLoadRequest {
             latest_prompt,
             model_text,
             opencode_sidebar,
+            plan_text,
         }
     }
 }
@@ -3672,6 +3789,24 @@ fn sidebar_prompt_input_signature(workdir: &Path) -> u64 {
         &mut hasher,
         workdir.join(".codex").join("latest-prompt.txt"),
     );
+    hasher.finish()
+}
+
+fn sidebar_plan_input_signature(workdir: &Path, selected_plan_path: Option<&Path>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_path_metadata(
+        &mut hasher,
+        workdir.join(crate::app::plan::DEFAULT_PLAN_FILE),
+    );
+    selected_plan_path.hash(&mut hasher);
+    if let Some(selected) = selected_plan_path {
+        let candidate = if selected.is_absolute() {
+            selected.to_path_buf()
+        } else {
+            workdir.join(selected)
+        };
+        hash_path_metadata(&mut hasher, candidate);
+    }
     hasher.finish()
 }
 

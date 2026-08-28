@@ -6,6 +6,7 @@ mod migrations;
 pub mod plan_interviews;
 pub mod pr_comment_triage;
 mod pr_review_cache;
+mod pr_terminal_state;
 mod session_status;
 pub mod store;
 pub mod todos;
@@ -147,6 +148,33 @@ impl AmfDb {
 
     pub fn evict_stale_pr_review_cache(&self) -> Result<()> {
         pr_review_cache::evict_stale(&self.conn)
+    }
+
+    /// Every cached terminal (merged/closed) PR, keyed by `(repo, branch)`.
+    /// Loaded once at startup to seed the dashboard badge before the first
+    /// sweep runs.
+    pub fn load_all_pr_terminal_state(
+        &self,
+    ) -> Result<std::collections::HashMap<(String, String), crate::github::TerminalPr>> {
+        pr_terminal_state::load_all(&self.conn)
+    }
+
+    /// Persist one branch's terminal PR state. Called by the sweep on every
+    /// positive lookup — cheap, since it never needs to happen again for that
+    /// branch.
+    pub fn save_pr_terminal_state(
+        &self,
+        repo: &str,
+        branch: &str,
+        pr: &crate::github::TerminalPr,
+    ) -> Result<()> {
+        pr_terminal_state::save(&self.conn, repo, branch, pr)
+    }
+
+    /// Remove the terminal PR cached for a deleted feature's repository and
+    /// branch so a future feature can safely reuse the branch name.
+    pub fn delete_pr_terminal_state(&self, repo: &str, branch: &str) -> Result<()> {
+        pr_terminal_state::delete(&self.conn, repo, branch)
     }
 
     /// Local triage rows for `pr_number` as `comment_id -> (state, note)`,
@@ -351,28 +379,46 @@ impl AmfDb {
     }
 }
 
-/// Per-project TODO list persistence. Wired into the UI in later epics (see
-/// `docs/backlog/feature-todos-plan.md`), so unused until then.
+/// Scoped TODO list persistence (worktree / project / global).
 #[allow(dead_code)]
 impl AmfDb {
-    /// The project's TODO list, or `None` if it has no list yet.
-    pub fn todo_list(&self, project_id: &str) -> Result<Option<todos::TodoList>> {
-        todos::load_list(&self.conn, project_id)
+    /// The TODO list for `scope`, or `None` if that scope has no list yet.
+    pub fn todo_list(&self, scope: &todos::TodoScope) -> Result<Option<todos::TodoList>> {
+        todos::load_list(&self.conn, scope)
     }
 
-    /// Return the project's TODO list, creating one hosted by `feature_id` if
+    /// A TODO list by its own id, whatever scope it is in.
+    pub fn todo_list_by_id(&self, list_id: &str) -> Result<Option<todos::TodoList>> {
+        todos::load_list_by_id(&self.conn, list_id)
+    }
+
+    /// Return the scope's TODO list, creating one hosted by `feature_id` if
     /// none exists.
     pub fn load_or_create_todo_list(
         &self,
-        project_id: &str,
-        feature_id: &str,
+        scope: &todos::TodoScope,
+        feature_id: Option<&str>,
     ) -> Result<todos::TodoList> {
-        todos::load_or_create_list(&self.conn, project_id, feature_id)
+        todos::load_or_create_list(&self.conn, scope, feature_id)
     }
 
-    /// Create the project's TODO list under `feature_id`; errors if one exists.
-    pub fn create_todo_list(&self, project_id: &str, feature_id: &str) -> Result<todos::TodoList> {
-        todos::create_list(&self.conn, project_id, feature_id)
+    /// Create the scope's TODO list under `feature_id`; errors if one exists.
+    pub fn create_todo_list(
+        &self,
+        scope: &todos::TodoScope,
+        feature_id: Option<&str>,
+    ) -> Result<todos::TodoList> {
+        todos::create_list(&self.conn, scope, feature_id)
+    }
+
+    /// Move a TODO into another list, appending it there and keeping its links.
+    pub fn move_todo(&self, todo_id: &str, target_list_id: &str) -> Result<()> {
+        todos::move_todo(&self.conn, todo_id, target_list_id)
+    }
+
+    /// Copy a TODO into another list as an unstarted item.
+    pub fn copy_todo(&self, todo_id: &str, target_list_id: &str) -> Result<Option<todos::Todo>> {
+        todos::copy_todo(&self.conn, todo_id, target_list_id)
     }
 
     pub fn set_todo_carry_over(&self, list_id: &str, carry_over: Option<&str>) -> Result<()> {
@@ -387,13 +433,31 @@ impl AmfDb {
         todos::delete_list(&self.conn, list_id)
     }
 
-    /// Delete the project's TODO list (and items) when the project is deleted.
-    pub fn delete_todo_list_for_project(&self, project_id: &str) -> Result<()> {
-        todos::delete_list_for_project(&self.conn, project_id)
+    /// Delete every list belonging to a project — its project-scoped list and
+    /// each of its worktree lists — when the project is deleted.
+    pub fn delete_todo_lists_for_project(&self, project_id: &str) -> Result<()> {
+        todos::delete_lists_for_project(&self.conn, project_id)
+    }
+
+    /// Delete the worktree-scoped list at `workdir`, if any.
+    pub fn delete_worktree_todo_list(&self, project_id: &str, workdir: &str) -> Result<()> {
+        todos::delete_worktree_list(&self.conn, project_id, workdir)
     }
 
     pub fn todos(&self, list_id: &str) -> Result<Vec<todos::Todo>> {
         todos::list_todos(&self.conn, list_id)
+    }
+
+    /// Look up a single TODO by id without knowing which list currently
+    /// holds it (it may have been moved/copied since the caller last saw it).
+    pub fn find_todo_by_id(&self, todo_id: &str) -> Result<Option<todos::Todo>> {
+        todos::find_todo_by_id(&self.conn, todo_id)
+    }
+
+    /// Resolve a TODO by its stable id together with the scope of the list
+    /// that currently owns it.  This follows TODO moves automatically.
+    pub fn resolve_todo_by_id(&self, todo_id: &str) -> Result<Option<todos::ResolvedTodo>> {
+        todos::resolve_todo_by_id(&self.conn, todo_id)
     }
 
     pub fn add_todo(
@@ -426,16 +490,20 @@ impl AmfDb {
         todos::set_linked_feature(&self.conn, todo_id, feature_id)
     }
 
-    pub fn set_todo_spawned_session(&self, todo_id: &str, session_id: &str) -> Result<()> {
-        todos::set_spawned_session(&self.conn, todo_id, session_id)
+    pub fn set_todo_agent_session(&self, todo_id: &str, session_id: &str) -> Result<()> {
+        todos::set_agent_session(&self.conn, todo_id, session_id)
     }
 
-    pub fn clear_todo_spawned_session(&self, todo_id: &str) -> Result<()> {
-        todos::clear_spawned_session(&self.conn, todo_id)
+    pub fn clear_todo_agent_session(&self, todo_id: &str) -> Result<()> {
+        todos::clear_agent_session(&self.conn, todo_id)
     }
 
-    pub fn set_todo_in_progress(&self, todo_id: &str, in_progress: bool) -> Result<()> {
-        todos::set_in_progress(&self.conn, todo_id, in_progress)
+    pub fn todo_agent_session_associations(&self) -> Result<Vec<(String, String)>> {
+        todos::agent_session_associations(&self.conn)
+    }
+
+    pub fn set_todo_work_state(&self, todo_id: &str, work: &todos::TodoWorkState) -> Result<()> {
+        todos::set_work_state(&self.conn, todo_id, work)
     }
 
     pub fn reorder_todos(&self, ordered_ids: &[String]) -> Result<()> {

@@ -3,6 +3,9 @@ mod automation;
 mod claude;
 mod codex;
 mod codex_config;
+mod context_collectors;
+mod context_display;
+mod context_tracking;
 mod custom_session_icons;
 mod db;
 mod debug;
@@ -286,6 +289,13 @@ enum AutomationCommands {
         #[arg(long, default_value_t = false)]
         dry_run: bool,
         /// Timeout in milliseconds while waiting for AMF to reply.
+        #[arg(long, default_value_t = 120000)]
+        timeout_ms: u64,
+    },
+    /// Seed deterministic completed AI-review findings for a screenshot fixture
+    SeedAiReview {
+        #[arg(long)]
+        file: Option<PathBuf>,
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
     },
@@ -863,6 +873,19 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
                 request.dry_run = true;
             }
 
+            let socket = ipc::socket_path();
+            let outbound = serde_json::to_string(&request.ipc_payload())?;
+            let reply = ipc::send_wait(&socket, &outbound, Duration::from_millis(timeout_ms))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string())
+            );
+            Ok(())
+        }
+        AutomationCommands::SeedAiReview { file, timeout_ms } => {
+            let payload = read_json_input(file.as_ref())?;
+            let request: automation::SeedAiReviewRequest =
+                serde_json::from_str(&payload).context("Invalid seed_ai_review JSON payload")?;
             let socket = ipc::socket_path();
             let outbound = serde_json::to_string(&request.ipc_payload())?;
             let reply = ipc::send_wait(&socket, &outbound, Duration::from_millis(timeout_ms))?;

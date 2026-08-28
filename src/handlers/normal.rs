@@ -335,6 +335,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('D') => {
             app.open_debug_log(None);
         }
+        KeyCode::Char('w') => {
+            app.start_context_settings();
+        }
         _ => {}
     }
     Ok(())
@@ -444,6 +447,11 @@ mod tests {
         assert_eq!(default_key_for_action("session_config"), Some('u'));
         assert_eq!(default_key_for_action("mark_ready"), Some('y'));
         assert_eq!(default_key_for_action("learning_mode"), Some('K'));
+        assert_eq!(
+            default_key_for_action("open_current_plan"),
+            None,
+            "the plan command is embedded-view-only, not a dashboard shortcut"
+        );
     }
 
     /// Two actions sharing a default key would make one of them unreachable,

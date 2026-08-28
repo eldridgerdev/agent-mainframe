@@ -33,12 +33,12 @@ use crate::github::{GhCli, PrRef, PrResolution, PrReviewComment as GhPrReviewCom
 use crate::headless::HeadlessRunner;
 
 /// The heading [`ai_review_prompt`] instructs the agent to emit per finding,
-/// e.g. `### src/app/sync.rs:42` or `### General`. [`parse_ai_findings`]
-/// parses exactly this shape back out.
+/// e.g. `### src/app/sync.rs|RIGHT|42` or `### General`.
+/// [`parse_ai_findings`] parses exactly this shape back out.
 const AI_FINDING_HEADING_PREFIX: &str = "### ";
 
 /// Lines of context kept on each side of the target line when extracting a
-/// windowed hunk for a finding ([`diff_hunk_for_line`]). Deliberately small:
+/// windowed hunk for a finding ([`diff_hunk_for_location`]). Deliberately small:
 /// unlike a human reviewer's inline comment — which GitHub anchors to a hunk
 /// that's already a few lines of context around a small change — an AI
 /// finding can point at a line inside a large contiguous block of new code,
@@ -47,27 +47,171 @@ const AI_FINDING_HEADING_PREFIX: &str = "### ";
 /// lines this finding is about."
 const AI_FINDING_HUNK_CONTEXT_LINES: usize = 6;
 
-/// Attribution for an AI review finding posted as an inline GitHub comment.
-fn append_ai_review_attribution(body: &str) -> String {
-    format!(
-        "{}\n\n{}",
-        body.trim_end(),
-        super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
-    )
+/// Provenance for one AI Review pass: which harness and model produced it, and
+/// the run's token usage and estimated cost. Captured from the headless run
+/// ([`run_ai_pr_review`]), persisted with the findings ([`AiReviewCacheEntry`]),
+/// and surfaced everywhere the review appears — the in-app pane and the posted
+/// GitHub comment — so a review carries one consistent attribution instead of
+/// the bare "— AI review via AMF" marker.
+///
+/// Every field past the harness is best-effort: a harness that reports no
+/// usage degrades to model-only attribution rather than showing a fabricated
+/// `$0.00`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiReviewAttribution {
+    /// Display name of the harness that ran the review. Always set for a run
+    /// AMF dispatched; `None` only for a legacy cache row written before
+    /// attribution existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Model the run used; `None` means the harness's default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    /// Preformatted USD cost (`token_tracking::format_token_cost`, so the same
+    /// configured rates and rounding as AMF's usage meters), or `None` when
+    /// the harness reported no usage to price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost: Option<String>,
 }
 
-/// Guarantee the footer survives into the posted body even though the
+impl AiReviewAttribution {
+    /// Build from a completed run. `usage` is the harness's last reported
+    /// `(input, output)` token counts, absent when it reported none.
+    pub fn from_run(
+        harness: &AgentKind,
+        model: Option<&str>,
+        usage: Option<(u64, u64)>,
+        pricing: &crate::token_tracking::TokenPricingConfig,
+    ) -> Self {
+        let estimated_cost = usage.map(|(input_tokens, output_tokens)| {
+            crate::token_tracking::format_token_cost(
+                &session_usage_from_counts(input_tokens, output_tokens),
+                pricing,
+            )
+        });
+        Self {
+            harness: Some(harness.display_name().to_string()),
+            model: model.map(str::to_string),
+            input_tokens: usage.map(|(input, _)| input),
+            output_tokens: usage.map(|(_, output)| output),
+            estimated_cost,
+        }
+    }
+
+    /// Whether any token usage was reported for this run.
+    pub fn has_usage(&self) -> bool {
+        self.input_tokens.is_some() || self.output_tokens.is_some()
+    }
+
+    fn model_label(&self) -> &str {
+        self.model.as_deref().unwrap_or("harness default")
+    }
+
+    /// `harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.08`,
+    /// dropping the token clause when usage is unknown and the cost clause when
+    /// it could not be priced. Plain text — used by the in-app pane and, inside
+    /// [`Self::disclosure_line`], the posted comment.
+    pub fn plain_label(&self) -> String {
+        let mut parts = vec![
+            format!(
+                "harness {}",
+                self.harness.as_deref().unwrap_or("unreported")
+            ),
+            format!("model {}", self.model_label()),
+        ];
+        if let (Some(input), Some(output)) = (self.input_tokens, self.output_tokens) {
+            parts.push(format!(
+                "~{} in / ~{} out",
+                crate::token_tracking::format_token_count(input),
+                crate::token_tracking::format_token_count(output)
+            ));
+        }
+        if let Some(cost) = &self.estimated_cost {
+            parts.push(format!("est. {cost}"));
+        }
+        parts.join(" · ")
+    }
+
+    /// GitHub-flavored Markdown disclosure line inserted just above the stable
+    /// [`AI_REVIEW_ATTRIBUTION_FOOTER`] in a posted review, mirroring the
+    /// reply-flow disclosure ([`super::pr_review::ReplyGenerationMetadata::disclosure`]).
+    pub fn disclosure_line(&self) -> String {
+        format!("_AI review · {}_", self.plain_label())
+    }
+}
+
+fn session_usage_from_counts(
+    input_tokens: u64,
+    output_tokens: u64,
+) -> crate::token_tracking::SessionTokenUsage {
+    crate::token_tracking::SessionTokenUsage {
+        // Only the token counts feed `format_token_cost`; the source label is
+        // never read for pricing.
+        source: crate::token_tracking::TokenUsageSource {
+            provider: crate::token_tracking::TokenUsageProvider::Claude,
+            id: "ai-review".to_string(),
+        },
+        input_tokens,
+        output_tokens,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: input_tokens.saturating_add(output_tokens),
+    }
+}
+
+/// Attribution for an AI review finding or summary posted to GitHub: the
+/// stable `— AI review via AMF` marker, preceded by a
+/// [`AiReviewAttribution::disclosure_line`] (model, tokens, estimated cost)
+/// when a run's provenance is available. Legacy callers with no attribution
+/// still get the bare marker.
+fn append_ai_review_attribution(body: &str, attribution: Option<&AiReviewAttribution>) -> String {
+    match attribution {
+        Some(attribution) => format!(
+            "{}\n\n{}\n\n{}",
+            body.trim_end(),
+            attribution.disclosure_line(),
+            super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
+        ),
+        None => format!(
+            "{}\n\n{}",
+            body.trim_end(),
+            super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
+        ),
+    }
+}
+
+/// Guarantee the attribution survives into the posted body even though the
 /// confirm dialog's summary editor is free-form text the user can edit —
-/// including deleting the footer [`build_ai_review`] seeded it with. Called
-/// right before [`GhCli::create_review`] rather than trusted from dialog
-/// build time, so an edited-out footer is restored instead of silently
-/// publishing an unattributed review.
-fn ensure_ai_review_attribution(body: &str) -> String {
+/// including deleting the disclosure line and footer [`build_ai_review`]
+/// seeded it with. Called right before [`GhCli::create_review`] rather than
+/// trusted from dialog build time, so an edited-out attribution is restored
+/// instead of silently publishing an unattributed review. Any existing
+/// trailing marker (and a recognized disclosure line above it) is stripped
+/// first so the attribution is never doubled.
+fn ensure_ai_review_attribution(body: &str, attribution: Option<&AiReviewAttribution>) -> String {
+    append_ai_review_attribution(strip_ai_review_attribution(body), attribution)
+}
+
+/// Remove a trailing [`AI_REVIEW_ATTRIBUTION_FOOTER`] and, if present directly
+/// above it, a disclosure line matching `attribution` — leaving the editable
+/// core body.
+fn strip_ai_review_attribution(body: &str) -> &str {
+    let footer = super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
     let trimmed = body.trim_end();
-    if trimmed.ends_with(super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER) {
-        trimmed.to_string()
-    } else {
-        append_ai_review_attribution(trimmed)
+    let core = trimmed.strip_suffix(footer).map_or(trimmed, str::trim_end);
+    // Drop a trailing italic `_AI review · …_` disclosure line, whatever its
+    // (model/token/cost) contents, so a re-priced run doesn't stack lines.
+    match core.rsplit_once('\n') {
+        Some((head, last)) if last.trim_start().starts_with("_AI review · ") => head.trim_end(),
+        _ if core.trim_start().starts_with("_AI review · ") && core.trim_end().ends_with('_') => {
+            ""
+        }
+        _ => core,
     }
 }
 
@@ -79,12 +223,17 @@ const AI_REVIEW_PROMPT_TOKEN_WARN: usize = 40_000;
 
 /// One AI-review finding: parsed from the agent's fixed-format output
 /// ([`parse_ai_findings`]), then kept/skipped/edited in the AI Review pane
-/// before an optional `W` post. `path`/`line` are `None` for a finding with no
-/// single-line anchor (the `### General` bucket).
+/// before an optional `W` post. `path` is `None` for the `### General` bucket;
+/// `line` is `None` whenever a finding has no validated single-line anchor. An
+/// anchored finding's `line` is one-based in the source-file coordinate system named by `side`.
+/// `side == None` is accepted only while parsing legacy `path:line` output;
+/// validation either resolves it unambiguously to a side or removes the line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiReviewFinding {
     pub path: Option<String>,
     pub line: Option<u32>,
+    #[serde(default)]
+    pub side: Option<crate::diff::DiffSide>,
     /// Editable before posting (`e` in the pane).
     pub body: String,
     /// The hunk (from the PR diff) covering `path:line`, matching the shape
@@ -92,7 +241,7 @@ pub struct AiReviewFinding {
     /// header + body). Unlike a GitHub comment, nothing about *generating* a
     /// finding produces this — it's reconstructed after parsing by
     /// re-matching `path:line` back into the already-fetched PR diff
-    /// ([`diff_hunk_for_line`]). `None` when there's no anchor, or the line
+    /// ([`diff_hunk_for_location`]). `None` when there's no anchor, or the line
     /// couldn't be matched to a hunk.
     pub diff_hunk: Option<String>,
     /// Excluded from `W` (post) without discarding it — the user can un-skip.
@@ -129,13 +278,18 @@ pub enum AiReviewProgress {
 /// model that doesn't follow the fixed-format instruction produces zero
 /// parsed findings with no other visible signal that anything went wrong (vs.
 /// a genuinely clean diff, which also parses to zero findings).
+#[derive(Debug)]
 pub struct AiReviewOutcome {
     pub findings: Vec<AiReviewFinding>,
     /// One-to-three sentence overview produced in the same agent pass as the
-    /// findings. `None` when an older/malformed response omitted the summary;
-    /// posting falls back to the legacy placeholder instead of blocking.
+    /// findings. New runs require this to be `Some`; `None` remains supported
+    /// for legacy cache entries created before summary validation.
     pub summary: Option<String>,
     pub raw_output: String,
+    /// Which harness/model produced this pass, and what it cost. Filled in by
+    /// [`run_ai_pr_review`] after the run; [`process_ai_review_output`] leaves
+    /// it at its default since it only sees the response text.
+    pub attribution: AiReviewAttribution,
 }
 
 /// Record of the most recent `A` run, persisted alongside the findings in
@@ -154,6 +308,27 @@ pub struct AiReviewRun {
 pub enum AiReviewRunOutcome {
     Findings(usize),
     Error(String),
+}
+
+/// Presentation status for the AI Review badge in PR Triage. The running
+/// variant comes from the live worker; terminal variants come from the exact
+/// PR-number/head-SHA cache entry retained on [`PrReviewState`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum AiReviewTriageStatus {
+    NotRun,
+    Running,
+    Pending(usize),
+    NoFindings(AiReviewRun),
+    Failed(AiReviewRun),
+    /// A successful run found findings, but none remain publishable (for
+    /// example because they were skipped or posted). PR Triage shows no badge.
+    CompletedWithFindings,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AiReviewTriageSnapshot {
+    pub(crate) pending_findings: usize,
+    pub(crate) last_run: Option<AiReviewRun>,
 }
 
 /// Stage of the AI PR review's full-screen running view. Mirrors the
@@ -179,6 +354,11 @@ pub struct AiReviewCacheEntry {
     /// keeps cache rows written before this field was introduced readable.
     #[serde(default)]
     pub summary: Option<String>,
+    /// Harness/model/token/cost provenance of the run that produced
+    /// `findings`. `None` for cache rows written before attribution existed,
+    /// or for a run whose latest outcome was an error.
+    #[serde(default)]
+    pub attribution: Option<AiReviewAttribution>,
 }
 
 impl AiReviewCacheEntry {
@@ -232,19 +412,75 @@ pub fn ai_review_prompt(diff: &str, memory: &str, skill: Option<&str>) -> String
         out.push_str("\n\n");
     }
     out.push_str("Diff:\n\n");
-    out.push_str(diff.trim_end());
+    out.push_str(&annotated_diff_for_ai_review(diff));
     out.push_str(&format!(
         "\n\n---\n\nOutput ONLY the summary and findings in this exact format (no prose outside \
          it). Always include the summary, even when there are no findings. The summary must be \
          one to three useful sentences covering the main themes or risk:\n\n\
          ## Summary\n\
          <overall review summary>\n\n\
-         {AI_FINDING_HEADING_PREFIX}<path>:<line>\n\
+         {AI_FINDING_HEADING_PREFIX}<path>|<side>|<line>\n\
          <finding text, 1-3 sentences>\n\n\
          {AI_FINDING_HEADING_PREFIX}General\n\
-         <a finding with no single file:line anchor>\n"
+         <a finding with no single file:line anchor>\n\n\
+         `<side>` must be `RIGHT` for a current-file line or `LEFT` for a removed \
+         base-file line. Copy the path, side, and one-based line number exactly \
+         from that row's bracketed coordinate label; never count patch rows or \
+         infer a line number from a hunk offset.\n"
     ));
     out
+}
+
+/// Render a parsed unified diff with an explicit source coordinate on every
+/// addressable row. Context rows show both coordinates but lead with RIGHT so
+/// findings naturally target the current file; removals expose LEFT only and
+/// additions RIGHT only. If parsing fails, retain the raw diff so the review
+/// can still run, while response validation will conservatively downgrade any
+/// location that cannot be resolved.
+fn annotated_diff_for_ai_review(diff: &str) -> String {
+    use crate::diff::{DiffLineKind, DiffSide, line_locations_in_hunk};
+
+    let Ok(files) = crate::diff::parse_unified_diff(diff) else {
+        return diff.trim_end().to_string();
+    };
+    let mut out = String::new();
+    for file in files {
+        out.push_str(&format!("File: {}\n", file.path));
+        for hunk in &file.hunks {
+            out.push_str(&hunk.header);
+            out.push('\n');
+            for (line, location) in hunk.lines.iter().zip(line_locations_in_hunk(hunk)) {
+                let label = match (line.kind.clone(), location) {
+                    (DiffLineKind::Context, Some(location)) => format!(
+                        "RIGHT:{} LEFT:{}",
+                        location
+                            .line_on(DiffSide::New)
+                            .expect("context has new line"),
+                        location
+                            .line_on(DiffSide::Old)
+                            .expect("context has old line")
+                    ),
+                    (DiffLineKind::Added, Some(location)) => format!(
+                        "RIGHT:{}",
+                        location
+                            .line_on(DiffSide::New)
+                            .expect("addition has new line")
+                    ),
+                    (DiffLineKind::Removed, Some(location)) => format!(
+                        "LEFT:{}",
+                        location
+                            .line_on(DiffSide::Old)
+                            .expect("removal has old line")
+                    ),
+                    (DiffLineKind::NoNewlineMarker, None) => "MARKER".to_string(),
+                    _ => continue,
+                };
+                out.push_str(&format!("[{label}] {}\n", line.text));
+            }
+        }
+        out.push('\n');
+    }
+    out.trim_end().to_string()
 }
 
 /// If `output` is entirely wrapped in one fenced code block (a common way
@@ -289,10 +525,12 @@ fn strip_finding_heading(line: &str) -> Option<&str> {
 /// ([`strip_outer_code_fence`]), and any small markdown heading level starts a
 /// section ([`strip_finding_heading`], not just the requested `###`). A
 /// case-insensitive `Summary` section is separated from findings; a
-/// `path:line` finding heading (the line parses as `u32`) is anchored, while
-/// anything else (`General`, malformed) stays pathless. Empty sections are
-/// dropped rather than erroring, so a partially-malformed response still
-/// yields whatever content did parse.
+/// `path|RIGHT|line` / `path|LEFT|line` finding heading is explicitly anchored.
+/// Legacy `path:line` remains parseable with an unspecified side for safe
+/// migration; the validation pass must resolve it unambiguously. Anything else
+/// (`General`, malformed) stays pathless. Empty sections are dropped rather
+/// than erroring, so a partially-malformed response still yields whatever
+/// content did parse.
 fn parse_ai_review_output(output: &str) -> (Option<String>, Vec<AiReviewFinding>) {
     fn flush(
         current: Option<(&str, Vec<&str>)>,
@@ -312,16 +550,31 @@ fn parse_ai_review_output(output: &str) -> (Option<String>, Vec<AiReviewFinding>
             }
             return;
         }
-        let (path, line) = match heading.trim().rsplit_once(':') {
-            Some((p, l)) if !p.is_empty() => match l.trim().parse::<u32>() {
-                Ok(n) => (Some(p.to_string()), Some(n)),
-                Err(_) => (None, None),
+        let heading = heading.trim();
+        let explicit = heading.rsplit_once('|').and_then(|(path_and_side, line)| {
+            let (path, side) = path_and_side.rsplit_once('|')?;
+            let side = match side.trim().to_ascii_uppercase().as_str() {
+                "LEFT" => crate::diff::DiffSide::Old,
+                "RIGHT" => crate::diff::DiffSide::New,
+                _ => return None,
+            };
+            let line = line.trim().parse::<u32>().ok()?;
+            (!path.is_empty()).then(|| (path.to_string(), line, side))
+        });
+        let (path, line, side) = match explicit {
+            Some((path, line, side)) => (Some(path), Some(line), Some(side)),
+            None => match heading.rsplit_once(':') {
+                Some((path, line)) if !path.is_empty() => match line.trim().parse::<u32>() {
+                    Ok(line) => (Some(path.to_string()), Some(line), None),
+                    Err(_) => (None, None, None),
+                },
+                _ => (None, None, None),
             },
-            _ => (None, None),
         };
         out.push(AiReviewFinding {
             path,
             line,
+            side,
             body,
             diff_hunk: None,
             skipped: false,
@@ -355,25 +608,53 @@ pub fn parse_ai_findings(output: &str) -> Vec<AiReviewFinding> {
     parse_ai_review_output(output).1
 }
 
-/// Reconstruct a GitHub-style `diff_hunk` string (the `@@ ... @@` header plus
-/// a small window of body lines around the target — not the whole matched
-/// hunk, see [`AI_FINDING_HUNK_CONTEXT_LINES`]) for whichever hunk in `files`
-/// covers `path:line` on the new (current) side of the diff. An AI-review
-/// finding gets no such hunk for free — it's re-derived here by matching the
-/// model's `path:line` back into the already-fetched PR diff. `None` when the
-/// file isn't in the diff, or no hunk's new-side range covers `line` (a
-/// mismatched/hallucinated line number) — the finding still renders and
-/// injects fine without one, same as any GitHub comment whose hunk happens to
-/// be unavailable.
-fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) -> Option<String> {
-    let line = line as usize;
-    let file = files.iter().find(|f| f.path == path)?;
-    let hunk = file.hunks.iter().find(|h| {
-        let end = h.new_start + h.new_lines;
-        line >= h.new_start && line < end
-    })?;
+/// Resolve a requested source coordinate through the canonical unified-diff
+/// row map. Legacy requests without a side are accepted only when the number
+/// identifies one row unambiguously across both sides; if the same integer
+/// names different old/new rows, guessing would recreate the original bug.
+fn resolve_ai_review_location(
+    file: &crate::diff::DiffFile,
+    line: u32,
+    side: Option<crate::diff::DiffSide>,
+) -> Option<(crate::diff::DiffSide, crate::diff::DiffLineLocation)> {
+    use crate::diff::DiffSide;
 
-    super::pr_review::window_parsed_hunk(hunk, line, false, AI_FINDING_HUNK_CONTEXT_LINES)
+    let line = line as usize;
+    if let Some(side) = side {
+        return file
+            .resolve_source_line(side, line)
+            .map(|location| (side, location));
+    }
+
+    let old = file.resolve_source_line(DiffSide::Old, line);
+    let new = file.resolve_source_line(DiffSide::New, line);
+    match (old, new) {
+        (Some(old), Some(new)) if old == new => Some((DiffSide::New, new)),
+        (Some(_), Some(_)) => None,
+        (Some(old), None) => Some((DiffSide::Old, old)),
+        (None, Some(new)) => Some((DiffSide::New, new)),
+        (None, None) => None,
+    }
+}
+
+/// Reconstruct a GitHub-style `diff_hunk` string (the `@@ ... @@` header plus
+/// a small window around an already-resolved source coordinate).
+fn diff_hunk_for_location(
+    files: &[crate::diff::DiffFile],
+    path: &str,
+    side: crate::diff::DiffSide,
+    location: crate::diff::DiffLineLocation,
+) -> Option<String> {
+    let file = files.iter().find(|f| f.path == path)?;
+    let hunk = file.hunk_for_location(location)?;
+    let line = location.line_on(side)?;
+
+    super::pr_review::window_parsed_hunk(
+        hunk,
+        line,
+        side == crate::diff::DiffSide::Old,
+        AI_FINDING_HUNK_CONTEXT_LINES,
+    )
 }
 
 /// Build the `(summary, inline comments)` GitHub review payload from a set of
@@ -385,34 +666,38 @@ fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) ->
 /// silently dropped. Inline comments carry their own attribution footer since
 /// they can surface on their own (e.g. the Files-changed view) without the
 /// review summary in sight; the summary already self-identifies.
+///
+/// `attribution`, when present, adds the model/token/cost disclosure line
+/// above the stable marker on both the summary and every inline comment.
 fn build_ai_review(
     findings: &[&AiReviewFinding],
     generated_summary: Option<&str>,
+    attribution: Option<&AiReviewAttribution>,
 ) -> (String, Vec<GhPrReviewComment>) {
     let mut inline = Vec::new();
     let mut general = Vec::new();
     for f in findings {
-        match (&f.path, f.line) {
-            // `diff_hunk.is_some()` gates whether the model's self-reported
-            // line actually landed inside a hunk of the diff GitHub will
-            // validate the review against (`diff_hunk_for_line`, computed
-            // from the very same diff at generation time) — models count
-            // lines from the raw unified-diff text themselves and can get
-            // this wrong independent of whether the PR has since moved, so a
-            // `None` hunk here means GitHub's create-review API would reject
-            // this line too. Fold it into the summary instead of a doomed
-            // inline comment.
-            (Some(path), Some(line)) if f.diff_hunk.is_some() => inline.push(GhPrReviewComment {
-                path: path.clone(),
-                line,
-                side: "RIGHT",
-                start_line: None,
-                start_side: None,
-                body: append_ai_review_attribution(&f.body),
-            }),
-            (Some(path), Some(line)) => general.push(format!("- **{path}:{line}**: {}", f.body)),
-            (Some(path), None) => general.push(format!("- **{path}**: {}", f.body)),
-            (None, _) => general.push(format!("- {}", f.body)),
+        match (&f.path, f.side, f.line) {
+            // `diff_hunk.is_some()` proves the side-aware source coordinate
+            // resolved through the same parsed diff that produced the prompt.
+            // Legacy cache rows have no side and invalid/stale coordinates have
+            // no hunk, so both conservatively fold into the summary instead of
+            // risking a wrong or GitHub-rejected inline anchor.
+            (Some(path), Some(side), Some(line)) if f.diff_hunk.is_some() => {
+                inline.push(GhPrReviewComment {
+                    path: path.clone(),
+                    line,
+                    side: match side {
+                        crate::diff::DiffSide::Old => "LEFT",
+                        crate::diff::DiffSide::New => "RIGHT",
+                    },
+                    start_line: None,
+                    start_side: None,
+                    body: append_ai_review_attribution(&f.body, attribution),
+                })
+            }
+            (Some(path), _, _) => general.push(format!("- **{path}**: {}", f.body)),
+            (None, _, _) => general.push(format!("- {}", f.body)),
         }
     }
 
@@ -425,7 +710,7 @@ fn build_ai_review(
         body.push_str(&general.join("\n"));
     }
     if generated_summary.is_some() {
-        body = append_ai_review_attribution(&body);
+        body = append_ai_review_attribution(&body, attribution);
     }
     (body, inline)
 }
@@ -464,6 +749,49 @@ fn model_for_ai_review_run(
     }
 }
 
+/// Validate and enrich a successful harness response. A non-empty Summary is
+/// the explicit proof that the model completed the requested response shape;
+/// without it, zero parsed findings cannot safely mean a clean review.
+fn process_ai_review_output(output: String, diff: &str) -> Result<AiReviewOutcome> {
+    let (summary, mut findings) = parse_ai_review_output(&output);
+    if summary.is_none() {
+        anyhow::bail!("AI review returned malformed output: missing a non-empty Summary section");
+    }
+    // Validate every requested coordinate against the exact parsed row map.
+    // Invalid or ambiguous requests retain their file and prose, but lose the
+    // misleading line target and are therefore rendered/posted as file-level
+    let files = crate::diff::parse_unified_diff(diff).ok();
+    for finding in &mut findings {
+        let resolved = match (&finding.path, finding.line, files.as_deref()) {
+            (Some(path), Some(line), Some(files)) => files
+                .iter()
+                .find(|file| file.path == *path)
+                .and_then(|file| resolve_ai_review_location(file, line, finding.side)),
+            _ => None,
+        };
+        if let (Some(path), Some((side, location)), Some(files)) =
+            (&finding.path, resolved, files.as_deref())
+        {
+            finding.side = Some(side);
+            finding.diff_hunk = diff_hunk_for_location(files, path, side, location);
+            if finding.diff_hunk.is_none() {
+                finding.line = None;
+                finding.side = None;
+            }
+        } else if finding.path.is_some() && finding.line.is_some() {
+            finding.line = None;
+            finding.side = None;
+            finding.diff_hunk = None;
+        }
+    }
+    Ok(AiReviewOutcome {
+        findings,
+        summary,
+        raw_output: output,
+        attribution: AiReviewAttribution::default(),
+    })
+}
+
 /// Background body of the AI PR review (`A`): assemble the prompt from
 /// `diff` + `memory` (+ optional `skill`), report a token estimate, then make
 /// **one** headless agent pass and parse its response into findings. Runs off
@@ -471,6 +799,7 @@ fn model_for_ai_review_run(
 /// `model`, when set (`AppConfig::review_model_for(ReviewAction::PrReview)`),
 /// picks the review's model independent of whichever model the feature's
 /// interactive session runs.
+#[allow(clippy::too_many_arguments)]
 fn run_ai_pr_review(
     harness: AgentKind,
     workdir: PathBuf,
@@ -478,6 +807,7 @@ fn run_ai_pr_review(
     memory: String,
     skill: Option<String>,
     model: Option<String>,
+    pricing: crate::token_tracking::TokenPricingConfig,
     tx: std::sync::mpsc::Sender<AiReviewProgress>,
 ) {
     let prompt = ai_review_prompt(&diff, &memory, skill.as_deref());
@@ -485,6 +815,13 @@ fn run_ai_pr_review(
         token_estimate: super::pr_review::estimate_tokens(&prompt),
     });
 
+    // The harness reports usage as one or more `Usage` events during the run;
+    // the last one is the run total. Recorded here as well as forwarded so the
+    // completed `AiReviewOutcome` carries the model/token/cost attribution,
+    // not just the transient running screen.
+    let last_usage: std::sync::Arc<std::sync::Mutex<Option<(u64, u64)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let usage_sink = std::sync::Arc::clone(&last_usage);
     let progress_tx = tx.clone();
     let result = HeadlessRunner::run_with_progress(
         &harness,
@@ -499,33 +836,25 @@ fn run_ai_pr_review(
                 crate::headless::HeadlessProgress::Usage {
                     input_tokens,
                     output_tokens,
-                } => AiReviewProgress::Usage {
-                    input_tokens,
-                    output_tokens,
-                },
+                } => {
+                    if let Ok(mut slot) = usage_sink.lock() {
+                        *slot = Some((input_tokens, output_tokens));
+                    }
+                    AiReviewProgress::Usage {
+                        input_tokens,
+                        output_tokens,
+                    }
+                }
             };
             let _ = progress_tx.send(progress);
         },
     )
-    .map(|output| {
-        let (summary, mut findings) = parse_ai_review_output(&output);
-        // Attach each anchored finding's diff hunk by re-matching its
-        // `path:line` into the already-fetched PR diff — nothing about
-        // generating a finding produces one the way GitHub's API does for a
-        // fetched comment. A parse failure (malformed diff) just leaves every
-        // finding without a hunk rather than failing the whole review.
-        if let Ok(files) = crate::diff::parse_unified_diff(&diff) {
-            for finding in &mut findings {
-                if let (Some(path), Some(line)) = (&finding.path, finding.line) {
-                    finding.diff_hunk = diff_hunk_for_line(&files, path, line);
-                }
-            }
-        }
-        AiReviewOutcome {
-            findings,
-            summary,
-            raw_output: output,
-        }
+    .and_then(|output| process_ai_review_output(output, &diff))
+    .map(|mut outcome| {
+        let usage = last_usage.lock().ok().and_then(|slot| *slot);
+        outcome.attribution =
+            AiReviewAttribution::from_run(&harness, model.as_deref(), usage, &pricing);
+        outcome
     });
     let _ = tx.send(AiReviewProgress::Done(result));
 }
@@ -542,12 +871,14 @@ fn apply_refreshed_pr_review_state(
     state: &mut PrReviewState,
     review: crate::app::pr_review::PrReview,
     pending_ai_review_findings: usize,
+    ai_review_last_run: Option<AiReviewRun>,
     checked_out_branch: Option<String>,
 ) {
     let selected_id = state.selected_comment().map(|comment| comment.id);
     let old_selected = state.selected;
     state.review = review;
     state.pending_ai_review_findings = pending_ai_review_findings;
+    state.ai_review_last_run = ai_review_last_run;
     state.checked_out_branch = checked_out_branch;
     state.marked.retain(|id| {
         state
@@ -591,15 +922,21 @@ impl App {
                 .ok()
                 .flatten()
         });
-        let (findings, summary, last_run) = match cached {
-            Some(entry) => (entry.findings, entry.summary, entry.last_run),
-            None => (Vec::new(), None, None),
+        let (findings, summary, last_run, attribution) = match cached {
+            Some(entry) => (
+                entry.findings,
+                entry.summary,
+                entry.last_run,
+                entry.attribution,
+            ),
+            None => (Vec::new(), None, None, None),
         };
         self.mode = AppMode::AiReview(AiReviewState {
             workdir,
             pr,
             findings,
             summary,
+            attribution,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
@@ -716,6 +1053,7 @@ impl App {
             findings: state.findings.clone(),
             last_run: state.last_run.clone(),
             summary: state.summary.clone(),
+            attribution: state.attribution.clone(),
         };
         let saved = match self.db.as_ref() {
             Some(db) => {
@@ -735,10 +1073,11 @@ impl App {
             }
             None => false,
         };
-        self.update_pending_ai_review_count(
+        self.update_ai_review_triage_snapshot(
             &state.workdir,
             &state.pr,
             entry.publishable_finding_count(),
+            entry.last_run.clone(),
         );
         saved
     }
@@ -746,7 +1085,7 @@ impl App {
     /// Publishable cached findings for the exact PR/head SHA. This is read
     /// when PR Triage opens so the pending badge survives pane changes and
     /// process restarts rather than depending on a live background job.
-    pub(crate) fn pending_ai_review_count(&self, pr: &PrRef) -> usize {
+    pub(crate) fn ai_review_triage_snapshot(&self, pr: &PrRef) -> AiReviewTriageSnapshot {
         self.db
             .as_ref()
             .and_then(|db| {
@@ -754,13 +1093,52 @@ impl App {
                     .ok()
                     .flatten()
             })
-            .map_or(0, |entry| entry.publishable_finding_count())
+            .map_or_else(AiReviewTriageSnapshot::default, |entry| {
+                AiReviewTriageSnapshot {
+                    pending_findings: entry.publishable_finding_count(),
+                    last_run: entry.last_run,
+                }
+            })
+    }
+
+    /// Derive the PR Triage badge state with live work taking precedence over
+    /// the exact cached terminal result retained by the pane.
+    pub(crate) fn ai_review_triage_status(&self, state: &PrReviewState) -> AiReviewTriageStatus {
+        let pr = &state.review.pr;
+        let running = self.ai_review_bg.is_some()
+            && self.ai_review_pending.as_ref().is_some_and(|pending| {
+                pending.workdir == state.workdir
+                    && pending.pr.number == pr.number
+                    && pending.pr.head_sha == pr.head_sha
+            });
+        if running {
+            return AiReviewTriageStatus::Running;
+        }
+        if state.pending_ai_review_findings > 0 {
+            return AiReviewTriageStatus::Pending(state.pending_ai_review_findings);
+        }
+        match state.ai_review_last_run.clone() {
+            Some(run) if matches!(run.outcome, AiReviewRunOutcome::Findings(0)) => {
+                AiReviewTriageStatus::NoFindings(run)
+            }
+            Some(run) if matches!(run.outcome, AiReviewRunOutcome::Error(_)) => {
+                AiReviewTriageStatus::Failed(run)
+            }
+            Some(_) => AiReviewTriageStatus::CompletedWithFindings,
+            None => AiReviewTriageStatus::NotRun,
+        }
     }
 
     /// Keep every in-memory copy of the matching PR Triage pane in sync with
     /// the durable cache. The pane may currently be visible, stashed under AI
     /// Review, or stashed while the user watches a fix session.
-    fn update_pending_ai_review_count(&mut self, workdir: &Path, pr: &PrRef, count: usize) {
+    fn update_ai_review_triage_snapshot(
+        &mut self,
+        workdir: &Path,
+        pr: &PrRef,
+        count: usize,
+        last_run: Option<AiReviewRun>,
+    ) {
         let matches = |state: &PrReviewState| {
             state.workdir == workdir
                 && state.review.pr.number == pr.number
@@ -770,17 +1148,20 @@ impl App {
             && matches(state)
         {
             state.pending_ai_review_findings = count;
+            state.ai_review_last_run = last_run.clone();
         }
         if let Some(return_to) = self.ai_review_return_to.as_deref_mut()
             && let AppMode::PrReview(state) = return_to
             && matches(state)
         {
             state.pending_ai_review_findings = count;
+            state.ai_review_last_run = last_run.clone();
         }
         if let Some(stash) = &mut self.pr_review_return
             && matches(&stash.state)
         {
             stash.state.pending_ai_review_findings = count;
+            stash.state.ai_review_last_run = last_run;
         }
     }
 
@@ -997,13 +1378,23 @@ impl App {
             &std::fs::read_to_string(&memory_paths.global).unwrap_or_default(),
         );
         let skill = self.config.ai_review_skill.clone();
+        let pricing = self.config.token_pricing.clone();
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.ai_review_bg = Some(rx);
         self.ai_review_pending = Some(origin.clone());
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || match GhCli::pr_diff(&thread_workdir, number) {
-            Ok(diff) => run_ai_pr_review(harness, thread_workdir, diff, memory, skill, model, tx),
+            Ok(diff) => run_ai_pr_review(
+                harness,
+                thread_workdir,
+                diff,
+                memory,
+                skill,
+                model,
+                pricing,
+                tx,
+            ),
             Err(e) => {
                 let _ = tx.send(AiReviewProgress::Done(Err(e)));
             }
@@ -1338,11 +1729,16 @@ impl App {
                         Pane(Box<AiReviewState>),
                         Elsewhere,
                     }
+                    let matches_pending = |state: &AiReviewState| {
+                        state.workdir == pending.workdir
+                            && state.pr.number == pending.pr.number
+                            && state.pr.head_sha == pending.pr.head_sha
+                    };
                     let target = match &self.mode {
-                        AppMode::AiReviewRunning(state) if state.origin.pr.number == pr_number => {
+                        AppMode::AiReviewRunning(state) if matches_pending(&state.origin) => {
                             Target::Running
                         }
-                        AppMode::AiReview(state) if state.pr.number == pr_number => {
+                        AppMode::AiReview(state) if matches_pending(state) => {
                             Target::Pane(Box::new(state.clone()))
                         }
                         _ => Target::Elsewhere,
@@ -1352,30 +1748,15 @@ impl App {
                     match result {
                         Ok(outcome) => {
                             let count = outcome.findings.len();
-                            let parse_suspect = count == 0
-                                && outcome.summary.is_none()
-                                && !outcome.raw_output.trim().is_empty();
-                            if parse_suspect {
-                                self.log_warn(
-                                    "pr_review",
-                                    format!(
-                                        "AI review of PR #{pr_number} parsed 0 findings from a \
-                                         non-empty response ({} chars) — raw output:\n{}",
-                                        outcome.raw_output.len(),
-                                        outcome.raw_output
-                                    ),
-                                );
-                            } else {
-                                self.log_debug(
-                                    "pr_review",
-                                    format!(
-                                        "AI review of PR #{pr_number} parsed {count} finding{} \
-                                         from {} chars of output",
-                                        if count == 1 { "" } else { "s" },
-                                        outcome.raw_output.len()
-                                    ),
-                                );
-                            }
+                            self.log_debug(
+                                "pr_review",
+                                format!(
+                                    "AI review of PR #{pr_number} parsed {count} finding{} \
+                                     from {} chars of output",
+                                    if count == 1 { "" } else { "s" },
+                                    outcome.raw_output.len()
+                                ),
+                            );
 
                             let mut base = match &target {
                                 Target::Running => {
@@ -1393,6 +1774,7 @@ impl App {
                             // PR Triage, not here.
                             base.findings = outcome.findings;
                             base.summary = outcome.summary;
+                            base.attribution = Some(outcome.attribution);
                             base.selected = 0;
                             base.detail_scroll = 0;
                             base.last_run = Some(AiReviewRun {
@@ -1412,16 +1794,9 @@ impl App {
                                 String::new()
                             };
                             if count == 0 {
-                                if parse_suspect {
-                                    self.push_toast_warning(format!(
-                                        "AI review found 0 findings{note} — press D to check the \
-                                         debug log"
-                                    ));
-                                } else {
-                                    self.push_toast_success(format!(
-                                        "AI review found no findings{note}"
-                                    ));
-                                }
+                                self.push_toast_success(format!(
+                                    "AI review found no findings{note}"
+                                ));
                             } else {
                                 self.push_toast_success(format!(
                                     "AI review found {count} finding{}{note}",
@@ -1472,25 +1847,44 @@ impl App {
                     self.ai_review_bg = None;
                     self.ai_review_progress = None;
                     let pending = self.ai_review_pending.take();
+                    let detail = "AI review worker disconnected unexpectedly";
                     let pr_number = pending.as_ref().map(|p| p.pr.number);
-                    let detail = pr_number.map_or_else(
-                        || "AI review failed unexpectedly".to_string(),
-                        |number| format!("AI review of PR #{number} failed unexpectedly"),
-                    );
-                    self.log_error("pr_review", detail);
-                    self.push_toast_error("AI review failed unexpectedly");
-                    match &self.mode {
-                        AppMode::AiReviewRunning(state)
-                            if Some(state.origin.pr.number) == pr_number =>
-                        {
-                            self.mode = AppMode::AiReview(state.origin.clone());
-                            changed = true;
+                    if let Some(pending) = pending {
+                        let matches_pending = |state: &AiReviewState| {
+                            state.workdir == pending.workdir
+                                && state.pr.number == pending.pr.number
+                                && state.pr.head_sha == pending.pr.head_sha
+                        };
+                        let visible = match &self.mode {
+                            AppMode::AiReviewRunning(state) => matches_pending(&state.origin),
+                            AppMode::AiReview(state) => matches_pending(state),
+                            _ => false,
+                        };
+                        let mut base = match &self.mode {
+                            AppMode::AiReviewRunning(state) if matches_pending(&state.origin) => {
+                                state.origin.clone()
+                            }
+                            AppMode::AiReview(state) if matches_pending(state) => state.clone(),
+                            _ => pending,
+                        };
+                        base.last_run = Some(AiReviewRun {
+                            ran_at: Local::now(),
+                            outcome: AiReviewRunOutcome::Error(detail.to_string()),
+                        });
+                        self.cache_ai_review(&base);
+                        if visible {
+                            self.mode = AppMode::AiReview(base);
                         }
-                        AppMode::AiReview(state) if Some(state.pr.number) == pr_number => {
-                            changed = true;
-                        }
-                        _ => {}
                     }
+                    self.log_error(
+                        "pr_review",
+                        pr_number.map_or_else(
+                            || detail.to_string(),
+                            |number| format!("AI review of PR #{number}: {detail}"),
+                        ),
+                    );
+                    self.push_toast_error("AI review failed unexpectedly");
+                    changed = true;
                     break;
                 }
             }
@@ -1516,8 +1910,12 @@ impl App {
     /// Open the post-to-GitHub confirm dialog (`W`) for every kept
     /// (not-skipped, not-already-published) finding.
     pub fn ai_review_open_post_confirm(&mut self) {
-        let (findings, generated_summary): (Vec<AiReviewFinding>, Option<String>) = match &self.mode
-        {
+        #[allow(clippy::type_complexity)]
+        let (findings, generated_summary, attribution): (
+            Vec<AiReviewFinding>,
+            Option<String>,
+            Option<AiReviewAttribution>,
+        ) = match &self.mode {
             AppMode::AiReview(state) if state.post_confirm.is_none() => {
                 let findings: Vec<AiReviewFinding> = state
                     .findings
@@ -1538,7 +1936,7 @@ impl App {
                 } else {
                     state.summary.clone()
                 };
-                (findings, generated_summary)
+                (findings, generated_summary, state.attribution.clone())
             }
             _ => return,
         };
@@ -1547,7 +1945,8 @@ impl App {
             return;
         }
         let refs: Vec<&AiReviewFinding> = findings.iter().collect();
-        let (summary, inline) = build_ai_review(&refs, generated_summary.as_deref());
+        let (summary, inline) =
+            build_ai_review(&refs, generated_summary.as_deref(), attribution.as_ref());
 
         if let AppMode::AiReview(state) = &mut self.mode {
             state.post_confirm = Some(AiReviewPostConfirmState {
@@ -1615,7 +2014,10 @@ impl App {
                     state.workdir.clone(),
                     state.pr.clone(),
                     post.inline.clone(),
-                    ensure_ai_review_attribution(post.editor.text().trim()),
+                    ensure_ai_review_attribution(
+                        post.editor.text().trim(),
+                        state.attribution.as_ref(),
+                    ),
                     state
                         .findings
                         .iter()
@@ -1736,7 +2138,7 @@ impl App {
             Ok(mut review) => {
                 self.cache_pr_review(&review);
                 self.apply_persisted_triage(&mut review);
-                let pending_count = self.pending_ai_review_count(&review.pr);
+                let ai_review = self.ai_review_triage_snapshot(&review.pr);
                 let checked_out_branch =
                     crate::worktree::WorktreeManager::current_branch(&pending.workdir)
                         .unwrap_or(None);
@@ -1750,7 +2152,8 @@ impl App {
                     apply_refreshed_pr_review_state(
                         state,
                         review.clone(),
-                        pending_count,
+                        ai_review.pending_findings,
+                        ai_review.last_run.clone(),
                         checked_out_branch.clone(),
                     );
                 }
@@ -1761,7 +2164,8 @@ impl App {
                     apply_refreshed_pr_review_state(
                         state,
                         review.clone(),
-                        pending_count,
+                        ai_review.pending_findings,
+                        ai_review.last_run.clone(),
                         checked_out_branch.clone(),
                     );
                 }
@@ -1771,7 +2175,8 @@ impl App {
                     apply_refreshed_pr_review_state(
                         &mut stash.state,
                         review.clone(),
-                        pending_count,
+                        ai_review.pending_findings,
+                        ai_review.last_run,
                         checked_out_branch,
                     );
                 }
@@ -1845,13 +2250,120 @@ impl App {
 mod tests {
     use super::*;
 
+    const LINE_MAPPING_DIFF: &str = "diff --git a/src/multi.rs b/src/multi.rs\n\
+--- a/src/multi.rs\n\
++++ b/src/multi.rs\n\
+@@ -1,4 +1,5 @@\n\
+\x20start\n\
+-old two\n\
++new two a\n\
++new two b\n\
+\x20three\n\
+\x20four\n\
+@@ -18,4 +19,4 @@\n\
+\x20eighteen\n\
+-nineteen\n\
++nineteen revised\n\
+\x20twenty\n\
+\x20twenty-one\n\
+diff --git a/src/added.rs b/src/added.rs\n\
+new file mode 100644\n\
+--- /dev/null\n\
++++ b/src/added.rs\n\
+@@ -0,0 +1,3 @@\n\
++first\n\
++middle\n\
++last\n\
+diff --git a/src/deleted.rs b/src/deleted.rs\n\
+deleted file mode 100644\n\
+--- a/src/deleted.rs\n\
++++ /dev/null\n\
+@@ -1,3 +0,0 @@\n\
+-first\n\
+-middle\n\
+-last\n\
+diff --git a/src/boundary.rs b/src/boundary.rs\n\
+--- a/src/boundary.rs\n\
++++ b/src/boundary.rs\n\
+@@ -1,2 +1,2 @@\n\
+-first\n\
++FIRST\n\
+\x20middle\n\
+@@ -9,2 +9,2 @@\n\
+\x20penultimate\n\
+-last\n\
++LAST\n";
+
+    #[test]
+    fn line_mapping_regression_fixtures_cover_failure_prone_diff_shapes() {
+        let files = crate::diff::parse_unified_diff(LINE_MAPPING_DIFF).unwrap();
+        assert_eq!(files.len(), 4);
+
+        let multi = files
+            .iter()
+            .find(|file| file.path == "src/multi.rs")
+            .unwrap();
+        assert_eq!(multi.hunks.len(), 2);
+        assert!(
+            multi
+                .addressable_lines()
+                .iter()
+                .any(|location| { location.old_line == Some(19) && location.new_line.is_none() })
+        );
+        assert!(
+            multi
+                .addressable_lines()
+                .iter()
+                .any(|location| { location.old_line == Some(18) && location.new_line == Some(19) })
+        );
+
+        let added = files
+            .iter()
+            .find(|file| file.path == "src/added.rs")
+            .unwrap();
+        assert!(
+            added
+                .addressable_lines()
+                .iter()
+                .all(|location| location.old_line.is_none() && location.new_line.is_some())
+        );
+
+        let deleted = files
+            .iter()
+            .find(|file| file.path == "src/deleted.rs")
+            .unwrap();
+        assert!(
+            deleted
+                .addressable_lines()
+                .iter()
+                .all(|location| location.old_line.is_some() && location.new_line.is_none())
+        );
+
+        let boundary = files
+            .iter()
+            .find(|file| file.path == "src/boundary.rs")
+            .unwrap();
+        let locations = boundary.addressable_lines();
+        assert!(
+            locations
+                .iter()
+                .any(|location| location.new_line == Some(1))
+        );
+        assert!(
+            locations
+                .iter()
+                .any(|location| location.new_line == Some(10))
+        );
+    }
+
     #[test]
     fn parse_ai_findings_parses_path_line_and_general_headings() {
-        let output = "### src/app/sync.rs:42\nGuard this with the lock.\n\n### General\nConsider adding integration tests.\n";
+        let output = "### src/app/sync.rs|RIGHT|42\nGuard this with the lock.\n\n### General\nConsider adding integration tests.\n";
         let findings = parse_ai_findings(output);
         assert_eq!(findings.len(), 2);
         assert_eq!(findings[0].path.as_deref(), Some("src/app/sync.rs"));
         assert_eq!(findings[0].line, Some(42));
+        assert_eq!(findings[0].side, Some(crate::diff::DiffSide::New));
         assert_eq!(findings[0].body, "Guard this with the lock.");
         assert!(!findings[0].skipped);
         assert!(!findings[0].published);
@@ -1861,7 +2373,7 @@ mod tests {
 
     #[test]
     fn parse_ai_review_output_separates_summary_from_findings() {
-        let output = "## Summary\nThe patch has one concurrency risk.\n\n### src/app/sync.rs:42\nGuard this with the lock.\n";
+        let output = "## Summary\nThe patch has one concurrency risk.\n\n### src/app/sync.rs|LEFT|42\nGuard this with the lock.\n";
         let (summary, findings) = parse_ai_review_output(output);
         assert_eq!(
             summary.as_deref(),
@@ -1869,6 +2381,7 @@ mod tests {
         );
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].path.as_deref(), Some("src/app/sync.rs"));
+        assert_eq!(findings[0].side, Some(crate::diff::DiffSide::Old));
     }
 
     #[test]
@@ -1877,6 +2390,58 @@ mod tests {
             parse_ai_review_output("## Summary\nNo actionable issues found.\n");
         assert_eq!(summary.as_deref(), Some("No actionable issues found."));
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn process_ai_review_output_accepts_summary_only_zero_result() {
+        let outcome =
+            process_ai_review_output("## Summary\nNo actionable issues found.\n".to_string(), "")
+                .unwrap();
+        assert!(outcome.findings.is_empty());
+        assert_eq!(
+            outcome.summary.as_deref(),
+            Some("No actionable issues found.")
+        );
+    }
+
+    #[test]
+    fn process_ai_review_output_accepts_summary_with_findings() {
+        let outcome = process_ai_review_output(
+            "## Summary\nOne risk.\n\n### General\nAdd a regression test.\n".to_string(),
+            "",
+        )
+        .unwrap();
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.findings[0].body, "Add a regression test.");
+    }
+
+    #[test]
+    fn untyped_line_that_names_different_old_and_new_rows_is_not_mapped_to_the_wrong_line() {
+        let outcome = process_ai_review_output(
+            "## Summary\nOne risk.\n\n### src/multi.rs:19\nThe removed behavior is required.\n"
+                .to_string(),
+            LINE_MAPPING_DIFF,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.findings[0].path.as_deref(), Some("src/multi.rs"));
+        assert_eq!(outcome.findings[0].line, None);
+        assert_eq!(outcome.findings[0].diff_hunk, None);
+    }
+
+    #[test]
+    fn process_ai_review_output_rejects_missing_summary() {
+        let error =
+            process_ai_review_output("### General\nAdd a regression test.\n".to_string(), "")
+                .unwrap_err();
+        assert!(error.to_string().contains("missing a non-empty Summary"));
+    }
+
+    #[test]
+    fn process_ai_review_output_rejects_empty_output() {
+        let error = process_ai_review_output(String::new(), "").unwrap_err();
+        assert!(error.to_string().contains("missing a non-empty Summary"));
     }
 
     #[test]
@@ -1934,6 +2499,75 @@ mod tests {
     }
 
     #[test]
+    fn ai_review_prompt_labels_old_and_new_source_coordinates_across_fixtures() {
+        let prompt = ai_review_prompt(LINE_MAPPING_DIFF, "", None);
+
+        // The earlier insertion shifts the second hunk: old 18 is new 19,
+        // while removed old 19 and replacement new 20 are distinct rows.
+        assert!(prompt.contains("[RIGHT:19 LEFT:18]  eighteen"));
+        assert!(prompt.contains("[LEFT:19] -nineteen"));
+        assert!(prompt.contains("[RIGHT:20] +nineteen revised"));
+
+        // Added-only / deleted-only files expose only their valid side.
+        assert!(prompt.contains("[RIGHT:1] +first"));
+        assert!(prompt.contains("[RIGHT:3] +last"));
+        assert!(prompt.contains("[LEFT:1] -first"));
+        assert!(prompt.contains("[LEFT:3] -last"));
+
+        // First and last changed lines remain source coordinates, not rows.
+        assert!(prompt.contains("File: src/boundary.rs"));
+        assert!(prompt.contains("[RIGHT:1] +FIRST"));
+        assert!(prompt.contains("[RIGHT:10] +LAST"));
+        assert!(prompt.contains("<path>|<side>|<line>"));
+    }
+
+    #[test]
+    fn canonical_mapping_covers_hunks_sides_replacements_context_and_boundaries() {
+        use crate::diff::{DiffLineLocation, DiffSide};
+
+        let files = crate::diff::parse_unified_diff(LINE_MAPPING_DIFF).unwrap();
+        let cases = [
+            ("src/multi.rs", DiffSide::Old, 19, Some(19), None),
+            ("src/multi.rs", DiffSide::New, 19, Some(18), Some(19)),
+            ("src/multi.rs", DiffSide::New, 20, None, Some(20)),
+            ("src/multi.rs", DiffSide::New, 21, Some(20), Some(21)),
+            ("src/added.rs", DiffSide::New, 1, None, Some(1)),
+            ("src/added.rs", DiffSide::New, 3, None, Some(3)),
+            ("src/deleted.rs", DiffSide::Old, 1, Some(1), None),
+            ("src/deleted.rs", DiffSide::Old, 3, Some(3), None),
+            ("src/boundary.rs", DiffSide::New, 1, None, Some(1)),
+            ("src/boundary.rs", DiffSide::New, 10, None, Some(10)),
+        ];
+
+        for (path, side, line, old_line, new_line) in cases {
+            let file = files.iter().find(|file| file.path == path).unwrap();
+            assert_eq!(
+                resolve_ai_review_location(file, line, Some(side)),
+                Some((side, DiffLineLocation { old_line, new_line })),
+                "{path} {side:?}:{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_old_and_new_findings_post_to_their_requested_github_sides() {
+        let outcome = process_ai_review_output(
+            "## Summary\nTwo risks.\n\n\
+             ### src/multi.rs|LEFT|19\nRemoved behavior is required.\n\n\
+             ### src/multi.rs|RIGHT|19\nThe context call is now unsafe.\n"
+                .to_string(),
+            LINE_MAPPING_DIFF,
+        )
+        .unwrap();
+        let refs: Vec<&AiReviewFinding> = outcome.findings.iter().collect();
+        let (_, inline) = build_ai_review(&refs, outcome.summary.as_deref(), None);
+
+        assert_eq!(inline.len(), 2);
+        assert_eq!((inline[0].side, inline[0].line), ("LEFT", 19));
+        assert_eq!((inline[1].side, inline[1].line), ("RIGHT", 19));
+    }
+
+    #[test]
     fn ai_review_prompt_leads_with_skill_directive_when_configured() {
         let prompt = ai_review_prompt("diff", "", Some("review"));
         assert!(prompt.starts_with("First, use the /review skill/command"));
@@ -1978,6 +2612,7 @@ mod tests {
         AiReviewFinding {
             path: path.map(String::from),
             line,
+            side: line.map(|_| crate::diff::DiffSide::New),
             body: body.to_string(),
             diff_hunk: hunk.map(String::from),
             skipped: false,
@@ -1997,6 +2632,7 @@ mod tests {
         let (summary, inline) = build_ai_review(
             &[&anchored, &general],
             Some("The patch has an anchored and a broad risk."),
+            None,
         );
         assert_eq!(inline.len(), 1);
         assert_eq!(inline[0].path, "src/lib.rs");
@@ -2014,7 +2650,7 @@ mod tests {
             "fix this",
             Some("@@ -1 +1 @@"),
         );
-        let (summary, inline) = build_ai_review(&[&anchored], None);
+        let (summary, inline) = build_ai_review(&[&anchored], None, None);
         assert_eq!(inline.len(), 1);
         assert_eq!(summary, "AI review, via AMF.");
     }
@@ -2025,7 +2661,7 @@ mod tests {
         // time — GitHub would reject the whole review if this were posted
         // inline, so it must fold into the summary instead.
         let unmatched = finding(Some("src/lib.rs"), Some(999), "miscounted line", None);
-        let (summary, inline) = build_ai_review(&[&unmatched], None);
+        let (summary, inline) = build_ai_review(&[&unmatched], None, None);
         assert!(inline.is_empty());
         assert!(summary.contains("miscounted line"));
     }
@@ -2044,6 +2680,7 @@ mod tests {
                 outcome: AiReviewRunOutcome::Findings(3),
             }),
             summary: Some("One finding remains.".to_string()),
+            attribution: None,
         };
 
         assert_eq!(entry.publishable_finding_count(), 1);
@@ -2056,22 +2693,73 @@ mod tests {
 
     #[test]
     fn append_ai_review_attribution_appends_footer_and_trims_trailing_whitespace() {
-        let body = append_ai_review_attribution("finding text  \n\n");
+        let body = append_ai_review_attribution("finding text  \n\n", None);
         assert_eq!(body, "finding text\n\n— AI review via AMF");
     }
 
+    fn sample_attribution() -> AiReviewAttribution {
+        AiReviewAttribution {
+            harness: Some("claude".to_string()),
+            model: Some("sonnet".to_string()),
+            input_tokens: Some(12_300),
+            output_tokens: Some(4_500),
+            estimated_cost: Some("$0.10".to_string()),
+        }
+    }
+
     #[test]
-    fn ensure_ai_review_attribution_restores_a_footer_the_user_deleted() {
+    fn append_ai_review_attribution_inserts_disclosure_line_above_the_marker() {
+        let attribution = sample_attribution();
+        let body = append_ai_review_attribution("finding text", Some(&attribution));
+        assert_eq!(
+            body,
+            "finding text\n\n_AI review · harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.10_\n\n— AI review via AMF"
+        );
+    }
+
+    #[test]
+    fn attribution_disclosure_degrades_when_usage_and_cost_are_missing() {
+        let attribution = AiReviewAttribution {
+            harness: Some("codex".to_string()),
+            model: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost: None,
+        };
+        assert_eq!(
+            attribution.disclosure_line(),
+            "_AI review · harness codex · model harness default_"
+        );
+        assert!(!attribution.has_usage());
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_restores_a_marker_the_user_deleted() {
         // The summary body is editable right up to `W`; a user who trims the
-        // seeded footer while editing must still get an attributed post.
-        let body = ensure_ai_review_attribution("Fixed the summary text.");
+        // seeded attribution while editing must still get an attributed post.
+        let body = ensure_ai_review_attribution("Fixed the summary text.", None);
         assert_eq!(body, "Fixed the summary text.\n\n— AI review via AMF");
     }
 
     #[test]
-    fn ensure_ai_review_attribution_does_not_duplicate_an_existing_footer() {
-        let body = ensure_ai_review_attribution("Summary.\n\n— AI review via AMF");
+    fn ensure_ai_review_attribution_does_not_duplicate_an_existing_marker() {
+        let body = ensure_ai_review_attribution("Summary.\n\n— AI review via AMF", None);
         assert_eq!(body, "Summary.\n\n— AI review via AMF");
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_replaces_a_stale_disclosure_line() {
+        // A re-priced run must not stack a second `_AI review · …_` line on
+        // top of the one the dialog was seeded with.
+        let attribution = sample_attribution();
+        let seeded = append_ai_review_attribution("Summary.", Some(&attribution));
+        let repriced = AiReviewAttribution {
+            estimated_cost: Some("$0.20".to_string()),
+            ..sample_attribution()
+        };
+        let body = ensure_ai_review_attribution(&seeded, Some(&repriced));
+        assert_eq!(body.matches("_AI review · ").count(), 1);
+        assert!(body.ends_with("est. $0.20_\n\n— AI review via AMF"));
     }
 
     #[test]
@@ -2090,7 +2778,7 @@ mod tests {
             outdated: false,
             file_level: false,
             diff_hunk: None,
-            body: append_ai_review_attribution("fix this"),
+            body: append_ai_review_attribution("fix this", None),
             snippet: String::new(),
             in_reply_to: Some(2),
             thread_id: None,
@@ -2116,17 +2804,28 @@ mod tests {
     }
 
     #[test]
-    fn diff_hunk_for_line_matches_the_covering_hunk() {
+    fn diff_hunk_for_location_matches_the_covering_hunk() {
         let files = sample_diff_files();
-        let hunk = diff_hunk_for_line(&files, "src/lib.rs", 2);
+        let file = &files[0];
+        let (_, location) =
+            resolve_ai_review_location(file, 2, Some(crate::diff::DiffSide::New)).unwrap();
+        let hunk =
+            diff_hunk_for_location(&files, "src/lib.rs", crate::diff::DiffSide::New, location);
         assert!(hunk.is_some());
         assert!(hunk.unwrap().contains("new line"));
     }
 
     #[test]
-    fn diff_hunk_for_line_is_none_outside_the_hunk_or_file() {
+    fn source_location_is_none_outside_the_hunk_or_file() {
         let files = sample_diff_files();
-        assert!(diff_hunk_for_line(&files, "src/lib.rs", 9999).is_none());
-        assert!(diff_hunk_for_line(&files, "src/other.rs", 1).is_none());
+        assert!(
+            resolve_ai_review_location(&files[0], 9999, Some(crate::diff::DiffSide::New)).is_none()
+        );
+        assert!(
+            files
+                .iter()
+                .find(|file| file.path == "src/other.rs")
+                .is_none()
+        );
     }
 }

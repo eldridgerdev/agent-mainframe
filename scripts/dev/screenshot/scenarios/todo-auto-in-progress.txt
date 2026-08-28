@@ -1,0 +1,51 @@
+# todo-auto-in-progress: prove that beginning a TODO plan changes the selected
+# item from not started to in progress, and that cancelling later plan setup
+# keeps the new status.
+#
+# Needs a seeded project and one non-worktree feature:
+#   ./amf-capture.sh --scenario scenarios/todo-auto-in-progress.txt \
+#       --seed <project.json> --seed-feature <feature.json> \
+#       --out-dir <output-dir>
+
+# Automation seeds after the capture dashboard starts, so restart the isolated
+# pane to load the new project and feature from its scratch database.
+run:tmux respawn-pane -k -t "$SESSION" "$AMF_BIN"
+wait:1500
+
+# Select the feature, add its native TODOs session, and open the editor. The
+# isolated fixture enables Claude only, putting TODOs four rows below it.
+key:j
+wait:200
+key:s
+wait:300
+key:Down|key:Down|key:Down|key:Down
+wait:200
+key:Enter
+wait:500
+key:Enter
+wait:500
+
+# Create one not-started TODO.
+key:a
+wait:200
+text:Build automatic TODO status transitions
+key:Enter
+wait:400
+shot:todo-before-planning
+
+# Open Start Work and choose "Plan this TODO first". Confirming this choice is
+# the in-progress transition point, before either destination is accepted.
+key:g
+wait:300
+key:j
+wait:200
+key:Enter
+wait:400
+shot:todo-plan-destination
+
+# Back out to the list; the TODO remains visibly in progress (`[~]`).
+key:Escape
+wait:200
+key:Escape
+wait:400
+shot:todo-plan-cancelled-in-progress

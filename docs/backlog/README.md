@@ -81,14 +81,19 @@ doc always says exactly what remains.
   transcripts persisted for re-runs. Six epics: interview engine,
   config templates, AI rounds, synthesis + review gate, on-demand +
   persistence, polish.
-- [Feature TODOs](feature-todos-plan.md) — _All epics shipped._ A
-  per-project TODO list added as a `SessionKind::Todos` session via the
-  `s` picker (one per project, native UI, SQLite-backed). Each TODO
-  carries priority, notes, and done state; the list can be re-homed or
-  dropped when its host feature is deleted. Full editing
-  (add/edit/notes/done/priority/reorder/delete + a scratchpad note),
-  spawning an agent from a TODO with a pre-filled composer prompt, and
-  quick-capture from any session view are all in place.
+- [Feature TODOs](feature-todos-plan.md) — _All epics shipped._ Scoped
+  TODO lists added as a `SessionKind::Todos` session via the `s` picker
+  (one per feature, native UI, SQLite-backed). A feature's editor opens
+  on its own **worktree** list, with the **project** list (`p`) and a
+  machine-wide **global** list (`g`) each independently toggled on or off
+  as side panes; items move or copy between scopes. Each TODO carries
+  priority, notes, and done state. Full editing
+  (add/edit/notes/done/priority/reorder/delete
+  + a per-list scratchpad), spawning an agent from a TODO with a
+  pre-filled composer prompt, "implement next" across the visible
+  scopes, plan mode from a TODO, and quick-capture from any session view
+  are all in place. Deleting a feature asks what happens to the
+  unfinished work in its worktree list.
 - [Learning Mode](learning-mode-plan.md) — _All epics shipped._ A read-only
   overlay (`K`) for studying a project you didn't write: browse the repo as a
   collapsible folder tree or just the branch's changes, anchor a question to a
@@ -147,7 +152,7 @@ doc always says exactly what remains.
   have shipped for Claude, Codex, and opencode; feature-row aggregation
   remains. Pi remains unsupported until it exposes usable per-session
   usage metadata.
-- [Token-efficient agent sessions](token-efficiency-plan.md) — _Backlog._
+- [Token-efficient agent sessions](token-efficiency-plan.md) — _Partial._
   Move AMF from cumulative usage accounting to active usage management:
   provider/model-aware costs, Economy/Balanced/Deep session profiles,
   context-pressure warnings and soft budgets, deliberate
@@ -161,6 +166,19 @@ doc always says exactly what remains.
 - [Vim mode](vim-mode-plan.md) — _Partial._ Ranked checklist of vim
   features for the in-house editor (`src/editor.rs`). Tier 1 core editing
   largely shipped; change operators and Tiers 2-3 remain.
+- [Remote Control — companion app](remote-control-companion-app-plan.md) —
+  _Ready._ Monitor and, eventually, fully control AMF agent sessions
+  (any harness, any feature) from a phone: read-only status/notifications
+  first, then answering blocked-agent prompts, then full terminal
+  control — over LAN and/or an existing tunnel tool. Client is a Flutter
+  native app (iOS + Android) rather than a PWA, paired to AMF via a
+  QR-code exchange for a per-device token. A new remote-control
+  server (tokio/axum) runs on-demand on its own thread, marshalling all
+  App-state access through the existing main-loop channel pattern. Ten
+  epics across four priority tiers, with server skeleton, device
+  storage, and native-app groundwork startable in parallel from day one.
+  Distinct from the shipped per-Claude-session Remote Control below,
+  which mirrors to claude.ai/mobile via Anthropic's own infrastructure.
 - [Remote Control — server mode](remote-control-server-mode-plan.md) —
   _Backlog._ Spawn new Claude sessions on demand from web/mobile, each
   in its own worktree. Deferred; AMF's role would shift from

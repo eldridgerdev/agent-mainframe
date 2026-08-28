@@ -56,43 +56,75 @@ pub struct DiffLineLocation {
     pub new_line: Option<usize>,
 }
 
+/// Which source-file coordinate system a line number belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum DiffSide {
+    /// The base file (`-` / GitHub `LEFT`).
+    Old,
+    /// The current file (`+` / GitHub `RIGHT`).
+    New,
+}
+
+impl DiffLineLocation {
+    pub fn line_on(self, side: DiffSide) -> Option<usize> {
+        match side {
+            DiffSide::Old => self.old_line,
+            DiffSide::New => self.new_line,
+        }
+    }
+}
+
+/// Source coordinates for every physical row in one hunk. Addressable rows
+/// carry a [`DiffLineLocation`]; the no-newline marker carries `None`. Keeping
+/// marker slots makes the result safe to zip with `hunk.lines` when producing
+/// annotated prompts or rendered diffs.
+pub fn line_locations_in_hunk(hunk: &DiffHunk) -> Vec<Option<DiffLineLocation>> {
+    let mut out = Vec::with_capacity(hunk.lines.len());
+    let mut old_line = hunk.old_start;
+    let mut new_line = hunk.new_start;
+    for line in &hunk.lines {
+        let location = match line.kind {
+            DiffLineKind::Context => {
+                let location = DiffLineLocation {
+                    old_line: Some(old_line),
+                    new_line: Some(new_line),
+                };
+                old_line += 1;
+                new_line += 1;
+                Some(location)
+            }
+            DiffLineKind::Removed => {
+                let location = DiffLineLocation {
+                    old_line: Some(old_line),
+                    new_line: None,
+                };
+                old_line += 1;
+                Some(location)
+            }
+            DiffLineKind::Added => {
+                let location = DiffLineLocation {
+                    old_line: None,
+                    new_line: Some(new_line),
+                };
+                new_line += 1;
+                Some(location)
+            }
+            DiffLineKind::NoNewlineMarker => None,
+        };
+        out.push(location);
+    }
+    out
+}
+
 /// `DiffFile::addressable_lines()` over bare hunks, so a caller holding a
 /// freshly built hunk list (context expansion) can see where its lines would
 /// land before committing it to the file.
 pub fn addressable_lines_in(hunks: &[DiffHunk]) -> Vec<DiffLineLocation> {
-    let mut out = Vec::new();
-    for hunk in hunks {
-        let mut old_line = hunk.old_start;
-        let mut new_line = hunk.new_start;
-        for line in &hunk.lines {
-            match line.kind {
-                DiffLineKind::Context => {
-                    out.push(DiffLineLocation {
-                        old_line: Some(old_line),
-                        new_line: Some(new_line),
-                    });
-                    old_line += 1;
-                    new_line += 1;
-                }
-                DiffLineKind::Removed => {
-                    out.push(DiffLineLocation {
-                        old_line: Some(old_line),
-                        new_line: None,
-                    });
-                    old_line += 1;
-                }
-                DiffLineKind::Added => {
-                    out.push(DiffLineLocation {
-                        old_line: None,
-                        new_line: Some(new_line),
-                    });
-                    new_line += 1;
-                }
-                DiffLineKind::NoNewlineMarker => {}
-            }
-        }
-    }
-    out
+    hunks
+        .iter()
+        .flat_map(line_locations_in_hunk)
+        .flatten()
+        .collect()
 }
 
 impl DiffFile {
@@ -103,6 +135,27 @@ impl DiffFile {
     /// returned vector matches a rendered diff row.
     pub fn addressable_lines(&self) -> Vec<DiffLineLocation> {
         addressable_lines_in(&self.hunks)
+    }
+
+    /// Resolve a one-based source-file line on an explicit side of this diff.
+    /// The returned dual-sided location is the canonical anchor consumed by
+    /// review rendering and posting.
+    pub fn resolve_source_line(&self, side: DiffSide, line: usize) -> Option<DiffLineLocation> {
+        self.hunks
+            .iter()
+            .flat_map(line_locations_in_hunk)
+            .flatten()
+            .find(|location| location.line_on(side) == Some(line))
+    }
+
+    /// Find the parsed hunk that owns an exact canonical line location.
+    pub fn hunk_for_location(&self, target: DiffLineLocation) -> Option<&DiffHunk> {
+        self.hunks.iter().find(|hunk| {
+            line_locations_in_hunk(hunk)
+                .into_iter()
+                .flatten()
+                .any(|location| location == target)
+        })
     }
 
     /// The index into `addressable_lines()` of each hunk's first addressable

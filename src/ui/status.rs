@@ -363,6 +363,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::FreshContextPrompt(_) => Line::from(vec![
+            Span::styled("Enter", key_style()),
+            Span::raw(" start session  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::TodoImplementChoice(_) => Line::from(vec![
             Span::styled("j/k", key_style()),
             Span::raw(" choose  "),
@@ -370,6 +376,22 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" confirm  "),
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
+        ]),
+        AppMode::TodoSpawnTarget(_) => Line::from(vec![
+            Span::styled("j/k", key_style()),
+            Span::raw(" choose feature  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" start  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::TodoDeleteDisposition(_) => Line::from(vec![
+            Span::styled("j/k", key_style()),
+            Span::raw(" choose  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" confirm  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel the deletion"),
         ]),
         AppMode::TodosHostReassign(_) => Line::from(vec![
             Span::styled("j/k", key_style()),
@@ -722,21 +744,36 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" page  "),
             Span::styled("/", key_style()),
             Span::raw(" files  "),
+            Span::styled("r", key_style()),
+            Span::raw(" refresh  "),
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
-        AppMode::MarkdownFilePicker(_) => Line::from(vec![
-            Span::styled(" j/k", key_style()),
-            Span::raw(" navigate  "),
-            Span::styled("/", key_style()),
-            Span::raw(" search  "),
-            Span::styled("p", key_style()),
-            Span::raw(" plan  "),
-            Span::styled("Enter", key_style()),
-            Span::raw(" open  "),
-            Span::styled("Esc", key_style()),
-            Span::raw(" cancel"),
-        ]),
+        AppMode::MarkdownFilePicker(state) => {
+            let selecting_plan = matches!(
+                state.purpose,
+                crate::app::MarkdownFilePickerPurpose::SelectPlan { .. }
+            );
+            let mut spans = vec![
+                Span::styled(" j/k", key_style()),
+                Span::raw(" navigate  "),
+                Span::styled("/", key_style()),
+                Span::raw(" search  "),
+            ];
+            if !selecting_plan {
+                spans.push(Span::styled("p", key_style()));
+                spans.push(Span::raw(" plan  "));
+            }
+            spans.push(Span::styled("Enter", key_style()));
+            spans.push(Span::raw(if selecting_plan {
+                " select  "
+            } else {
+                " open  "
+            }));
+            spans.push(Span::styled("Esc", key_style()));
+            spans.push(Span::raw(" cancel"));
+            Line::from(spans)
+        }
         AppMode::ForkingFeature(_) => Line::from(vec![
             Span::styled(" Enter", key_style()),
             Span::raw(" confirm  "),
@@ -839,6 +876,20 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" y", key_style()),
             Span::raw(" start anyway  "),
             Span::styled("n/Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ConfirmTodoReferenceCompletion(_) => Line::from(vec![
+            Span::styled(" y/Enter", key_style()),
+            Span::raw(" complete TODO  "),
+            Span::styled("n/Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ContextSettings(_) => Line::from(vec![
+            Span::styled(" Tab", key_style()),
+            Span::raw(" next field  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" save  "),
+            Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
     };

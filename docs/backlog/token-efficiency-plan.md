@@ -1,6 +1,6 @@
 # Token-efficient agent sessions
 
-- **Status:** Backlog
+- **Status:** Partial
 - **Owner:** unassigned
 - **Relates to:** [per-session agent usage](per-session-usage-plan.md),
   [plan-mode interview](plan-mode-interview-plan.md),
@@ -497,16 +497,33 @@ Acceptance criteria:
 
 ### P2 — Context pressure, budgets, and rotation
 
-- [ ] Calculate provider-specific active-context estimates and record
+- [x] Calculate provider-specific active-context estimates and record
       known model context windows.
-- [ ] Render context pressure, latest-turn usage, and recent burn in the
-      session row/sidebar.
-- [ ] Add configurable soft context and cumulative usage thresholds.
-- [ ] Add dashboard/sidebar warnings and deduplicate repeated alerts.
+- [x] Render context pressure in agent session rows and in a `Context`
+      section of the Claude, Codex, and opencode sidebars, in every band
+      (calm/warning/critical), with direct/estimated, stale, warning,
+      critical, and reset states.
+- [ ] Render latest-turn usage and recent burn in the session row/sidebar.
+- [x] Add configurable context-window-size and warning/critical percentage
+      thresholds, global via `AppConfig` and a dedicated dashboard dialog
+      (`w`, `src/app/context_settings.rs`, `src/context_tracking.rs`).
+      Cumulative token/dollar usage thresholds and per-utility-call budgets
+      are still open.
+- [x] Show the viewed session's context reading in the sidebar in every
+      band, and at the warning or critical band add a fresh-context call to
+      action with a dismiss-and-rearm lifecycle (dismiss quiets the action
+      but keeps the reading). Dashboard-wide alerts and broader
+      repeated-alert deduplication remain open.
 - [ ] Introduce a capability-driven resume/compact/fresh dialog.
 - [ ] Make normal restart semantics consistent across Claude, Codex,
       and opencode.
-- [ ] Add a leader command for compact or fresh-session rotation.
+- [x] Add a leader command for fresh-session rotation (`Ctrl+Space` then
+      `F`, `src/app/handoff.rs`): starts a new agent session in the same
+      feature/worktree, seeded with an editable prompt built from the
+      effective plan, changed files, feature summary, latest prompt, and a
+      conservative inspect-and-continue instruction. Context-pressure hints
+      can open the same workflow directly. Compact rotation and the full
+      structured-handoff schema in P3 below are still open.
 - [ ] Add tests for unknown context limits, threshold crossings, exact
       versus inferred sources, and unsupported compaction.
 
@@ -520,6 +537,11 @@ Acceptance criteria:
 - Compaction/fresh actions are never triggered silently.
 
 ### P3 — Structured handoffs and fork repair
+
+The context-pressure feature now provides a bounded, editable seeded
+continuation prompt for the selected feature. The provider-neutral persisted
+handoff format and selectable `None` / `Structured` / `Full` modes below
+remain future work.
 
 - [ ] Define the provider-neutral handoff schema and gitignored storage
       location.

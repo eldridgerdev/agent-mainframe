@@ -8,8 +8,11 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Selection, VisibleItem};
+use crate::context_display::{ContextIndicator, format_context_indicator};
+use crate::context_tracking::ContextBand;
 use crate::custom_session_icons::resolve_custom_session_icon;
 use crate::project::{ProjectStatus, SessionKind, VibeMode};
 use crate::theme::Theme;
@@ -60,6 +63,68 @@ fn shorten_path(path: &Path) -> String {
         return format!("~/{}", rest.display());
     }
     path.display().to_string()
+}
+
+fn truncate_right_to_width(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
+        return "…".to_string();
+    }
+
+    let content_width = width - 1;
+    let mut result = String::new();
+    let mut used = 0;
+    for character in text.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if used + character_width > content_width {
+            break;
+        }
+        result.push(character);
+        used += character_width;
+    }
+    result.push('…');
+    result
+}
+
+/// Reserve room for the full context label without sacrificing the session
+/// name entirely. At widths where both cannot be meaningful, the name wins.
+fn fit_session_label(
+    label: &str,
+    prefix_width: usize,
+    row_width: usize,
+    indicator: Option<&ContextIndicator>,
+) -> (String, bool) {
+    const INDICATOR_GAP: usize = 2;
+    const MIN_SESSION_NAME_WIDTH: usize = 3;
+
+    let Some(indicator) = indicator else {
+        return (label.to_string(), false);
+    };
+    let indicator_width = UnicodeWidthStr::width(indicator.text.as_str());
+    let reserved = prefix_width + INDICATOR_GAP + indicator_width;
+    if row_width < reserved + MIN_SESSION_NAME_WIDTH {
+        return (label.to_string(), false);
+    }
+    (truncate_right_to_width(label, row_width - reserved), true)
+}
+
+fn context_indicator_style(indicator: &ContextIndicator, theme: &Theme) -> Style {
+    let color = match indicator.band {
+        ContextBand::Normal => theme.success.to_color(),
+        ContextBand::Warning => theme.warning.to_color(),
+        ContextBand::Critical => theme.danger.to_color(),
+    };
+    let modifier = if indicator.band == ContextBand::Normal {
+        Modifier::empty()
+    } else {
+        Modifier::BOLD
+    };
+    Style::default().fg(color).add_modifier(modifier)
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -377,6 +442,22 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             label,
                             Style::default().fg(color).add_modifier(Modifier::BOLD),
                         ));
+                    } else if let Some(pr) = app.terminal_pr_for_feature(&feature.id) {
+                        // A branch with no open PR but a merged/closed one is
+                        // finished work, not "no PR" — show that instead of
+                        // nothing (see D3 in AMF_PLAN.md).
+                        let (word, color) = match pr.state {
+                            crate::github::TerminalPrState::Merged => {
+                                (pr.state.label(), theme.pr_merged.to_color())
+                            }
+                            crate::github::TerminalPrState::Closed => {
+                                (pr.state.label(), theme.pr_closed.to_color())
+                            }
+                        };
+                        line_spans.push(Span::styled(
+                            format!(" [PR #{} {word}]", pr.number),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ));
                     }
                     if let Some(usage) = aggregate_token_usage(
                         feature
@@ -585,12 +666,38 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         Style::default().fg(theme.text.to_color())
                     };
 
-                    let main_line = Line::from(vec![
+                    let context_indicator = session
+                        .kind
+                        .is_agent_harness()
+                        .then(|| {
+                            app.context_states
+                                .get(&session.id)
+                                .and_then(|state| state.snapshot.as_ref())
+                                .map(format_context_indicator)
+                        })
+                        .flatten();
+                    let prefix_width = UnicodeWidthStr::width(vert)
+                        + UnicodeWidthStr::width(branch)
+                        + UnicodeWidthStr::width(kind_icon.content.as_ref());
+                    let row_width = usize::from(area.width.saturating_sub(2));
+                    let (display_label, show_context_indicator) = fit_session_label(
+                        &session.label,
+                        prefix_width,
+                        row_width,
+                        context_indicator.as_ref(),
+                    );
+                    let mut main_spans = vec![
                         Span::styled(vert, Style::default().fg(muted)),
                         Span::styled(branch, Style::default().fg(muted)),
                         kind_icon,
-                        Span::styled(&session.label, name_style),
-                    ]);
+                        Span::styled(display_label, name_style),
+                    ];
+                    if show_context_indicator && let Some(indicator) = context_indicator {
+                        let style = context_indicator_style(&indicator, &theme);
+                        main_spans.push(Span::raw("  "));
+                        main_spans.push(Span::styled(indicator.text, style));
+                    }
+                    let main_line = Line::from(main_spans);
 
                     if let Some(ref text) = session.status_text {
                         let status_vert = if is_last_feature { "  " } else { "  │" };
@@ -649,9 +756,13 @@ mod tests {
     use std::path::PathBuf;
 
     use chrono::Utc;
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
     use crate::app::App;
+    use crate::context_tracking::{
+        ContextFreshness, ContextPercentage, ContextProvenance, ContextResetMetadata,
+        SessionContextSnapshot, SessionContextState,
+    };
     use crate::project::{AgentKind, Feature, FeatureSession, Project, ProjectStore};
     use crate::token_tracking::{SessionTokenUsage, TokenUsageProvider, TokenUsageSource};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
@@ -694,6 +805,7 @@ mod tests {
             label: label.to_string(),
             tmux_window: label.to_ascii_lowercase().replace(' ', "-"),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -724,6 +836,7 @@ mod tests {
             },
             findings: Vec::new(),
             summary: None,
+            attribution: None,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
@@ -777,6 +890,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let store = ProjectStore {
@@ -823,6 +937,237 @@ mod tests {
 
     fn render_feature_row(sessions: Vec<FeatureSession>) -> String {
         render_feature_row_with_pr(sessions, None)
+    }
+
+    fn context_snapshot(
+        percentage: u8,
+        band: ContextBand,
+        provenance: ContextProvenance,
+        freshness: ContextFreshness,
+    ) -> SessionContextSnapshot {
+        let now = Utc::now();
+        SessionContextSnapshot {
+            used_tokens: u64::from(percentage) * 1_000,
+            context_limit: std::num::NonZeroU64::new(100_000).unwrap(),
+            percentage: ContextPercentage::clamped(i64::from(percentage)),
+            band,
+            provenance,
+            freshness,
+            sampled_at: now,
+            checked_at: now,
+            reset: ContextResetMetadata::default(),
+        }
+    }
+
+    fn render_session_row(
+        kind: SessionKind,
+        label: &str,
+        snapshot: Option<SessionContextSnapshot>,
+        width: u16,
+    ) -> Buffer {
+        let now = Utc::now();
+        let session = session(kind, label, None);
+        let session_id = session.id.clone();
+        let feature = Feature {
+            id: "feat-1".to_string(),
+            name: "usage-feat".to_string(),
+            branch: "usage-feat".to_string(),
+            workdir: PathBuf::from("/tmp/usage-feat"),
+            is_worktree: true,
+            tmux_session: "amf-usage-feat".to_string(),
+            sessions: vec![session],
+            collapsed: false,
+            mode: VibeMode::default(),
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Claude,
+            enable_chrome: false,
+            remote_control: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+            selected_plan_path: None,
+            triage_source: None,
+        };
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![Project {
+                id: "proj-1".to_string(),
+                name: "usage-project".to_string(),
+                repo: PathBuf::from("/tmp/usage-project"),
+                collapsed: false,
+                features: vec![feature],
+                created_at: now,
+                preferred_agent: AgentKind::Claude,
+                is_git: false,
+            }],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.selection = crate::app::Selection::Session(0, 0, 0);
+        if let Some(snapshot) = snapshot {
+            app.context_states.insert(
+                session_id,
+                SessionContextState {
+                    reset: snapshot.reset.clone(),
+                    snapshot: Some(snapshot),
+                    awaiting_post_reset: false,
+                },
+            );
+        }
+
+        let backend = TestBackend::new(width, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::draw(frame, &mut app, frame.area()))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn every_supported_agent_row_shows_its_context_indicator() {
+        for kind in [
+            SessionKind::Claude,
+            SessionKind::Codex,
+            SessionKind::Opencode,
+            SessionKind::Pi,
+        ] {
+            let rendered = buffer_text(&render_session_row(
+                kind.clone(),
+                "Agent session",
+                Some(context_snapshot(
+                    64,
+                    ContextBand::Normal,
+                    ContextProvenance::Direct,
+                    ContextFreshness::Fresh,
+                )),
+                60,
+            ));
+            assert!(
+                rendered.contains("Ctx 64%"),
+                "missing indicator for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_agent_rows_never_render_context_even_if_state_leaks_in() {
+        for kind in [
+            SessionKind::Terminal,
+            SessionKind::Nvim,
+            SessionKind::Vscode,
+            SessionKind::Custom,
+            SessionKind::Todos,
+        ] {
+            let rendered = buffer_text(&render_session_row(
+                kind.clone(),
+                "Utility session",
+                Some(context_snapshot(
+                    90,
+                    ContextBand::Critical,
+                    ContextProvenance::Direct,
+                    ContextFreshness::Fresh,
+                )),
+                60,
+            ));
+            assert!(!rendered.contains("Ctx "), "indicator leaked onto {kind:?}");
+        }
+    }
+
+    #[test]
+    fn warning_critical_estimated_and_stale_labels_reach_the_row() {
+        let warning = buffer_text(&render_session_row(
+            SessionKind::Claude,
+            "Claude",
+            Some(context_snapshot(
+                74,
+                ContextBand::Warning,
+                ContextProvenance::Estimated,
+                ContextFreshness::Fresh,
+            )),
+            60,
+        ));
+        assert!(warning.contains("Ctx ~74% WARNING"));
+
+        let critical_stale = buffer_text(&render_session_row(
+            SessionKind::Codex,
+            "Codex",
+            Some(context_snapshot(
+                91,
+                ContextBand::Critical,
+                ContextProvenance::Direct,
+                ContextFreshness::Stale,
+            )),
+            60,
+        ));
+        assert!(critical_stale.contains("Ctx 91% CRITICAL STALE"));
+    }
+
+    #[test]
+    fn pending_reset_has_no_old_percentage_to_render() {
+        let rendered = buffer_text(&render_session_row(SessionKind::Pi, "Pi", None, 60));
+
+        assert!(!rendered.contains("Ctx "));
+    }
+
+    #[test]
+    fn narrow_rows_truncate_the_name_and_keep_the_critical_text() {
+        let rendered = buffer_text(&render_session_row(
+            SessionKind::Opencode,
+            "A very long OpenCode session name",
+            Some(context_snapshot(
+                91,
+                ContextBand::Critical,
+                ContextProvenance::Estimated,
+                ContextFreshness::Fresh,
+            )),
+            48,
+        ));
+
+        assert!(rendered.contains('…'));
+        assert!(rendered.contains("Ctx ~91% CRITICAL"));
+    }
+
+    #[test]
+    fn band_styles_use_healthy_warning_and_danger_colors() {
+        let theme = Theme::default();
+        for (band, expected) in [
+            (ContextBand::Normal, theme.success.to_color()),
+            (ContextBand::Warning, theme.warning.to_color()),
+            (ContextBand::Critical, theme.danger.to_color()),
+        ] {
+            let indicator = ContextIndicator {
+                text: "Ctx 85%".to_string(),
+                band,
+                stale: false,
+            };
+            let style = context_indicator_style(&indicator, &theme);
+            assert_eq!(style.fg, Some(expected));
+            assert_eq!(
+                style.add_modifier.contains(Modifier::BOLD),
+                band != ContextBand::Normal
+            );
+        }
     }
 
     #[test]

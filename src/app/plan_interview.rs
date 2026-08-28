@@ -9,8 +9,8 @@ use anyhow::{Context, Result, bail};
 
 use super::pr_review::estimate_tokens;
 use super::{
-    App, AppMode, PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget, PreparedFeatureLaunch,
-    Selection, StartIntent, TodoPlanOrigin,
+    App, AppMode, PendingPlanLaunch, PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget,
+    PreparedFeatureLaunch, Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
@@ -21,7 +21,7 @@ const PLAN_FILE_NAME: &str = "AMF_PLAN.md";
 /// Composer seed offered after an accepted interview. Deliberately short and
 /// editable: the plan itself carries the detail, and the instruction block
 /// already told the agent to treat its decisions as settled.
-const PLAN_KICKOFF_PROMPT: &str = "\
+pub(super) const PLAN_KICKOFF_PROMPT: &str = "\
 Read `AMF_PLAN.md`. It is the plan I approved for this feature — its \
 decisions are settled unless I say otherwise.
 
@@ -1644,29 +1644,32 @@ impl App {
         // still leaves a transcript behind.
         self.persist_plan_interview_draft();
 
-        let pending = match &mut self.mode {
-            AppMode::PlanInterview(state) => state.pending_launch.take(),
+        let pending = match &self.mode {
+            AppMode::PlanInterview(state) => state.pending_launch.clone(),
             _ => return Ok(()),
         };
 
         if let Some(mut prepared) = pending {
-            self.mode = AppMode::Normal;
-            let project_name = prepared.project_name.clone();
-            let branch = prepared.branch.clone();
             // The launch injects the plan-mode instruction block into the
             // harness's instruction file (via `ensure_feature_running`), so the
             // agent already knows the plan is user-approved before it reads the
             // kickoff prompt.
             prepared.startup_prompt = Some(PLAN_KICKOFF_PROMPT.to_string());
-            self.finish_feature_launch_without_interview(prepared)?;
-            self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
-            // The feature exists only now, so this is the first moment the TODO
-            // can be pointed at it. The row itself stays open: the plan is the
-            // start of the work, not the end of it.
-            if let Some(origin) = &todo_origin {
-                self.link_todo_to_new_feature(origin, &project_name, &branch);
+            let pending = PendingPlanLaunch {
+                prepared,
+                interview_key,
+                plan,
+            };
+
+            // A completed interview has all the state needed to pause safely,
+            // so use the same interactive resource gate as manual starts. The
+            // dialog retains this PlanInterview mode for cancellation.
+            if self.gate_plan_launch(pending.clone()) {
+                return Ok(());
             }
-            Ok(())
+
+            self.mode = AppMode::Normal;
+            self.resume_accepted_plan_launch(pending)
         } else if let Some(origin) = todo_origin {
             // A TODO planned into its host feature. The plan is on disk beside
             // the feature's own; accepting starts an agent on it rather than
@@ -1705,6 +1708,31 @@ impl App {
             }
             Ok(())
         }
+    }
+
+    /// Resume the exact accepted-plan launch stashed by the resource dialog.
+    /// The resource check has either passed or been explicitly confirmed, so
+    /// creation and startup bypass the creation-time toast gate exactly once.
+    pub(crate) fn resume_accepted_plan_launch(&mut self, pending: PendingPlanLaunch) -> Result<()> {
+        let PendingPlanLaunch {
+            prepared,
+            interview_key,
+            plan,
+        } = pending;
+        let project_name = prepared.project_name.clone();
+        let branch = prepared.branch.clone();
+        let todo_origin = prepared.todo_origin.clone();
+
+        self.finish_feature_launch_resource_approved(prepared)?;
+        self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
+
+        // The feature exists only now, so this is the first moment the TODO can
+        // be pointed at it. The row itself stays open: the plan is the start of
+        // the work, not the end of it.
+        if let Some(origin) = &todo_origin {
+            self.link_todo_to_new_feature(origin, &project_name, &branch);
+        }
+        Ok(())
     }
 
     /// Whether this interview's plan lands in a feature that already exists.
@@ -1777,6 +1805,21 @@ impl App {
             return Ok(());
         };
 
+        let planned_todo = self.find_todo_by_id(&origin.todo_id);
+        let rollback_on_failure = if let Some(todo) = planned_todo.as_ref() {
+            let Some(rollback_on_failure) = self.todos_prepare_planned_launch(todo)? else {
+                self.mode = AppMode::Normal;
+                self.push_toast_warning(
+                    "Plan saved, but this TODO is completed; an agent was not launched",
+                );
+                self.message = Some(format!("Plan written to {}", plan_path.display()));
+                return Ok(());
+            };
+            rollback_on_failure
+        } else {
+            false
+        };
+
         self.mode = AppMode::Normal;
         let agent = self.store.projects[pi].features[fi].agent.clone();
         let label = Self::todo_session_label(&origin.todo_title);
@@ -1791,6 +1834,9 @@ impl App {
         ) {
             Ok(si) => si,
             Err(e) => {
+                if rollback_on_failure {
+                    self.todos_rollback_launch_best_effort(&origin.todo_id);
+                }
                 self.push_toast_error(format!("Plan saved, but the agent failed to start: {e}"));
                 self.message = Some(format!("Plan written to {}", plan_path.display()));
                 return Ok(());
@@ -1798,15 +1844,26 @@ impl App {
         };
 
         let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
-        if let Some(db) = self.db.as_ref()
-            && let Err(e) = db.set_todo_spawned_session(&origin.todo_id, &session_id)
+        if planned_todo.is_some()
+            && let Err(e) = self.todos_mark_in_progress(&origin.todo_id, Some(&session_id))
         {
-            self.log_warn("todos", format!("failed to link TODO to its session: {e}"));
+            if rollback_on_failure {
+                self.todos_rollback_launch_best_effort(&origin.todo_id);
+            }
+            return Err(e);
         }
 
         self.selection = Selection::Session(pi, fi, si);
-        self.enter_view_without_auto_compose()?;
-        self.open_compose_seeded(todo_plan_kickoff_prompt(plan_file))
+        if let Err(e) = self
+            .enter_view_without_auto_compose()
+            .and_then(|_| self.open_compose_seeded(todo_plan_kickoff_prompt(plan_file)))
+        {
+            if rollback_on_failure {
+                self.todos_rollback_launch_best_effort(&origin.todo_id);
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Locate a live agent session for the feature an on-demand plan was just

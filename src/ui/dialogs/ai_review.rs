@@ -119,17 +119,21 @@ fn format_elapsed(elapsed: std::time::Duration) -> String {
     }
 }
 
-fn ai_review_last_run_badge(run: &AiReviewRun) -> (String, bool) {
+pub(super) fn ai_review_run_badge_text(
+    run: &AiReviewRun,
+    include_error_detail: bool,
+) -> (String, bool) {
     let age = format_relative_time(run.ran_at);
     match &run.outcome {
-        AiReviewRunOutcome::Findings(0) => (format!("  no findings ({age})"), false),
+        AiReviewRunOutcome::Findings(0) => (format!("no findings ({age})"), false),
         AiReviewRunOutcome::Findings(n) => (
-            format!("  {n} finding{} ({age})", if *n == 1 { "" } else { "s" }),
+            format!("{n} finding{} ({age})", if *n == 1 { "" } else { "s" }),
             false,
         ),
-        AiReviewRunOutcome::Error(e) => {
-            (format!("  failed ({age}): {}", truncate_right(e, 60)), true)
+        AiReviewRunOutcome::Error(e) if include_error_detail => {
+            (format!("failed ({age}): {}", truncate_right(e, 60)), true)
         }
+        AiReviewRunOutcome::Error(_) => (format!("failed ({age})"), true),
     }
 }
 
@@ -163,10 +167,15 @@ fn truncate_right(s: &str, max: usize) -> String {
 }
 
 fn finding_location(f: &AiReviewFinding) -> String {
-    match (&f.path, f.line) {
-        (Some(path), Some(line)) => format!("{path}:{line}"),
-        (Some(path), None) => path.clone(),
-        (None, _) => "General".to_string(),
+    match (&f.path, f.side, f.line) {
+        (Some(path), Some(crate::diff::DiffSide::Old), Some(line)) => {
+            format!("{path}:{line} (base)")
+        }
+        (Some(path), Some(crate::diff::DiffSide::New), Some(line)) => {
+            format!("{path}:{line}")
+        }
+        (Some(path), _, _) => path.clone(),
+        (None, _, _) => "General".to_string(),
     }
 }
 
@@ -329,12 +338,29 @@ pub fn draw_ai_review(
     throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
     let area = frame.area();
+    // A sub-header line naming the harness/model that produced the current
+    // findings and what the run cost. Absent until a run completes for this
+    // head SHA (or for a legacy cache row with no attribution).
+    let attribution_line: Option<Line<'static>> = state.attribution.as_ref().map(|attribution| {
+        let mut label = format!("  {}", attribution.plain_label());
+        if !attribution.has_usage() {
+            // The run finished but the harness reported no token counts, so
+            // there is no cost to show — say so rather than leave it looking
+            // truncated.
+            label.push_str(" · usage not reported");
+        }
+        Line::from(Span::styled(
+            label,
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
+    });
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
-            Constraint::Min(1),    // body
-            Constraint::Length(1), // footer
+            Constraint::Length(1),                                     // header
+            Constraint::Length(u16::from(attribution_line.is_some())), // attribution
+            Constraint::Min(1),                                        // body
+            Constraint::Length(1),                                     // footer
         ])
         .split(area);
 
@@ -366,9 +392,9 @@ pub fn draw_ai_review(
             Style::default().fg(theme.warning.to_color()),
         ));
     } else if let Some(run) = &state.last_run {
-        let (text, is_error) = ai_review_last_run_badge(run);
+        let (text, is_error) = ai_review_run_badge_text(run, true);
         header_spans.push(Span::styled(
-            text,
+            format!("  {text}"),
             Style::default().fg(if is_error {
                 theme.danger.to_color()
             } else {
@@ -378,10 +404,14 @@ pub fn draw_ai_review(
     }
     frame.render_widget(Paragraph::new(Line::from(header_spans)), outer[0]);
 
+    if let Some(attribution_line) = attribution_line {
+        frame.render_widget(Paragraph::new(attribution_line), outer[1]);
+    }
+
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-        .split(outer[1]);
+        .split(outer[2]);
     draw_finding_list(frame, body[0], state, theme);
     let detail_lines = draw_finding_detail(
         frame,
@@ -401,7 +431,7 @@ pub fn draw_ai_review(
         format!(" j/k move   s skip/unskip   e edit   {ai_action}   W post   esc/q close"),
         Style::default().fg(theme.text_muted.to_color()),
     )));
-    frame.render_widget(keys, outer[2]);
+    frame.render_widget(keys, outer[3]);
 
     if let Some(pick) = &state.harness_pick {
         draw_ai_harness_pick(frame, pick, theme);
@@ -671,7 +701,7 @@ mod tests {
 
     use ratatui::{Terminal, backend::TestBackend};
 
-    use super::{draw_ai_review, draw_ai_review_running, format_elapsed};
+    use super::{draw_ai_review, draw_ai_review_running, finding_location, format_elapsed};
     use crate::{
         app::{AiReviewRunState, AiReviewState},
         project::AgentKind,
@@ -684,6 +714,33 @@ mod tests {
         assert_eq!(
             format_elapsed(std::time::Duration::from_secs(125)),
             "2m 05s"
+        );
+    }
+
+    #[test]
+    fn finding_location_renders_only_validated_side_aware_coordinates() {
+        let finding = |side, line| crate::app::ai_review::AiReviewFinding {
+            path: Some("src/lib.rs".to_string()),
+            line,
+            side,
+            body: "finding".to_string(),
+            diff_hunk: None,
+            skipped: false,
+            published: false,
+        };
+
+        assert_eq!(
+            finding_location(&finding(Some(crate::diff::DiffSide::New), Some(12))),
+            "src/lib.rs:12"
+        );
+        assert_eq!(
+            finding_location(&finding(Some(crate::diff::DiffSide::Old), Some(9))),
+            "src/lib.rs:9 (base)"
+        );
+        assert_eq!(
+            finding_location(&finding(None, None)),
+            "src/lib.rs",
+            "an unmapped finding must not display its rejected line number"
         );
     }
 
@@ -702,6 +759,7 @@ mod tests {
                 },
                 findings: Vec::new(),
                 summary: None,
+                attribution: None,
                 selected: 0,
                 detail_scroll: 0,
                 detail_content_lines: 0,
@@ -757,5 +815,91 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("A view progress"));
+    }
+
+    fn pane_state_with_attribution(
+        attribution: Option<crate::app::ai_review::AiReviewAttribution>,
+    ) -> AiReviewState {
+        AiReviewState {
+            workdir: PathBuf::from("/tmp/review"),
+            pr: crate::github::PrRef {
+                number: 12,
+                head_sha: "abc123".to_string(),
+                url: "https://github.com/o/r/pull/12".to_string(),
+                owner: "o".to_string(),
+                repo: "r".to_string(),
+                head_ref: "feature".to_string(),
+            },
+            findings: Vec::new(),
+            summary: None,
+            attribution,
+            selected: 0,
+            detail_scroll: 0,
+            detail_content_lines: 0,
+            last_run: None,
+            harness: None,
+            harness_pick: None,
+            harness_pick_origin: None,
+            model: None,
+            model_picked: false,
+            model_pick: None,
+            finding_editor: None,
+            post_confirm: None,
+        }
+    }
+
+    fn render_pane(state: &mut AiReviewState) -> String {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let throbber = throbber_widgets_tui::ThrobberState::default();
+        terminal
+            .draw(|frame| draw_ai_review(frame, state, &Theme::default(), false, &throbber))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn pane_shows_the_model_token_cost_attribution_line_after_a_run() {
+        let mut state =
+            pane_state_with_attribution(Some(crate::app::ai_review::AiReviewAttribution {
+                harness: Some("claude".to_string()),
+                model: Some("sonnet".to_string()),
+                input_tokens: Some(12_300),
+                output_tokens: Some(4_500),
+                estimated_cost: Some("$0.10".to_string()),
+            }));
+        let rendered = render_pane(&mut state);
+        assert!(
+            rendered.contains("harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.10"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn pane_attribution_line_degrades_to_model_only_without_usage() {
+        let mut state =
+            pane_state_with_attribution(Some(crate::app::ai_review::AiReviewAttribution {
+                harness: Some("codex".to_string()),
+                model: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+            }));
+        let rendered = render_pane(&mut state);
+        assert!(rendered.contains("harness codex · model harness default · usage not reported"));
+        assert!(!rendered.contains("est. $"));
+    }
+
+    #[test]
+    fn pane_has_no_attribution_line_before_the_first_run() {
+        let mut state = pane_state_with_attribution(None);
+        let rendered = render_pane(&mut state);
+        assert!(!rendered.contains("harness "));
     }
 }

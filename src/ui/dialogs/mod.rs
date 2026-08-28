@@ -3,11 +3,13 @@ mod batch_creation;
 mod browse;
 mod compose;
 mod config_wizard;
+mod context_settings;
 mod debug;
 mod diff;
 mod dormant;
 mod editor_view;
 mod feature;
+mod handoff;
 mod harness;
 mod help;
 mod hooks;
@@ -29,6 +31,7 @@ pub use batch_creation::draw_create_batch_features_dialog;
 pub use browse::draw_browse_path_dialog;
 pub use compose::draw_compose_dialog;
 pub use config_wizard::draw_config_wizard_dialog;
+pub use context_settings::draw_context_settings_dialog;
 pub use debug::draw_debug_log;
 pub use diff::{draw_diff_picker, draw_diff_viewer, draw_diff_viewer_loading};
 pub use dormant::draw_dormant_view;
@@ -36,6 +39,7 @@ pub use feature::{
     draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
     draw_deleting_feature_dialog, draw_fork_feature_dialog, draw_steering_prompt_dialog,
 };
+pub use handoff::draw_fresh_context_prompt_dialog;
 pub use harness::draw_harness_setup_dialog;
 pub use help::draw_help;
 pub use hooks::{
@@ -63,6 +67,8 @@ pub use session::{
 };
 pub use theme::draw_theme_picker;
 pub use todos::{
-    draw_todo_implement_choice_dialog, draw_todo_quick_capture_dialog,
-    draw_todos_host_reassign_dialog, draw_todos_view,
+    draw_todo_delete_disposition_dialog, draw_todo_implement_choice_dialog,
+    draw_todo_quick_capture_dialog, draw_todo_reference_completion_dialog,
+    draw_todo_spawn_target_dialog, draw_todos_host_reassign_dialog,
+    draw_todos_view_with_visibility,
 };

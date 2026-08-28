@@ -1,5 +1,9 @@
 use super::GH_GRAPHQL_BACKOFF;
 use super::*;
+use crate::context_collectors::{
+    ContextCollectionResult, ContextCollectionTarget, ContextCollector, SessionContextCollector,
+};
+use crate::context_tracking::{ContextThresholds, SessionContextState};
 use crate::github::{GhCli, GhGraphqlError};
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
@@ -10,7 +14,7 @@ use crate::token_tracking::{
 };
 
 use chrono::Utc;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -75,6 +79,10 @@ impl ActivePrSweepOutcome {
 #[derive(Debug)]
 pub(crate) struct ActivePrSweep {
     pub updates: Vec<ActivePrUpdate>,
+    /// Terminal (merged/closed) lookups for branches the open query didn't
+    /// match and that weren't already known-terminal. Empty whenever nothing
+    /// needed asking about.
+    pub terminal_updates: Vec<TerminalPrUpdate>,
     /// Set when any job hit GitHub's GraphQL point budget, so the main loop can
     /// stop scheduling sweeps until the budget resets.
     pub rate_limited: bool,
@@ -85,6 +93,29 @@ pub(crate) struct ActivePrUpdate {
     pub feature_id: String,
     pub branch: String,
     pub lookup: ActivePrLookup,
+}
+
+#[derive(Debug)]
+pub(crate) enum TerminalPrLookup {
+    Found(crate::github::TerminalPr),
+    /// The repository answered and this branch has no merged/closed PR.
+    /// Deliberately *not* persisted to the DB — only a positive result is
+    /// durable, since "no terminal PR yet" can always change — but cached
+    /// in-memory in `App::confirmed_no_terminal_pr` so it costs one lookup
+    /// per branch per app run rather than one every sweep.
+    NoPr,
+    /// Not looked up (budget exhausted this sweep, or a prior failure in the
+    /// same repo call). Leaves any previous badge alone.
+    Skipped,
+    Failed(String),
+}
+
+#[derive(Debug)]
+pub(crate) struct TerminalPrUpdate {
+    pub feature_id: String,
+    pub repo: PathBuf,
+    pub branch: String,
+    pub lookup: TerminalPrLookup,
 }
 
 fn read_status_line(content: &str) -> Option<String> {
@@ -154,6 +185,7 @@ struct SessionStatusJob {
     #[allow(dead_code)] // set during job construction, not read yet
     existing_source_match: Option<TokenUsageSourceMatch>,
     claude_session_id: Option<String>,
+    context_conversation_id: Option<String>,
     custom_status_text: Option<String>,
 }
 
@@ -169,10 +201,13 @@ struct SessionStatusUpdate {
     source_action: SourceAction,
     status_text: Option<String>,
     token_usage: Option<SessionTokenUsage>,
+    context_result: Option<ContextCollectionResult>,
+    context_checked_at: chrono::DateTime<chrono::Utc>,
 }
 
 pub(crate) struct SessionStatusBgResult {
     tracker: SessionTokenTracker,
+    context_collector: SessionContextCollector,
     updates: Vec<SessionStatusUpdate>,
     sources_discovered: bool,
 }
@@ -180,6 +215,7 @@ pub(crate) struct SessionStatusBgResult {
 fn collect_jobs(
     store: &crate::project::ProjectStore,
     db: Option<&crate::db::AmfDb>,
+    context_states: &HashMap<String, SessionContextState>,
 ) -> Vec<SessionStatusJob> {
     store
         .projects
@@ -195,6 +231,9 @@ fn collect_jobs(
                     existing_source: session.token_usage_source.clone(),
                     existing_source_match: session.token_usage_source_match.clone(),
                     claude_session_id: session.claude_session_id.clone(),
+                    context_conversation_id: context_states
+                        .get(&session.id)
+                        .and_then(|state| state.reset.conversation_id.clone()),
                     custom_status_text: if session.kind == SessionKind::Custom {
                         read_custom_session_status(&session.id, &feature.id, &feature.workdir, db)
                     } else {
@@ -208,30 +247,68 @@ fn collect_jobs(
 
 fn run_jobs(
     mut tracker: SessionTokenTracker,
+    mut context_collector: SessionContextCollector,
     jobs: Vec<SessionStatusJob>,
     pricing: &TokenPricingConfig,
+    context_limit_override: Option<u64>,
 ) -> SessionStatusBgResult {
     let mut updates = Vec::with_capacity(jobs.len());
     let mut sources_discovered = false;
     let mut reserved_sources: HashSet<(String, TokenUsageProvider, String)> = HashSet::new();
+    let mut reserved_context_ids: HashSet<(String, u8, String)> = HashSet::new();
 
     for job in jobs {
+        let context_checked_at = Utc::now();
+        let harness_key = session_kind_key(&job.kind);
+        let excluded_context_ids = reserved_context_ids
+            .iter()
+            .filter(|(feature_id, kind, _)| feature_id == &job.feature_id && *kind == harness_key)
+            .map(|(_, _, id)| id.clone())
+            .collect::<Vec<_>>();
         if job.kind == SessionKind::Custom {
             updates.push(SessionStatusUpdate {
                 session_id: job.session_id,
                 source_action: SourceAction::NoChange,
                 status_text: job.custom_status_text,
                 token_usage: None,
+                context_result: None,
+                context_checked_at,
             });
             continue;
         }
 
         let Some(expected_provider) = provider_for_session_kind(&job.kind) else {
+            let context_result = job.kind.is_agent_harness().then(|| {
+                context_collector.collect(ContextCollectionTarget {
+                    session_kind: &job.kind,
+                    workdir: &job.workdir,
+                    conversation_id: job
+                        .claude_session_id
+                        .as_deref()
+                        .or(job.context_conversation_id.as_deref()),
+                    excluded_conversation_ids: &excluded_context_ids,
+                    session_created_at: job.created_at,
+                    provider_id: None,
+                    model_id: None,
+                    runtime_payload: None,
+                    fallback_usage: None,
+                    fallback_context_limit: context_limit_override,
+                    collected_at: context_checked_at,
+                })
+            });
+            reserve_context_result(
+                &mut reserved_context_ids,
+                &job.feature_id,
+                harness_key,
+                context_result.as_ref(),
+            );
             updates.push(SessionStatusUpdate {
                 session_id: job.session_id,
                 source_action: SourceAction::NoChange,
                 status_text: None,
                 token_usage: None,
+                context_result,
+                context_checked_at,
             });
             continue;
         };
@@ -325,24 +402,100 @@ fn run_jobs(
         let status_text = token_usage
             .as_ref()
             .map(|usage| format_token_usage(usage, pricing));
+        // Live signals win over the cached id: `context_conversation_id` is
+        // derived from this same collector's *previous* output, so once it
+        // drifts (a `/clear`, a new Codex/OpenCode thread) it can only
+        // self-correct if something fresher outranks it here.
+        let conversation_id = job
+            .claude_session_id
+            .as_deref()
+            .or_else(|| source.as_ref().map(|source| source.id.as_str()))
+            .or(job.context_conversation_id.as_deref());
+        let context_result = Some(context_collector.collect(ContextCollectionTarget {
+            session_kind: &job.kind,
+            workdir: &job.workdir,
+            conversation_id,
+            excluded_conversation_ids: &excluded_context_ids,
+            session_created_at: job.created_at,
+            provider_id: None,
+            model_id: None,
+            runtime_payload: None,
+            fallback_usage: token_usage.as_ref(),
+            fallback_context_limit: context_limit_override,
+            collected_at: context_checked_at,
+        }));
+        reserve_context_result(
+            &mut reserved_context_ids,
+            &job.feature_id,
+            harness_key,
+            context_result.as_ref(),
+        );
 
         updates.push(SessionStatusUpdate {
             session_id: job.session_id,
             source_action: action,
             status_text,
             token_usage,
+            context_result,
+            context_checked_at,
         });
     }
 
     SessionStatusBgResult {
         tracker,
+        context_collector,
         updates,
         sources_discovered,
     }
 }
 
+fn session_kind_key(kind: &SessionKind) -> u8 {
+    match kind {
+        SessionKind::Claude => 0,
+        SessionKind::Opencode => 1,
+        SessionKind::Codex => 2,
+        SessionKind::Pi => 3,
+        SessionKind::Terminal => 4,
+        SessionKind::Nvim => 5,
+        SessionKind::Vscode => 6,
+        SessionKind::Custom => 7,
+        SessionKind::Todos => 8,
+    }
+}
+
+fn reserve_context_result(
+    reserved: &mut HashSet<(String, u8, String)>,
+    feature_id: &str,
+    kind: u8,
+    result: Option<&ContextCollectionResult>,
+) {
+    let conversation_id = match result {
+        Some(ContextCollectionResult::Collected(sample)) => sample.reset.conversation_id.as_ref(),
+        Some(ContextCollectionResult::ResetPending {
+            conversation_id, ..
+        }) => conversation_id.as_ref(),
+        _ => None,
+    };
+    if let Some(conversation_id) = conversation_id {
+        reserved.insert((feature_id.to_string(), kind, conversation_id.clone()));
+    }
+}
+
 fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
     app.token_tracker = result.tracker;
+    app.context_collector = result.context_collector;
+    let live_session_ids = result
+        .updates
+        .iter()
+        .map(|update| update.session_id.as_str())
+        .collect::<HashSet<_>>();
+    app.context_states
+        .retain(|session_id, _| live_session_ids.contains(session_id.as_str()));
+
+    let thresholds = ContextThresholds {
+        warning_percent: app.config.context_warning_percent,
+        critical_percent: app.config.context_critical_percent,
+    };
 
     for update in result.updates {
         'outer: for project in &mut app.store.projects {
@@ -363,11 +516,23 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
                     }
                     session.status_text = update.status_text;
                     session.token_usage = update.token_usage;
+                    apply_context_result(
+                        &mut app.context_states,
+                        &session.id,
+                        update.context_result,
+                        update.context_checked_at,
+                        thresholds,
+                    );
                     break 'outer;
                 }
             }
         }
     }
+
+    // Hint eligibility follows the normalized current-window snapshots. The
+    // cumulative token usage above remains a separate billing/status value and
+    // must not be used to infer context occupancy.
+    app.context_hint_states.sync_all(&app.context_states);
 
     if result.sources_discovered
         && let Err(err) = app.save()
@@ -384,6 +549,32 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
         app.schedule_sidebar_loads_for_polling_fallback();
     }
     app.flush_token_cache_to_db();
+}
+
+fn apply_context_result(
+    states: &mut HashMap<String, SessionContextState>,
+    session_id: &str,
+    result: Option<ContextCollectionResult>,
+    checked_at: chrono::DateTime<Utc>,
+    thresholds: ContextThresholds,
+) {
+    let Some(result) = result else {
+        states.remove(session_id);
+        return;
+    };
+    let state = states.entry(session_id.to_string()).or_default();
+    match result {
+        ContextCollectionResult::Collected(sample) => {
+            if state.accept_sample(sample, thresholds).is_err() {
+                state.mark_unavailable(checked_at);
+            }
+        }
+        ContextCollectionResult::ResetPending {
+            conversation_id,
+            event,
+        } => state.begin_reset(conversation_id, event),
+        ContextCollectionResult::Unavailable(_) => state.mark_unavailable(checked_at),
+    }
 }
 
 pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
@@ -457,6 +648,30 @@ impl App {
             .filter(|d| !d.is_zero())
     }
 
+    /// Seed `terminal_prs` from the DB before the first sweep runs. A merged
+    /// or closed PR never reverts, so a stored hit is never stale — this is a
+    /// straight load-and-match, never a `gh` call, and is called once at
+    /// startup (see `App::new`).
+    pub(crate) fn load_terminal_prs_from_db(&mut self) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let Ok(cached) = db.load_all_pr_terminal_state() else {
+            return;
+        };
+        if cached.is_empty() {
+            return;
+        }
+        for project in &self.store.projects {
+            let repo = project.repo.to_string_lossy().to_string();
+            for feature in &project.features {
+                if let Some(pr) = cached.get(&(repo.clone(), feature.branch.clone())) {
+                    self.terminal_prs.insert(feature.id.clone(), pr.clone());
+                }
+            }
+        }
+    }
+
     /// Refresh dashboard PR badges without ever blocking rendering or input.
     /// The main loop starts this on [`ACTIVE_PR_SYNC_INTERVAL`] and refuses to
     /// overlap jobs, so a slow `gh` invocation cannot build up a queue of
@@ -505,32 +720,68 @@ impl App {
             return;
         }
 
+        // A feature already known terminal never needs asking about again —
+        // merged/closed never revert — so this sweep can skip straight past
+        // it rather than spending a GraphQL alias on a settled answer. A
+        // feature already confirmed to have *no* terminal PR is folded in
+        // here too: that answer isn't durable (a branch can still get a PR
+        // later), but it holds until `apply_active_pr_updates` sees the
+        // branch open again and clears it, which is what keeps a "never had
+        // one" branch from being re-queried on every single sweep.
+        let known_terminal_ids: HashSet<String> = self
+            .terminal_prs
+            .keys()
+            .cloned()
+            .chain(self.confirmed_no_terminal_pr.iter().cloned())
+            .collect();
+
         let (tx, rx) = std::sync::mpsc::channel();
         self.active_pr_bg = Some(rx);
         std::thread::spawn(move || {
             let mut rate_limited = false;
             let mut updates = Vec::new();
+            let mut terminal_updates = Vec::new();
 
             for job in repos {
                 // One depleted budget means every remaining repository would
                 // fail the same way, so the first to see it stops the rest.
                 if rate_limited {
-                    updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
-                        feature_id: feature.feature_id,
-                        branch: feature.branch,
-                        lookup: ActivePrLookup::Skipped,
-                    }));
+                    for feature in job.features {
+                        if !known_terminal_ids.contains(&feature.feature_id) {
+                            terminal_updates.push(TerminalPrUpdate {
+                                feature_id: feature.feature_id.clone(),
+                                repo: job.repo.clone(),
+                                branch: feature.branch.clone(),
+                                lookup: TerminalPrLookup::Skipped,
+                            });
+                        }
+                        updates.push(ActivePrUpdate {
+                            feature_id: feature.feature_id,
+                            branch: feature.branch,
+                            lookup: ActivePrLookup::Skipped,
+                        });
+                    }
                     continue;
                 }
 
                 // No GitHub remote is a settled answer, not a failure: the
                 // repository simply has no PRs to badge. Costs no API call.
                 let Some((owner, repo)) = crate::github::owner_repo_from_remote(&job.repo) else {
-                    updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
-                        feature_id: feature.feature_id,
-                        branch: feature.branch,
-                        lookup: ActivePrLookup::NoPr,
-                    }));
+                    for feature in job.features {
+                        if !known_terminal_ids.contains(&feature.feature_id) {
+                            terminal_updates.push(TerminalPrUpdate {
+                                feature_id: feature.feature_id.clone(),
+                                repo: job.repo.clone(),
+                                branch: feature.branch.clone(),
+                                lookup: TerminalPrLookup::NoPr,
+                            });
+                        }
+                        updates.push(ActivePrUpdate {
+                            feature_id: feature.feature_id,
+                            branch: feature.branch,
+                            lookup: ActivePrLookup::NoPr,
+                        });
+                    }
                     continue;
                 };
 
@@ -538,27 +789,108 @@ impl App {
                     Ok(open) => open,
                     Err(GhGraphqlError::RateLimited) => {
                         rate_limited = true;
-                        updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
-                            feature_id: feature.feature_id,
-                            branch: feature.branch,
-                            lookup: ActivePrLookup::Skipped,
-                        }));
+                        for feature in job.features {
+                            if !known_terminal_ids.contains(&feature.feature_id) {
+                                terminal_updates.push(TerminalPrUpdate {
+                                    feature_id: feature.feature_id.clone(),
+                                    repo: job.repo.clone(),
+                                    branch: feature.branch.clone(),
+                                    lookup: TerminalPrLookup::Skipped,
+                                });
+                            }
+                            updates.push(ActivePrUpdate {
+                                feature_id: feature.feature_id,
+                                branch: feature.branch,
+                                lookup: ActivePrLookup::Skipped,
+                            });
+                        }
                         continue;
                     }
                     Err(GhGraphqlError::Failed(error)) => {
                         // One failed repository must not blank the badges of
                         // features in the repositories that did answer.
-                        updates.extend(job.features.into_iter().map(|feature| ActivePrUpdate {
-                            feature_id: feature.feature_id,
-                            branch: feature.branch,
-                            lookup: ActivePrLookup::Failed(error.clone()),
-                        }));
+                        for feature in job.features {
+                            if !known_terminal_ids.contains(&feature.feature_id) {
+                                terminal_updates.push(TerminalPrUpdate {
+                                    feature_id: feature.feature_id.clone(),
+                                    repo: job.repo.clone(),
+                                    branch: feature.branch.clone(),
+                                    lookup: TerminalPrLookup::Failed(error.clone()),
+                                });
+                            }
+                            updates.push(ActivePrUpdate {
+                                feature_id: feature.feature_id,
+                                branch: feature.branch,
+                                lookup: ActivePrLookup::Failed(error.clone()),
+                            });
+                        }
                         continue;
                     }
                 };
 
-                updates.extend(job.features.into_iter().map(|feature| {
-                    let lookup = match open.iter().find(|pr| pr.head_ref == feature.branch) {
+                // Only branches the open query didn't match, and that aren't
+                // already known-terminal, are worth a second call — this is
+                // what keeps the terminal lookup a one-time cost per branch.
+                let mut needs_terminal: Vec<String> = Vec::new();
+                for feature in &job.features {
+                    let is_open = open.iter().any(|pr| pr.head_ref == feature.branch);
+                    if !is_open
+                        && !known_terminal_ids.contains(&feature.feature_id)
+                        && !needs_terminal.contains(&feature.branch)
+                    {
+                        needs_terminal.push(feature.branch.clone());
+                    }
+                }
+
+                enum TerminalBatchOutcome {
+                    RateLimited,
+                    Failed(String),
+                }
+
+                let (terminal_map, terminal_outcome): (
+                    HashMap<String, crate::github::TerminalPr>,
+                    Option<TerminalBatchOutcome>,
+                ) = if needs_terminal.is_empty() {
+                    (HashMap::new(), None)
+                } else {
+                    match GhCli::terminal_prs(&job.repo, &owner, &repo, &needs_terminal) {
+                        Ok(map) => (map, None),
+                        Err(GhGraphqlError::RateLimited) => {
+                            rate_limited = true;
+                            (HashMap::new(), Some(TerminalBatchOutcome::RateLimited))
+                        }
+                        Err(GhGraphqlError::Failed(error)) => {
+                            (HashMap::new(), Some(TerminalBatchOutcome::Failed(error)))
+                        }
+                    }
+                };
+
+                for feature in job.features {
+                    let matched_open = open.iter().find(|pr| pr.head_ref == feature.branch);
+                    let is_open = matched_open.is_some();
+
+                    if !is_open && !known_terminal_ids.contains(&feature.feature_id) {
+                        let lookup = match &terminal_outcome {
+                            Some(TerminalBatchOutcome::RateLimited) => TerminalPrLookup::Skipped,
+                            Some(TerminalBatchOutcome::Failed(error)) => {
+                                TerminalPrLookup::Failed(error.clone())
+                            }
+                            None => match terminal_map.get(&feature.branch) {
+                                Some(pr) => TerminalPrLookup::Found(pr.clone()),
+                                // The repository answered and this branch has
+                                // no merged/closed PR: a confirmed absence.
+                                None => TerminalPrLookup::NoPr,
+                            },
+                        };
+                        terminal_updates.push(TerminalPrUpdate {
+                            feature_id: feature.feature_id.clone(),
+                            repo: job.repo.clone(),
+                            branch: feature.branch.clone(),
+                            lookup,
+                        });
+                    }
+
+                    let lookup = match matched_open {
                         Some(pr) => ActivePrLookup::Found(ActivePrStatus {
                             branch: feature.branch.clone(),
                             head_sha: pr.head_sha.clone(),
@@ -569,16 +901,17 @@ impl App {
                         // its open PRs: a confirmed absence, not a failure.
                         None => ActivePrLookup::NoPr,
                     };
-                    ActivePrUpdate {
+                    updates.push(ActivePrUpdate {
                         feature_id: feature.feature_id,
                         branch: feature.branch,
                         lookup,
-                    }
-                }));
+                    });
+                }
             }
 
             let _ = tx.send(ActivePrSweep {
                 updates,
+                terminal_updates,
                 rate_limited,
             });
         });
@@ -596,7 +929,9 @@ impl App {
                 if sweep.rate_limited {
                     self.note_gh_graphql_rate_limited();
                 }
-                self.apply_active_pr_updates(sweep.updates)
+                let active_changed = self.apply_active_pr_updates(sweep.updates);
+                let terminal_changed = self.apply_terminal_pr_updates(sweep.terminal_updates);
+                active_changed || terminal_changed
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -622,6 +957,10 @@ impl App {
 
             match update.lookup {
                 ActivePrLookup::Found(status) => {
+                    // The branch has an open PR again, so a past "no terminal
+                    // PR" answer is no longer settled — it must be re-checked
+                    // once this PR itself reaches a terminal state.
+                    self.confirmed_no_terminal_pr.remove(&update.feature_id);
                     let previous_pr_number = self
                         .active_prs
                         .get(&update.feature_id)
@@ -671,20 +1010,100 @@ impl App {
         self.active_prs.get(feature_id)
     }
 
+    /// Apply a completed terminal-PR sweep. Unlike `apply_active_pr_updates`,
+    /// a positive result is durable — merged/closed never revert — so
+    /// `Found` is persisted to the DB as well as cached in memory, and
+    /// nothing here ever removes an existing terminal-PR entry (`Skipped` and
+    /// `Failed` leave a prior terminal badge exactly as it was). `NoPr` is
+    /// not durable and is never persisted, but it is cached in
+    /// `confirmed_no_terminal_pr` so the same settled-negative branch isn't
+    /// re-queried every sweep; that cache self-invalidates the moment the
+    /// branch is seen with an open PR again.
+    pub(crate) fn apply_terminal_pr_updates(&mut self, updates: Vec<TerminalPrUpdate>) -> bool {
+        let mut changed = false;
+        for update in updates {
+            let branch_is_current = self.store.projects.iter().any(|project| {
+                project.features.iter().any(|feature| {
+                    feature.id == update.feature_id && feature.branch == update.branch
+                })
+            });
+            if !branch_is_current {
+                continue;
+            }
+
+            match update.lookup {
+                TerminalPrLookup::Found(pr) => {
+                    if self.terminal_prs.get(&update.feature_id) != Some(&pr) {
+                        if let Some(db) = self.db.as_ref() {
+                            let repo = update.repo.to_string_lossy().to_string();
+                            if let Err(error) =
+                                db.save_pr_terminal_state(&repo, &update.branch, &pr)
+                            {
+                                self.log_error(
+                                    "github",
+                                    format!(
+                                        "failed to persist terminal PR state for {} ({}): {error}",
+                                        update.feature_id, update.branch
+                                    ),
+                                );
+                            }
+                        }
+                        self.terminal_prs.insert(update.feature_id, pr);
+                        changed = true;
+                    }
+                }
+                TerminalPrLookup::NoPr => {
+                    // Not persisted to the DB — this isn't a durable fact —
+                    // but cached in memory so the next sweep doesn't spend a
+                    // GraphQL alias re-asking a branch that still has nothing
+                    // to report. Cleared as soon as the branch shows an open
+                    // PR again (`apply_active_pr_updates`).
+                    self.confirmed_no_terminal_pr.insert(update.feature_id);
+                }
+                TerminalPrLookup::Skipped => {}
+                TerminalPrLookup::Failed(error) => {
+                    self.log_debug(
+                        "github",
+                        format!(
+                            "Terminal PR lookup failed for {} ({}): {}",
+                            update.feature_id, update.branch, error
+                        ),
+                    );
+                }
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn terminal_pr_for_feature(
+        &self,
+        feature_id: &str,
+    ) -> Option<&crate::github::TerminalPr> {
+        self.terminal_prs.get(feature_id)
+    }
+
     /// Kick off a background thread to do the expensive token-usage I/O.
     /// The thread takes ownership of `self.token_tracker` so the cache is
     /// preserved; it is swapped back in when `poll_session_status_bg` applies
     /// the results.
     pub fn sync_session_status_background(&mut self) {
-        let jobs = collect_jobs(&self.store, self.db.as_ref());
+        let jobs = collect_jobs(&self.store, self.db.as_ref(), &self.context_states);
         let pricing = self.config.token_pricing.clone();
+        let context_limit_override = self.config.context_window_override;
         let tracker = std::mem::take(&mut self.token_tracker);
+        let context_collector = std::mem::take(&mut self.context_collector);
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.session_status_bg = Some(rx);
 
         std::thread::spawn(move || {
-            let result = run_jobs(tracker, jobs, &pricing);
+            let result = run_jobs(
+                tracker,
+                context_collector,
+                jobs,
+                &pricing,
+                context_limit_override,
+            );
             let _ = tx.send(result);
         });
     }
@@ -765,6 +1184,17 @@ impl App {
             self.user_stopped_features
                 .retain(|id| !live_feature_ids.contains(id));
         }
+
+        if let Err(e) = self.reconcile_todo_agent_associations() {
+            self.log_warn(
+                "todos",
+                format!("failed to reconcile TODO agent associations: {e}"),
+            );
+        }
+
+        // Rebuild active TODO sidebar text here rather than per frame:
+        // each referenced session costs two SQLite queries to resolve.
+        self.refresh_active_todos_sidebar_cache();
     }
 
     #[allow(dead_code)] // exercised only by unit tests
@@ -776,117 +1206,24 @@ impl App {
 
     #[allow(dead_code)] // exercised only by unit tests
     pub(crate) fn sync_session_status_with_tracker(&mut self, tracker: &mut SessionTokenTracker) {
+        let jobs = collect_jobs(&self.store, self.db.as_ref(), &self.context_states);
+        let owned_tracker = std::mem::take(tracker);
+        let context_collector = std::mem::take(&mut self.context_collector);
         let pricing = self.config.token_pricing.clone();
-        let mut discovered_sources = false;
-
-        for project in &mut self.store.projects {
-            for feature in &mut project.features {
-                let mut reserved_sources: HashSet<(TokenUsageProvider, String)> = HashSet::new();
-                for session in &mut feature.sessions {
-                    if session.kind == crate::project::SessionKind::Custom {
-                        session.status_text = read_custom_session_status(
-                            &session.id,
-                            &feature.id,
-                            &feature.workdir,
-                            self.db.as_ref(),
-                        );
-                        session.token_usage = None;
-                        continue;
-                    }
-
-                    let Some(expected_provider) = provider_for_session_kind(&session.kind) else {
-                        session.status_text = None;
-                        session.token_usage = None;
-                        continue;
-                    };
-
-                    if session.token_usage_source.is_none()
-                        && matches!(session.kind, SessionKind::Claude)
-                        && session.claude_session_id.is_some()
-                        && let Some(id) = session.claude_session_id.as_ref()
-                    {
-                        session.set_token_usage_source_exact(TokenUsageSource {
-                            provider: TokenUsageProvider::Claude,
-                            id: id.clone(),
-                        });
-                        discovered_sources = true;
-                    }
-
-                    if session
-                        .token_usage_source
-                        .as_ref()
-                        .is_some_and(|source| source.provider != expected_provider)
-                    {
-                        session.clear_token_usage_source();
-                        discovered_sources = true;
-                    }
-
-                    if let Some(source) = session.token_usage_source.as_ref()
-                        && session.token_usage_source_match == Some(TokenUsageSourceMatch::Inferred)
-                        && source.provider == TokenUsageProvider::Codex
-                        && tracker
-                            .source_updated_at_seconds(source, &feature.workdir)
-                            .is_some_and(|updated| updated < session.created_at.timestamp())
-                    {
-                        session.clear_token_usage_source();
-                        discovered_sources = true;
-                    }
-
-                    if let Some(source) = session.token_usage_source.as_ref() {
-                        let key = (source.provider.clone(), source.id.clone());
-                        if session.token_usage_source_match == Some(TokenUsageSourceMatch::Inferred)
-                            && reserved_sources.contains(&key)
-                        {
-                            session.clear_token_usage_source();
-                            discovered_sources = true;
-                        } else {
-                            reserved_sources.insert(key);
-                        }
-                    }
-
-                    if session.token_usage_source.is_none() {
-                        let excluded_ids = reserved_sources
-                            .iter()
-                            .filter(|(provider, _)| provider == &expected_provider)
-                            .map(|(_, id)| id.clone())
-                            .collect::<HashSet<_>>();
-                        if let Some(source) = tracker.discover_source_excluding(
-                            &session.kind,
-                            &feature.workdir,
-                            session.created_at,
-                            &excluded_ids,
-                        ) {
-                            reserved_sources.insert((source.provider.clone(), source.id.clone()));
-                            session.set_token_usage_source_inferred(source);
-                            discovered_sources = true;
-                        }
-                    }
-
-                    session.token_usage = session
-                        .token_usage_source
-                        .as_ref()
-                        .and_then(|source| tracker.read_usage(source, &feature.workdir));
-                    session.status_text = session
-                        .token_usage
-                        .as_ref()
-                        .map(|usage| format_token_usage(usage, &pricing));
-                }
-            }
-        }
-
-        if self.has_active_sidebar() {
-            self.refresh_sidebar_for_current_view();
-        } else if !matches!(self.mode, AppMode::Viewing(_)) {
-            self.schedule_sidebar_loads_for_polling_fallback();
-        }
-
-        if discovered_sources && let Err(err) = self.save() {
-            self.log_warn(
-                "usage",
-                format!("Failed to persist discovered token tracking sources: {err}"),
-            );
-        }
-        self.flush_token_cache_to_db();
+        let context_limit_override = self.config.context_window_override;
+        let result = run_jobs(
+            owned_tracker,
+            context_collector,
+            jobs,
+            &pricing,
+            context_limit_override,
+        );
+        apply_bg_result(self, result);
+        // Clone rather than `mem::take`: `apply_bg_result` already wrote the
+        // updated tracker into `self.token_tracker`, and this caller's
+        // tracker is a separate copy — taking would leave `self.token_tracker`
+        // reset to default for anyone reading it after this call returns.
+        *tracker = self.token_tracker.clone();
     }
 
     pub fn sync_thinking_status(&mut self) -> bool {

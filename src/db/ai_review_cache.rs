@@ -67,9 +67,11 @@ mod tests {
 
     fn entry(body: &str) -> AiReviewCacheEntry {
         AiReviewCacheEntry {
+            attribution: None,
             findings: vec![AiReviewFinding {
                 path: Some("src/lib.rs".into()),
                 line: Some(42),
+                side: Some(crate::diff::DiffSide::New),
                 body: body.into(),
                 diff_hunk: Some("@@ -1 +1 @@".into()),
                 skipped: false,
@@ -134,5 +136,63 @@ mod tests {
         });
         let entry: AiReviewCacheEntry = serde_json::from_value(legacy).unwrap();
         assert!(entry.summary.is_none());
+        assert!(entry.attribution.is_none());
+    }
+
+    #[test]
+    fn attribution_roundtrips_through_the_cache_json() {
+        let (_tmp, db) = open_temp_db();
+        let mut e = entry("guard this");
+        e.attribution = Some(crate::app::ai_review::AiReviewAttribution {
+            harness: Some("claude".into()),
+            model: Some("sonnet".into()),
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            estimated_cost: Some("$0.01".into()),
+        });
+        db.save_ai_review_cache(9, "sha", &e).unwrap();
+
+        let loaded = db.load_ai_review_cache(9, "sha").unwrap().unwrap();
+        let attribution = loaded.attribution.unwrap();
+        assert_eq!(attribution.model.as_deref(), Some("sonnet"));
+        assert_eq!(attribution.input_tokens, Some(1_000));
+        assert_eq!(attribution.estimated_cost.as_deref(), Some("$0.01"));
+    }
+
+    #[test]
+    fn legacy_zero_finding_run_without_summary_remains_readable() {
+        let legacy = serde_json::json!({
+            "findings": [],
+            "last_run": {
+                "ran_at": Local::now(),
+                "outcome": { "Findings": 0 }
+            }
+        });
+        let entry: AiReviewCacheEntry = serde_json::from_value(legacy).unwrap();
+        assert!(entry.summary.is_none());
+        assert!(matches!(
+            entry.last_run.unwrap().outcome,
+            AiReviewRunOutcome::Findings(0)
+        ));
+    }
+
+    #[test]
+    fn eviction_removes_only_rows_older_than_one_week() {
+        let (_tmp, db) = open_temp_db();
+        db.save_ai_review_cache(1, "old", &entry("old")).unwrap();
+        db.save_ai_review_cache(2, "fresh", &entry("fresh"))
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE ai_review_cache SET updated_at = datetime('now', '-8 days') \
+                 WHERE pr_number = 1",
+                [],
+            )
+            .unwrap();
+
+        db.evict_stale_ai_review_cache().unwrap();
+
+        assert!(db.load_ai_review_cache(1, "old").unwrap().is_none());
+        assert!(db.load_ai_review_cache(2, "fresh").unwrap().is_some());
     }
 }

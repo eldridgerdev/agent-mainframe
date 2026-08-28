@@ -24,7 +24,7 @@ reviewed.
   review workflows.
 - Explains code you didn't write: browse a repository read-only and ask an
   agent about any file, hunk, or line range, with the answers kept per project.
-- Provides reusable prompts, project TODO lists, themes, lifecycle hooks, and
+- Provides reusable prompts, scoped TODO lists, themes, lifecycle hooks, and
   workspace presets.
 - Supports ordinary directories as well as git repositories.
 
@@ -44,7 +44,8 @@ non-git directories without it.
 Optional tools:
 
 - An authenticated [GitHub CLI](https://cli.github.com/) (`gh`) enables PR
-  triage, AI review, and posting final-review feedback.
+  triage, AI review, posting final-review feedback, and the dashboard's
+  open/merged/closed PR badge.
 - A [Nerd Font](https://www.nerdfonts.com/) provides the best icon rendering.
 - The `code` command enables VS Code sessions.
 - A C compiler and git are required only for installing optional tree-sitter
@@ -157,6 +158,12 @@ review and edit the resulting plan, ask an agent to improve it, or cancel it.
 AMF does not save the plan or launch the feature until you accept it. Press `P`
 on an existing feature to run the interview again.
 
+Multiple-choice questions in the interview also take your own answer: press `e`
+to type into the "Your own answer" box under the options. You can answer with
+your own text alone or add it alongside a picked option; `Enter` in the box
+returns to the options without submitting, and `Enter` on the option list
+submits.
+
 ## Essential controls
 
 ### Dashboard
@@ -172,7 +179,7 @@ on an existing feature to run the interview again.
 | `r` / `d` | Rename / delete the selected item |
 | `/` | Search and jump |
 | `i` | Show agents needing attention: questions first, then finished work |
-| `I` | On a TODOs session row: start an agent on the next TODO in priority order |
+| `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
 | `z` | Show dormant features: idle and unattended |
 | `G` | Open GitHub PR triage |
 | `W` | Run AMF's AI review of a PR diff |
@@ -195,7 +202,7 @@ Most keys go directly to the active session. These controls belong to AMF:
 | `Ctrl+Space`, then `i` | Jump to an agent needing attention |
 | `Ctrl+Space`, then `f` | Start final diff review |
 | `Ctrl+Space`, then `p` | Open the prompt library |
-| `Ctrl+Space`, then `N` | Add a project TODO |
+| `Ctrl+Space`, then `N` | Add a TODO to this worktree's list |
 | `Ctrl+Space`, then `?` | Show all leader commands |
 
 ## User workflows
@@ -255,7 +262,7 @@ Once an answer is on screen, five keys act on it:
 | `F` | Ask a follow-up; the agent keeps the question and answer you just read |
 | `D` | Ask again with the repository readable — slower, but it checks (except on Codex, see below) |
 | `i` | Re-file the entry as the other kind; the answer text is left alone |
-| `a` | Keep the answer as a to-do on the project's TODO list |
+| `a` | Keep the answer as a to-do on this feature's TODO list |
 | `S` | Hand it to a live agent session, with the prompt filled in and unsent |
 
 `D` is worth knowing about: an ordinary answer only sees the code on screen, so
@@ -290,6 +297,15 @@ pull request.
 
 ### Work through pull-request feedback
 
+With an authenticated `gh` and a GitHub remote, a feature whose branch has a
+pull request shows a `[PR #N · M open]` badge on its dashboard row and in an
+embedded session's header, refreshed every few minutes in the background.
+Once that PR is merged or closed without merging, the badge switches to
+`[PR #N merged]` / `[PR #N closed]` instead of disappearing, so a finished
+feature stays visually distinct from one that never had a PR. A branch
+without `gh`, without a GitHub remote, or without any PR shows no badge at
+all.
+
 Select a feature and press `G` to open PR Triage. You can inspect review
 threads, send an individual or batched fix prompt to an agent, reply, and mark
 threads done. Press `W` to have AMF run its own review of the PR diff. GitHub
@@ -298,7 +314,12 @@ When `f` or `B` targets a dedicated session, AMF lets you name it so multiple
 PR Triage agents can run simultaneously; leave the name blank to reuse the
 default `PR Triage` session.
 An unchanged AI-drafted reply discloses the harness, best-effort model,
-estimated tokens, and estimated cost of the session that wrote it.
+estimated tokens, and estimated cost of the session that wrote it. AMF's own
+AI review (`W`) carries the same attribution: once a run finishes, the pane
+shows which harness and model produced it and the run's token usage and
+estimated cost, and that line is included above the `— AI review via AMF`
+marker on the posted summary and every inline comment. A harness that reports
+no usage degrades to model-only attribution rather than showing a fake `$0.00`.
 
 To seed review memory from earlier reviews, open the PR picker and press `b`.
 If `G` opened the feature's pull request directly, press `g` from PR Triage to
@@ -318,15 +339,39 @@ Press `L` to manage reusable prompt templates, or open them from a session with
 `Ctrl+Space`, then `p`. Templates may include `{{placeholder}}` fields that AMF
 asks you to fill before injection.
 
-Add a `TODOs` session with `s` to maintain a project-wide checklist. From any
-session, press `Ctrl+Space`, then `N` to capture a TODO without leaving your
-current work.
+Add a `TODOs` session with `s` to open a checklist — one per feature. The
+editor shows up to three lists side by side:
 
-Press `g` (or `Enter`) on a TODO to start work on it. AMF asks how:
+| List | What it holds |
+| --- | --- |
+| **Worktree** | Work belonging to this feature's own checkout. Features on the repo root have no worktree list. |
+| **Project** | Work belonging to the project as a whole, whichever checkout you are in. |
+| **Global** | Work belonging to no project at all, shared across every repo AMF knows about. |
+
+All three scopes start visible. Press `p` to hide or show the project list and
+`g` to hide or show the global list independently; the worktree list is always
+visible when the feature has one. Hidden scopes stay represented by compact
+labeled placeholders. The choice is shared by every TODO view for the rest of
+the current AMF run and resets the next time AMF starts. `Tab` / `Shift+Tab`
+move between visible lists; each list keeps its own cursor, scroll, and
+scratchpad while hidden. `M` moves the selected TODO to another visible list
+and `C` copies it — a move carries whatever was already started for the item,
+while a copy lands as fresh, unstarted work.
+
+From any session, press `Ctrl+Space`, then `N` to capture a TODO without
+leaving your current work. It lands in that feature's worktree list (the
+project's if the feature sits on the repo root), and the capture box names the
+list it is writing to.
+
+Existing TODO lists are unchanged by the upgrade: they stay project-scoped,
+keep their host feature and their links, and show up in the project pane. New
+worktree lists start empty.
+
+Press `Enter` on a TODO to start work on it. AMF asks how:
 
 | Choice | What happens |
 | --- | --- |
-| **Start an agent on this TODO** | Opens a session in this feature with the TODO in the composer, unsent. |
+| **Start an agent on this TODO** | Opens a session with the TODO in the composer, unsent — in this feature for a worktree TODO, or in a feature you pick for a project or global one. |
 | **Plan this TODO first** | Runs the guided plan interview, with the TODO's title, notes, and the list scratchpad already filled in as the feature brief — editable before the first question. |
 
 If you choose to plan it, AMF then asks where the plan should land: **here**, in
@@ -342,20 +387,32 @@ lands in an existing feature is written to `AMF_PLAN.todo-<name>.md` rather than
 it, and the agent is told which file is its own.
 
 A TODO planned into a new feature stays open on the list, marked as linked, and
-`g` afterwards jumps to that feature rather than asking again. If the feature is
-later deleted the TODO survives, the link is dropped, and `g` offers the choice
-again. An interrupted interview is saved as a draft and offered back the next
-time you press `g` on that TODO.
+`Enter` afterwards jumps to that feature rather than asking again. If the
+feature is later deleted the TODO survives, the link is dropped, and `Enter`
+offers the choice again. An interrupted interview is saved as a draft and
+offered back the next time you press `Enter` on that TODO.
 
 Press `I` to work the list rather than a particular item: AMF takes the
-highest-priority TODO nobody has started, opens an agent on it in the list's
-feature, and marks the item in progress (`[~]`) so the next `I` moves on. It
-works on the list itself and on the `TODOs` row on the dashboard, and the
-composer is seeded but unsent, exactly as `g` leaves it. Press `i` on a TODO to
+highest-priority TODO nobody has started, opens an agent on it, and marks the
+item in progress (`[~]`) so the next `I` moves on. It considers whichever
+lists are currently visible. Hidden project and global scopes are excluded;
+at equal priority AMF prefers the narrower visible scope: worktree, then
+project, then global. It works on the list itself and on the `TODOs` row on the
+dashboard, and the composer is seeded but unsent, exactly as `Enter` leaves it.
+
+A worktree TODO is worked in the feature that owns the checkout. A project or
+global TODO belongs to no one checkout, so `Enter` and `I` ask which feature
+should work it; the feature you pick supplies the agent and permission
+mode exactly as a worktree TODO's own feature would. Press `i` on a TODO to
 set or clear that in-progress mark by hand — useful when you abandoned a session
 without closing it. When every remaining TODO is already underway, AMF offers
 the next one anyway and asks whether to go to the work already started, start a
 second agent, skip it, or cancel.
+
+Deleting a feature deletes its worktree list along with the checkout, so if
+that list still has unfinished items AMF asks first: move them to the project
+list, move them to the global list, delete them with the worktree, or cancel
+the deletion. Nothing is killed or removed until you answer.
 
 ### See which agents need you
 

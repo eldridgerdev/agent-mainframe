@@ -287,32 +287,43 @@ impl App {
         let mut project_id: Option<String> = None;
         if let Some(project) = self.store.find_project(&project_name) {
             project_id = Some(project.id.clone());
-            let features: Vec<(String, PathBuf, bool)> = project
+            let features: Vec<(String, PathBuf, bool, String, String)> = project
                 .features
                 .iter()
-                .map(|f| (f.tmux_session.clone(), f.workdir.clone(), f.is_worktree))
+                .map(|f| {
+                    (
+                        f.tmux_session.clone(),
+                        f.workdir.clone(),
+                        f.is_worktree,
+                        f.id.clone(),
+                        f.branch.clone(),
+                    )
+                })
                 .collect();
             let repo = project.repo.clone();
 
-            for (session, workdir, is_worktree) in features {
+            for (session, workdir, is_worktree, feature_id, branch) in features {
                 let _ = TmuxManager::kill_session(&session);
                 if is_worktree {
                     let _ = WorktreeManager::remove(&repo, &workdir);
                 }
+                self.clear_pr_association_for_deleted_feature(&feature_id, &repo, &branch);
             }
         }
 
-        // The TODO list is keyed by project id with no FK to `projects` (it
-        // would be wiped by the store's full-replace save otherwise), so its
-        // rows must be cleaned up explicitly when a project is deleted.
+        // TODO lists are keyed by project id with no FK to `projects` (they
+        // would be wiped by the store's full-replace save otherwise), so their
+        // rows must be cleaned up explicitly when a project is deleted. This
+        // takes the project-scoped list *and* every worktree list under it;
+        // the global list belongs to no project and survives.
         let cleanup_err = match (&self.db, &project_id) {
-            (Some(db), Some(pid)) => db.delete_todo_list_for_project(pid).err(),
+            (Some(db), Some(pid)) => db.delete_todo_lists_for_project(pid).err(),
             _ => None,
         };
         if let (Some(e), Some(pid)) = (cleanup_err, &project_id) {
             self.log_warn(
                 "todos",
-                format!("failed to delete todo list for project {pid}: {e}"),
+                format!("failed to delete todo lists for project {pid}: {e}"),
             );
         }
 

@@ -146,6 +146,29 @@ impl TextEditor {
         editor
     }
 
+    /// Build a fresh vim editor in Normal mode.
+    ///
+    /// Session-wide editor preferences use this when opening a new editing
+    /// surface: the buffer is retained, while cursor/undo/key-sequence state is
+    /// deliberately initialized from scratch.
+    pub fn with_vim_normal(text: String) -> Self {
+        let mut editor = Self::with_vim(text);
+        editor.vim_mode = VimMode::Normal;
+        // `with_vim` stages an Insert-session snapshot. Normal mode has no
+        // active Insert session, so there is nothing to commit or undo yet.
+        editor.pending = None;
+        // `new`/`with_vim` place the cursor at `text.len()`, a valid Insert
+        // append position but not a valid Normal-mode resting place unless
+        // the buffer is empty or ends with a newline (an empty last line).
+        // Step back onto the last real character so Normal-mode commands
+        // like `x`/`l` work immediately instead of no-oping until the user
+        // first presses `h`.
+        if editor.cursor > 0 && editor.cursor >= editor.text.len() && !editor.text.ends_with('\n') {
+            editor.cursor = editor.prev_boundary(editor.cursor);
+        }
+        editor
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -1625,6 +1648,49 @@ mod tests {
         assert!(outcome.mode_changed);
         assert_eq!(editor.keymap(), EditorKeymap::Plain);
         assert_eq!(editor.vim_mode(), None);
+    }
+
+    #[test]
+    fn with_vim_normal_starts_fresh_in_normal_mode() {
+        let mut editor = TextEditor::with_vim_normal("hello world".to_string());
+
+        assert_eq!(editor.keymap(), EditorKeymap::Vim);
+        assert_eq!(editor.vim_mode(), Some(VimMode::Normal));
+        editor.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(
+            editor.text(),
+            "hello world",
+            "fresh editors have no undo history"
+        );
+    }
+
+    #[test]
+    fn with_vim_normal_lands_cursor_on_last_char_of_nonempty_text() {
+        let mut editor = TextEditor::with_vim_normal("fix this bug".to_string());
+
+        // Cursor must rest on a real character, not one past the end, so
+        // basic Normal-mode commands work immediately.
+        assert_eq!(editor.cursor(), 11);
+        let outcome = editor.handle_key(key(KeyCode::Char('x')));
+        assert!(
+            outcome.text_changed,
+            "x should delete the char under cursor"
+        );
+        assert_eq!(editor.text(), "fix this bu");
+    }
+
+    #[test]
+    fn with_vim_normal_on_empty_text_keeps_cursor_at_zero() {
+        let editor = TextEditor::with_vim_normal(String::new());
+        assert_eq!(editor.cursor(), 0);
+    }
+
+    #[test]
+    fn with_vim_normal_on_trailing_newline_keeps_cursor_on_empty_last_line() {
+        let editor = TextEditor::with_vim_normal("hello\n".to_string());
+        // The buffer ends with a newline, so the last line is empty and
+        // index == text.len() is itself the only valid resting place.
+        assert_eq!(editor.cursor(), 6);
     }
 
     #[test]

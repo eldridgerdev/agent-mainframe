@@ -552,7 +552,12 @@ mod tests {
             "the entry now points at the item it produced"
         );
         let db = app.db.as_ref().unwrap();
-        let list = db.todo_list("proj-1").unwrap().unwrap();
+        let list = db
+            .todo_list(&crate::db::todos::TodoScope::Project {
+                project_id: "proj-1".to_string(),
+            })
+            .unwrap()
+            .unwrap();
         let todos = db.todos(&list.id).unwrap();
         assert_eq!(todos.len(), 1);
         assert!(
@@ -574,7 +579,11 @@ mod tests {
         assert!(learning(&app).qa[0].todo_id.is_none());
         let db = app.db.as_ref().unwrap();
         assert!(
-            db.todo_list("proj-1").unwrap().is_none(),
+            db.todo_list(&crate::db::todos::TodoScope::Project {
+                project_id: "proj-1".to_string(),
+            })
+            .unwrap()
+            .is_none(),
             "not even a list was created"
         );
     }

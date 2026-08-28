@@ -151,6 +151,11 @@ pub struct FeatureSession {
     pub label: String,
     pub tmux_window: String,
     pub claude_session_id: Option<String>,
+    /// The TODO that initiated this agent session, when it was launched from
+    /// the TODO menu.  The identity is stable across TODO list moves; the
+    /// current TODO data is always resolved from SQLite rather than copied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_reference: Option<TodoSessionReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage_source: Option<TokenUsageSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,6 +171,17 @@ pub struct FeatureSession {
     pub status_text: Option<String>,
     #[serde(skip)]
     pub token_usage: Option<SessionTokenUsage>,
+}
+
+/// Provenance retained on an agent session started through the TODO menu.
+///
+/// `launched_from_todo_menu` is deliberately stored alongside the TODO id so
+/// legacy TODO/session associations cannot be mistaken for this feature's
+/// explicit sidebar reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TodoSessionReference {
+    pub todo_id: String,
+    pub launched_from_todo_menu: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -341,6 +357,10 @@ pub struct Feature {
     pub summary_updated_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
+    /// User-selected plan file for this feature. The effective-plan resolver
+    /// may prefer the worktree's conventional `AMF_PLAN.md` over this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_plan_path: Option<PathBuf>,
     /// Set only on a **companion triage feature**: the isolated worktree PR
     /// Triage creates when the user picks the `New feature…` fix target. Git
     /// can't check out the PR's branch in two worktrees at once, so the
@@ -408,6 +428,8 @@ struct FeatureDe {
     #[serde(default)]
     nickname: Option<String>,
     #[serde(default)]
+    selected_plan_path: Option<PathBuf>,
+    #[serde(default)]
     triage_source: Option<TriageSource>,
 }
 
@@ -441,12 +463,27 @@ impl<'de> Deserialize<'de> for Feature {
             summary: feature.summary,
             summary_updated_at: feature.summary_updated_at,
             nickname: feature.nickname,
+            selected_plan_path: feature.selected_plan_path,
             triage_source: feature.triage_source,
         })
     }
 }
 
 impl Feature {
+    /// The feature's TODOs session, if it has one.
+    ///
+    /// One per **feature**, not one per project: each checkout has its own
+    /// worktree list to open, and the editor reaches the project and global
+    /// lists as side panes from there.
+    pub fn todos_session(&self) -> Option<&FeatureSession> {
+        self.sessions.iter().find(|s| s.kind == SessionKind::Todos)
+    }
+
+    /// Whether this feature already has a TODOs session.
+    pub fn has_todos_session(&self) -> bool {
+        self.todos_session().is_some()
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[allow(dead_code)] // exercised only by unit tests
     pub fn new(
@@ -545,6 +582,7 @@ impl Feature {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         }
     }
@@ -632,6 +670,7 @@ impl Feature {
             label,
             tmux_window: window,
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -668,6 +707,7 @@ impl Feature {
             label: name,
             tmux_window: window,
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -697,23 +737,6 @@ pub struct Project {
 }
 
 impl Project {
-    /// The project's TODOs session (and its host feature), if one exists.
-    /// At most one TODOs session is allowed per project, across all features.
-    pub fn todos_session(&self) -> Option<(&Feature, &FeatureSession)> {
-        self.features.iter().find_map(|feature| {
-            feature
-                .sessions
-                .iter()
-                .find(|s| s.kind == SessionKind::Todos)
-                .map(|s| (feature, s))
-        })
-    }
-
-    /// Whether the project already has a TODOs session.
-    pub fn has_todos_session(&self) -> bool {
-        self.todos_session().is_some()
-    }
-
     pub fn new(name: String, repo: PathBuf, is_git: bool, preferred_agent: AgentKind) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -857,6 +880,7 @@ fn merge_feature(target: &mut Feature, incoming: Feature) {
     target.summary = incoming.summary;
     target.summary_updated_at = incoming.summary_updated_at;
     target.nickname = incoming.nickname;
+    target.selected_plan_path = incoming.selected_plan_path;
 }
 
 fn merge_session_vec(
@@ -1113,6 +1137,7 @@ impl ProjectStore {
                                 label: "Claude 1".into(),
                                 tmux_window: "claude".into(),
                                 claude_session_id: f.claude_session_id,
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: f.created_at,
@@ -1128,6 +1153,7 @@ impl ProjectStore {
                                 label: "Terminal 1".into(),
                                 tmux_window: "terminal".into(),
                                 claude_session_id: None,
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: f.created_at,
@@ -1161,6 +1187,7 @@ impl ProjectStore {
                             summary: None,
                             summary_updated_at: None,
                             nickname: None,
+                            selected_plan_path: None,
                             triage_source: None,
                         }
                     })
@@ -1395,6 +1422,7 @@ mod tests {
         });
         let feature: Feature = serde_json::from_value(json).unwrap();
         assert!(feature.triage_source.is_none());
+        assert!(feature.selected_plan_path.is_none());
     }
 
     #[test]
@@ -1436,6 +1464,7 @@ mod tests {
             label: "test".to_string(),
             tmux_window: window.to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -1445,6 +1474,35 @@ mod tests {
             status_text: None,
             token_usage: None,
         }
+    }
+
+    #[test]
+    fn session_todo_reference_is_backward_compatible_and_serializes_when_present() {
+        let legacy = r#"{
+            "id":"session-1",
+            "kind":"claude",
+            "label":"Claude 1",
+            "tmux_window":"claude",
+            "claude_session_id":null,
+            "created_at":"2025-01-01T00:00:00Z"
+        }"#;
+
+        let legacy_session: FeatureSession = serde_json::from_str(legacy).unwrap();
+        assert!(legacy_session.todo_reference.is_none());
+
+        let referenced = FeatureSession {
+            todo_reference: Some(TodoSessionReference {
+                todo_id: "todo-1".to_string(),
+                launched_from_todo_menu: true,
+            }),
+            ..legacy_session
+        };
+        let serialized = serde_json::to_value(referenced).unwrap();
+        assert_eq!(serialized["todo_reference"]["todo_id"], "todo-1");
+        assert_eq!(
+            serialized["todo_reference"]["launched_from_todo_menu"],
+            true
+        );
     }
 
     fn make_feature() -> Feature {
@@ -1471,6 +1529,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         }
     }
@@ -1507,6 +1566,7 @@ mod tests {
                         label: "Claude 1".to_string(),
                         tmux_window: "claude".to_string(),
                         claude_session_id: None,
+                        todo_reference: None,
                         token_usage_source: None,
                         token_usage_source_match: None,
                         created_at: Utc::now(),
@@ -1531,6 +1591,7 @@ mod tests {
                     summary: None,
                     summary_updated_at: None,
                     nickname: None,
+                    selected_plan_path: None,
                     triage_source: None,
                 }],
                 created_at: Utc::now(),
@@ -1569,6 +1630,7 @@ mod tests {
                                 label: "Terminal 1".to_string(),
                                 tmux_window: "terminal".to_string(),
                                 claude_session_id: Some("claude-123".to_string()),
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: Utc::now(),
@@ -1584,6 +1646,7 @@ mod tests {
                                 label: "Claude 2".to_string(),
                                 tmux_window: "claude-2".to_string(),
                                 claude_session_id: None,
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: Utc::now(),
@@ -1609,6 +1672,7 @@ mod tests {
                         summary: Some("summary".to_string()),
                         summary_updated_at: Some(Utc::now()),
                         nickname: Some("nick".to_string()),
+                        selected_plan_path: None,
                         triage_source: None,
                     },
                     Feature {
@@ -1634,6 +1698,7 @@ mod tests {
                         summary: None,
                         summary_updated_at: None,
                         nickname: None,
+                        selected_plan_path: None,
                         triage_source: None,
                     },
                 ],

@@ -112,6 +112,30 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Mark a TODO as actively being worked, apart from its session link",
             MIGRATION_024,
         ),
+        (
+            "Scope TODO lists to a worktree, a project, or the machine",
+            MIGRATION_025,
+        ),
+        (
+            "Cache a branch's terminal (merged/closed) PR state, keyed by repo + branch",
+            MIGRATION_026,
+        ),
+        (
+            "Persist a manually selected plan path per feature",
+            MIGRATION_027,
+        ),
+        (
+            "Replace TODO completion flags with a three-state status and agent association",
+            MIGRATION_028,
+        ),
+        (
+            "Persist TODO-menu launch references on agent sessions",
+            MIGRATION_029,
+        ),
+        (
+            "Store per-choice-question custom answers alongside plan-interview answers",
+            MIGRATION_030,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -631,20 +655,143 @@ ALTER TABLE todos
     ADD COLUMN in_progress INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Give a TODO list a **scope**: the worktree it belongs to, the project it
+/// belongs to, or nothing at all (the machine-wide global list).
+///
+/// This is a table rebuild rather than a set of `ALTER TABLE`s because two of
+/// the three changes cannot be expressed any other way in SQLite: dropping the
+/// `project_id UNIQUE` constraint (a project now owns one project-scoped list
+/// *and* one list per worktree) and relaxing `project_id` / `feature_id` to
+/// nullable (the global list has neither).
+///
+/// The rebuild runs with `foreign_keys` off, and that is load-bearing in both
+/// directions. `DROP TABLE todo_lists` with foreign keys on would fire
+/// `todos`' `ON DELETE CASCADE` and take every TODO in the database with it;
+/// and `ALTER TABLE ... RENAME TO` with them on would rewrite `todos`' own
+/// `REFERENCES todo_lists(id)` clause to point at the temporary name. With
+/// them off, neither happens and `todos` ends up referencing the rebuilt table
+/// under its original name.
+///
+/// Every existing row is backfilled to `scope = 'project'` with its
+/// `carry_over` scratchpad, host feature, and id all preserved — an upgrade
+/// leaves the lists people already have exactly where they were, and the new
+/// worktree lists start empty.
+///
+/// The three partial unique indexes are what the old single UNIQUE used to be:
+/// one project-scoped list per project, one worktree list per
+/// (project, workdir), and exactly one global list on the machine.
+const MIGRATION_025: &str = "
+PRAGMA foreign_keys=OFF;
+
+CREATE TABLE todo_lists_new (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT,
+    feature_id  TEXT,
+    scope       TEXT NOT NULL DEFAULT 'project',
+    workdir     TEXT,
+    carry_over  TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+INSERT INTO todo_lists_new
+    (id, project_id, feature_id, scope, workdir, carry_over, created_at, updated_at)
+SELECT id, project_id, feature_id, 'project', NULL, carry_over, created_at, updated_at
+FROM todo_lists;
+
+DROP TABLE todo_lists;
+ALTER TABLE todo_lists_new RENAME TO todo_lists;
+
+CREATE UNIQUE INDEX idx_todo_lists_project
+    ON todo_lists(project_id) WHERE scope = 'project';
+CREATE UNIQUE INDEX idx_todo_lists_worktree
+    ON todo_lists(project_id, workdir) WHERE scope = 'worktree';
+CREATE UNIQUE INDEX idx_todo_lists_global
+    ON todo_lists(scope) WHERE scope = 'global';
+
+PRAGMA foreign_keys=ON;
+";
+
+/// A branch's terminal PR state never goes stale — merged and closed never
+/// revert — so it is keyed by `(repo, branch)` rather than by feature id:
+/// that identity outlives any one feature/worktree pointing at the branch,
+/// and a row is looked up again if a deleted feature's branch is ever reused.
+/// No foreign key to `todo_lists`/features on purpose, for the same reason.
+const MIGRATION_026: &str = "
+CREATE TABLE IF NOT EXISTS pr_terminal_state (
+    repo       TEXT NOT NULL,
+    branch     TEXT NOT NULL,
+    pr_number  INTEGER NOT NULL,
+    state      TEXT NOT NULL,
+    at         TEXT NOT NULL,
+    PRIMARY KEY (repo, branch)
+);
+";
+
+const MIGRATION_027: &str = "
+ALTER TABLE features ADD COLUMN selected_plan_path TEXT;
+";
+
+/// Replace the two independent lifecycle flags with one exhaustive status and
+/// give the TODO-specific agent link an explicit, harness-neutral name.
+///
+/// Existing completed work stays completed and keeps its session association.
+/// Every incomplete row becomes not started with no association, including a
+/// row that happened to have the old `in_progress` bit or a historical spawned
+/// session. This is the settled migration rule: AMF must not infer that old
+/// links still represent active TODO-specific launches.
+const MIGRATION_028: &str = "
+ALTER TABLE todos
+    ADD COLUMN status TEXT NOT NULL DEFAULT 'not_started'
+        CHECK (status IN ('not_started', 'in_progress', 'completed'));
+ALTER TABLE todos
+    ADD COLUMN agent_session_id TEXT;
+
+UPDATE todos
+SET status = CASE WHEN done != 0 THEN 'completed' ELSE 'not_started' END,
+    agent_session_id = CASE WHEN done != 0 THEN spawned_session_id ELSE NULL END;
+";
+
+/// A TODO reference belongs to an AMF agent session, rather than to the TODO's
+/// lifecycle/work-state link.  Existing sessions predate this explicit launch
+/// provenance and therefore remain unreferenced.
+///
+/// No index on `todo_id`: sessions are always loaded by `feature_id` and the
+/// reverse lookup (clearing references for a deleted TODO) walks the in-memory
+/// store, so an index would be dead weight.
+const MIGRATION_029: &str = "
+ALTER TABLE feature_sessions ADD COLUMN todo_id TEXT;
+ALTER TABLE feature_sessions
+    ADD COLUMN todo_launched_from_menu INTEGER NOT NULL DEFAULT 0;
+";
+
+/// A JSON array, positionally paired with `answers`, holding the free-text
+/// custom answer a user attached to each choice question (`null` for a question
+/// with none, and for every free-text question). Kept apart from `answers` —
+/// which stays the single serialized string every downstream consumer reads —
+/// so a resumed or re-run interview can restore the radio selection and the
+/// elaboration together instead of a flat string. Existing rows backfill to an
+/// empty array, which `load` squares up to the question count.
+const MIGRATION_030: &str = "
+ALTER TABLE plan_interviews ADD COLUMN custom_answers TEXT NOT NULL DEFAULT '[]';
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
-    /// the todo tables 011 built, and the reply-draft table 013/014 built.
-    /// Fixtures that seed a version this high have to stand up everything later
-    /// migrations alter — 022 alters `pr_comment_reply_drafts` and 023 alters
-    /// `todos`.
+    /// the todo tables 011 built, the reply-draft table 013/014 built, and the
+    /// plan-interviews table 016 built. Fixtures that seed a version this high
+    /// have to stand up everything later migrations alter — 022 alters
+    /// `pr_comment_reply_drafts`, 023 alters `todos`, and 030 alters
+    /// `plan_interviews`.
     fn seed_pre_learning_schema(conn: &Connection) {
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
     }
 
     /// A DB last touched before Learning Mode existed (schema version 18)
@@ -667,7 +814,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 24);
+        assert_eq!(version, 30);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -762,7 +909,70 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 30);
+    }
+
+    #[test]
+    fn migration_029_leaves_existing_sessions_without_todo_provenance() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        // 030 replays after 029 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (28, datetime('now'), 'seed');
+             INSERT INTO projects (id, name, repo, created_at)
+                VALUES ('p1', 'project', '/repo', datetime('now'));
+             INSERT INTO features (id, project_id, name, branch, workdir, created_at, last_accessed)
+                VALUES ('f1', 'p1', 'feature', 'main', '/repo', datetime('now'), datetime('now'));
+             INSERT INTO feature_sessions (id, feature_id, kind, created_at)
+                VALUES ('s1', 'f1', 'claude', datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let reference: (Option<String>, i64) = conn
+            .query_row(
+                "SELECT todo_id, todo_launched_from_menu
+                 FROM feature_sessions WHERE id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(reference, (None, 0));
+    }
+
+    /// Migration 030 adds `custom_answers` to plan-interview rows written before
+    /// it existed. They backfill to `'[]'`, which `db::plan_interviews::load`
+    /// squares up to the question count as "no custom answer anywhere".
+    #[test]
+    fn migration_030_backfills_plan_interviews_with_an_empty_custom_answers_array() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (29, datetime('now'), 'seed');
+             INSERT INTO plan_interviews
+                (feature_id, stage, feature_name, brief, questions, answers,
+                 ai_rounds_completed, created_at, updated_at)
+             VALUES ('f1', 'draft', 'feature', 'brief', '[]', '[]', 0,
+                     datetime('now'), datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let custom_answers: String = conn
+            .query_row(
+                "SELECT custom_answers FROM plan_interviews WHERE feature_id = 'f1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(custom_answers, "[]");
     }
 
     /// Migration 023 adds `linked_feature_id` to TODOs written before it
@@ -774,6 +984,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
+        // 030 replays after 023 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -815,6 +1027,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
+        // 030 replays after 024 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -848,6 +1062,126 @@ mod tests {
         assert_eq!(session.as_deref(), Some("sess-1"));
     }
 
+    #[test]
+    fn migration_028_preserves_todo_data_and_normalizes_work_state() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_011).unwrap();
+        // 030 replays after 028 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
+        conn.execute_batch(super::MIGRATION_023).unwrap();
+        conn.execute_batch(super::MIGRATION_024).unwrap();
+        conn.execute_batch(super::MIGRATION_025).unwrap();
+        conn.execute_batch(super::MIGRATION_026).unwrap();
+        conn.execute_batch(super::MIGRATION_027).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (27, datetime('now'), 'seed');
+
+             INSERT INTO todo_lists
+                (id, project_id, feature_id, scope, workdir, carry_over,
+                 created_at, updated_at)
+             VALUES
+                ('lp', 'p1', 'f1', 'project', NULL, 'project scratchpad',
+                 '2025-01-01', '2025-01-02'),
+                ('lw', 'p1', 'fw', 'worktree', '/repo/.worktrees/w', 'worktree notes',
+                 '2025-02-01', '2025-02-02'),
+                ('lg', NULL, NULL, 'global', NULL, 'global notes',
+                 '2025-03-01', '2025-03-02');
+
+             INSERT INTO todos
+                (id, list_id, title, body, priority, done, sort_order,
+                 spawned_session_id, linked_feature_id, in_progress,
+                 created_at, updated_at)
+             VALUES
+                ('open', 'lw', 'Open item', 'keep body', 'high', 0, 7,
+                 'stale-session', 'linked-feature', 1,
+                 '2025-04-01', '2025-04-02'),
+                ('done', 'lp', 'Done item', 'done body', 'low', 1, 3,
+                 'completed-session', NULL, 0,
+                 '2025-05-01', '2025-05-02');",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let open: (String, Option<String>, String, String, i64, String, String) = conn
+            .query_row(
+                "SELECT status, agent_session_id, body, priority, sort_order,
+                        created_at, updated_at
+                 FROM todos WHERE id = 'open'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(open.0, "not_started");
+        assert_eq!(open.1, None, "incomplete rows lose historical links");
+        assert_eq!(
+            (&open.2, &open.3, open.4, &open.5, &open.6),
+            (
+                &"keep body".to_string(),
+                &"high".to_string(),
+                7,
+                &"2025-04-01".to_string(),
+                &"2025-04-02".to_string()
+            )
+        );
+
+        let completed: (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, agent_session_id FROM todos WHERE id = 'done'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(completed.0, "completed");
+        assert_eq!(completed.1.as_deref(), Some("completed-session"));
+
+        type ListSnapshot = (String, Option<String>, Option<String>, Option<String>);
+        let lists: Vec<ListSnapshot> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT scope, project_id, workdir, carry_over
+                     FROM todo_lists ORDER BY id",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(lists.len(), 3);
+        assert!(lists.contains(&(
+            "worktree".to_string(),
+            Some("p1".to_string()),
+            Some("/repo/.worktrees/w".to_string()),
+            Some("worktree notes".to_string())
+        )));
+        assert!(lists.contains(&(
+            "project".to_string(),
+            Some("p1".to_string()),
+            None,
+            Some("project scratchpad".to_string())
+        )));
+        assert!(lists.contains(&(
+            "global".to_string(),
+            None,
+            None,
+            Some("global notes".to_string())
+        )));
+    }
+
     /// Migration 022 adds `provenance` to reply drafts written before it
     /// existed. They come back NULL, and the reply then discloses AI authorship
     /// with unknown details rather than borrowing another session's.
@@ -855,10 +1189,12 @@ mod tests {
     fn migration_022_leaves_existing_reply_drafts_without_provenance() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
-        // 023 replays after 022 here and alters `todos`, so it has to exist.
+        // 023 replays after 022 here and alters `todos`, so it has to exist;
+        // 030 replays too and alters `plan_interviews`.
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -894,7 +1230,57 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 24);
+        assert_eq!(rows, 30);
+    }
+
+    /// Features written before selected-plan persistence existed acquire a
+    /// nullable column. Their meaning is unchanged: no manual plan has been
+    /// selected yet.
+    #[test]
+    fn migration_027_leaves_existing_features_without_a_selected_plan() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_011).unwrap();
+        conn.execute_batch(super::MIGRATION_015).unwrap();
+        // 030 replays after 027 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
+        conn.execute_batch(super::MIGRATION_023).unwrap();
+        conn.execute_batch(super::MIGRATION_024).unwrap();
+        conn.execute_batch(super::MIGRATION_025).unwrap();
+        conn.execute_batch(super::MIGRATION_026).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (26, datetime('now'), 'seed');
+             INSERT INTO projects
+                (id, name, repo, created_at)
+             VALUES ('proj-1', 'project', '/tmp/project', datetime('now'));
+             INSERT INTO features
+                (id, project_id, name, branch, workdir, status,
+                 created_at, last_accessed)
+             VALUES ('feat-1', 'proj-1', 'feature', 'feature/plan',
+                     '/tmp/project/.worktrees/feature', 'stopped',
+                     datetime('now'), datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let selected_plan_path: Option<String> = conn
+            .query_row(
+                "SELECT selected_plan_path FROM features WHERE id = 'feat-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(selected_plan_path, None);
+
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 30);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

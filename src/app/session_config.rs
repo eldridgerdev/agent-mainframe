@@ -331,6 +331,7 @@ fn sync_feature_agent_sessions(feature: &mut Feature, next_agent: &AgentKind) {
             label: format!("{label_base} 1"),
             tmux_window: window_prefix.to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),

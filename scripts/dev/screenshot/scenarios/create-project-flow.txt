@@ -7,6 +7,7 @@
 # Run with:
 #   ./amf-capture.sh --scenario scenarios/create-project-flow.txt --keep
 
+note:The empty dashboard establishes the starting state before project creation begins.
 shot:dashboard-empty
 
 # 'N' opens the create-project dialog on the Name step.
@@ -14,6 +15,7 @@ key:N
 wait:200
 text:demo-project
 wait:200
+note:The Name step accepts the proposed project name and keeps the wizard focused on the first required field.
 shot:create-project-name
 
 # Enter advances Name -> Path.
@@ -21,14 +23,17 @@ key:Enter
 wait:200
 text:/tmp/demo-project
 wait:200
+note:The Path step preserves the entered project name while collecting the repository location.
 shot:create-project-path
 
 # Enter advances Path -> Agent.
 key:Enter
 wait:200
+note:The Agent step confirms the wizard advanced through the required fields without creating a real project.
 shot:create-project-agent
 
 # Cancel rather than submit (the typed path likely doesn't exist).
 key:Escape
 wait:200
+note:Cancelling returns to the unchanged dashboard, proving the demonstration leaves no project behind.
 shot:dashboard-after-cancel

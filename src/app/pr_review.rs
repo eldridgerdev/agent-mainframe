@@ -1780,7 +1780,7 @@ impl App {
     /// shows the stored comments instantly; a miss falls back to the background
     /// fetch. Either path spends zero agent tokens. Manual refresh
     /// ([`refresh_pr_review`](Self::refresh_pr_review)) bypasses the cache.
-    fn enter_pr_review(&mut self, workdir: PathBuf, pr: PrRef) {
+    pub(crate) fn enter_pr_review(&mut self, workdir: PathBuf, pr: PrRef) {
         if let Some(mut review) = self.load_cached_pr_review(&pr) {
             self.log_info(
                 "pr_review",
@@ -1788,7 +1788,7 @@ impl App {
             );
             self.apply_persisted_triage(&mut review);
             let usage_baselines = self.pr_review_initial_usage_baselines(&workdir);
-            let pending_ai_review_findings = self.pending_ai_review_count(&review.pr);
+            let ai_review = self.ai_review_triage_snapshot(&review.pr);
             let checked_out_branch =
                 crate::worktree::WorktreeManager::current_branch(&workdir).unwrap_or(None);
             self.mode = AppMode::PrReview(PrReviewState {
@@ -1816,7 +1816,8 @@ impl App {
                 marked: std::collections::HashSet::new(),
                 pending_batch: false,
                 checked_out_branch,
-                pending_ai_review_findings,
+                pending_ai_review_findings: ai_review.pending_findings,
+                ai_review_last_run: ai_review.last_run,
             });
             // A companion triage feature created on an earlier visit is reused
             // for every fix in this PR — adopt it now so `f` doesn't re-ask.
@@ -2502,7 +2503,7 @@ impl App {
                         );
                         self.cache_pr_review(&review);
                         self.apply_persisted_triage(&mut review);
-                        let pending_ai_review_findings = self.pending_ai_review_count(&review.pr);
+                        let ai_review = self.ai_review_triage_snapshot(&review.pr);
                         let checked_out_branch =
                             crate::worktree::WorktreeManager::current_branch(&workdir)
                                 .unwrap_or(None);
@@ -2531,7 +2532,8 @@ impl App {
                             marked: std::collections::HashSet::new(),
                             pending_batch: false,
                             checked_out_branch,
-                            pending_ai_review_findings,
+                            pending_ai_review_findings: ai_review.pending_findings,
+                            ai_review_last_run: ai_review.last_run,
                         });
                         self.adopt_existing_triage_feature();
                     }

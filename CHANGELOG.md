@@ -10,36 +10,352 @@ are tagged.
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **AMF no longer exhausts your GitHub API budget refreshing PR badges.** The
-  dashboard's pull-request badge was refreshed every 30 seconds, and each sweep
-  made a GitHub API call for *every* feature you have — not just the ones with
-  open pull requests. On a workspace with ~34 features that is around 8,500
-  points an hour against GitHub's 5,000-point hourly GraphQL budget, so simply
-  leaving AMF open drained the whole allowance in about 35 minutes. The first
-  visible symptom was usually PR Triage failing with a rate-limit error — the
-  one workflow that had not caused it.
+- **AMF's own AI review (`W`) now carries model, token, and cost
+  attribution.** After a run completes, the AI Review pane shows a line
+  naming the harness and model that produced the findings plus the run's
+  input/output tokens and estimated cost. The same disclosure is inserted
+  above the `— AI review via AMF` marker on the posted GitHub summary and on
+  every inline comment, so a reader on the PR can tell which model reviewed
+  their code and roughly what it cost. It uses the same configured pricing
+  and rounding as AMF's other usage meters, and matches the disclosure
+  already shown on AI-drafted PR Triage replies. A harness that reports no
+  token usage degrades to model-only attribution rather than showing a
+  fabricated `$0.00`; a review generated before this change keeps the bare
+  marker.
 
-  Two changes fix it. The sweep now makes **one request per repository** rather
-  than one per feature: a single query returns every open PR in a repo with its
-  unresolved-thread count, and each feature's branch is matched against that
-  locally. A project with thirty worktrees now costs the same as one with a
-  single feature. Badges also refresh every 5 minutes instead of every 30
-  seconds, which is far inside a PR badge's useful freshness.
+### Changed
 
-  When GitHub does report an exhausted budget, AMF now says so and pauses badge
-  refresh for 15 minutes rather than retrying into an empty allowance, and
-  features it did not get to keep their existing badge instead of blanking.
+- **Planning a TODO into its own feature no longer proposes a sentence-long
+  branch name.** TODO titles are written as sentences, and the create-feature
+  wizard seeded the branch with the whole thing slugified — which then became
+  the worktree directory name, the tmux session name, and the dashboard row.
+  The seeded name is now shortened to at most 32 characters, cut on a word
+  boundary so it still reads as a name rather than a truncation. It is still
+  only a seed: the wizard opens on the branch field, so a name worth spelling
+  out in full is one keystroke away.
 
-  Two smaller behavior changes come with the batching: a repository with no
-  GitHub remote is now treated as "no pull requests" instead of reporting an
-  error per feature, and a feature is matched by the branch AMF has recorded for
-  it rather than by whatever branch its worktree currently has checked out. Note
-  that a worktree whose `origin` is a **fork**, with its PR on the upstream
-  repository, no longer shows a badge.
+- **The agent sidebar now always shows the viewed session's context usage,
+  not only when it is nearing the limit.** The section (renamed from
+  `Fresh Context` to `Context`) appears for every Claude, Codex, or opencode
+  session that has a reading, in every band — a calm green line like
+  `Ctx 42% · 42,000` while there is headroom, turning amber then red as
+  pressure rises. At the warning or critical threshold the same section still
+  adds `Ctrl+Space`, then `F` to open a new session in the same feature with
+  an editable continuation prompt; `Ctrl+Space`, then `X` dismisses that call
+  to action while leaving the reading in place, and it returns after the
+  session clears or resets. Estimated and stale readings stay labeled, while
+  unavailable or reset-pending readings do not invent a percentage. No
+  migration is required.
+
+### Migration
+
+- The AI review attribution adds an optional field to the existing
+  `ai_review_cache` JSON rows; older cache entries load unchanged and simply
+  show no attribution until the next run.
+
+## [v0.41.0] - 2026-08-27
 
 ### Added
+
+- **The embedded session sidebar now shows a Usage box.** Directly under
+  Status, it lists the current harness's account-level rate-limit windows —
+  the same 5h/7d figures the dashboard status bar shows — so you can check
+  your remaining headroom without leaving the session. It appears once the
+  usage numbers are known and is left out for harnesses that don't report
+  usage (OpenCode, Pi).
+
+- **Plan-mode multiple-choice questions now take your own free-text answer.**
+  Every select question in the guided plan interview shows a "Your own answer"
+  box beneath the options. Press `e` to type into it; you can answer purely
+  with your own text, or pick option(s) *and* add elaboration. `Enter` in the
+  box commits it and returns focus to the option list without submitting the
+  question; `Esc` discards the edit; `Enter` on the option list still submits.
+  Press `Backspace` to clear a pick and answer with custom text alone.
+  There is a 500-character limit (multi-line allowed) shown as a `used/500`
+  counter. A question with nothing picked and a blank custom answer stays
+  unanswered, exactly as before. The submitted answer is a single plain
+  string — picked labels, then ` — ` and your text — so the AI rounds and the
+  saved plan treat it like any other answer, and revisiting the question
+  restores the selection and the custom text rather than a flat string. Visual
+  proof regenerable via
+  `scripts/dev/screenshot/scenarios/plan-interview-custom-answer.txt`.
+
+- **TODO-launched agent sessions now keep their own TODO visible in the agent
+  sidebar.** The box shows only that TODO's title and whether it is open or
+  completed, and it remains visible after completion. From the embedded
+  session, press `Ctrl+Space`, then `z` to confirm completion. References
+  follow TODOs when they move between scopes and are removed when an item is
+  deleted. No migration is required; existing sessions simply have no
+  reference until launched from the TODO menu.
+
+- **The agent sidebar now always shows the viewed session's context usage.**
+  A `Context` section appears for every Claude, Codex, or opencode session
+  that has a reading, in every band — a calm green line like
+  `Usage: Ctx 42% · 42,000` while there is headroom, turning amber then red
+  as pressure rises. At the warning or critical threshold the same section
+  adds `Ctrl+Space`, then `F` to open a new session in the same feature with
+  an editable continuation prompt; `Ctrl+Space`, then `X` dismisses that call
+  to action while leaving the reading in place, and it returns after the
+  session clears or resets. Estimated and stale readings stay labeled, while
+  unavailable or reset-pending readings do not invent a percentage. No
+  migration is required.
+
+- **Harness pickers now show how much rate-limit headroom you have left,
+  right where you choose a harness.** When creating a feature (Harness
+  step) or adding a session (`s`), a Claude or Codex option now shows a
+  line underneath it like `5h 62% left · resets in 3h   7d 90% left`, so
+  you can see you're about to run low before you start. It reads the same
+  cached numbers already shown in the dashboard's status bar — no extra
+  waiting, no new login prompts. If nothing is known for a harness (this
+  includes OpenCode and Pi, which don't expose this today), the line is
+  simply left out.
+
+- **Final-review PR-triage comment and suggestion editors can now use Vim
+  mode for the whole review session.** Press `Ctrl+T` to toggle it for every
+  editor; enabling starts in Normal mode, while `Tab` submits and `Ctrl+Q`
+  cancels from either keymap. Vim mode starts off for each new review, so
+  existing plain-editor behavior is unchanged.
+
+- **AMF's own AI review (`W`) now carries model, token, and cost
+  attribution.** After a run completes, the AI Review pane shows a line
+  naming the harness and model that produced the findings plus the run's
+  input/output tokens and estimated cost. The same disclosure is inserted
+  above the `— AI review via AMF` marker on the posted GitHub summary and on
+  every inline comment, so a reader on the PR can tell which model reviewed
+  their code and roughly what it cost. It uses the same configured pricing
+  and rounding as AMF's other usage meters, and matches the disclosure
+  already shown on AI-drafted PR Triage replies. A harness that reports no
+  token usage degrades to model-only attribution rather than showing a
+  fabricated `$0.00`; a review generated before this change keeps the bare
+  marker.
+
+### Fixed
+
+- Fixed the new usage line above being unreadable when its row was
+  selected in the add-session picker, in themes (including the default)
+  where the selection highlight and the line's muted text color matched.
+  It now switches to the brighter selected-row text color.
+
+### Migration
+
+- Schema migration 030 runs automatically on first launch, adding a
+  `custom_answers` column to the `plan_interviews` table so custom
+  plan-interview answers survive a resumed or re-run interview. Existing
+  rows backfill to "no custom answer"; no user action is required.
+- The Vim toggle is transient and is not persisted.
+
+## [v0.40.0] - 2026-08-26
+
+### Added
+
+- **A new leader command starts a fresh agent session for continuing work
+  without dragging along a long conversation history.** From an agent
+  session, press `Ctrl+Space`, then `Shift+F`. AMF asks what you want the new
+  session to do, then opens a brand-new session in the same feature, using
+  the same agent. Its compose box arrives pre-filled (not sent) with your
+  instruction plus a pointer to the feature's current plan and the files
+  changed on this branch, so it starts oriented without inheriting the old
+  session's accumulated context — review it and send when ready. If the
+  feature has no plan file, that part is left out and AMF says why; on a
+  non-git project, or a branch with nothing changed yet, the changed-files
+  list is simply left out too.
+
+- **You can now customize the context-window size and the warning/critical
+  thresholds behind the `Ctx` indicator, instead of relying on AMF's
+  hardcoded defaults.** Press `w` on the dashboard to open Context Window
+  Settings: set a token count to override the context-window size AMF
+  assumes when a harness doesn't report its own (useful if you're on a
+  larger or smaller context-window plan than AMF's default guess), and set
+  the usage percentages at which the indicator switches to `WARNING` and
+  `CRITICAL` (70% / 85% by default). These are global settings, saved to
+  your AMF config. No migration is required — leaving both blank/default
+  keeps today's behavior exactly as it is.
+
+### Changed
+
+- **Starting a TODO plan now marks the item in progress immediately.** Choosing
+  **Plan this TODO first** changes the TODO from `[ ]` to `[~]` before the plan
+  destination is selected, so the list accurately shows that planning work has
+  begun and `I` will not assign the same item again. Cancelling later plan or
+  feature setup keeps the item in progress; failed direct agent launches still
+  roll back to not started as before.
+
+- **The context-window indicator now shows the raw token count, not just the
+  percentage.** Every session row's `Ctx` indicator — Normal, `WARNING`, and
+  `CRITICAL` alike — now reads its actual token count next to the label
+  (e.g. `Ctx ~91% CRITICAL · 182,000`), so you can judge how large a
+  session's context has actually grown instead of relying on the severity
+  label alone. No config changes or migration required.
+
+- **Raised the fallback context-window size used for Claude Code sessions
+  from 200,000 to 900,000 tokens.** This only affects the `Ctx` percentage
+  when Claude's own status line or transcript doesn't report its context
+  window size directly; AMF's estimate now better matches Sonnet's actual
+  auto-compact window instead of understating it.
+
+- **Project and global TODO lists can now be shown or hidden independently.**
+  Press `p` for the project list and `g` for the global list; hidden scopes stay
+  discoverable through labeled placeholders and are excluded from pane
+  navigation, `I` (implement next), and other cross-pane actions. The worktree
+  list remains visible whenever the feature has one, while repo-root features
+  may hide both optional lists. Visibility is shared by every TODO view for the
+  current AMF run and resets to both lists shown on the next launch.
+- **TODO priority and launch keys moved to make room for the scope toggles.**
+  Press `P` to cycle priority and `Enter` to start or plan the selected TODO.
+  The previous `\` side-pane toggle and `g` launch alias are no longer used in
+  the TODO editor.
+
+### Fixed
+
+- **Deleting a feature or project now clears its remembered PR association.**
+  Reusing the same branch name for later work no longer shows the old feature's
+  merged or closed PR badge. Failed deletions leave the association intact.
+
+- **Accepting a completed plan now asks immediately before starting above the
+  agent concurrency limit.** The completed plan stays available while the
+  Resource Check popup is open: continue to create and start the planned
+  feature with its original kickoff prompt, or cancel back to plan review
+  without creating it. This replaces the detour to the dashboard and the
+  follow-up “Press c to start it” warning.
+
+### Migration
+
+- No migration is required for PR cleanup. Associations are cleared when a
+  feature or project is deleted after upgrading.
+- No migration is required. Existing TODO states and associations are
+  preserved.
+- No data migration is required. TODO contents and pane state are retained when
+  a scope is hidden; only the TODO editor keybindings changed.
+- No migration is required for plan completion confirmations. Existing agent
+  limits and plan-mode features continue to use their current configuration.
+
+## [v0.39.0] - 2026-08-25
+
+### Added
+
+- **Agent sidebars now keep the feature's current plan within reach.** Claude
+  Code, Codex, OpenCode, and Pi sessions show the current plan in a dedicated
+  sidebar section; press `Ctrl+Space`, then `n` to open it in AMF's read-only
+  Markdown viewer. `AMF_PLAN.md` is selected automatically. When it is absent,
+  AMF offers Markdown files from the feature worktree and remembers the chosen
+  file for that feature. Moved or deleted selections are cleared safely, and
+  `r` refreshes a plan while it is open. Dashboard and non-agent session rows
+  remain unchanged.
+
+- **Agent session rows now show context-window pressure before the next prompt
+  runs out of room.** Claude Code, Codex, OpenCode, and Pi sessions display a
+  compact `Ctx` percentage that turns yellow with `WARNING` at 70% and red
+  with `CRITICAL` at 85%. Estimated readings are marked with `~`, stale
+  readings are labeled, and detected compaction or a new conversation clears
+  the old value until fresh usage arrives. Terminal, editor, TODO, and custom
+  rows remain unchanged.
+
+- **The dashboard PR badge now shows merged and closed pull requests, not just
+  open ones.** Once a feature's PR is merged or closed without merging, its
+  badge switches to `[PR #N merged]` / `[PR #N closed]` instead of vanishing,
+  so a finished feature stays visually distinct from one that never had a PR.
+  This applies to the feature row and to the badge shown in an embedded
+  session's header/sidebar. Requires an authenticated `gh` and a GitHub
+  remote, same as the existing open-PR badge, and refreshes on the same
+  background schedule — no extra `gh` calls beyond what a branch actually
+  needs. No migration is required; the database updates itself on first
+  launch after upgrading.
+
+### Changed
+
+- **TODO assignment now has a durable three-state lifecycle.** Items are
+  explicitly **not started**, **in progress**, or **completed**, with `[ ]`,
+  `[~]`, and `[x]` markers in the TODO editor. Starting a TODO-specific agent
+  reserves the item as in progress before launch, prevents a second agent from
+  being assigned to the same item, and makes `I` continue to the next
+  not-started TODO. If session creation or composer setup fails, the reservation
+  rolls back so the item can be tried again.
+
+  Closing or stopping the associated agent does not silently reset the work:
+  the TODO stays in progress until you change it. Press `Space` or `x` to cycle
+  not started → in progress → completed. If an associated session is removed,
+  AMF clears the stale link while preserving the visible in-progress state.
+
+### Fixed
+
+- **AI Review findings now stay attached to the correct side and source line
+  across multi-hunk diffs.** Review prompts label current-file (`RIGHT`) and
+  deleted base-file (`LEFT`) lines explicitly, so earlier additions or removals
+  no longer shift later findings onto a different row. Deleted-line findings
+  show `(base)`, and an ambiguous or invalid location falls back to a file-level
+  finding instead of displaying or posting a misleading line number.
+
+- **PR Triage now confirms when an AI Review completed with no findings.**
+  The header shows `[AI review: no findings (<age>)]` for the current PR
+  revision instead of looking identical to a review that never ran. Running
+  reviews and unpublished findings still take precedence, while failed reviews
+  get a separate failure badge without crowding the header with error details.
+  Same-revision results survive leaving the pane and restarting AMF; a new head
+  commit starts unreviewed as before. Empty or incomplete agent responses are
+  recorded as failures rather than clean reviews.
+
+### Migration
+
+- No migration is required for current-plan shortcuts. Existing features start
+  without a manual selection, and AMF updates its database automatically.
+- No migration is required for context-window indicators.
+- No migration is required for AI Review line mapping. Existing cached findings
+  remain readable; entries without side information are handled conservatively
+  until the review is regenerated.
+- No migration is required. Existing same-revision AI Review cache entries
+  remain readable and expire under the existing one-week retention policy.
+- No manual TODO migration is required. Existing completed items remain
+  completed; existing incomplete items begin as not started with no agent
+  association.
+
+## [v0.38.0] - 2026-08-21
+
+### Added
+
+- **TODO lists are scoped to the work they belong to.** A feature's TODO editor
+  now opens on that worktree's own list rather than one shared list per
+  project, and every feature can have its own `TODOs` session instead of the
+  first one claiming it for the whole project.
+
+  Two other scopes sit beside it. Press `\` in the editor to reveal the
+  **project** list — the one that existed before — and a new **global** list
+  that belongs to no project and is shared across every repo AMF knows about.
+  The three panes each keep their own cursor, scroll, and scratchpad; `Tab` /
+  `Shift+Tab` move between them, and the reveal is remembered between sessions.
+  The global list has no entry point of its own — it is reachable as a side
+  pane of any TODO editor.
+
+  `M` moves the selected TODO to another scope and `C` copies it. A move
+  carries the item's session and planned-feature links with it, because it is
+  the same work; a copy deliberately lands unstarted, so two panes never both
+  claim the same agent.
+
+  `I` (implement next) now scans whichever lists are showing: the worktree list
+  alone with the side panes closed, all three with them open. Priority still
+  comes first, and at equal priority the narrower scope wins — worktree, then
+  project, then global.
+
+  A worktree TODO is still worked in the feature that owns the checkout. A
+  project or global TODO belongs to no one checkout, so `g`, `Enter`, and `I`
+  now ask which feature should work it; that feature supplies the agent and
+  permission mode exactly as before.
+
+  `Ctrl+Space` `N` quick-capture writes to the session feature's worktree list
+  (the project's when the feature sits on the repo root), and the capture box
+  names the list it is writing to.
+
+  Deleting a feature deletes its worktree list along with the checkout, so if
+  that list still holds unfinished items AMF asks first: move them to the
+  project list, move them to the global list, delete them with the worktree, or
+  cancel. Nothing is killed or removed until you answer.
+
+  **Migration:** existing TODO lists are untouched. They stay project-scoped,
+  keep their host feature, their scratchpad, and their session links, and
+  appear in the project pane. New worktree lists start empty. Deleting a
+  project still removes its lists — now its worktree lists as well as its
+  project list — and never the global one.
 
 - **`I` starts the next TODO on the list.** Working a TODO list meant picking
   an item, pressing `g`, and remembering where you were — so a list that is
@@ -100,15 +416,6 @@ are tagged.
 
 ### Changed
 
-- **Planning a TODO into its own feature no longer proposes a sentence-long
-  branch name.** TODO titles are written as sentences, and the create-feature
-  wizard seeded the branch with the whole thing slugified — which then became
-  the worktree directory name, the tmux session name, and the dashboard row.
-  The seeded name is now shortened to at most 32 characters, cut on a word
-  boundary so it still reads as a name rather than a truncation. It is still
-  only a seed: the wizard opens on the branch field, so a name worth spelling
-  out in full is one keystroke away.
-
 - **Project config moved to `amf.json` at the repo root.** AMF's per-project
   settings — custom sessions, feature presets, lifecycle hooks, keybindings,
   plan questions, and prompt templates — now live in a tracked `amf.json`
@@ -144,6 +451,35 @@ are tagged.
   readable as fallbacks.
 
 ### Fixed
+
+- **AMF no longer exhausts your GitHub API budget refreshing PR badges.** The
+  dashboard's pull-request badge was refreshed every 30 seconds, and each sweep
+  made a GitHub API call for *every* feature you have — not just the ones with
+  open pull requests. On a workspace with ~34 features that is around 8,500
+  points an hour against GitHub's 5,000-point hourly GraphQL budget, so simply
+  leaving AMF open drained the whole allowance in about 35 minutes. The first
+  visible symptom was usually PR Triage failing with a rate-limit error — the
+  one workflow that had not caused it.
+
+  Two changes fix it. The sweep now makes **one request per repository** rather
+  than one per feature: a single query returns every open PR in a repo with its
+  unresolved-thread count, and each feature's branch is matched against that
+  locally. A project with thirty worktrees now costs the same as one with a
+  single feature. Badges also refresh every 5 minutes instead of every 30
+  seconds, which is far inside a PR badge's useful freshness. The longer
+  interval governs how often badges refresh, not how long you wait to see one:
+  the first sweep still runs a few seconds after launch.
+
+  When GitHub does report an exhausted budget, AMF now says so and pauses badge
+  refresh for 15 minutes rather than retrying into an empty allowance, and
+  features it did not get to keep their existing badge instead of blanking.
+
+  Two smaller behavior changes come with the batching: a repository with no
+  GitHub remote is now treated as "no pull requests" instead of reporting an
+  error per feature, and a feature is matched by the branch AMF has recorded for
+  it rather than by whatever branch its worktree currently has checked out. Note
+  that a worktree whose `origin` is a **fork**, with its PR on the upstream
+  repository, no longer shows a badge.
 
 - **A waiting session is one entry in the needs-attention list, not hundreds.**
   Harnesses re-report a stop freely — Claude's Stop hook fires at every turn

@@ -1405,6 +1405,26 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `build_ai_review` tests updated to set a matching `diff_hunk` on their
       still-inline-expected fixtures). → `src/app/pr_review.rs`,
       `src/app/tests.rs`.
+
+      **Follow-up, 2026-08-24 — correct in-range line mis-mappings.** The hunk
+      membership guard above prevented an invalid line from reaching GitHub,
+      but it could not detect a wrong line number that happened to name a
+      different valid row in the same hunk. This occurs predictably after an
+      earlier insertion or deletion: for example, old line 19 can be a removed
+      row while new line 19 is unrelated context. AI Review now renders the
+      parsed diff with an explicit bracketed coordinate on every addressable
+      row and requires `path|RIGHT|line` or `path|LEFT|line` findings. Response
+      validation resolves that coordinate through the shared unified-diff row
+      map before retaining the line or reconstructing its hunk. Legacy
+      `path:line` output remains accepted only when it identifies one row
+      unambiguously across both sides; invalid and ambiguous requests keep
+      their file and prose but lose the misleading line target and post as
+      summary text. The pane displays deletion anchors as `(base)` and posts
+      them to GitHub's `LEFT` side. Regression fixtures cover multiple hunks,
+      earlier line shifts, context, replacements, pure additions/deletions,
+      and first/last changed lines; isolated UI evidence lives in
+      `docs/screenshots/ai-review-line-mapping/`. → `src/diff.rs`,
+      `src/app/ai_review.rs`, `src/ui/dialogs/ai_review.rs`.
 - [x] **Make the review-memory path configurable per project (resolves half
       of the Open Questions item below).** `AppConfig::review_memory_path`
       was already a path override, but global-only — every project shared
@@ -2588,6 +2608,34 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `src/db/pr_review_cache.rs`, `src/db/mod.rs`, `src/ui/dashboard.rs`,
       `src/ui/dialogs/ai_review.rs`, `src/ui/dialogs/pr_review.rs`,
       `src/app/tests.rs`, `CHANGELOG.md`.
+
+      **Follow-up, 2026-08-24 — distinguish a clean review from no review.**
+      The pending badge deliberately disappeared for zero-finding and failed
+      reviews, but that left PR Triage unable to tell a genuinely clean run
+      from one that had never started. PR Triage now retains the exact cached
+      `AiReviewRun` for its current PR/head SHA and derives one status with this
+      precedence: running, positive pending count, completed with no findings,
+      failed, then no indicator. Clean runs render
+      `[AI review: no findings (<age>)]`; failures render
+      `[AI review failed (<age>)]` without putting error details in the
+      single-line header. The shared badge formatter keeps wording and age
+      formatting aligned with the standalone AI Review pane.
+
+      New successful agent output must contain a non-empty summary, including
+      summary-only clean reviews. Missing-summary and empty output, agent/diff
+      failures, and disconnected workers persist an error outcome instead of
+      becoming `Findings(0)` or apparently unreviewed. Legacy cached
+      `Findings(0)` entries remain readable because their raw output cannot be
+      revalidated retroactively. Exact-head cache loading, refresh invalidation,
+      visible and stashed pane synchronization, restart survival, one-week
+      eviction, `Esc` background continuation, and rendering precedence are
+      regression-tested. Full suite green (2,207 tests); strict Clippy,
+      formatting, and isolated 120×40 visual verification clean. →
+      `src/app/ai_review.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/db/ai_review_cache.rs`, `src/ui/dashboard.rs`,
+      `src/ui/dialogs/ai_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/app/tests.rs`, `docs/screenshots/pr-triage-ai-review-outcomes/`,
+      `CHANGELOG.md`.
 
 - [x] **BUG — the AI Review model picker cannot go back to change the
       harness.** In the `A` generation flow, choosing Claude/Codex/Opencode/etc.

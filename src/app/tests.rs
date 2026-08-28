@@ -1,3 +1,4 @@
+use super::plan_interview::PLAN_KICKOFF_PROMPT;
 use super::setup::{
     cleanup_agent_injected_files, ensure_notification_hooks, ensure_plan_mode_instructions,
     ensure_review_claude_md, strip_between_markers,
@@ -8,8 +9,13 @@ use super::util::{
     latest_prompt_path, read_latest_prompt, shorten_path, slugify, slugify_shortened,
 };
 use super::*;
-use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
+use crate::automation::{
+    CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest, SeedAiReviewFinding,
+    SeedAiReviewRequest,
+};
+use crate::db::todos::{TodoPriority, TodoStatus};
 use crate::extension::{ExtensionConfig, FeaturePreset, HookConfig, HookPrompt, LifecycleHooks};
+use crate::project::TodoSessionReference;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::sync::{
@@ -377,6 +383,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
                 deletions: Some(1),
                 files: Some(1),
             }),
+            plan_text: "Current: AMF_PLAN.md".to_string(),
         })
         .unwrap();
 
@@ -385,6 +392,12 @@ fn poll_sidebar_load_results_updates_feature_caches() {
     assert_eq!(
         app.latest_prompt_for_session("amf-my-feat"),
         Some("lazy prompt")
+    );
+    assert_eq!(
+        app.sidebar_effective_plan_cache
+            .get("amf-my-feat")
+            .map(String::as_str),
+        Some("Current: AMF_PLAN.md")
     );
     assert_eq!(
         app.opencode_sidebar_cache
@@ -533,6 +546,40 @@ fn app_config_waiting_stale_minutes_is_configurable_and_zero_disables() {
 fn app_config_default_diff_review_viewer_is_amf() {
     let config = AppConfig::default();
     assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
+}
+
+#[test]
+fn app_config_context_defaults_match_the_hardcoded_fallbacks() {
+    let config = AppConfig::default();
+    assert_eq!(config.context_window_override, None);
+    assert_eq!(
+        config.context_warning_percent,
+        crate::context_tracking::DEFAULT_CONTEXT_WARNING_PERCENT
+    );
+    assert_eq!(
+        config.context_critical_percent,
+        crate::context_tracking::DEFAULT_CONTEXT_CRITICAL_PERCENT
+    );
+}
+
+#[test]
+fn app_config_missing_context_keys_use_defaults() {
+    // Configs written before these keys existed must keep loading.
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.context_window_override, None);
+    assert_eq!(config.context_warning_percent, 70);
+    assert_eq!(config.context_critical_percent, 85);
+}
+
+#[test]
+fn app_config_context_values_are_configurable() {
+    let config: AppConfig = serde_json::from_str(
+        r#"{"context_window_override":500000,"context_warning_percent":50,"context_critical_percent":75}"#,
+    )
+    .unwrap();
+    assert_eq!(config.context_window_override, Some(500_000));
+    assert_eq!(config.context_warning_percent, 50);
+    assert_eq!(config.context_critical_percent, 75);
 }
 
 #[test]
@@ -771,6 +818,168 @@ fn default_project_preferred_agent_comes_from_config() {
     app.config.projects.default_preferred_agent = Some(AgentKind::Opencode);
 
     assert_eq!(app.default_project_preferred_agent(), AgentKind::Opencode);
+}
+
+// ── ContextSettings dialog ─────────────────────────────────
+
+fn context_settings_test_app() -> App {
+    App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    )
+}
+
+#[test]
+fn context_settings_opens_prefilled_with_current_config() {
+    let mut app = context_settings_test_app();
+    app.config.context_window_override = Some(500_000);
+    app.config.context_warning_percent = 60;
+    app.config.context_critical_percent = 90;
+
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    assert_eq!(state.window_limit_input, "500000");
+    assert_eq!(state.warning_input, "60");
+    assert_eq!(state.critical_input, "90");
+    assert_eq!(state.field, crate::app::ContextSettingsField::WindowLimit);
+}
+
+#[test]
+fn context_settings_confirm_persists_valid_values() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.window_limit_input = "500000".to_string();
+    state.warning_input = "50".to_string();
+    state.critical_input = "80".to_string();
+
+    assert!(app.context_settings_confirm());
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(app.config.context_window_override, Some(500_000));
+    assert_eq!(app.config.context_warning_percent, 50);
+    assert_eq!(app.config.context_critical_percent, 80);
+}
+
+#[test]
+fn context_settings_confirm_blank_window_limit_clears_the_override() {
+    let mut app = context_settings_test_app();
+    app.config.context_window_override = Some(500_000);
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.window_limit_input.clear();
+
+    assert!(app.context_settings_confirm());
+    assert_eq!(app.config.context_window_override, None);
+}
+
+#[test]
+fn context_settings_confirm_rejects_critical_at_or_below_warning() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.warning_input = "80".to_string();
+    state.critical_input = "80".to_string();
+
+    assert!(!app.context_settings_confirm());
+    let AppMode::ContextSettings(state) = &app.mode else {
+        panic!("dialog should stay open after a rejected confirm");
+    };
+    assert!(state.error.is_some());
+    // Rejected values must not leak into the live config.
+    assert_eq!(app.config.context_warning_percent, 70);
+}
+
+#[test]
+fn context_settings_confirm_rejects_out_of_range_percentages() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.critical_input = "150".to_string();
+
+    assert!(!app.context_settings_confirm());
+    assert!(matches!(&app.mode, AppMode::ContextSettings(s) if s.error.is_some()));
+}
+
+#[test]
+fn context_settings_confirm_rejects_zero_window_limit() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.window_limit_input = "0".to_string();
+
+    assert!(!app.context_settings_confirm());
+    assert!(matches!(&app.mode, AppMode::ContextSettings(s) if s.error.is_some()));
+}
+
+#[test]
+fn context_settings_cancel_discards_changes() {
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    let AppMode::ContextSettings(state) = &mut app.mode else {
+        panic!("expected ContextSettings mode");
+    };
+    state.warning_input = "10".to_string();
+
+    app.cancel_context_settings();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(app.config.context_warning_percent, 70);
+}
+
+#[test]
+fn context_settings_focus_cycles_through_all_fields_and_wraps() {
+    use crate::app::ContextSettingsField;
+
+    let mut app = context_settings_test_app();
+    app.start_context_settings();
+
+    app.context_settings_focus_next();
+    assert!(matches!(
+        &app.mode,
+        AppMode::ContextSettings(s) if s.field == ContextSettingsField::WarningPercent
+    ));
+    app.context_settings_focus_next();
+    assert!(matches!(
+        &app.mode,
+        AppMode::ContextSettings(s) if s.field == ContextSettingsField::CriticalPercent
+    ));
+    app.context_settings_focus_next();
+    assert!(matches!(
+        &app.mode,
+        AppMode::ContextSettings(s) if s.field == ContextSettingsField::WindowLimit
+    ));
+    app.context_settings_focus_prev();
+    assert!(matches!(
+        &app.mode,
+        AppMode::ContextSettings(s) if s.field == ContextSettingsField::CriticalPercent
+    ));
 }
 
 // ── strip_between_markers ─────────────────────────────────
@@ -1109,6 +1318,7 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -1156,6 +1366,7 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -1185,6 +1396,7 @@ fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
         label: label.to_string(),
         tmux_window: label.to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: Utc::now(),
@@ -2179,6 +2391,215 @@ fn unchanged_active_pr_badge_does_not_cancel_explicit_closed_pr_fetch() {
     assert!(app.pr_review_bg.is_some());
 }
 
+/// A `Found` terminal result is durable: it lands in the in-memory cache and,
+/// when a DB is attached, is persisted so a restart doesn't lose it.
+#[test]
+fn terminal_pr_found_updates_cache_and_persists_to_db() {
+    use super::sync::{TerminalPrLookup, TerminalPrUpdate};
+    use crate::db::AmfDb;
+    use crate::github::{TerminalPr, TerminalPrState};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = NamedTempFile::new().unwrap();
+    app.db = Some(AmfDb::open(db_file.path()).unwrap());
+
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let repo = app.store.projects[0].repo.clone();
+
+    let pr = TerminalPr {
+        number: 42,
+        state: TerminalPrState::Merged,
+        at: "2026-01-01T00:00:00Z".to_string(),
+    };
+
+    assert!(app.apply_terminal_pr_updates(vec![TerminalPrUpdate {
+        feature_id: feature_id.clone(),
+        repo: repo.clone(),
+        branch: branch.clone(),
+        lookup: TerminalPrLookup::Found(pr.clone()),
+    }]));
+    assert_eq!(app.terminal_pr_for_feature(&feature_id), Some(&pr));
+
+    let saved = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_all_pr_terminal_state()
+        .unwrap();
+    assert_eq!(
+        saved.get(&(repo.to_string_lossy().to_string(), branch)),
+        Some(&pr)
+    );
+}
+
+/// A result addressed to a branch the feature no longer has (it was renamed,
+/// or the update raced a branch switch) must not overwrite the current
+/// terminal badge — mirrors the same guard on `apply_active_pr_updates`.
+#[test]
+fn terminal_pr_update_for_stale_branch_does_not_overwrite_current_badge() {
+    use super::sync::{TerminalPrLookup, TerminalPrUpdate};
+    use crate::github::{TerminalPr, TerminalPrState};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let repo = app.store.projects[0].repo.clone();
+
+    let changed = app.apply_terminal_pr_updates(vec![TerminalPrUpdate {
+        feature_id: feature_id.clone(),
+        repo,
+        branch: "old-branch".to_string(),
+        lookup: TerminalPrLookup::Found(TerminalPr {
+            number: 1,
+            state: TerminalPrState::Merged,
+            at: "2026-01-01T00:00:00Z".to_string(),
+        }),
+    }]);
+
+    assert!(!changed);
+    assert!(app.terminal_pr_for_feature(&feature_id).is_none());
+}
+
+/// `Skipped` and `Failed` terminal lookups must leave a previously confirmed
+/// merged/closed badge exactly as it was — the sweep never had new evidence.
+#[test]
+fn skipped_or_failed_terminal_lookup_leaves_previous_badge_untouched() {
+    use super::sync::{TerminalPrLookup, TerminalPrUpdate};
+    use crate::github::{TerminalPr, TerminalPrState};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let repo = app.store.projects[0].repo.clone();
+    let pr = TerminalPr {
+        number: 7,
+        state: TerminalPrState::Closed,
+        at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    app.terminal_prs.insert(feature_id.clone(), pr.clone());
+
+    let changed = app.apply_terminal_pr_updates(vec![
+        TerminalPrUpdate {
+            feature_id: feature_id.clone(),
+            repo: repo.clone(),
+            branch: branch.clone(),
+            lookup: TerminalPrLookup::Skipped,
+        },
+        TerminalPrUpdate {
+            feature_id: feature_id.clone(),
+            repo,
+            branch,
+            lookup: TerminalPrLookup::Failed("network unavailable".to_string()),
+        },
+    ]);
+
+    assert!(!changed);
+    assert_eq!(app.terminal_pr_for_feature(&feature_id), Some(&pr));
+}
+
+/// The bug this pins down: without a negative cache, a branch that never has
+/// a PR would trigger a fresh `GhCli::terminal_prs` call on every sweep,
+/// forever. `NoPr` must settle into `confirmed_no_terminal_pr` so the next
+/// sweep's `needs_terminal` computation (gated on `known_terminal_ids`) skips
+/// it — and that settled answer must be cleared the moment the branch shows
+/// an open PR again, since a *new* PR on that branch can still reach a
+/// terminal state later.
+#[test]
+fn confirmed_no_terminal_pr_is_cached_and_cleared_when_branch_reopens() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate, TerminalPrLookup, TerminalPrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let repo = app.store.projects[0].repo.clone();
+
+    let changed = app.apply_terminal_pr_updates(vec![TerminalPrUpdate {
+        feature_id: feature_id.clone(),
+        repo,
+        branch: branch.clone(),
+        lookup: TerminalPrLookup::NoPr,
+    }]);
+    assert!(!changed, "a settled negative isn't a badge change");
+    assert!(app.confirmed_no_terminal_pr.contains(&feature_id));
+    assert!(app.terminal_pr_for_feature(&feature_id).is_none());
+
+    // The branch gets a PR again; the settled "never had one" answer must not
+    // survive that, or a later merge/close on this new PR would never be
+    // looked up again.
+    app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch,
+            head_sha: "abc123".to_string(),
+            number: 99,
+            unresolved_threads: Some(0),
+        }),
+    }]);
+    assert!(!app.confirmed_no_terminal_pr.contains(&feature_id));
+}
+
+/// Seeded once at startup, before the first sweep: a matching `(repo,
+/// branch)` row lands in `terminal_prs`, and a row for a repo/branch this
+/// store doesn't have is simply not applied.
+#[test]
+fn load_terminal_prs_from_db_seeds_only_matching_features() {
+    use crate::db::AmfDb;
+    use crate::github::{TerminalPr, TerminalPrState};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature_id = app.store.projects[0].features[0].id.clone();
+    let repo = app.store.projects[0].repo.to_string_lossy().to_string();
+    let branch = app.store.projects[0].features[0].branch.clone();
+
+    let db_file = NamedTempFile::new().unwrap();
+    let db = AmfDb::open(db_file.path()).unwrap();
+    let pr = TerminalPr {
+        number: 5,
+        state: TerminalPrState::Merged,
+        at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    db.save_pr_terminal_state(&repo, &branch, &pr).unwrap();
+    db.save_pr_terminal_state("/some/other/repo", "unrelated-branch", &pr)
+        .unwrap();
+    app.db = Some(db);
+
+    assert!(app.terminal_pr_for_feature(&feature_id).is_none());
+    app.load_terminal_prs_from_db();
+
+    assert_eq!(app.terminal_pr_for_feature(&feature_id), Some(&pr));
+    assert_eq!(app.terminal_prs.len(), 1, "the unrelated row isn't applied");
+}
+
 #[test]
 fn predecessor_invalidation_preserves_live_successor_ai_review() {
     let store = store_with_feature(ProjectStatus::Idle);
@@ -2273,6 +2694,7 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
                 deletions: None,
                 files: None,
             }),
+            plan_text: "No plan selected".to_string(),
         })
         .unwrap();
 
@@ -2590,6 +3012,9 @@ fn visible_items_prioritizes_non_worktree_features() {
                 summary: None,
                 summary_updated_at: None,
                 nickname: None,
+                selected_plan_path: Some(PathBuf::from(
+                    "/tmp/test-repo/.worktrees/worktree-newer/docs/accepted.md",
+                )),
                 triage_source: None,
             },
             Feature {
@@ -2615,6 +3040,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                 summary: None,
                 summary_updated_at: None,
                 nickname: None,
+                selected_plan_path: None,
                 triage_source: None,
             },
         ],
@@ -2641,6 +3067,11 @@ fn visible_items_prioritizes_non_worktree_features() {
     assert!(matches!(visible[0], VisibleItem::Project(0)));
     assert!(matches!(visible[1], VisibleItem::Feature(0, 1)));
     assert!(matches!(visible[2], VisibleItem::Feature(0, 0)));
+    assert_eq!(
+        visible.len(),
+        3,
+        "a persisted current plan must not become a dashboard tree item"
+    );
 }
 
 #[test]
@@ -3791,6 +4222,183 @@ fn synthesized_plan_response() -> String {
      ## Tasks\n- [ ] Implement the feature\n- [ ] Verify it\n\n\
      ## Risks / open questions\n- None identified.\n"
         .to_string()
+}
+
+/// Tmux behavior needed by an accepted plan that first opens the resource
+/// confirmation and then launches after approval. A real sleeping child makes
+/// the existing feature's mocked pane count as busy without touching the
+/// process-global headless lease used by concurrently-running tests.
+fn plan_resource_gate_tmux(expect_launch: bool) -> (MockTmuxOps, BusyPane) {
+    let child = std::process::Command::new("sh")
+        .args(["-c", "sleep 60 & wait"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("sh should be available");
+    let pane_pid = child.id() as i64;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let procs = crate::resources::procs::list_processes();
+        if crate::resources::procs::process_tree(&procs, pane_pid).len() > 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_list_panes()
+        .returning(move || vec![("amf-my-feat".to_string(), "claude".to_string(), pane_pid)]);
+    if expect_launch {
+        let created = Arc::new(AtomicBool::new(false));
+        let seen = created.clone();
+        tmux.expect_session_exists()
+            .returning(move |_| seen.load(Ordering::SeqCst));
+        tmux.expect_create_session_with_window()
+            .returning(move |_, _, _| {
+                created.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+        tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_select_window().returning(|_, _| Ok(()));
+    }
+    (tmux, BusyPane(child))
+}
+
+#[test]
+fn accepted_plan_over_limit_asks_then_resumes_exact_launch_once() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.store.projects[0].features[0].status = ProjectStatus::Active;
+    app.store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Existing Claude".into());
+    let (tmux, _pane) = plan_resource_gate_tmux(true);
+    app.tmux = Box::new(tmux);
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+
+    let (workdir, expected_plan) = match &mut app.mode {
+        AppMode::PlanInterview(state) => {
+            let plan = synthesized_plan_response();
+            state.apply_synthesis(plan.clone());
+            (state.workdir.clone(), plan)
+        }
+        _ => panic!("expected plan review"),
+    };
+
+    app.complete_plan_interview().unwrap();
+
+    match &app.mode {
+        AppMode::ConfirmResourceStart(state) => {
+            assert_eq!(state.over_limit.unwrap().limit, 1);
+            let PendingStart::PlannedFeature(pending) = &state.pending else {
+                panic!("expected the accepted plan launch to be parked");
+            };
+            assert_eq!(pending.plan, expected_plan);
+            assert_eq!(pending.prepared.workdir, workdir);
+            assert_eq!(
+                pending.prepared.startup_prompt.as_deref(),
+                Some(PLAN_KICKOFF_PROMPT)
+            );
+            assert!(matches!(
+                state.plan_interview.as_ref(),
+                Some(interview)
+                    if interview.phase == PlanInterviewPhase::Review
+                        && interview.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+                        && interview.pending_launch.is_some()
+            ));
+        }
+        _ => panic!("expected the resource confirmation"),
+    }
+    assert!(workdir.join("AMF_PLAN.md").is_file());
+    assert!(
+        !app.store.projects[0]
+            .features
+            .iter()
+            .any(|feature| feature.name == "planned-feature")
+    );
+    assert!(
+        !app.toasts
+            .iter()
+            .any(|toast| toast.message.contains("Press c to start it"))
+    );
+
+    crate::handlers::handle_resource_confirm_key(&mut app, KeyCode::Enter).unwrap();
+
+    assert_eq!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .filter(|feature| feature.name == "planned-feature")
+            .count(),
+        1
+    );
+    match &app.mode {
+        AppMode::Compose(state) => {
+            assert_eq!(state.editor.text(), PLAN_KICKOFF_PROMPT);
+            assert_eq!(state.view.feature_name, "planned-feature");
+        }
+        _ => panic!("confirmed plan should land in the seeded composer"),
+    }
+
+    // The dialog payload was consumed before replay. A repeated confirmation
+    // call is a no-op and cannot create a duplicate feature or second harness.
+    app.confirm_pending_start().unwrap();
+    assert_eq!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .filter(|feature| feature.name == "planned-feature")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn cancelling_over_limit_plan_start_restores_completed_review() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.store.projects[0].features[0].status = ProjectStatus::Active;
+    app.store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Existing Claude".into());
+    let (tmux, _pane) = plan_resource_gate_tmux(false);
+    app.tmux = Box::new(tmux);
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+
+    let (workdir, expected_plan) = match &mut app.mode {
+        AppMode::PlanInterview(state) => {
+            let plan = synthesized_plan_response();
+            state.apply_synthesis(plan.clone());
+            (state.workdir.clone(), plan)
+        }
+        _ => panic!("expected plan review"),
+    };
+    app.complete_plan_interview().unwrap();
+    assert!(matches!(app.mode, AppMode::ConfirmResourceStart(_)));
+
+    crate::handlers::handle_resource_confirm_key(&mut app, KeyCode::Esc).unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.synthesized_plan.as_deref() == Some(expected_plan.as_str())
+                && state.pending_launch.is_some()
+    ));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Planned feature start cancelled; plan kept for review")
+    );
+    assert_eq!(
+        std::fs::read_to_string(workdir.join("AMF_PLAN.md")).unwrap(),
+        expected_plan
+    );
+    assert!(
+        !app.store.projects[0]
+            .features
+            .iter()
+            .any(|feature| feature.name == "planned-feature")
+    );
 }
 
 fn plan_critique_response() -> String {
@@ -5996,6 +6604,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let store = ProjectStore {
@@ -7071,6 +7680,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -7281,6 +7891,7 @@ fn session_picker_enter_opens_name_step_with_default_label() {
         label: "Codex 1".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: Utc::now(),
@@ -7571,6 +8182,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -7719,6 +8331,186 @@ fn complete_deleting_feature_clears_sidebar_caches() {
     assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
     assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
+#[test]
+fn complete_deleting_feature_clears_terminal_pr_association() {
+    let repo = TempDir::new().unwrap();
+    let store_file = NamedTempFile::new().unwrap();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    store.projects[0].features[0].is_worktree = true;
+    let feature = &store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let terminal_pr = crate::github::TerminalPr {
+        number: 550,
+        state: crate::github::TerminalPrState::Merged,
+        at: "2026-08-21T13:32:59Z".to_string(),
+    };
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = store_file.path().to_path_buf();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_terminal_state(&repo.path().to_string_lossy(), &branch, &terminal_pr)
+        .unwrap();
+    app.terminal_prs
+        .insert(feature_id.clone(), terminal_pr.clone());
+    app.confirmed_no_terminal_pr.insert(feature_id.clone());
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "new-head".to_string(),
+            number: 561,
+            unresolved_threads: Some(0),
+        },
+    );
+    app.mode = AppMode::DeletingFeatureInProgress(DeletingFeatureState {
+        project_name: "my-project".to_string(),
+        feature_name: "my-feat".to_string(),
+        tmux_session: "amf-my-feat".to_string(),
+        is_worktree: true,
+        repo: repo.path().to_path_buf(),
+        workdir: repo.path().join(".worktrees/my-feat"),
+        stage: DeleteStage::Completed,
+        child: None,
+        output: String::new(),
+        output_rx: None,
+        error: None,
+    });
+
+    app.complete_deleting_feature().unwrap();
+
+    assert!(!app.active_prs.contains_key(&feature_id));
+    assert!(!app.terminal_prs.contains_key(&feature_id));
+    assert!(!app.confirmed_no_terminal_pr.contains(&feature_id));
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_all_pr_terminal_state()
+        .unwrap();
+    assert!(!cached.contains_key(&(repo.path().to_string_lossy().to_string(), branch)));
+}
+
+#[test]
+fn completed_background_deletion_clears_terminal_pr_association() {
+    let repo = TempDir::new().unwrap();
+    let store_file = NamedTempFile::new().unwrap();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    store.projects[0].features[0].is_worktree = true;
+    let feature = &store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let terminal_pr = crate::github::TerminalPr {
+        number: 550,
+        state: crate::github::TerminalPrState::Merged,
+        at: "2026-08-21T13:32:59Z".to_string(),
+    };
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = store_file.path().to_path_buf();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_terminal_state(&repo.path().to_string_lossy(), &branch, &terminal_pr)
+        .unwrap();
+    app.terminal_prs.insert(feature_id.clone(), terminal_pr);
+    app.background_deletions.insert(
+        "my-project/my-feat".to_string(),
+        BackgroundDeletion {
+            project_name: "my-project".to_string(),
+            feature_name: "my-feat".to_string(),
+            tmux_session: "amf-my-feat".to_string(),
+            is_worktree: true,
+            repo: repo.path().to_path_buf(),
+            workdir: repo.path().join(".worktrees/my-feat"),
+            stage: DeleteStage::Completed,
+            child: None,
+            output: String::new(),
+            output_rx: None,
+            error: None,
+        },
+    );
+
+    app.poll_background_deletions().unwrap();
+
+    assert!(!app.terminal_prs.contains_key(&feature_id));
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_all_pr_terminal_state()
+        .unwrap();
+    assert!(!cached.contains_key(&(repo.path().to_string_lossy().to_string(), branch)));
+}
+
+#[test]
+fn delete_project_clears_terminal_pr_associations_for_all_features() {
+    let repo = TempDir::new().unwrap();
+    let store_file = NamedTempFile::new().unwrap();
+    let db_file = NamedTempFile::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let feature = &store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    let terminal_pr = crate::github::TerminalPr {
+        number: 550,
+        state: crate::github::TerminalPrState::Merged,
+        at: "2026-08-21T13:32:59Z".to_string(),
+    };
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = store_file.path().to_path_buf();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_terminal_state(&repo.path().to_string_lossy(), &branch, &terminal_pr)
+        .unwrap();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "new-head".to_string(),
+            number: 561,
+            unresolved_threads: Some(0),
+        },
+    );
+    app.terminal_prs.insert(feature_id.clone(), terminal_pr);
+    app.confirmed_no_terminal_pr.insert(feature_id.clone());
+    app.mode = AppMode::DeletingProject("my-project".to_string());
+
+    app.delete_project().unwrap();
+
+    assert!(!app.active_prs.contains_key(&feature_id));
+    assert!(!app.terminal_prs.contains_key(&feature_id));
+    assert!(!app.confirmed_no_terminal_pr.contains(&feature_id));
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_all_pr_terminal_state()
+        .unwrap();
+    assert!(!cached.contains_key(&(repo.path().to_string_lossy().to_string(), branch)));
 }
 
 // ── ensure_notification_hooks ─────────────────────────────
@@ -8878,6 +9670,7 @@ fn store_with_worktree_agent(
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -8921,6 +9714,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             label: "Claude 1".to_string(),
             tmux_window: "claude".to_string(),
             claude_session_id: Some("resume-me".to_string()),
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: now,
@@ -8936,6 +9730,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             label: "Terminal 1".to_string(),
             tmux_window: "terminal".to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: now,
@@ -9063,6 +9858,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         label: "Dev Servers".to_string(),
         tmux_window: "custom".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -9095,6 +9891,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -9125,6 +9922,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         label: "Codex".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -9157,6 +9955,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -9193,6 +9992,7 @@ fn store_with_single_agent_session(
         label: window.to_string(),
         tmux_window: window.to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -9225,6 +10025,7 @@ fn store_with_single_agent_session(
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -9341,6 +10142,7 @@ fn sync_session_status_shows_agent_token_usage() {
         label: "Claude 1".to_string(),
         tmux_window: "claude".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: Some(TokenUsageSource {
             provider: TokenUsageProvider::Claude,
             id: "claude-123".to_string(),
@@ -9376,6 +10178,7 @@ fn sync_session_status_shows_agent_token_usage() {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -9406,6 +10209,11 @@ fn sync_session_status_shows_agent_token_usage() {
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
+    app.context_collector = crate::context_collectors::SessionContextCollector::with_roots(
+        home.path(),
+        data.path(),
+        data.path(),
+    );
     app.sync_session_status_with_tracker(&mut tracker);
 
     assert_eq!(
@@ -9423,6 +10231,239 @@ fn sync_session_status_shows_agent_token_usage() {
         app.store.projects[0].features[0].sessions[0].token_usage_source_match,
         Some(TokenUsageSourceMatch::Exact),
     );
+    let context = app
+        .context_states
+        .get("claude-sess")
+        .and_then(|state| state.snapshot.as_ref())
+        .expect("the five-second session sync should collect context usage");
+    assert_eq!(context.used_tokens, 12);
+    assert_eq!(
+        context.provenance,
+        crate::context_tracking::ContextProvenance::Estimated
+    );
+}
+
+#[test]
+fn sync_session_status_collects_isolated_pi_context_without_a_token_usage_provider() {
+    let home = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Idle);
+    let first_created = Utc.with_ymd_and_hms(2026, 8, 23, 11, 0, 0).unwrap();
+    let second_created = Utc.with_ymd_and_hms(2026, 8, 23, 12, 0, 0).unwrap();
+    let first_session =
+        store.projects[0].features[0].add_session_named(SessionKind::Pi, "Pi".to_string());
+    first_session.created_at = first_created;
+    let first_amf_session_id = first_session.id.clone();
+    let second_session =
+        store.projects[0].features[0].add_session_named(SessionKind::Pi, "Pi 2".to_string());
+    second_session.created_at = second_created;
+    let second_amf_session_id = second_session.id.clone();
+    let session_dir = home.path().join(".pi/agent/sessions/repo");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(
+        session_dir.join("pi-1.jsonl"),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"pi-1\",\"timestamp\":\"2026-08-23T11:00:00Z\",\"cwd\":{}}}\n\
+             {{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"test\",\"model\":\"model\",\"stopReason\":\"stop\",\"usage\":{{\"input\":20000,\"output\":1000,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":21000}}}}}}\n",
+            serde_json::to_string(workdir.path().to_string_lossy().as_ref()).unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        session_dir.join("pi-2.jsonl"),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"pi-2\",\"timestamp\":\"2026-08-23T12:00:00Z\",\"cwd\":{}}}\n\
+             {{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"test\",\"model\":\"model\",\"stopReason\":\"stop\",\"usage\":{{\"input\":80000,\"output\":1000,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":81000}}}}}}\n",
+            serde_json::to_string(workdir.path().to_string_lossy().as_ref()).unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.path().join(".pi/agent")).unwrap();
+    std::fs::write(
+        home.path().join(".pi/agent/models.json"),
+        r#"{"providers":{"test":{"models":[{"id":"model","contextWindow":100000}]}}}"#,
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.context_collector = crate::context_collectors::SessionContextCollector::with_roots(
+        home.path(),
+        home.path(),
+        home.path(),
+    );
+    let mut tracker = SessionTokenTracker::new(Some(home.path().to_path_buf()), None);
+
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    let first_snapshot = app
+        .context_states
+        .get(&first_amf_session_id)
+        .and_then(|state| state.snapshot.as_ref())
+        .expect("Pi should participate in the shared five-second sync");
+    let second_snapshot = app
+        .context_states
+        .get(&second_amf_session_id)
+        .and_then(|state| state.snapshot.as_ref())
+        .expect("the second Pi session should have independent context state");
+    assert_eq!(first_snapshot.used_tokens, 21_000);
+    assert_eq!(
+        first_snapshot.reset.conversation_id.as_deref(),
+        Some("pi-1")
+    );
+    assert_eq!(second_snapshot.used_tokens, 81_000);
+    assert_eq!(
+        second_snapshot.reset.conversation_id.as_deref(),
+        Some("pi-2")
+    );
+    assert_eq!(
+        second_snapshot.band,
+        crate::context_tracking::ContextBand::Warning
+    );
+}
+
+#[test]
+fn session_status_sync_refreshes_all_context_harnesses_and_excludes_terminal() {
+    let roots = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let write = |path: PathBuf, content: String| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    };
+    let mut store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Idle);
+    let feature = &mut store.projects[0].features[0];
+    let claude = feature.add_session_named(SessionKind::Claude, "Claude".to_string());
+    claude.claude_session_id = Some("claude-all".to_string());
+    let claude_amf_id = claude.id.clone();
+    let codex = feature.add_session_named(SessionKind::Codex, "Codex".to_string());
+    codex.set_token_usage_source_exact(TokenUsageSource {
+        provider: TokenUsageProvider::Codex,
+        id: "codex-all".to_string(),
+    });
+    let codex_amf_id = codex.id.clone();
+    let opencode = feature.add_session_named(SessionKind::Opencode, "OpenCode".to_string());
+    opencode.set_token_usage_source_exact(TokenUsageSource {
+        provider: TokenUsageProvider::Opencode,
+        id: "open-all".to_string(),
+    });
+    let opencode_amf_id = opencode.id.clone();
+    let pi = feature.add_session_named(SessionKind::Pi, "Pi".to_string());
+    let pi_amf_id = pi.id.clone();
+    let terminal = feature.add_session_named(SessionKind::Terminal, "Terminal".to_string());
+    let terminal_amf_id = terminal.id.clone();
+
+    let encoded = workdir
+        .path()
+        .to_string_lossy()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    write(
+        roots
+            .path()
+            .join(".claude/projects")
+            .join(encoded)
+            .join("claude-all.jsonl"),
+        "{\"type\":\"assistant\",\"timestamp\":\"2026-08-23T12:00:00Z\",\"sessionId\":\"claude-all\",\"requestId\":\"r1\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":630000,\"output_tokens\":1}}}\n".to_string(),
+    );
+    write(
+        roots.path().join(".codex/sessions/codex-all.jsonl"),
+        format!(
+            "{{\"timestamp\":\"2026-08-23T12:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"codex-all\",\"cwd\":{}}}}}\n\
+             {{\"timestamp\":\"2026-08-23T12:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":1,\"total_tokens\":1}},\"last_token_usage\":{{\"total_tokens\":150000}},\"model_context_window\":200000}}}}}}\n",
+            serde_json::to_string(workdir.path().to_string_lossy().as_ref()).unwrap()
+        ),
+    );
+    write(
+        roots
+            .path()
+            .join("opencode/storage/session/project/open-all.json"),
+        serde_json::json!({
+            "id": "open-all",
+            "directory": workdir.path(),
+            "time": {"updated": 2_000}
+        })
+        .to_string(),
+    );
+    write(
+        roots
+            .path()
+            .join("opencode/storage/message/open-all/m1.json"),
+        serde_json::json!({
+            "id": "m1",
+            "role": "assistant",
+            "providerID": "test",
+            "modelID": "model",
+            "time": {"completed": 2_000},
+            "tokens": {"input": 80_000, "output": 0, "cache": {"read": 0, "write": 0}}
+        })
+        .to_string(),
+    );
+    write(
+        roots.path().join("opencode/models.json"),
+        r#"{"test":{"models":{"model":{"limit":{"context":100000}}}}}"#.to_string(),
+    );
+    write(
+        roots.path().join(".pi/agent/sessions/repo/pi-all.jsonl"),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"pi-all\",\"cwd\":{}}}\n\
+             {{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"test\",\"model\":\"model\",\"stopReason\":\"stop\",\"usage\":{{\"totalTokens\":90000}}}}}}\n",
+            serde_json::to_string(workdir.path().to_string_lossy().as_ref()).unwrap()
+        ),
+    );
+    write(
+        roots.path().join(".pi/agent/models.json"),
+        r#"{"providers":{"test":{"models":[{"id":"model","contextWindow":100000}]}}}"#.to_string(),
+    );
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.context_collector = crate::context_collectors::SessionContextCollector::with_roots(
+        roots.path(),
+        roots.path(),
+        roots.path(),
+    );
+    let mut tracker = SessionTokenTracker::new(
+        Some(roots.path().to_path_buf()),
+        Some(roots.path().to_path_buf()),
+    );
+
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    for (session_id, percentage) in [
+        (claude_amf_id, 70),
+        (codex_amf_id, 75),
+        (opencode_amf_id, 80),
+        (pi_amf_id, 90),
+    ] {
+        assert_eq!(
+            app.context_states[&session_id]
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .percentage
+                .get(),
+            percentage
+        );
+        let context_state = app.context_states.get(&session_id).unwrap();
+        assert!(
+            app.context_hint_states
+                .is_eligible(&session_id, Some(context_state))
+        );
+    }
+    assert!(!app.context_states.contains_key(&terminal_amf_id));
 }
 
 #[test]
@@ -9457,6 +10498,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         label: "Codex".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at,
@@ -9489,6 +10531,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -9585,6 +10628,7 @@ fn sync_session_status_does_not_infer_stale_codex_usage_for_new_session() {
         label: "Codex".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: Some(TokenUsageSource {
             provider: TokenUsageProvider::Codex,
             id: "old-codex".to_string(),
@@ -9620,6 +10664,7 @@ fn sync_session_status_does_not_infer_stale_codex_usage_for_new_session() {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -9692,6 +10737,7 @@ fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
         label: "Codex 1".to_string(),
         tmux_window: "codex".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at,
@@ -9731,6 +10777,7 @@ fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -9793,6 +10840,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         label: "Claude".to_string(),
         tmux_window: "claude".to_string(),
         claude_session_id: Some("claude-session-1".to_string()),
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at,
@@ -9825,6 +10873,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -10967,6 +12016,7 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
             label: "Claude".to_string(),
             tmux_window: "claude".to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -11501,6 +12551,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         label: "Claude 1".to_string(),
         tmux_window: "claude".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -11533,6 +12584,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -11728,6 +12780,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         label: "Claude 1".to_string(),
         tmux_window: "claude".to_string(),
         claude_session_id: None,
+        todo_reference: None,
         token_usage_source: None,
         token_usage_source_match: None,
         created_at: now,
@@ -11760,6 +12813,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -12631,6 +13685,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -13067,6 +14122,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -13081,6 +14137,7 @@ fn sample_ai_review_state(
         pr,
         findings: Vec::new(),
         summary: None,
+        attribution: None,
         selected: 0,
         detail_scroll: 0,
         detail_content_lines: 0,
@@ -13100,6 +14157,7 @@ fn sample_ai_review_finding(body: &str) -> crate::app::ai_review::AiReviewFindin
     crate::app::ai_review::AiReviewFinding {
         path: None,
         line: None,
+        side: None,
         body: body.to_string(),
         diff_hunk: None,
         skipped: false,
@@ -15379,6 +16437,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -15454,6 +16513,7 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -15998,6 +17058,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
+        ai_review_last_run: None,
     });
 }
 
@@ -17100,6 +18161,7 @@ fn store_with_review_project(repo: &std::path::Path) -> ProjectStore {
         summary: None,
         summary_updated_at: None,
         nickname: None,
+        selected_plan_path: None,
         triage_source: None,
     };
     let project = Project {
@@ -17878,7 +18940,12 @@ fn add_builtin_session_blocks_second_todos_per_project() {
     app.selection = Selection::Feature(0, 0);
 
     app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
-    assert!(app.store.projects[0].has_todos_session());
+    assert!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .any(|f| f.has_todos_session())
+    );
     let todos_count = |app: &App| {
         app.store.projects[0]
             .features
@@ -17899,7 +18966,7 @@ fn add_builtin_session_blocks_second_todos_per_project() {
     );
     assert_eq!(
         app.message.as_deref(),
-        Some("This project already has a TODOs session")
+        Some("This feature already has a TODOs session")
     );
 }
 
@@ -17941,7 +19008,9 @@ fn app_with_todo_host_deleted(remove_all_features: bool) -> App {
     let db_path = db_dir.keep().join("amf.db");
     let db = crate::db::AmfDb::open(&db_path).unwrap();
     db.save_store(&store).unwrap();
-    let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+    let list = db
+        .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+        .unwrap();
     db.add_todo(
         &list.id,
         "do a thing",
@@ -17988,10 +19057,10 @@ fn host_feature_delete_prompts_rehome_onto_surviving_feature() {
         .db
         .as_ref()
         .unwrap()
-        .todo_list("proj-1")
+        .todo_list(&test_project_scope("proj-1"))
         .unwrap()
         .unwrap();
-    assert_eq!(reloaded.feature_id, "feat-2");
+    assert_eq!(reloaded.feature_id.as_deref(), Some("feat-2"));
     assert!(matches!(app.mode, AppMode::Normal));
 }
 
@@ -18010,7 +19079,7 @@ fn host_feature_delete_can_delete_the_list() {
         app.db
             .as_ref()
             .unwrap()
-            .todo_list("proj-1")
+            .todo_list(&test_project_scope("proj-1"))
             .unwrap()
             .is_none()
     );
@@ -18028,7 +19097,7 @@ fn host_feature_delete_drops_list_when_no_features_remain() {
         app.db
             .as_ref()
             .unwrap()
-            .todo_list("proj-1")
+            .todo_list(&test_project_scope("proj-1"))
             .unwrap()
             .is_none()
     );
@@ -18045,24 +19114,40 @@ fn deleting_non_host_feature_leaves_todo_list_untouched() {
         .db
         .as_ref()
         .unwrap()
-        .todo_list("proj-1")
+        .todo_list(&test_project_scope("proj-1"))
         .unwrap()
         .unwrap();
-    assert_eq!(list.feature_id, "feat-1", "list host should be unchanged");
+    assert_eq!(
+        list.feature_id.as_deref(),
+        Some("feat-1"),
+        "list host should be unchanged"
+    );
+}
+
+fn test_project_scope(project_id: &str) -> crate::db::todos::TodoScope {
+    crate::db::todos::TodoScope::Project {
+        project_id: project_id.to_string(),
+    }
 }
 
 fn sample_todo(title: &str, done: bool) -> crate::db::todos::Todo {
+    use crate::db::todos::{TodoStatus, TodoWorkState};
     crate::db::todos::Todo {
         id: format!("todo-{title}"),
         list_id: "list-1".to_string(),
         title: title.to_string(),
         body: None,
         priority: crate::db::todos::TodoPriority::Med,
-        done,
         sort_order: 0,
-        spawned_session_id: None,
+        work: TodoWorkState {
+            status: if done {
+                TodoStatus::Completed
+            } else {
+                TodoStatus::NotStarted
+            },
+            agent_session_id: None,
+        },
         linked_feature_id: None,
-        in_progress: false,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -18159,17 +19244,14 @@ fn todos_navigation_wraps_around() {
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
-    app.mode = AppMode::Todos(TodoViewState {
-        todos: vec![
-            sample_todo("a", false),
-            sample_todo("b", false),
-            sample_todo("c", true),
-        ],
-        ..empty_todo_view()
-    });
+    app.mode = AppMode::Todos(todo_view_with(vec![
+        sample_todo("a", false),
+        sample_todo("b", false),
+        sample_todo("c", true),
+    ]));
 
     let selected = |app: &App| match &app.mode {
-        AppMode::Todos(state) => state.selected,
+        AppMode::Todos(state) => state.panes[0].selected,
         _ => panic!("expected Todos overlay"),
     };
 
@@ -18194,25 +19276,40 @@ fn todos_navigation_no_op_when_empty() {
     app.todos_select_next();
     app.todos_select_prev();
     match &app.mode {
-        AppMode::Todos(state) => assert_eq!(state.selected, 0),
+        AppMode::Todos(state) => assert_eq!(state.panes[0].selected, 0),
         _ => panic!("expected Todos overlay"),
     }
 }
 
+/// A one-pane overlay over the project's list — the shape a feature sitting on
+/// the repo root opens with, and the simplest thing to assert against. Tests
+/// that need the side panes build them explicitly.
 fn empty_todo_view() -> TodoViewState {
+    todo_view_with(vec![])
+}
+
+fn todo_view_with(todos: Vec<crate::db::todos::Todo>) -> TodoViewState {
     TodoViewState {
-        project_id: "proj-1".to_string(),
         pi: 0,
         fi: 0,
         project_name: "my-project".to_string(),
         feature_name: "my-feat".to_string(),
-        list: None,
-        todos: vec![],
-        selected: 0,
-        scroll_offset: 0,
+        panes: vec![crate::app::TodoPane {
+            kind: crate::app::TodoPaneKind::Project,
+            scope: crate::db::todos::TodoScope::Project {
+                project_id: "proj-1".to_string(),
+            },
+            title: "my-project".to_string(),
+            list: None,
+            todos,
+            selected: 0,
+            scroll_offset: 0,
+        }],
+        focus: Some(0),
         editor: None,
         pending_delete: false,
         launch: None,
+        scope_move: None,
     }
 }
 
@@ -18238,7 +19335,11 @@ fn type_str(app: &mut App, s: &str) {
 
 fn todo_titles(app: &App) -> Vec<String> {
     match &app.mode {
-        AppMode::Todos(state) => state.todos.iter().map(|t| t.title.clone()).collect(),
+        AppMode::Todos(state) => state.panes[0]
+            .todos
+            .iter()
+            .map(|t| t.title.clone())
+            .collect(),
         _ => panic!("expected Todos overlay"),
     }
 }
@@ -18251,8 +19352,8 @@ fn seed_selected_todo(app: &mut App, title: &str) -> String {
     let id = todo.id.clone();
     match &mut app.mode {
         AppMode::Todos(state) => {
-            state.todos.push(todo);
-            state.selected = state.todos.len() - 1;
+            state.panes[0].todos.push(todo);
+            state.panes[0].selected = state.panes[0].todos.len() - 1;
         }
         _ => panic!("expected Todos overlay"),
     }
@@ -18266,14 +19367,14 @@ fn launch_step(app: &App) -> Option<&crate::app::TodoLaunchStep> {
     }
 }
 
-/// `g` on a TODO with nothing linked has to ask rather than pick for the user:
+/// `Enter` on a TODO with nothing linked has to ask rather than pick for the user:
 /// spawning and planning are different amounts of work to commit to.
 #[test]
-fn g_on_an_unlinked_todo_opens_the_chooser_instead_of_spawning() {
+fn enter_on_an_unlinked_todo_opens_the_chooser_instead_of_spawning() {
     let mut app = todos_app();
     seed_selected_todo(&mut app, "wire up the chooser");
 
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert!(
         matches!(
@@ -18294,7 +19395,7 @@ fn esc_walks_back_from_destination_to_chooser_to_the_list() {
     let mut app = todos_app();
     seed_selected_todo(&mut app, "plan me");
 
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
     // Move to "Plan this TODO first" and take it.
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
@@ -18323,13 +19424,56 @@ fn esc_walks_back_from_destination_to_chooser_to_the_list() {
     );
 }
 
+/// Choosing plan mode is the lifecycle boundary: the TODO changes before the
+/// destination is chosen, and backing out of that workflow does not pretend it
+/// was never begun. The layered picker must not disturb the list viewport.
+#[test]
+fn starting_then_cancelling_todo_planning_keeps_it_in_progress_and_preserves_the_pane() {
+    let mut app = todos_app();
+    seed_selected_todo(&mut app, "plan me");
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].scroll_offset = 7;
+    }
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(matches!(
+                state.launch,
+                Some(crate::app::TodoLaunchStep::Destination { .. })
+            ));
+            assert!(state.panes[0].todos[0].work.status.is_in_progress());
+            assert_eq!(state.focus, Some(0));
+            assert_eq!(state.panes[0].selected, 0);
+            assert_eq!(state.panes[0].scroll_offset, 7);
+        }
+        _ => panic!("expected the destination picker over the TODO list"),
+    }
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.launch.is_none());
+            assert!(state.panes[0].todos[0].work.status.is_in_progress());
+            assert_eq!(state.focus, Some(0));
+            assert_eq!(state.panes[0].selected, 0);
+            assert_eq!(state.panes[0].scroll_offset, 7);
+        }
+        _ => panic!("expected to return to the TODO list"),
+    }
+}
+
 /// The cursor clamps rather than wraps: with two options, wrapping makes j and
 /// k the same key and the highlight appears not to move.
 #[test]
 fn chooser_cursor_clamps_at_both_ends() {
     let mut app = todos_app();
     seed_selected_todo(&mut app, "plan me");
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('k'))).unwrap();
     assert_eq!(
@@ -18351,7 +19495,7 @@ fn chooser_cursor_clamps_at_both_ends() {
 /// A TODO already planned into a feature jumps there instead of asking again —
 /// the decision was made the first time.
 #[test]
-fn g_on_a_todo_linked_to_a_live_feature_jumps_there_without_asking() {
+fn enter_on_a_todo_linked_to_a_live_feature_jumps_there_without_asking() {
     let mut tmux = MockTmuxOps::new();
     // The jump enters the feature's view, which reconciles against tmux.
     tmux.expect_session_exists().return_const(true);
@@ -18365,12 +19509,12 @@ fn g_on_a_todo_linked_to_a_live_feature_jumps_there_without_asking() {
     seed_selected_todo(&mut app, "already planned");
     match &mut app.mode {
         AppMode::Todos(state) => {
-            state.todos[0].linked_feature_id = Some(feature_id);
+            state.panes[0].todos[0].linked_feature_id = Some(feature_id);
         }
         _ => unreachable!(),
     }
 
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert!(
         !matches!(app.mode, AppMode::Todos(_)),
@@ -18381,22 +19525,22 @@ fn g_on_a_todo_linked_to_a_live_feature_jumps_there_without_asking() {
 /// A link whose feature was deleted must not be a dead end: it is dropped, the
 /// user is told, and the next press offers the chooser.
 #[test]
-fn g_on_a_todo_linked_to_a_deleted_feature_clears_the_link_and_offers_the_chooser() {
+fn enter_on_a_todo_linked_to_a_deleted_feature_clears_the_link_and_offers_the_chooser() {
     let mut app = todos_app();
     seed_selected_todo(&mut app, "planned into a ghost");
     match &mut app.mode {
         AppMode::Todos(state) => {
-            state.todos[0].linked_feature_id = Some("feat-that-is-gone".to_string());
+            state.panes[0].todos[0].linked_feature_id = Some("feat-that-is-gone".to_string());
         }
         _ => unreachable!(),
     }
 
-    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     match &app.mode {
         AppMode::Todos(state) => {
             assert!(
-                state.todos[0].linked_feature_id.is_none(),
+                state.panes[0].todos[0].linked_feature_id.is_none(),
                 "the dead link is dropped"
             );
             assert!(
@@ -18420,8 +19564,8 @@ fn deleting_a_feature_clears_todo_links_to_it_but_keeps_the_todos() {
     seed_selected_todo(&mut app, "planned elsewhere");
     match &mut app.mode {
         AppMode::Todos(state) => {
-            state.todos[0].linked_feature_id = Some("feat-doomed".to_string());
-            state.todos[1].linked_feature_id = Some("feat-safe".to_string());
+            state.panes[0].todos[0].linked_feature_id = Some("feat-doomed".to_string());
+            state.panes[0].todos[1].linked_feature_id = Some("feat-safe".to_string());
         }
         _ => unreachable!(),
     }
@@ -18430,10 +19574,10 @@ fn deleting_a_feature_clears_todo_links_to_it_but_keeps_the_todos() {
 
     match &app.mode {
         AppMode::Todos(state) => {
-            assert_eq!(state.todos.len(), 2, "both TODOs survive");
-            assert!(state.todos[0].linked_feature_id.is_none());
+            assert_eq!(state.panes[0].todos.len(), 2, "both TODOs survive");
+            assert!(state.panes[0].todos[0].linked_feature_id.is_none());
             assert_eq!(
-                state.todos[1].linked_feature_id.as_deref(),
+                state.panes[0].todos[1].linked_feature_id.as_deref(),
                 Some("feat-safe"),
                 "an unrelated link is untouched"
             );
@@ -18452,7 +19596,7 @@ fn todos_add_via_handler_appends_and_selects() {
     assert_eq!(todo_titles(&app), vec!["buy milk"]);
     match &app.mode {
         AppMode::Todos(state) => {
-            assert_eq!(state.selected, 0);
+            assert_eq!(state.panes[0].selected, 0);
             assert!(state.editor.is_none(), "editor closes after commit");
         }
         _ => panic!("expected Todos overlay"),
@@ -18496,18 +19640,19 @@ fn todos_toggle_done_sinks_item_below_open() {
     type_str(&mut app, "b");
     app.todos_commit_edit().unwrap();
 
-    // Select "a" (index 0) and mark it done.
+    // Select "a" (index 0), advance through in progress, and mark it done.
     if let AppMode::Todos(state) = &mut app.mode {
-        state.selected = 0;
+        state.panes[0].selected = 0;
     }
+    app.todos_toggle_done().unwrap();
     app.todos_toggle_done().unwrap();
 
     // Open "b" now sorts before done "a"; cursor follows "a".
     assert_eq!(todo_titles(&app), vec!["b", "a"]);
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.todos[1].done);
-            assert_eq!(state.selected, 1);
+            assert!(state.panes[0].todos[1].work.status.is_completed());
+            assert_eq!(state.panes[0].selected, 1);
         }
         _ => panic!("expected Todos overlay"),
     }
@@ -18522,7 +19667,7 @@ fn todos_cycle_priority_rotates() {
     app.todos_commit_edit().unwrap();
 
     let prio = |app: &App| match &app.mode {
-        AppMode::Todos(state) => state.todos[0].priority,
+        AppMode::Todos(state) => state.panes[0].todos[0].priority,
         _ => panic!("expected Todos overlay"),
     };
     assert_eq!(prio(&app), TodoPriority::Med);
@@ -18544,13 +19689,15 @@ fn todos_reorder_moves_item() {
     }
     // Select "a" (top) and move it down.
     if let AppMode::Todos(state) = &mut app.mode {
-        state.selected = 0;
+        state.panes[0].selected = 0;
     }
     app.todos_reorder(1).unwrap();
 
     assert_eq!(todo_titles(&app), vec!["b", "a", "c"]);
     match &app.mode {
-        AppMode::Todos(state) => assert_eq!(state.selected, 1, "cursor follows moved item"),
+        AppMode::Todos(state) => {
+            assert_eq!(state.panes[0].selected, 1, "cursor follows moved item")
+        }
         _ => panic!("expected Todos overlay"),
     }
 }
@@ -18575,6 +19722,34 @@ fn todos_delete_requires_confirmation() {
 }
 
 #[test]
+fn deleting_a_todo_clears_all_session_sidebar_references_to_it() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "doomed");
+    app.todos_commit_edit().unwrap();
+    let todo_id = match &app.mode {
+        AppMode::Todos(state) => state.panes[0].todos[0].id.clone(),
+        _ => unreachable!(),
+    };
+
+    let session = app.store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "TODO agent".to_string());
+    session.todo_reference = Some(crate::project::TodoSessionReference {
+        todo_id,
+        launched_from_todo_menu: true,
+    });
+
+    app.todos_request_delete();
+    app.todos_confirm_delete().unwrap();
+
+    assert!(
+        app.store.projects[0].features[0].sessions[0]
+            .todo_reference
+            .is_none()
+    );
+}
+
+#[test]
 fn todos_edit_scratchpad_banner() {
     let mut app = todos_app();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('b'))).unwrap();
@@ -18584,7 +19759,10 @@ fn todos_edit_scratchpad_banner() {
     match &app.mode {
         AppMode::Todos(state) => {
             assert_eq!(
-                state.list.as_ref().and_then(|l| l.carry_over.as_deref()),
+                state.panes[0]
+                    .list
+                    .as_ref()
+                    .and_then(|l| l.carry_over.as_deref()),
                 Some("finishing the parser")
             );
         }
@@ -18657,6 +19835,7 @@ fn push_agent_session(app: &mut App, id: &str) -> String {
             label: "Claude".to_string(),
             tmux_window: "claude".to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -18719,12 +19898,12 @@ fn next_todo_index_skips_each_exclusion() {
 
     // Done.
     let mut todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
-    todos[0].done = true;
+    todos[0].work.status = crate::db::todos::TodoStatus::Completed;
     assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
 
     // In progress.
     let mut todos = vec![prio_todo("a", High, 0), prio_todo("b", High, 1)];
-    todos[0].in_progress = true;
+    todos[0].work.status = crate::db::todos::TodoStatus::InProgress;
     assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
 
     // Explicitly skipped by a previous "skip to next".
@@ -18740,7 +19919,7 @@ fn next_todo_index_skips_each_exclusion() {
         prio_todo("a", High, 0),
         prio_todo("b", crate::db::todos::TodoPriority::Low, 1),
     ];
-    todos[0].spawned_session_id = Some("sess-1".to_string());
+    todos[0].work.agent_session_id = Some("sess-1".to_string());
     assert_eq!(App::next_todo_index(&todos, &[]), Some(NextTodo::Ready(1)));
 
     // Same for a TODO planned into its own feature: the work moved elsewhere.
@@ -18760,8 +19939,8 @@ fn next_todo_index_falls_back_to_a_started_todo() {
     // offered for the caller to ask about rather than silently reported as
     // "nothing to do".
     let mut todos = vec![prio_todo("a", Med, 0), prio_todo("b", High, 1)];
-    todos[0].spawned_session_id = Some("sess-1".to_string());
-    todos[1].spawned_session_id = Some("sess-2".to_string());
+    todos[0].work.agent_session_id = Some("sess-1".to_string());
+    todos[1].work.agent_session_id = Some("sess-2".to_string());
     assert_eq!(
         App::next_todo_index(&todos, &[]),
         Some(NextTodo::Started(1))
@@ -18779,8 +19958,8 @@ fn next_todo_index_returns_nothing_when_there_is_nothing() {
         prio_todo("b", High, 1),
         prio_todo("c", High, 2),
     ];
-    todos[0].done = true;
-    todos[1].in_progress = true;
+    todos[0].work.status = crate::db::todos::TodoStatus::Completed;
+    todos[1].work.status = crate::db::todos::TodoStatus::InProgress;
     assert_eq!(App::next_todo_index(&todos, &["c".to_string()]), None);
 }
 
@@ -18793,7 +19972,7 @@ fn no_next_todo_message_names_the_reason() {
     );
 
     let mut done = vec![prio_todo("a", High, 0)];
-    done[0].done = true;
+    done[0].work.status = crate::db::todos::TodoStatus::Completed;
     assert_eq!(
         App::no_next_todo_message(&done, &[]),
         "No TODOs left to implement"
@@ -18802,7 +19981,7 @@ fn no_next_todo_message_names_the_reason() {
     // Open items exist, they are just all underway — a different problem with a
     // different fix, so it gets different words.
     let mut busy = vec![prio_todo("a", High, 0)];
-    busy[0].in_progress = true;
+    busy[0].work.status = crate::db::todos::TodoStatus::InProgress;
     assert_eq!(
         App::no_next_todo_message(&busy, &[]),
         "All remaining TODOs are already in progress"
@@ -18820,8 +19999,8 @@ fn implement_next_toasts_when_nothing_is_eligible() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
         let mut todo = sample_todo("a", false);
-        todo.in_progress = true;
-        state.todos = vec![todo];
+        todo.work.status = crate::db::todos::TodoStatus::InProgress;
+        state.panes[0].todos = vec![todo];
     }
     app.implement_next_todo_in_overlay().unwrap();
     // Still the list, and the refusal says why rather than doing nothing.
@@ -18843,8 +20022,8 @@ fn implement_next_prompts_when_the_only_candidate_is_started() {
     let session_id = push_agent_session(&mut app, "sess-1");
     if let AppMode::Todos(state) = &mut app.mode {
         let mut todo = sample_todo("a", false);
-        todo.spawned_session_id = Some(session_id);
-        state.todos = vec![todo];
+        todo.work.agent_session_id = Some(session_id);
+        state.panes[0].todos = vec![todo];
     }
 
     app.implement_next_todo_in_overlay().unwrap();
@@ -18860,7 +20039,7 @@ fn implement_next_prompts_when_the_only_candidate_is_started() {
     // Esc restores exactly what the key was pressed in.
     app.cancel_todo_implement_choice();
     match &app.mode {
-        AppMode::Todos(state) => assert_eq!(state.todos.len(), 1),
+        AppMode::Todos(state) => assert_eq!(state.panes[0].todos.len(), 1),
         _ => panic!("expected the list back"),
     }
 }
@@ -18871,10 +20050,10 @@ fn implement_next_skip_moves_on_to_the_next_todo() {
     let session_id = push_agent_session(&mut app, "sess-1");
     if let AppMode::Todos(state) = &mut app.mode {
         let mut first = sample_todo("a", false);
-        first.spawned_session_id = Some(session_id.clone());
+        first.work.agent_session_id = Some(session_id.clone());
         let mut second = sample_todo("b", false);
-        second.spawned_session_id = Some(session_id);
-        state.todos = vec![first, second];
+        second.work.agent_session_id = Some(session_id);
+        state.panes[0].todos = vec![first, second];
     }
 
     app.implement_next_todo_in_overlay().unwrap();
@@ -18911,7 +20090,7 @@ fn implement_next_skip_moves_on_to_the_next_todo() {
 }
 
 #[test]
-fn implement_next_clears_the_flag_only_where_the_session_is_gone() {
+fn implement_next_clears_only_the_missing_session_association() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
         // Marked underway by an earlier launch whose session has since been
@@ -18919,22 +20098,25 @@ fn implement_next_clears_the_flag_only_where_the_session_is_gone() {
         // on to spawn: what is under test is the reconciliation, which runs
         // over the whole list rather than just the candidate.
         let mut stale = sample_todo("a", true);
-        stale.spawned_session_id = Some("sess-gone".to_string());
-        stale.in_progress = true;
+        stale.work.agent_session_id = Some("sess-gone".to_string());
+        stale.work.status = crate::db::todos::TodoStatus::InProgress;
         // Marked underway by hand: no session to lose, so nothing to clear.
         let mut manual = sample_todo("b", false);
-        manual.in_progress = true;
-        state.todos = vec![stale, manual];
+        manual.work.status = crate::db::todos::TodoStatus::InProgress;
+        state.panes[0].todos = vec![stale, manual];
     }
 
     app.implement_next_todo_in_overlay().unwrap();
 
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.todos[0].spawned_session_id.is_none());
-            assert!(!state.todos[0].in_progress, "a dead link stops counting");
+            assert!(state.panes[0].todos[0].work.agent_session_id.is_none());
             assert!(
-                state.todos[1].in_progress,
+                state.panes[0].todos[0].work.status.is_in_progress(),
+                "a dead link does not make the work unstarted"
+            );
+            assert!(
+                state.panes[0].todos[1].work.status.is_in_progress(),
                 "a hand-marked TODO has no link to lose and is left alone"
             );
         }
@@ -18955,7 +20137,7 @@ fn implement_next_jump_clears_a_dead_feature_link_and_frees_the_todo() {
         // Planned into a feature that has since been deleted, and with no
         // session of its own to fall back to.
         todo.linked_feature_id = Some("feat-that-is-gone".to_string());
-        state.todos = vec![todo];
+        state.panes[0].todos = vec![todo];
     }
 
     app.implement_next_todo_in_overlay().unwrap();
@@ -18976,11 +20158,11 @@ fn implement_next_jump_clears_a_dead_feature_link_and_frees_the_todo() {
     match &app.mode {
         AppMode::Todos(state) => {
             assert!(
-                state.todos[0].linked_feature_id.is_none(),
+                state.panes[0].todos[0].linked_feature_id.is_none(),
                 "the dead link is dropped by the failed jump"
             );
             assert_eq!(
-                App::next_todo_index(&state.todos, &[]),
+                App::next_todo_index(&state.panes[0].todos, &[]),
                 Some(NextTodo::Ready(0)),
                 "so the next scan starts the TODO instead of re-offering it"
             );
@@ -19019,67 +20201,1377 @@ fn implement_next_is_inert_off_a_todos_session_row() {
 }
 
 #[test]
-fn completing_a_todo_ends_its_in_progress_state() {
+fn manual_toggle_advances_in_progress_to_completed() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
         let mut todo = sample_todo("a", false);
-        todo.in_progress = true;
-        state.todos = vec![todo];
+        todo.work.status = crate::db::todos::TodoStatus::InProgress;
+        state.panes[0].todos = vec![todo];
     }
     app.todos_toggle_done().unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.todos[0].done);
-            assert!(!state.todos[0].in_progress);
+            assert!(state.panes[0].todos[0].work.status.is_completed());
         }
         _ => panic!("expected Todos overlay"),
     }
 }
 
 #[test]
-fn toggling_in_progress_by_hand_uncompletes_the_todo() {
+fn manual_toggle_cycles_completed_to_not_started_to_in_progress() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
-        state.todos = vec![sample_todo("a", true)];
+        state.panes[0].todos = vec![sample_todo("a", true)];
     }
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('i'))).unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.todos[0].in_progress);
-            // The two states contradict each other; the one just asked for wins.
-            assert!(!state.todos[0].done);
+            assert!(state.panes[0].todos[0].work.status.is_not_started());
         }
         _ => panic!("expected Todos overlay"),
     }
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('i'))).unwrap();
     match &app.mode {
-        AppMode::Todos(state) => assert!(!state.todos[0].in_progress),
+        AppMode::Todos(state) => {
+            assert!(state.panes[0].todos[0].work.status.is_in_progress())
+        }
         _ => panic!("expected Todos overlay"),
     }
 }
 
 #[test]
-fn todos_mark_started_updates_in_memory() {
+fn todos_mark_in_progress_updates_in_memory() {
     let mut app = todos_app();
     if let AppMode::Todos(state) = &mut app.mode {
-        state.todos = vec![sample_todo("a", false), sample_todo("b", false)];
+        state.panes[0].todos = vec![sample_todo("a", false), sample_todo("b", false)];
     }
-    app.todos_mark_started("todo-b", "sess-42").unwrap();
+    app.todos_mark_in_progress("todo-b", Some("sess-42"))
+        .unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
-            assert!(state.todos[0].spawned_session_id.is_none());
-            assert!(!state.todos[0].in_progress);
+            assert!(state.panes[0].todos[0].work.agent_session_id.is_none());
+            assert!(state.panes[0].todos[0].work.status.is_not_started());
             assert_eq!(
-                state.todos[1].spawned_session_id.as_deref(),
+                state.panes[0].todos[1].work.agent_session_id.as_deref(),
                 Some("sess-42")
             );
             // The session link and the in-progress flag are written together:
             // the flag is what keeps "implement next" off this item.
-            assert!(state.todos[1].in_progress);
+            assert!(state.panes[0].todos[1].work.status.is_in_progress());
         }
         _ => panic!("expected Todos overlay"),
     }
+}
+
+#[test]
+fn mark_in_progress_updates_every_in_memory_scope_without_moving_the_cursor() {
+    let mut app = todos_app();
+    let mut worktree = sample_todo("worktree", false);
+    let mut project = sample_todo("project", false);
+    let mut global = sample_todo("global", false);
+    worktree.id = "todo-worktree".to_string();
+    project.id = "todo-project".to_string();
+    global.id = "todo-global".to_string();
+    app.mode = AppMode::Todos(three_pane_view(vec![worktree], vec![project], vec![global]));
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.focus = Some(2);
+        state.panes[0].scroll_offset = 3;
+        state.panes[1].scroll_offset = 4;
+        state.panes[2].scroll_offset = 5;
+    }
+
+    for id in ["todo-worktree", "todo-project", "todo-global"] {
+        app.todos_mark_in_progress(id, None).unwrap();
+    }
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(
+                state
+                    .panes
+                    .iter()
+                    .all(|pane| pane.todos[0].work.status.is_in_progress())
+            );
+            assert_eq!(state.focus, Some(2));
+            assert_eq!(
+                state
+                    .panes
+                    .iter()
+                    .map(|pane| (pane.selected, pane.scroll_offset))
+                    .collect::<Vec<_>>(),
+                vec![(0, 3), (0, 4), (0, 5)]
+            );
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn mark_in_progress_persists_all_scopes_and_is_idempotent() {
+    use crate::db::todos::{TodoPriority, TodoScope, TodoStatus};
+
+    let mut app = todos_app();
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+
+    let scopes = [
+        worktree_scope("proj-1", "/tmp/test-workdir"),
+        test_project_scope("proj-1"),
+        TodoScope::Global,
+    ];
+    let mut originals = Vec::new();
+    for (index, scope) in scopes.iter().enumerate() {
+        let list = app
+            .db
+            .as_ref()
+            .unwrap()
+            .create_todo_list(scope, (index < 2).then_some("feat-1"))
+            .unwrap();
+        let mut todo = app
+            .db
+            .as_ref()
+            .unwrap()
+            .add_todo(
+                &list.id,
+                &format!("scope {index}"),
+                Some("keep these notes"),
+                TodoPriority::High,
+            )
+            .unwrap();
+        todo.sort_order = 40 + index as i64;
+        todo.work.agent_session_id = Some(format!("existing-session-{index}"));
+        todo.linked_feature_id = Some(format!("linked-feature-{index}"));
+        app.db.as_ref().unwrap().update_todo(&todo).unwrap();
+        originals.push(todo);
+    }
+    app.mode = AppMode::Normal;
+
+    for todo in &originals {
+        app.todos_mark_in_progress(&todo.id, None).unwrap();
+        app.todos_mark_in_progress(&todo.id, None).unwrap();
+    }
+
+    for original in originals {
+        let loaded = app
+            .db
+            .as_ref()
+            .unwrap()
+            .find_todo_by_id(&original.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.work.status, TodoStatus::InProgress);
+        assert_eq!(loaded.work.agent_session_id, original.work.agent_session_id);
+        assert_eq!(loaded.list_id, original.list_id);
+        assert_eq!(loaded.title, original.title);
+        assert_eq!(loaded.body, original.body);
+        assert_eq!(loaded.priority, original.priority);
+        assert_eq!(loaded.sort_order, original.sort_order);
+        assert_eq!(loaded.linked_feature_id, original.linked_feature_id);
+    }
+}
+
+#[test]
+fn todo_launch_request_reserves_before_a_session_exists() {
+    let mut app = todos_app();
+    let todo = sample_todo("a", false);
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].todos = vec![todo.clone()];
+    }
+
+    assert!(app.todos_reserve_launch(&todo).unwrap());
+    match &app.mode {
+        AppMode::Todos(state) => {
+            let work = &state.panes[0].todos[0].work;
+            assert!(work.status.is_in_progress());
+            assert!(work.agent_session_id.is_none());
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn accepted_plan_continues_from_the_in_progress_state_created_at_plan_start() {
+    let mut app = todos_app();
+    let mut todo = sample_todo("planned", false);
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].todos = vec![todo.clone()];
+    }
+
+    assert_eq!(
+        app.todos_prepare_planned_launch(&todo).unwrap(),
+        Some(false)
+    );
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.panes[0].todos[0].work.status.is_in_progress());
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn accepted_older_plan_reserves_not_started_work_but_blocks_completed_work() {
+    let mut app = todos_app();
+    let not_started = sample_todo("not-started", false);
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].todos = vec![not_started.clone()];
+    }
+    assert_eq!(
+        app.todos_prepare_planned_launch(&not_started).unwrap(),
+        Some(true),
+        "a legacy or externally reset plan needs a rollback-capable reservation"
+    );
+
+    let mut completed = sample_todo("completed", true);
+    completed.work.status = crate::db::todos::TodoStatus::Completed;
+    assert_eq!(app.todos_prepare_planned_launch(&completed).unwrap(), None);
+}
+
+#[test]
+fn ordinary_duplicate_spawn_for_in_progress_todo_is_blocked_without_side_effects() {
+    let mut app = todos_app();
+    let mut todo = sample_todo("a", false);
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
+    let before = todo.work.clone();
+
+    app.spawn_todo_agent(0, 0, &todo, false).unwrap();
+
+    assert_eq!(todo.work, before);
+    assert!(app.toasts.iter().any(|toast| {
+        toast.message.contains("already in progress")
+            && toast.message.contains("another agent was not launched")
+    }));
+    assert!(app.store.projects[0].features[0].sessions.is_empty());
+}
+
+#[test]
+fn referenced_todo_completion_updates_db_and_retains_reference() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db = crate::db::AmfDb::open(tmp.path()).unwrap();
+    let list = db
+        .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+        .unwrap();
+    let todo = db
+        .add_todo(&list.id, "finish sidebar", None, TodoPriority::High)
+        .unwrap();
+    app.db = Some(db);
+    app.store.projects[0].features[0]
+        .sessions
+        .push(FeatureSession {
+            id: "session-todo".into(),
+            kind: SessionKind::Claude,
+            label: "Agent".into(),
+            tmux_window: "claude".into(),
+            claude_session_id: None,
+            todo_reference: Some(TodoSessionReference {
+                todo_id: todo.id.clone(),
+                launched_from_todo_menu: true,
+            }),
+            token_usage_source: None,
+            token_usage_source_match: None,
+            created_at: Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+            token_usage: None,
+        });
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".into(),
+        "my-feat".into(),
+        "amf-my-feat".into(),
+        "claude".into(),
+        "Agent".into(),
+        SessionKind::Claude,
+        VibeMode::default(),
+        false,
+    ));
+    app.request_todo_reference_completion();
+    app.confirm_todo_reference_completion().unwrap();
+
+    let loaded = app
+        .db
+        .as_ref()
+        .unwrap()
+        .find_todo_by_id(&todo.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.work.status, TodoStatus::Completed);
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    assert!(
+        app.store.projects[0].features[0].sessions[0]
+            .todo_reference
+            .is_some()
+    );
+    // The sidebar text is served from a cache refreshed on completion, not
+    // re-resolved from SQLite per frame.
+    let cached = app
+        .active_todos_sidebar_cache
+        .get("session-todo")
+        .expect("completion refreshes this session's active TODO cache");
+    assert!(cached.contains("finish sidebar"));
+    assert!(cached.ends_with("State: completed"));
+}
+
+#[test]
+fn request_todo_reference_completion_without_db_warns_instead_of_opening_dialog() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store.projects[0].features[0]
+        .sessions
+        .push(FeatureSession {
+            id: "session-todo".into(),
+            kind: SessionKind::Claude,
+            label: "Agent".into(),
+            tmux_window: "claude".into(),
+            claude_session_id: None,
+            todo_reference: Some(TodoSessionReference {
+                todo_id: "todo-1".into(),
+                launched_from_todo_menu: true,
+            }),
+            token_usage_source: None,
+            token_usage_source_match: None,
+            created_at: Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+            token_usage: None,
+        });
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".into(),
+        "my-feat".into(),
+        "amf-my-feat".into(),
+        "claude".into(),
+        "Agent".into(),
+        SessionKind::Claude,
+        VibeMode::default(),
+        false,
+    ));
+
+    app.request_todo_reference_completion();
+
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|toast| toast.message.contains("persistence is unavailable"))
+    );
+}
+
+#[test]
+fn failed_agent_session_startup_and_prompt_setup_both_roll_back_todo_reservation() {
+    let mut app = todos_app();
+    let todo = sample_todo("a", false);
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.panes[0].todos = vec![todo.clone()];
+    }
+
+    // Agent-creation failure path.
+    assert!(app.todos_reserve_launch(&todo).unwrap());
+    app.todos_rollback_launch(&todo.id).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(
+                state.panes[0].todos[0].work,
+                crate::db::todos::TodoWorkState::default()
+            )
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+
+    // Prompt-delivery failure path uses the same centralized rollback.
+    let current = match &app.mode {
+        AppMode::Todos(state) => state.panes[0].todos[0].clone(),
+        _ => unreachable!(),
+    };
+    assert!(app.todos_reserve_launch(&current).unwrap());
+    app.todos_mark_in_progress(&todo.id, Some("session-created"))
+        .unwrap();
+    app.todos_rollback_launch(&todo.id).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(
+                state.panes[0].todos[0].work,
+                crate::db::todos::TodoWorkState::default()
+            )
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+/// The scenario a plan interview hits between generating a plan and the user
+/// accepting it: no `Todos` overlay is open (so there is no in-memory pane to
+/// consult) and the TODO was moved to a different list in the meantime. The
+/// lookup must still find it by id alone rather than the stale list it
+/// started in — see `App::find_todo_by_id` and `start_todo_plan_session`.
+#[test]
+fn find_todo_by_id_resolves_after_a_move_when_no_overlay_is_open() {
+    let mut app = todos_app();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(tmp.path()).unwrap());
+
+    let (dst_id, todo_id) = {
+        let db = app.db.as_ref().unwrap();
+        let src = db
+            .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+            .unwrap();
+        let dst = db
+            .create_todo_list(&crate::db::todos::TodoScope::Global, None)
+            .unwrap();
+        let todo = db
+            .add_todo(
+                &src.id,
+                "port me",
+                None,
+                crate::db::todos::TodoPriority::Med,
+            )
+            .unwrap();
+        db.move_todo(&todo.id, &dst.id).unwrap();
+        (dst.id, todo.id)
+    };
+    // Whatever list the caller remembers (or none at all) must not matter.
+    app.mode = AppMode::Normal;
+
+    let found = app
+        .find_todo_by_id(&todo_id)
+        .expect("resolved via the db by id alone, without a stale list_id");
+    assert_eq!(found.list_id, dst_id);
+}
+
+#[test]
+fn reconciliation_clears_missing_session_but_keeps_in_progress_status() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db = crate::db::AmfDb::open(tmp.path()).unwrap();
+    let list = db
+        .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+        .unwrap();
+    let mut todo = db
+        .add_todo(&list.id, "a", None, crate::db::todos::TodoPriority::Med)
+        .unwrap();
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
+    todo.work.agent_session_id = Some("missing-session".to_string());
+    db.update_todo(&todo).unwrap();
+
+    let mut app = todos_app();
+    app.db = Some(db);
+    app.reconcile_todo_agent_associations().unwrap();
+
+    let loaded = app.db.as_ref().unwrap().todos(&list.id).unwrap();
+    assert!(loaded[0].work.status.is_in_progress());
+    assert!(loaded[0].work.agent_session_id.is_none());
+}
+
+// ----- scoped TODO lists ---------------------------------------------------
+
+fn worktree_scope(project_id: &str, workdir: &str) -> crate::db::todos::TodoScope {
+    crate::db::todos::TodoScope::Worktree {
+        project_id: project_id.to_string(),
+        workdir: workdir.to_string(),
+    }
+}
+
+fn todo_pane(
+    kind: crate::app::TodoPaneKind,
+    scope: crate::db::todos::TodoScope,
+    todos: Vec<crate::db::todos::Todo>,
+) -> crate::app::TodoPane {
+    crate::app::TodoPane {
+        kind,
+        scope,
+        title: kind.label().to_string(),
+        list: None,
+        todos,
+        selected: 0,
+        scroll_offset: 0,
+    }
+}
+
+/// A three-pane overlay, which is the shape every cross-scope behaviour is
+/// about.
+fn three_pane_view(
+    worktree: Vec<crate::db::todos::Todo>,
+    project: Vec<crate::db::todos::Todo>,
+    global: Vec<crate::db::todos::Todo>,
+) -> TodoViewState {
+    use crate::app::TodoPaneKind;
+    let mut state = todo_view_with(vec![]);
+    state.panes = vec![
+        todo_pane(
+            TodoPaneKind::Worktree,
+            worktree_scope("proj-1", "/tmp/test-workdir"),
+            worktree,
+        ),
+        todo_pane(TodoPaneKind::Project, test_project_scope("proj-1"), project),
+        todo_pane(
+            TodoPaneKind::Global,
+            crate::db::todos::TodoScope::Global,
+            global,
+        ),
+    ];
+    state.focus = Some(0);
+    state
+}
+
+/// Turn the fixture's single feature into a real worktree, so it has a
+/// worktree list of its own.
+fn make_feature_a_worktree(app: &mut App) {
+    app.store.projects[0].features[0].is_worktree = true;
+}
+
+fn prioritised(title: &str, priority: crate::db::todos::TodoPriority) -> crate::db::todos::Todo {
+    let mut todo = sample_todo(title, false);
+    todo.priority = priority;
+    todo
+}
+
+/// Priority is the first question, scope only the tie-break: a low-priority
+/// worktree item does not beat a high-priority global one.
+#[test]
+fn next_todo_across_puts_priority_before_scope() {
+    use crate::app::todos::NextTodo;
+    use crate::db::todos::TodoPriority;
+
+    let worktree = vec![prioritised("wt-low", TodoPriority::Low)];
+    let project = vec![prioritised("proj-med", TodoPriority::Med)];
+    let global = vec![prioritised("global-high", TodoPriority::High)];
+
+    assert_eq!(
+        App::next_todo_across(&[&worktree, &project, &global], &[]),
+        Some((2, NextTodo::Ready(0))),
+        "the High item wins even though it is in the widest scope"
+    );
+}
+
+/// At equal priority the narrower scope wins: worktree, then project, then
+/// global.
+#[test]
+fn next_todo_across_breaks_equal_priority_ties_worktree_first() {
+    use crate::app::todos::NextTodo;
+    use crate::db::todos::TodoPriority;
+
+    let worktree = vec![prioritised("wt", TodoPriority::Med)];
+    let project = vec![prioritised("proj", TodoPriority::Med)];
+    let global = vec![prioritised("global", TodoPriority::Med)];
+
+    assert_eq!(
+        App::next_todo_across(&[&worktree, &project, &global], &[]),
+        Some((0, NextTodo::Ready(0)))
+    );
+    // Drop the worktree list and the project one inherits the tie.
+    assert_eq!(
+        App::next_todo_across(&[&[], &project, &global], &[]),
+        Some((1, NextTodo::Ready(0)))
+    );
+    assert_eq!(
+        App::next_todo_across(&[&[], &[], &global], &[]),
+        Some((2, NextTodo::Ready(0)))
+    );
+}
+
+/// Manual order still breaks ties *within* a list; scope only decides between
+/// lists.
+#[test]
+fn next_todo_across_keeps_manual_order_within_a_list() {
+    use crate::app::todos::NextTodo;
+    let project = vec![sample_todo("first", false), sample_todo("second", false)];
+    assert_eq!(
+        App::next_todo_across(&[&[], &project, &[]], &[]),
+        Some((1, NextTodo::Ready(0)))
+    );
+}
+
+/// A started item in a *narrower* scope is still only held in reserve: an
+/// unstarted item anywhere — even in the global list — outranks it.
+#[test]
+fn next_todo_across_holds_started_items_in_reserve_across_scopes() {
+    use crate::app::todos::NextTodo;
+    use crate::db::todos::TodoPriority;
+
+    let mut started = prioritised("wt-high-started", TodoPriority::High);
+    started.work.agent_session_id = Some("sess-1".to_string());
+    let worktree = vec![started];
+    let global = vec![prioritised("global-low", TodoPriority::Low)];
+
+    assert_eq!(
+        App::next_todo_across(&[&worktree, &[], &global], &[]),
+        Some((2, NextTodo::Ready(0))),
+        "an unstarted low-priority global item beats a started high-priority worktree one"
+    );
+}
+
+/// …and it is returned, as `Started`, only once nothing unstarted remains in
+/// any visible scope.
+#[test]
+fn next_todo_across_returns_started_only_when_nothing_unstarted_remains_anywhere() {
+    use crate::app::todos::NextTodo;
+
+    let mut started = sample_todo("wt-started", false);
+    started.work.agent_session_id = Some("sess-1".to_string());
+    let worktree = vec![started];
+    let project = vec![sample_todo("proj-done", true)];
+    let mut busy = sample_todo("global-busy", false);
+    busy.work.status = crate::db::todos::TodoStatus::InProgress;
+    let global = vec![busy];
+
+    assert_eq!(
+        App::next_todo_across(&[&worktree, &project, &global], &[]),
+        Some((0, NextTodo::Started(0))),
+        "done and in-progress items are passed over entirely, leaving the reserve"
+    );
+}
+
+#[test]
+fn next_todo_across_returns_nothing_when_every_list_is_empty() {
+    assert_eq!(App::next_todo_across(&[&[], &[], &[]], &[]), None);
+}
+
+/// The refusal has to count every visible list, not just one: "nothing to do"
+/// would be wrong when the other panes are full of in-progress work.
+#[test]
+fn no_next_todo_message_across_counts_every_list() {
+    let mut busy = sample_todo("b", false);
+    busy.work.status = crate::db::todos::TodoStatus::InProgress;
+    let project = vec![busy];
+
+    assert_eq!(
+        App::no_next_todo_message_across(&[&[], &[], &[]], &[]),
+        "No TODOs left to implement"
+    );
+    assert_eq!(
+        App::no_next_todo_message_across(&[&[], &project, &[]], &[]),
+        "All remaining TODOs are already in progress"
+    );
+    assert_eq!(
+        App::no_next_todo_message_across(&[&[], &project, &[]], &["a".to_string()]),
+        "No other TODOs left to implement"
+    );
+}
+
+// ----- which scopes are visible -------------------------------------------
+
+#[test]
+fn todo_scope_visibility_is_independent_and_worktree_is_always_visible() {
+    use crate::app::TodoPaneKind;
+    let mut app = todos_app();
+    make_feature_a_worktree(&mut app);
+
+    let all = app.visible_todo_scopes(0, 0);
+    assert_eq!(
+        all.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+        vec![
+            TodoPaneKind::Worktree,
+            TodoPaneKind::Project,
+            TodoPaneKind::Global
+        ]
+    );
+    app.todo_project_visible = false;
+    assert_eq!(
+        app.visible_todo_scopes(0, 0)
+            .iter()
+            .map(|(kind, _)| *kind)
+            .collect::<Vec<_>>(),
+        vec![TodoPaneKind::Worktree, TodoPaneKind::Global]
+    );
+    app.todo_global_visible = false;
+    assert_eq!(
+        app.visible_todo_scopes(0, 0)
+            .iter()
+            .map(|(kind, _)| *kind)
+            .collect::<Vec<_>>(),
+        vec![TodoPaneKind::Worktree]
+    );
+
+    let worktree = worktree_scope("proj-1", "/tmp/test-workdir");
+    assert!(app.toggle_todo_scope_visibility(&worktree));
+    assert!(app.todo_scope_visible(&worktree));
+    assert!(!app.todo_project_visible);
+    assert!(!app.todo_global_visible);
+}
+
+// ----- pane focus ----------------------------------------------------------
+
+#[test]
+fn tab_moves_focus_between_the_visible_panes() {
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(vec![], vec![], vec![]));
+
+    let focus = |app: &App| match &app.mode {
+        AppMode::Todos(state) => state.focus,
+        _ => panic!("expected Todos overlay"),
+    };
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
+    assert_eq!(focus(&app), Some(1));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
+    assert_eq!(focus(&app), Some(2));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
+    assert_eq!(focus(&app), Some(0), "focus wraps");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::BackTab)).unwrap();
+    assert_eq!(focus(&app), Some(2), "Shift+Tab wraps the other way");
+}
+
+#[test]
+fn navigation_skips_hidden_scopes() {
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(vec![], vec![], vec![]));
+    app.todo_project_visible = false;
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(2)));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(0)));
+}
+
+#[test]
+fn hiding_the_focused_scope_advances_and_wraps() {
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(vec![], vec![], vec![]));
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.focus = Some(1);
+    }
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(2)));
+
+    // Restore project without moving focus, then hide global: the search wraps
+    // from global back to worktree.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(0)));
+}
+
+#[test]
+fn repo_root_view_supports_no_visible_actionable_pane_and_recovers() {
+    let mut app = todos_app();
+    let mut state = todo_view_with(vec![]);
+    state.panes.push(todo_pane(
+        crate::app::TodoPaneKind::Global,
+        crate::db::todos::TodoScope::Global,
+        vec![],
+    ));
+    app.mode = AppMode::Todos(state);
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(1)));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(0)));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus.is_none()));
+
+    app.todos_select_next();
+    app.todos_begin_add();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.editor.is_none()));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(state) if state.focus == Some(1)));
+}
+
+#[test]
+fn visibility_keys_replace_backslash_without_losing_priority_or_launch() {
+    use crate::db::todos::TodoPriority;
+
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(
+        vec![sample_todo("work", false)],
+        vec![],
+        vec![],
+    ));
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('\\'))).unwrap();
+    assert!(app.todo_project_visible && app.todo_global_visible);
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('g'))).unwrap();
+    assert!(!app.todo_project_visible && !app.todo_global_visible);
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('P'))).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::Todos(state) if state.panes[0].todos[0].priority == TodoPriority::Low
+    ));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::Todos(state) if state.launch.is_some()
+    ));
+}
+
+#[test]
+fn visibility_is_shared_across_views_and_survives_reopening() {
+    let mut app = todos_app();
+    let mut second = app.store.projects[0].features[0].clone();
+    second.id = "feat-2".to_string();
+    second.name = "other-feat".to_string();
+    second.workdir = PathBuf::from("/tmp/other-workdir");
+    app.store.projects[0].features.push(second);
+
+    app.open_todos_view(0, 0).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('p'))).unwrap();
+    app.close_todos_view();
+    app.open_todos_view(0, 0).unwrap();
+    assert!(!app.todo_project_visible);
+    assert!(app.todo_global_visible);
+
+    app.close_todos_view();
+    app.open_todos_view(0, 1).unwrap();
+    assert!(
+        !app.todo_project_visible,
+        "the second TODO view shares state"
+    );
+    assert!(app.todo_global_visible);
+}
+
+#[test]
+fn new_app_starts_with_both_optional_scopes_visible() {
+    let mut first = todos_app();
+    first.todo_project_visible = false;
+    first.todo_global_visible = false;
+
+    let restarted = todos_app();
+    assert!(restarted.todo_project_visible);
+    assert!(restarted.todo_global_visible);
+}
+
+#[test]
+fn hidden_pane_state_is_restored_unchanged() {
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(
+        vec![],
+        vec![sample_todo("p1", false), sample_todo("p2", false)],
+        vec![],
+    ));
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.focus = Some(1);
+        state.panes[1].selected = 1;
+        state.panes[1].scroll_offset = 7;
+    }
+    app.todos_toggle_project_visibility();
+    app.todos_toggle_project_visibility();
+    assert!(matches!(
+        &app.mode,
+        AppMode::Todos(state)
+            if state.panes[1].selected == 1
+                && state.panes[1].scroll_offset == 7
+                && state.panes[1].todos.len() == 2
+    ));
+}
+
+#[test]
+fn hidden_scopes_are_excluded_from_implement_next_priority_resolution() {
+    use crate::db::todos::TodoPriority;
+
+    let mut app = todos_app();
+    let session_id = push_agent_session(&mut app, "sess-visible");
+    let mut project = prioritised("project-visible", TodoPriority::Med);
+    project.work.agent_session_id = Some(session_id.clone());
+    let mut global = prioritised("global-hidden", TodoPriority::High);
+    global.work.agent_session_id = Some(session_id);
+    app.mode = AppMode::Todos(three_pane_view(vec![], vec![project], vec![global]));
+    app.todo_global_visible = false;
+
+    app.implement_next_todo_in_overlay().unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::TodoImplementChoice(state) if state.todo_id == "todo-project-visible"
+    ));
+}
+
+#[test]
+fn hidden_scopes_are_excluded_from_cross_pane_move_targets() {
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(
+        vec![sample_todo("move-me", false)],
+        vec![],
+        vec![],
+    ));
+    app.todo_project_visible = false;
+
+    app.todos_begin_scope_move(false);
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(
+            state
+                .scope_move
+                .as_ref()
+                .unwrap()
+                .targets
+                .iter()
+                .map(|(_, index)| *index)
+                .collect::<Vec<_>>(),
+            vec![2]
+        ),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+/// Each pane keeps its own cursor: moving focus away and back lands where it
+/// was left.
+#[test]
+fn each_pane_keeps_its_own_cursor() {
+    let mut app = todos_app();
+    app.mode = AppMode::Todos(three_pane_view(
+        vec![sample_todo("w1", false), sample_todo("w2", false)],
+        vec![sample_todo("p1", false), sample_todo("p2", false)],
+        vec![],
+    ));
+
+    app.todos_select_next(); // worktree pane → index 1
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Tab)).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(s) if s.panes[1].selected == 0));
+    app.todos_select_next(); // project pane → index 1
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::BackTab)).unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(state.focus, Some(0));
+            assert_eq!(state.panes[0].selected, 1, "the worktree cursor was kept");
+            assert_eq!(state.panes[1].selected, 1);
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+// ----- move / copy between scopes -----------------------------------------
+
+/// A move re-files the same work, so whatever was started for it comes along.
+#[test]
+fn moving_a_todo_to_another_scope_carries_its_links() {
+    let mut app = todos_app();
+    let mut todo = sample_todo("port me", false);
+    todo.work.agent_session_id = Some("sess-1".to_string());
+    todo.linked_feature_id = Some("feat-planned".to_string());
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
+    app.mode = AppMode::Todos(three_pane_view(vec![todo], vec![], vec![]));
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('M'))).unwrap();
+    // The chooser offers the two panes the item is *not* in.
+    match &app.mode {
+        AppMode::Todos(state) => {
+            let step = state.scope_move.as_ref().expect("chooser is open");
+            assert!(!step.copy);
+            assert_eq!(
+                step.targets.iter().map(|(_, i)| *i).collect::<Vec<_>>(),
+                vec![1, 2],
+                "the pane it already lives in is not a destination"
+            );
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.scope_move.is_none(), "the chooser closes");
+            assert!(state.panes[0].todos.is_empty(), "it left the worktree pane");
+            let moved = &state.panes[1].todos[0];
+            assert_eq!(moved.title, "port me");
+            assert_eq!(moved.work.agent_session_id.as_deref(), Some("sess-1"));
+            assert_eq!(moved.linked_feature_id.as_deref(), Some("feat-planned"));
+            assert!(moved.work.status.is_in_progress());
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+/// A copy is a second, unstarted item — two panes must never both claim the
+/// same session.
+#[test]
+fn copying_a_todo_to_another_scope_leaves_it_unstarted() {
+    let mut app = todos_app();
+    let mut todo = sample_todo("share me", false);
+    todo.work.agent_session_id = Some("sess-1".to_string());
+    todo.linked_feature_id = Some("feat-planned".to_string());
+    todo.work.status = crate::db::todos::TodoStatus::InProgress;
+    app.mode = AppMode::Todos(three_pane_view(vec![todo], vec![], vec![]));
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('C'))).unwrap();
+    // Second target: the global pane.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            let original = &state.panes[0].todos[0];
+            assert_eq!(original.work.agent_session_id.as_deref(), Some("sess-1"));
+            assert!(
+                original.work.status.is_in_progress(),
+                "the original is untouched"
+            );
+
+            assert!(
+                state.panes[1].todos.is_empty(),
+                "the project pane is not a target here"
+            );
+            let copy = &state.panes[2].todos[0];
+            assert_eq!(copy.title, "share me");
+            assert_ne!(copy.id, original.id);
+            assert!(copy.work.agent_session_id.is_none());
+            assert!(copy.linked_feature_id.is_none());
+            assert!(copy.work.status.is_not_started());
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+/// The scope chooser is refused with a reason when there is nothing selected.
+#[test]
+fn move_with_nothing_selected_says_so() {
+    let mut app = todos_app();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('M'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(s) if s.scope_move.is_none()));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.message.contains("No TODO selected")),
+        "got {:?}",
+        app.toasts.iter().map(|t| &t.message).collect::<Vec<_>>()
+    );
+}
+
+// ----- quick-capture target ------------------------------------------------
+
+/// Quick capture writes to the list of the checkout the session is in.
+#[test]
+fn quick_capture_targets_the_features_own_worktree_list() {
+    let mut app = todos_app();
+    make_feature_a_worktree(&mut app);
+
+    let scope = app.default_todo_scope(0, 0).unwrap();
+    assert_eq!(
+        scope,
+        worktree_scope("proj-1", "/tmp/test-workdir"),
+        "the workdir is the key, not the feature id"
+    );
+    assert_eq!(app.todo_scope_label(&scope), "Worktree · my-feat");
+}
+
+/// A feature sitting on the repo root has no worktree list, so the note falls
+/// back to the project's.
+#[test]
+fn quick_capture_falls_back_to_the_project_list_at_the_repo_root() {
+    let app = todos_app();
+    assert!(!app.store.projects[0].features[0].is_worktree);
+
+    let scope = app.default_todo_scope(0, 0).unwrap();
+    assert_eq!(scope, test_project_scope("proj-1"));
+    assert_eq!(app.todo_scope_label(&scope), "Project · my-project");
+}
+
+/// A trailing separator is the same checkout, not a second one.
+#[test]
+fn worktree_keys_ignore_a_trailing_separator() {
+    assert_eq!(
+        App::todo_workdir_key(std::path::Path::new("/tmp/wt/")),
+        App::todo_workdir_key(std::path::Path::new("/tmp/wt"))
+    );
+    // A root path is not trimmed away to nothing.
+    assert_eq!(App::todo_workdir_key(std::path::Path::new("/")), "/");
+}
+
+/// The overlay names the list it will write to, so the target is never a guess.
+#[test]
+fn quick_capture_overlay_names_its_target_list() {
+    let mut app = todos_app();
+    make_feature_a_worktree(&mut app);
+    app.mode = AppMode::Viewing(view_state_for("my-project", "my-feat"));
+
+    app.open_todo_quick_capture();
+
+    match &app.mode {
+        AppMode::TodoQuickCapture(state) => {
+            assert_eq!(state.list_label, "Worktree · my-feat");
+        }
+        _ => panic!("expected the quick-capture overlay"),
+    }
+}
+
+// ----- feature deletion disposition ---------------------------------------
+
+/// A worktree feature with unfinished TODOs, its list already in the DB.
+fn app_with_worktree_todos(unfinished: usize, done: usize) -> (App, String) {
+    let store = store_with_feature(ProjectStatus::Active);
+    let db_dir = TempDir::new().unwrap();
+    let db_path = db_dir.keep().join("amf.db");
+    let db = crate::db::AmfDb::open(&db_path).unwrap();
+    db.save_store(&store).unwrap();
+
+    let scope = worktree_scope("proj-1", "/tmp/test-workdir");
+    let list = db.create_todo_list(&scope, Some("feat-1")).unwrap();
+    for i in 0..unfinished {
+        db.add_todo(
+            &list.id,
+            &format!("open-{i}"),
+            None,
+            crate::db::todos::TodoPriority::Med,
+        )
+        .unwrap();
+    }
+    for i in 0..done {
+        let mut todo = db
+            .add_todo(
+                &list.id,
+                &format!("done-{i}"),
+                None,
+                crate::db::todos::TodoPriority::Med,
+            )
+            .unwrap();
+        todo.work.status = crate::db::todos::TodoStatus::Completed;
+        db.update_todo(&todo).unwrap();
+    }
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(db);
+    make_feature_a_worktree(&mut app);
+    (app, list.id)
+}
+
+/// Deleting the worktree deletes its list, so open work in it is asked about
+/// rather than decided on the user's behalf.
+#[test]
+fn deleting_a_feature_with_unfinished_worktree_todos_asks_first() {
+    let (mut app, _list_id) = app_with_worktree_todos(2, 1);
+
+    app.mode = AppMode::DeletingFeature("my-project".to_string(), "my-feat".to_string());
+    app.delete_feature().unwrap();
+
+    match &app.mode {
+        AppMode::TodoDeleteDisposition(state) => {
+            assert_eq!(state.unfinished, 2, "completed items are not at stake");
+            assert_eq!(state.feature_name, "my-feat");
+            assert_eq!(state.workdir, "/tmp/test-workdir");
+            assert_eq!(
+                state.choice(),
+                crate::app::TodoDeleteDisposition::MoveToProject,
+                "the least destructive option is the default"
+            );
+        }
+        _ => panic!("expected the disposition prompt"),
+    }
+    // Nothing has been touched yet.
+    assert!(app.store.find_project("my-project").is_some());
+    assert_eq!(app.store.projects[0].features.len(), 1);
+}
+
+/// A list with nothing open in it is not worth a prompt — there is no work to
+/// lose — and neither is a feature on the repo root, which has no worktree
+/// list at all.
+#[test]
+fn a_worktree_list_with_no_open_work_does_not_prompt() {
+    let (app, _) = app_with_worktree_todos(0, 3);
+    assert!(
+        app.pending_todo_disposition("my-project", "my-feat")
+            .is_none()
+    );
+
+    let (mut app, _) = app_with_worktree_todos(2, 0);
+    app.store.projects[0].features[0].is_worktree = false;
+    assert!(
+        app.pending_todo_disposition("my-project", "my-feat")
+            .is_none(),
+        "a repo-root feature has no worktree list to disposition"
+    );
+}
+
+#[test]
+fn disposition_move_to_project_relocates_the_open_todos_and_drops_the_list() {
+    use crate::app::TodoDeleteDisposition;
+    let (mut app, list_id) = app_with_worktree_todos(2, 1);
+    let state = app
+        .pending_todo_disposition("my-project", "my-feat")
+        .unwrap();
+
+    app.apply_todo_disposition(&state, TodoDeleteDisposition::MoveToProject)
+        .unwrap();
+
+    let db = app.db.as_ref().unwrap();
+    // The worktree list is gone, and with it the completed items.
+    assert!(db.todo_list_by_id(&list_id).unwrap().is_none());
+    assert!(
+        db.todo_list(&worktree_scope("proj-1", "/tmp/test-workdir"))
+            .unwrap()
+            .is_none()
+    );
+    // The open ones landed in the project list, which was created for them.
+    let project_list = db
+        .todo_list(&test_project_scope("proj-1"))
+        .unwrap()
+        .unwrap();
+    let titles: Vec<String> = db
+        .todos(&project_list.id)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.title)
+        .collect();
+    assert_eq!(titles, vec!["open-0", "open-1"]);
+}
+
+/// The project list created by the move must not be hosted on the feature that
+/// is about to be deleted: `handle_todos_host_feature_deleted` would then find
+/// its host gone and — with no features left — delete the very items the user
+/// just chose to keep.
+#[test]
+fn disposition_move_to_project_does_not_host_the_list_on_the_doomed_feature() {
+    use crate::app::TodoDeleteDisposition;
+    let (mut app, _) = app_with_worktree_todos(2, 0);
+    let state = app
+        .pending_todo_disposition("my-project", "my-feat")
+        .unwrap();
+
+    app.apply_todo_disposition(&state, TodoDeleteDisposition::MoveToProject)
+        .unwrap();
+
+    let project_list = {
+        let db = app.db.as_ref().unwrap();
+        let list = db
+            .todo_list(&test_project_scope("proj-1"))
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            list.feature_id.as_deref(),
+            Some("feat-1"),
+            "the list would be orphaned the moment the deletion completes"
+        );
+        list
+    };
+
+    // Now finish the deletion the way the real flow does.
+    app.store.projects[0].features.clear();
+    app.handle_todos_host_feature_deleted("my-project", "my-feat", Some("feat-1"));
+
+    let db = app.db.as_ref().unwrap();
+    let titles: Vec<String> = db
+        .todos(&project_list.id)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.title)
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["open-0", "open-1"],
+        "the moved items survive the deletion that prompted the move"
+    );
+}
+
+/// When the project has another feature, that one hosts the new project list —
+/// the host is a hint for later lookups, so a real one beats none.
+#[test]
+fn disposition_move_to_project_hosts_the_list_on_a_surviving_feature() {
+    use crate::app::TodoDeleteDisposition;
+    let (mut app, _) = app_with_worktree_todos(1, 0);
+    let mut survivor = app.store.projects[0].features[0].clone();
+    survivor.id = "feat-2".to_string();
+    survivor.name = "other-feat".to_string();
+    survivor.workdir = PathBuf::from("/tmp/other-workdir");
+    app.store.projects[0].features.push(survivor);
+
+    let state = app
+        .pending_todo_disposition("my-project", "my-feat")
+        .unwrap();
+    app.apply_todo_disposition(&state, TodoDeleteDisposition::MoveToProject)
+        .unwrap();
+
+    let list_id = {
+        let db = app.db.as_ref().unwrap();
+        let list = db
+            .todo_list(&test_project_scope("proj-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(list.feature_id.as_deref(), Some("feat-2"));
+        list.id
+    };
+
+    // The host outlives the deletion, so there is no re-home prompt.
+    app.store.projects[0].features.remove(0);
+    assert!(!app.handle_todos_host_feature_deleted("my-project", "my-feat", Some("feat-1")));
+    assert!(matches!(app.mode, AppMode::Normal));
+    let db = app.db.as_ref().unwrap();
+    assert_eq!(db.todos(&list_id).unwrap().len(), 1);
+}
+
+#[test]
+fn disposition_move_to_global_takes_them_out_of_the_project() {
+    use crate::app::TodoDeleteDisposition;
+    let (mut app, _) = app_with_worktree_todos(1, 0);
+    let state = app
+        .pending_todo_disposition("my-project", "my-feat")
+        .unwrap();
+
+    app.apply_todo_disposition(&state, TodoDeleteDisposition::MoveToGlobal)
+        .unwrap();
+
+    let db = app.db.as_ref().unwrap();
+    let global = db
+        .todo_list(&crate::db::todos::TodoScope::Global)
+        .unwrap()
+        .unwrap();
+    assert!(global.feature_id.is_none(), "the global list has no host");
+    assert_eq!(db.todos(&global.id).unwrap().len(), 1);
+    assert!(
+        db.todo_list(&test_project_scope("proj-1"))
+            .unwrap()
+            .is_none(),
+        "the project list is not created for a move that went past it"
+    );
+}
+
+#[test]
+fn disposition_delete_removes_the_list_and_its_items() {
+    use crate::app::TodoDeleteDisposition;
+    let (mut app, list_id) = app_with_worktree_todos(2, 1);
+    let state = app
+        .pending_todo_disposition("my-project", "my-feat")
+        .unwrap();
+
+    app.apply_todo_disposition(&state, TodoDeleteDisposition::Delete)
+        .unwrap();
+
+    let db = app.db.as_ref().unwrap();
+    assert!(db.todo_list_by_id(&list_id).unwrap().is_none());
+    assert!(db.todos(&list_id).unwrap().is_empty());
+    assert!(
+        db.todo_list(&test_project_scope("proj-1"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        db.todo_list(&crate::db::todos::TodoScope::Global)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// Cancel is the escape hatch on an irreversible action: nothing is deleted
+/// and the feature stays.
+#[test]
+fn disposition_cancel_leaves_the_feature_and_its_todos_intact() {
+    let (mut app, list_id) = app_with_worktree_todos(2, 0);
+    app.mode = AppMode::DeletingFeature("my-project".to_string(), "my-feat".to_string());
+    app.delete_feature().unwrap();
+    assert!(matches!(app.mode, AppMode::TodoDeleteDisposition(_)));
+
+    crate::handlers::handle_todo_delete_disposition_key(&mut app, KeyCode::Esc).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(
+        app.store.projects[0].features.len(),
+        1,
+        "the feature is still there"
+    );
+    let db = app.db.as_ref().unwrap();
+    assert!(db.todo_list_by_id(&list_id).unwrap().is_some());
+    assert_eq!(db.todos(&list_id).unwrap().len(), 2);
 }
 
 #[test]
@@ -19118,6 +21610,7 @@ fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
             findings: vec![],
             summary: Some("No actionable issues found.".to_string()),
             raw_output: String::new(),
+            attribution: crate::app::ai_review::AiReviewAttribution::default(),
         },
     )))
     .unwrap();
@@ -19172,6 +21665,7 @@ fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
             ],
             summary: Some("Two correctness risks need attention.".to_string()),
             raw_output: "review output".to_string(),
+            attribution: crate::app::ai_review::AiReviewAttribution::default(),
         },
     )))
     .unwrap();
@@ -19188,7 +21682,13 @@ fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
         _ => panic!("expected AI Review pane"),
     }
     match app.ai_review_return_to.as_deref() {
-        Some(AppMode::PrReview(state)) => assert_eq!(state.pending_ai_review_findings, 2),
+        Some(AppMode::PrReview(state)) => {
+            assert_eq!(state.pending_ai_review_findings, 2);
+            assert!(matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Findings(2))
+            ));
+        }
         _ => panic!("expected stashed PR Triage pane"),
     }
 
@@ -19197,6 +21697,250 @@ fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
         Some(AppMode::PrReview(state)) => assert_eq!(state.pending_ai_review_findings, 1),
         _ => panic!("expected stashed PR Triage pane"),
     }
+}
+
+#[test]
+fn completed_ai_review_carries_run_attribution_into_the_pane_and_cache() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    app.open_ai_review_from_triage();
+    let origin = match &app.mode {
+        AppMode::AiReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let pr = origin.pr.clone();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        progress: crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
+        },
+    });
+    let attribution = crate::app::ai_review::AiReviewAttribution {
+        harness: Some("claude".to_string()),
+        model: Some("sonnet".to_string()),
+        input_tokens: Some(9_000),
+        output_tokens: Some(1_200),
+        estimated_cost: Some("$0.05".to_string()),
+    };
+    tx.send(crate::app::ai_review::AiReviewProgress::Done(Ok(
+        crate::app::ai_review::AiReviewOutcome {
+            findings: vec![sample_ai_review_finding("first")],
+            summary: Some("One risk.".to_string()),
+            raw_output: "review output".to_string(),
+            attribution: attribution.clone(),
+        },
+    )))
+    .unwrap();
+
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.attribution.as_ref(), Some(&attribution));
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_ai_review_cache(pr.number, &pr.head_sha)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cached.attribution.as_ref(), Some(&attribution));
+}
+
+#[test]
+fn completed_zero_ai_review_updates_visible_triage_immediately() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => {
+            sample_ai_review_state(state.workdir.clone(), state.review.pr.clone())
+        }
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin);
+    tx.send(crate::app::ai_review::AiReviewProgress::Done(Ok(
+        crate::app::ai_review::AiReviewOutcome {
+            findings: vec![],
+            summary: Some("No actionable issues found.".to_string()),
+            raw_output: "## Summary\nNo actionable issues found.".to_string(),
+            attribution: crate::app::ai_review::AiReviewAttribution::default(),
+        },
+    )))
+    .unwrap();
+
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.pending_ai_review_findings, 0);
+            assert!(matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Findings(0))
+            ));
+        }
+        _ => panic!("expected visible PR Triage pane"),
+    }
+}
+
+#[test]
+fn ai_review_errors_update_visible_triage_for_agent_and_diff_failures() {
+    for detail in ["agent exited with status 1", "failed to fetch PR diff"] {
+        let store = store_with_feature(ProjectStatus::Active);
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        enter_pr_review_for_feature(&mut app, 1);
+        let origin = match &app.mode {
+            AppMode::PrReview(state) => {
+                sample_ai_review_state(state.workdir.clone(), state.review.pr.clone())
+            }
+            _ => unreachable!(),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.ai_review_bg = Some(rx);
+        app.ai_review_pending = Some(origin);
+        tx.send(crate::app::ai_review::AiReviewProgress::Done(Err(
+            anyhow::anyhow!(detail),
+        )))
+        .unwrap();
+
+        assert!(app.poll_ai_pr_review_bg());
+        match &app.mode {
+            AppMode::PrReview(state) => assert!(matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Error(message))
+                    if message == detail
+            )),
+            _ => panic!("expected visible PR Triage pane"),
+        }
+    }
+}
+
+#[test]
+fn disconnected_ai_review_worker_persists_error_and_updates_triage() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    let (workdir, pr) = match &app.mode {
+        AppMode::PrReview(state) => (state.workdir.clone(), state.review.pr.clone()),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(sample_ai_review_state(workdir, pr.clone()));
+    drop(tx);
+
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state)
+            if matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Error(message))
+                    if message.contains("disconnected")
+            )
+    ));
+    let cached = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_ai_review_cache(pr.number, &pr.head_sha)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        cached.last_run.unwrap().outcome,
+        crate::app::ai_review::AiReviewRunOutcome::Error(message)
+            if message.contains("disconnected")
+    ));
+}
+
+#[test]
+fn escape_keeps_ai_review_running_through_triage_return_and_completion() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    app.open_ai_review_from_triage();
+    let origin = match &app.mode {
+        AppMode::AiReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        progress: crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
+        },
+    });
+
+    app.cancel_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::AiReview(_)));
+    assert!(app.ai_review_bg.is_some());
+    app.close_ai_review();
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(matches!(
+            app.ai_review_triage_status(state),
+            crate::app::ai_review::AiReviewTriageStatus::Running
+        )),
+        _ => panic!("expected restored PR Triage pane"),
+    }
+
+    tx.send(crate::app::ai_review::AiReviewProgress::Done(Ok(
+        crate::app::ai_review::AiReviewOutcome {
+            findings: vec![],
+            summary: Some("No actionable issues found.".to_string()),
+            raw_output: "## Summary\nNo actionable issues found.".to_string(),
+            attribution: crate::app::ai_review::AiReviewAttribution::default(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state)
+            if matches!(
+                state.ai_review_last_run.as_ref().map(|run| &run.outcome),
+                Some(crate::app::ai_review::AiReviewRunOutcome::Findings(0))
+            )
+    ));
 }
 
 #[test]
@@ -19363,10 +22107,11 @@ fn open_ai_review_for_pr_reopens_cached_findings_and_summary() {
                     outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(1),
                 }),
                 summary: Some("Cached review summary.".to_string()),
+                attribution: None,
             },
         )
         .unwrap();
-    assert_eq!(app.pending_ai_review_count(&pr), 1);
+    assert_eq!(app.ai_review_triage_snapshot(&pr).pending_findings, 1);
 
     app.open_ai_review_for_pr(PathBuf::from("/tmp/test-workdir"), pr);
 
@@ -19376,6 +22121,178 @@ fn open_ai_review_for_pr_reopens_cached_findings_and_summary() {
             assert_eq!(state.summary.as_deref(), Some("Cached review summary."));
         }
         _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
+fn seed_ai_review_fixture_persists_and_opens_without_running_an_agent() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    let workdir = tempfile::tempdir().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+
+    let response = app
+        .seed_ai_review_from_request(&SeedAiReviewRequest {
+            pr_number: 55,
+            head_sha: "fixture-sha".to_string(),
+            summary: "Deterministic completed review.".to_string(),
+            findings: vec![SeedAiReviewFinding {
+                body: "A deterministic finding.".to_string(),
+                ..Default::default()
+            }],
+            open: true,
+            workdir: Some(workdir.path().to_path_buf()),
+            repository: Some("owner/repository".to_string()),
+            head_ref: Some("fixture-branch".to_string()),
+        })
+        .unwrap();
+
+    assert!(response.ok);
+    assert!(response.opened);
+    assert_eq!(response.finding_count, 1);
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            assert_eq!(state.pr.number, 55);
+            assert_eq!(state.pr.head_sha, "fixture-sha");
+            assert_eq!(state.findings[0].body, "A deterministic finding.");
+            assert_eq!(
+                state.summary.as_deref(),
+                Some("Deterministic completed review.")
+            );
+        }
+        _ => panic!("expected seeded AI Review pane"),
+    }
+}
+
+#[test]
+fn pr_triage_zero_result_survives_reopen_and_restart_but_not_new_head() {
+    let db_dir = TempDir::new().unwrap();
+    let db_path = db_dir.path().join("amf.db");
+    let review = pr_review_with_comments(1);
+    let zero_run = crate::app::ai_review::AiReviewRun {
+        ran_at: chrono::Local::now(),
+        outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(0),
+    };
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(crate::db::AmfDb::open(&db_path).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_review_cache(&review)
+        .unwrap();
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_ai_review_cache(
+            review.pr.number,
+            &review.pr.head_sha,
+            &crate::app::ai_review::AiReviewCacheEntry {
+                findings: vec![],
+                last_run: Some(zero_run.clone()),
+                summary: None,
+                attribution: None,
+            },
+        )
+        .unwrap();
+
+    app.enter_pr_review(PathBuf::from("/tmp/test-workdir"), review.pr.clone());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state)
+            if state.ai_review_last_run.as_ref() == Some(&zero_run)
+    ));
+    app.mode = AppMode::Normal;
+    app.enter_pr_review(PathBuf::from("/tmp/test-workdir"), review.pr.clone());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state)
+            if state.ai_review_last_run.as_ref() == Some(&zero_run)
+    ));
+    drop(app);
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut restarted = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    restarted.db = Some(crate::db::AmfDb::open(&db_path).unwrap());
+    restarted.enter_pr_review(PathBuf::from("/tmp/test-workdir"), review.pr.clone());
+    assert!(matches!(
+        &restarted.mode,
+        AppMode::PrReview(state)
+            if state.ai_review_last_run.as_ref() == Some(&zero_run)
+    ));
+
+    let mut moved = review;
+    moved.pr.head_sha = "new-head".to_string();
+    restarted
+        .db
+        .as_ref()
+        .unwrap()
+        .save_pr_review_cache(&moved)
+        .unwrap();
+    restarted.enter_pr_review(PathBuf::from("/tmp/test-workdir"), moved.pr.clone());
+    assert!(matches!(
+        &restarted.mode,
+        AppMode::PrReview(state)
+            if state.review.pr.head_sha == "new-head"
+                && state.ai_review_last_run.is_none()
+                && state.pending_ai_review_findings == 0
+    ));
+}
+
+#[test]
+fn refreshed_pr_head_clears_stale_ai_review_completion() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    enter_pr_review_for_feature(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(0),
+        });
+    }
+    app.open_ai_review_from_triage();
+    let (workdir, old_pr) = match &app.mode {
+        AppMode::AiReview(state) => (state.workdir.clone(), state.pr.clone()),
+        _ => unreachable!(),
+    };
+    let mut moved = pr_review_with_comments(2);
+    moved.pr.head_sha = "new-head".to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_triage_refresh_bg = Some(rx);
+    app.ai_review_triage_refresh_pending = Some(crate::app::AiReviewTriageRefresh {
+        workdir,
+        pr: old_pr,
+    });
+    tx.send(Ok(moved)).unwrap();
+
+    assert!(app.poll_ai_review_triage_refresh_bg());
+    match app.ai_review_return_to.as_deref() {
+        Some(AppMode::PrReview(state)) => {
+            assert_eq!(state.review.pr.head_sha, "new-head");
+            assert!(state.ai_review_last_run.is_none());
+            assert_eq!(state.pending_ai_review_findings, 0);
+        }
+        _ => panic!("expected refreshed stashed PR Triage pane"),
     }
 }
 
@@ -19405,6 +22322,62 @@ fn ai_review_post_dialog_is_seeded_with_generated_summary_and_attribution() {
             assert!(body.starts_with("The patch has one correctness risk."));
             assert!(body.contains("A general finding"));
             assert!(body.ends_with("— AI review via AMF"));
+        }
+        _ => panic!("expected AI Review pane"),
+    }
+}
+
+#[test]
+fn ai_review_post_dialog_seeds_the_model_token_cost_disclosure_when_a_run_recorded_it() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_ai_review_for_feature(&mut app);
+    if let AppMode::AiReview(state) = &mut app.mode {
+        let mut anchored = sample_ai_review_finding("An anchored finding");
+        anchored.path = Some("src/lib.rs".to_string());
+        anchored.line = Some(10);
+        anchored.side = Some(crate::diff::DiffSide::New);
+        anchored.diff_hunk = Some("@@ -1 +1 @@".to_string());
+        state.findings = vec![anchored];
+        state.summary = Some("One risk.".to_string());
+        state.last_run = Some(crate::app::ai_review::AiReviewRun {
+            ran_at: chrono::Local::now(),
+            outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(1),
+        });
+        state.attribution = Some(crate::app::ai_review::AiReviewAttribution {
+            harness: Some("claude".to_string()),
+            model: Some("sonnet".to_string()),
+            input_tokens: Some(12_300),
+            output_tokens: Some(4_500),
+            estimated_cost: Some("$0.10".to_string()),
+        });
+    }
+
+    app.ai_review_open_post_confirm();
+
+    match &app.mode {
+        AppMode::AiReview(state) => {
+            let post = state.post_confirm.as_ref().unwrap();
+            let body = post.editor.text();
+            assert!(
+                body.contains(
+                    "_AI review · harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.10_"
+                ),
+                "summary should carry the disclosure line: {body}"
+            );
+            assert!(body.ends_with("— AI review via AMF"));
+            // The same disclosure rides along on every inline comment body.
+            assert!(
+                post.inline[0]
+                    .body
+                    .contains("_AI review · harness claude · model sonnet"),
+                "inline comment should carry the disclosure: {}",
+                post.inline[0].body
+            );
         }
         _ => panic!("expected AI Review pane"),
     }
@@ -22350,6 +25323,7 @@ fn store_with_agents(agents: &[AgentKind]) -> ProjectStore {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         })
         .collect();
@@ -22926,6 +25900,7 @@ fn a_waiting_session_still_counts_toward_dormancy_and_the_agent_gate() {
             tmux_window: "claude".to_string(),
             command: None,
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             on_stop: None,

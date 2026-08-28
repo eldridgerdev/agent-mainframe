@@ -375,6 +375,12 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<(
             }
 
             if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
+                if matches!(
+                    state.purpose,
+                    crate::app::MarkdownFilePickerPurpose::SelectPlan { .. }
+                ) {
+                    return Ok(());
+                }
                 state.plan_only = !state.plan_only;
                 clamp_markdown_picker_selection(state);
             }
@@ -429,6 +435,24 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<(
                     .find(|&&idx| idx == state.selected)
                     .and_then(|idx| state.files.get(*idx).cloned());
                 if let (Some(path), Some(view)) = (path, state.from_view.clone()) {
+                    let path = match &state.purpose {
+                        crate::app::MarkdownFilePickerPurpose::Browse => path,
+                        crate::app::MarkdownFilePickerPurpose::SelectPlan { feature_id } => {
+                            match app.persist_selected_plan_path(feature_id, &state.workdir, &path)
+                            {
+                                Ok(path) => path,
+                                Err(error) => {
+                                    app.push_toast_error(format!("Could not select plan: {error}"));
+                                    app.mode = AppMode::MarkdownFilePicker(state);
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    };
+                    let current_plan = matches!(
+                        state.purpose,
+                        crate::app::MarkdownFilePickerPurpose::SelectPlan { .. }
+                    );
                     let return_to_picker = Some(crate::app::MarkdownFilePickerState {
                         files: state.files,
                         selected: state.selected,
@@ -437,6 +461,7 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<(
                         query: state.query,
                         workdir: state.workdir.clone(),
                         repo_root: state.repo_root.clone(),
+                        purpose: state.purpose,
                         from_view: Some(view.clone()),
                     });
                     return app.open_markdown_viewer_path(
@@ -445,6 +470,7 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<(
                         state.repo_root,
                         view,
                         return_to_picker,
+                        current_plan,
                     );
                 }
                 app.mode = AppMode::MarkdownFilePicker(state);
@@ -1028,6 +1054,7 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use tempfile::{NamedTempFile, TempDir};
 
     fn picker_app() -> App {
         let store = ProjectStore {
@@ -1078,6 +1105,7 @@ mod tests {
                 label: "Codex".into(),
                 tmux_window: "codex".into(),
                 claude_session_id: None,
+                todo_reference: None,
                 token_usage_source: None,
                 token_usage_source_match: None,
                 created_at: now,
@@ -1102,6 +1130,7 @@ mod tests {
             summary: None,
             summary_updated_at: None,
             nickname: None,
+            selected_plan_path: None,
             triage_source: None,
         };
         let store = ProjectStore {
@@ -1146,6 +1175,7 @@ mod tests {
             query: String::new(),
             workdir: PathBuf::from("/tmp/demo"),
             repo_root: None,
+            purpose: crate::app::MarkdownFilePickerPurpose::Browse,
             from_view: Some(picker_view()),
         });
 
@@ -1179,6 +1209,7 @@ mod tests {
             query: String::new(),
             workdir: PathBuf::from("/tmp/demo"),
             repo_root: None,
+            purpose: crate::app::MarkdownFilePickerPurpose::Browse,
             from_view: Some(picker_view()),
         });
 
@@ -1209,6 +1240,7 @@ mod tests {
             query: String::new(),
             workdir: PathBuf::from("/tmp/demo"),
             repo_root: None,
+            purpose: crate::app::MarkdownFilePickerPurpose::Browse,
             from_view: Some(picker_view()),
         });
 
@@ -1245,6 +1277,125 @@ mod tests {
             }
             _ => panic!("expected markdown picker to stay open"),
         }
+    }
+
+    #[test]
+    fn confirming_plan_selection_persists_only_for_its_feature() {
+        let first_workdir = TempDir::new().unwrap();
+        let second_workdir = TempDir::new().unwrap();
+        let selected = first_workdir.path().join("docs/accepted.md");
+        std::fs::create_dir_all(selected.parent().unwrap()).unwrap();
+        std::fs::write(&selected, "# Accepted\n").unwrap();
+
+        let mut first = Feature::new(
+            "feature".into(),
+            "feature/one".into(),
+            first_workdir.path().to_path_buf(),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Codex,
+            false,
+            false,
+        );
+        first.id = "feat-1".into();
+        let mut second = Feature::new(
+            "other".into(),
+            "feature/two".into(),
+            second_workdir.path().to_path_buf(),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Codex,
+            false,
+            false,
+        );
+        second.id = "feat-2".into();
+
+        let mut project = Project::new(
+            "demo".into(),
+            first_workdir.path().to_path_buf(),
+            true,
+            AgentKind::Codex,
+        );
+        project.features = vec![first, second];
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let db_file = NamedTempFile::new().unwrap();
+        app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
+            files: vec![selected.clone()],
+            selected: 0,
+            plan_only: false,
+            search_active: false,
+            query: String::new(),
+            workdir: first_workdir.path().to_path_buf(),
+            repo_root: None,
+            purpose: crate::app::MarkdownFilePickerPurpose::SelectPlan {
+                feature_id: "feat-1".into(),
+            },
+            from_view: Some(picker_view()),
+        });
+
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        let canonical = selected.canonicalize().unwrap();
+        assert_eq!(
+            app.store.projects[0].features[0].selected_plan_path,
+            Some(canonical.clone())
+        );
+        assert_eq!(app.store.projects[0].features[1].selected_plan_path, None);
+        assert!(matches!(app.mode, AppMode::MarkdownLoading(_)));
+
+        let reloaded = crate::db::AmfDb::open(db_file.path())
+            .unwrap()
+            .load_store()
+            .unwrap();
+        assert_eq!(
+            reloaded.projects[0].features[0].selected_plan_path,
+            Some(canonical)
+        );
+        assert_eq!(reloaded.projects[0].features[1].selected_plan_path, None);
+    }
+
+    #[test]
+    fn cancelling_plan_selection_returns_to_the_originating_view() {
+        let mut app = picker_app();
+        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
+            files: vec![PathBuf::from("/tmp/demo/accepted.md")],
+            selected: 0,
+            plan_only: false,
+            search_active: false,
+            query: String::new(),
+            workdir: PathBuf::from("/tmp/demo"),
+            repo_root: None,
+            purpose: crate::app::MarkdownFilePickerPurpose::SelectPlan {
+                feature_id: "feat-1".into(),
+            },
+            from_view: Some(picker_view()),
+        });
+
+        handle_markdown_file_picker_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
     }
 
     #[test]

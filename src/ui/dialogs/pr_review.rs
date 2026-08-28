@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use std::path::Path;
 
 use crate::{
+    app::ai_review::AiReviewTriageStatus,
     app::pr_review::{
         BootstrapDepth, BootstrapStage, CommentKind, CompactStage, MarkAction, PrComment, ReplyKind,
     },
@@ -651,7 +652,7 @@ pub fn draw_pr_review(
     theme: &Theme,
     usage: PrReviewUsage<'_>,
     dedicated_session_working: Option<bool>,
-    ai_review_running: bool,
+    ai_review_status: &AiReviewTriageStatus,
     // `"<feature> · <harness> · <mode>"` for the companion triage feature when
     // that's the fix target — so the fix confirm dialog names exactly which
     // feature (and which mode) a fix will run in. `None` for the in-feature
@@ -734,21 +735,32 @@ pub fn draw_pr_review(
             Style::default().fg(theme.secondary.to_color()),
         ));
     }
-    if ai_review_running {
-        header_spans.push(Span::styled(
+    match ai_review_status {
+        AiReviewTriageStatus::Running => header_spans.push(Span::styled(
             "  [AI review running]",
             Style::default().fg(theme.warning.to_color()),
-        ));
-    } else if state.pending_ai_review_findings > 0 {
-        header_spans.push(Span::styled(
-            format!(
-                "  [AI review pending: {}]",
-                state.pending_ai_review_findings
-            ),
+        )),
+        AiReviewTriageStatus::Pending(count) => header_spans.push(Span::styled(
+            format!("  [AI review pending: {count}]"),
             Style::default()
                 .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
-        ));
+        )),
+        AiReviewTriageStatus::NoFindings(run) => {
+            let (text, _) = super::ai_review::ai_review_run_badge_text(run, false);
+            header_spans.push(Span::styled(
+                format!("  [AI review: {text}]"),
+                Style::default().fg(theme.status_detail.to_color()),
+            ));
+        }
+        AiReviewTriageStatus::Failed(run) => {
+            let (text, _) = super::ai_review::ai_review_run_badge_text(run, false);
+            header_spans.push(Span::styled(
+                format!("  [AI review {text}]"),
+                Style::default().fg(theme.danger.to_color()),
+            ));
+        }
+        AiReviewTriageStatus::NotRun | AiReviewTriageStatus::CompletedWithFindings => {}
     }
     // Once the fix-target session exists, show what triage has spent on it —
     // the "only pay for what you asked for" constraint made visible in-pane.
@@ -2967,6 +2979,7 @@ mod tests {
             pending_batch: false,
             checked_out_branch: Some("main".to_string()),
             pending_ai_review_findings: 0,
+            ai_review_last_run: None,
         }
     }
 

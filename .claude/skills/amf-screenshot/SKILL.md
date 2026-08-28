@@ -3,9 +3,9 @@ name: amf:screenshot
 description: >
   Capture screenshots (PNG) or a GIF of AMF's own TUI running in an
   isolated, throwaway instance, as visual proof a feature/UI change
-  works, then publish them as a small viewable Artifact gallery page
-  (a terminal often won't render PNGs/GIFs inline, so the raw files
-  alone aren't a usable deliverable). Use only when the user explicitly
+  works, then, when explicitly requested, publish them to a private
+  Cloudflare Pages review gallery. A terminal often will not render
+  PNGs/GIFs inline, so raw files alone are not a usable deliverable. Use only when the user explicitly
   asks for visual proof ("show me a screenshot of X", "prove the
   dashboard renders Y") — not automatically after every UI change.
 allowed-tools: Bash(scripts/dev/screenshot/*) Bash(python3 *) Bash(mkdir *) Bash(cat *) Bash(ls *) Write Read Skill Artifact
@@ -69,11 +69,15 @@ comments ignored):
 - `text:<literal>` — literal typed text (`text:my-feature-name`)
 - `wait:<ms>` — sleep, use after keys that trigger a redraw or async
   work (harness checks, status sync)
+- `note:<text>` — a complete sentence explaining what the immediately following
+  `shot:` proves to a reviewer
 - `shot:<label>` — capture the pane now, written as
   `NNN-<label>.ansi`
 
 Put a `shot:` at every point worth showing (before the change, mid
-interaction, after the change lands) rather than just first/last.
+interaction, after the change lands) rather than just first/last. Put a
+reviewer-facing `note:` immediately before every shot so the published index
+explains the visible state and why it matters.
 Author the file under `scripts/dev/screenshot/scenarios/` if it's
 worth keeping as a reusable example, otherwise a scratch path (e.g.
 your scratchpad dir) is fine for a one-off.
@@ -98,6 +102,11 @@ Relevant flags:
   default deliverable.
 - `--keep` — preserve the scratch root instead of deleting it on exit
   (useful while iterating on a scenario).
+
+For a screenshot of an already-completed AI Review, use
+`scenarios/ai-review-completed-fixture.txt`. It uses AMF's deterministic
+`seed-ai-review` fixture; CI must never start a live `A` review or depend on a
+logged-in Claude/Codex harness for visual proof.
 
 This produces, per `shot:` step, a numbered `.ansi` dump and a
 plain-text `.txt` twin (same capture, no escape codes) in `--out-dir`
@@ -129,36 +138,38 @@ Only after the text checks pass, Read **one or two representative
 PNGs** as images to confirm layout/colors look right — not every
 frame.
 
-## Step 5: publish an Artifact gallery (the deliverable)
+## Step 5: publish the private Cloudflare Pages gallery to the PR
 
-Raw file paths are not the deliverable — most terminal environments
-don't render PNGs/GIFs inline for the user, so finish by publishing a
-small, self-contained HTML page with the shots embedded. Do this every
-time this skill runs, not just when asked.
+The repository's selected publication backend is a Cloudflare Pages preview.
+Publication is a real PR-body write: do it only when the user explicitly asks.
+The branch and scenario must be pushed, the target PR must be open, and `gh`
+must be authenticated as `eldridgerdev`. Run:
 
-1. **Load the `artifact-design` skill** before writing the HTML (the
-   `Artifact` tool requires it). Treat this as a utilitarian proof
-   page, not a landing page: a short title naming the feature, one line
-   of context (branch, PR number, what was seeded — whatever grounds
-   the shots), then one `<figure>` per shot in story order, each with a
-   caption that says what's notable in that frame. No hero, no
-   flourish — a plain terminal-window chrome around each image (a
-   title-bar strip is enough) suits the subject better than decoration.
-2. **Base64-encode each PNG/GIF** (`python3 -c "import base64; ..."`),
-   writing the encoded string to a scratch `.b64` file — don't paste it
-   into the HTML through Edit/Write. A multi-shot gallery is tens to
-   hundreds of KB of base64; pushing that through the conversation
-   burns context for no benefit.
-3. **Write the HTML with placeholder tokens** (`IMG_1`, `IMG_2`, …) in
-   the `<img src="data:image/png;base64,IMG_1">` slots (or
-   `image/gif` for a `--gif` run), then substitute the real base64 in
-   directly on disk with a small Python `str.replace` script — the
-   encoded data itself never needs to pass through the model.
-4. **Publish with the `Artifact` tool** (`file_path` pointing at the
-   HTML, a `favicon` emoji fitting the feature, a one-line
-   `description`). If re-running this skill again for the *same*
-   feature/PR in the same conversation, reuse the same `file_path` so
-   republishing updates the existing URL instead of minting a new one.
-5. **Return the artifact URL as the primary deliverable.** Mention the
-   on-disk PNG/GIF paths too (useful if the user wants the raw files),
-   but the URL is what answers "show me."
+```bash
+scripts/dev/screenshot/publish-pages.sh \
+  --pr <number> \
+  --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+  --summary "One sentence explaining the complete flow under review" \
+  --ref <pushed-branch> \
+  --strict
+```
+
+Add `--gif` only when the user asks for animation. The command runs the
+isolated harness on GitHub, deploys a private Pages gallery, and replaces only
+the PR section delimited by
+`<!-- amf:screenshots:start -->`/`<!-- amf:screenshots:end -->`. The PR link
+opens the Cloudflare Access-protected gallery. Raw ANSI/text captures remain in
+a 14-day internal artifact; no screenshot files are committed.
+The gallery starts with `--summary`, then presents an ordered walkthrough whose
+**What this proves** captions come from the scenario's `note:` entries.
+
+The command prints an actionable `warning:` and exits successfully by default
+when capture, authentication, workflow, artifact, or PR-body update fails, so
+the surrounding PR workflow can continue. Use `--strict` when a nonzero exit
+is required; agents publishing proof must use it. The workflow permits only
+the `eldridgerdev` actor and serializes all requests. The protected
+`screenshot-pages` environment may wait for a required human approval before
+the deployment job receives Cloudflare credentials. Do not bypass that gate;
+report that approval is pending and do not claim publication completed. The
+Claude-specific `Artifact` tool may still be used for a secondary
+in-conversation preview, but never put its raw ANSI/text output in the PR.

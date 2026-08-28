@@ -11,7 +11,10 @@ use crate::editor::TextEditor;
 use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
 };
-use crate::plan_interview::{PlanQuestion, PlanQuestionKind, QuestionSource};
+use crate::plan_interview::{
+    CUSTOM_ANSWER_MAX_LEN, PlanQuestion, PlanQuestionKind, QuestionSource, serialize_choice_answer,
+    split_choice_answer,
+};
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 use crate::worktree::WorktreeInfo;
@@ -139,12 +142,9 @@ impl ViewState {
             return None;
         }
 
-        match self.session_kind {
-            SessionKind::Claude | SessionKind::Codex | SessionKind::Opencode => {
-                Some(self.session_kind.clone())
-            }
-            _ => None,
-        }
+        self.session_kind
+            .is_agent_harness()
+            .then(|| self.session_kind.clone())
     }
 }
 
@@ -276,6 +276,48 @@ pub struct RenameFeatureState {
     pub project_idx: usize,
     pub feature_idx: usize,
     pub input: String,
+}
+
+/// Which field of [`ContextSettingsState`] currently has input focus.
+/// Declared in edit order so `next()`/`prev()` can wrap with simple
+/// arithmetic instead of a match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextSettingsField {
+    WindowLimit,
+    WarningPercent,
+    CriticalPercent,
+}
+
+impl ContextSettingsField {
+    const ALL: [Self; 3] = [
+        Self::WindowLimit,
+        Self::WarningPercent,
+        Self::CriticalPercent,
+    ];
+
+    pub fn next(self) -> Self {
+        let index = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let index = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+/// Global context-window/severity settings dialog (`w` on the dashboard).
+/// Edits [`super::AppConfig::context_window_override`],
+/// `context_warning_percent`, and `context_critical_percent` directly —
+/// unlike `ConfigWizard` this has no project/global scope choice, since the
+/// values it edits are process-wide by design.
+pub struct ContextSettingsState {
+    pub field: ContextSettingsField,
+    /// Empty means "no override" (falls back to each harness's own default).
+    pub window_limit_input: String,
+    pub warning_input: String,
+    pub critical_input: String,
+    pub error: Option<String>,
 }
 
 pub struct SessionConfigState {
@@ -897,6 +939,10 @@ pub struct DiffViewerState {
     pub feedback_editing: bool,
     /// True while the user is typing general (non-file) review feedback.
     pub editing_general: bool,
+    /// Session-scoped keymap preference for every final-review comment,
+    /// suggestion, rejection, and general-feedback editor. Fresh review
+    /// sessions start plain; the preference is intentionally not persisted.
+    pub vim_enabled: bool,
     /// Active editor, shared by the per-file rejection editor and the
     /// general-feedback editor (only one is open at a time). Vim-capable so
     /// reviewers can write multi-paragraph / list feedback.
@@ -1075,6 +1121,30 @@ pub struct VerdictUndo {
 pub const VERDICT_UNDO_LIMIT: usize = 50;
 
 impl DiffViewerState {
+    /// Replace the shared review editor with a fresh instance that follows the
+    /// session keymap. Vim editors always enter Normal mode; either keymap gets
+    /// fresh cursor and undo state while retaining the supplied text.
+    pub(crate) fn reset_feedback_editor(&mut self, text: String) {
+        self.feedback_editor = if self.vim_enabled {
+            TextEditor::with_vim_normal(text)
+        } else {
+            TextEditor::new(text)
+        };
+    }
+
+    /// Toggle Vim for this review session and immediately apply it to the
+    /// active shared editor. Rebuilding is intentional: the text survives, but
+    /// keymap-specific cursor, pending-command, register, and undo state do not
+    /// cross the keymap boundary.
+    pub(crate) fn toggle_feedback_vim(&mut self) -> bool {
+        self.vim_enabled = !self.vim_enabled;
+        let text = self.feedback_editor.text().to_string();
+        self.reset_feedback_editor(text);
+        self.feedback_scroll = 0;
+        self.feedback_sync_to_cursor = true;
+        self.vim_enabled
+    }
+
     pub fn new(from_view: ViewState, workdir: PathBuf) -> Self {
         Self {
             from_view,
@@ -1110,6 +1180,7 @@ impl DiffViewerState {
             finish_confirm: false,
             feedback_editing: false,
             editing_general: false,
+            vim_enabled: false,
             feedback_editor: TextEditor::new(String::new()),
             feedback_scroll: 0,
             feedback_sync_to_cursor: true,
@@ -2261,6 +2332,12 @@ pub struct AiReviewState {
     /// pass as `findings`, and loaded from the same cache row. Older cache
     /// entries may not have one.
     pub summary: Option<String>,
+    /// Harness/model/token/cost provenance of the run that produced
+    /// `findings`, loaded from the same cache row and refreshed by each `A`
+    /// pass. `None` before the first run this SHA, for a legacy cache row, or
+    /// when the latest run errored. Surfaced in the pane and attached to the
+    /// posted GitHub review.
+    pub attribution: Option<crate::app::ai_review::AiReviewAttribution>,
     /// Index into `findings` of the highlighted finding.
     pub selected: usize,
     /// Scroll offset (in lines) for the detail pane of the selected finding.
@@ -2408,6 +2485,10 @@ pub struct PrReviewState {
     /// publishable. Loaded from `ai_review_cache` on entry and kept in sync as
     /// the linked AI Review is generated, skipped, or posted.
     pub pending_ai_review_findings: usize,
+    /// Most recent terminal AI Review result for this exact PR/head SHA.
+    /// Kept alongside the pending count so a successful zero-finding run or a
+    /// failure remains distinguishable from a review that has never run.
+    pub ai_review_last_run: Option<crate::app::ai_review::AiReviewRun>,
 }
 
 /// Identity of the PR Triage refresh started after a successful AI Review
@@ -2970,45 +3051,187 @@ pub struct TodoEditor {
     pub editor: TextEditor,
 }
 
-/// State for the native TODOs overlay (`AppMode::Todos`). Holds the loaded
-/// per-project list and its items plus the cursor and any in-progress edit.
-pub struct TodoViewState {
-    /// Project that owns the list (and whose `S` picker created the session).
-    pub project_id: String,
-    /// Project / host-feature indices the TODOs session lives under, used to
-    /// resolve the session for selection on close and to host the list.
-    pub pi: usize,
-    pub fi: usize,
-    /// Display labels for the header.
-    pub project_name: String,
-    pub feature_name: String,
-    /// The loaded list (carry-over note, id). `None` when no DB is available
-    /// (e.g. tests) — the overlay then shows an empty list.
+/// Which scope a pane of the TODOs overlay shows. The variants are in the
+/// order the panes are laid out and the order ties between them resolve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoPaneKind {
+    /// This feature's own checkout. Absent for a feature sitting on the repo
+    /// root, which has no worktree of its own to scope a list to.
+    Worktree,
+    /// The project's list — the only scope that existed before scoping.
+    Project,
+    /// The machine-wide list, belonging to no project.
+    Global,
+}
+
+impl TodoPaneKind {
+    /// The pane header, and the noun used when a message has to name a scope.
+    pub fn label(self) -> &'static str {
+        match self {
+            TodoPaneKind::Worktree => "Worktree",
+            TodoPaneKind::Project => "Project",
+            TodoPaneKind::Global => "Global",
+        }
+    }
+}
+
+/// One scope's list within the TODOs overlay: its own items, cursor, scroll,
+/// and scratchpad, so switching focus never disturbs the pane being left.
+pub struct TodoPane {
+    pub kind: TodoPaneKind,
+    /// The scope this pane reads and writes. Carries the project id and
+    /// workdir, so it is the whole key to the pane's list.
+    pub scope: crate::db::todos::TodoScope,
+    /// Name shown in the pane header beside the scope label (the worktree's
+    /// feature name, the project name, or nothing for global).
+    pub title: String,
+    /// The loaded list (scratchpad note, id). `None` until the list exists —
+    /// with no DB (tests) it is synthesized on first write, and with one it is
+    /// created lazily, so an untouched scope leaves no row behind.
     pub list: Option<crate::db::todos::TodoList>,
     /// Items in display order (open first, then by sort_order).
     pub todos: Vec<crate::db::todos::Todo>,
     /// Cursor into `todos`.
     pub selected: usize,
-    /// Vertical scroll offset into the list area.
+    /// Vertical scroll offset into this pane's list area.
     pub scroll_offset: usize,
-    /// Active inline edit, if any (add/edit title/notes/carry-over).
+}
+
+impl TodoPane {
+    pub fn selected_todo(&self) -> Option<&crate::db::todos::Todo> {
+        self.todos.get(self.selected)
+    }
+
+    /// The list's free-form scratchpad note (stored in the legacy
+    /// `carry_over` column), when it is not blank.
+    pub fn scratchpad(&self) -> Option<&str> {
+        self.list
+            .as_ref()
+            .and_then(|l| l.carry_over.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// State for the native TODOs overlay (`AppMode::Todos`): up to three scoped
+/// panes, which one has focus, and any in-progress edit or prompt layered over
+/// them.
+pub struct TodoViewState {
+    /// Project / feature indices the TODOs session lives under, used to
+    /// resolve the session for selection on close and to host new lists.
+    pub pi: usize,
+    pub fi: usize,
+    /// Display labels for the header.
+    pub project_name: String,
+    pub feature_name: String,
+    /// The scoped panes, always ordered worktree → project → global. The
+    /// worktree pane is absent for a feature on the repo root, which is the
+    /// only way this is shorter than three.
+    pub panes: Vec<TodoPane>,
+    /// Index into `panes` of the visible pane that owns the cursor. `None` is
+    /// valid for a repository-root feature when both optional scopes are
+    /// hidden.
+    pub focus: Option<usize>,
+    /// Active inline edit, if any (add/edit title/notes/scratchpad).
     pub editor: Option<TodoEditor>,
     /// Set when a delete is awaiting y/n confirmation.
     pub pending_delete: bool,
     /// Active launch step (chooser / destination), layered over the list.
     pub launch: Option<TodoLaunchStep>,
+    /// Active move/copy scope chooser (`M` / `C`), layered the same way.
+    pub scope_move: Option<TodoScopeMoveState>,
+}
+
+impl TodoViewState {
+    pub fn pane_is_visible(pane: &TodoPane, project_visible: bool, global_visible: bool) -> bool {
+        match pane.kind {
+            TodoPaneKind::Worktree => true,
+            TodoPaneKind::Project => project_visible,
+            TodoPaneKind::Global => global_visible,
+        }
+    }
+
+    /// Indices of actionable panes in worktree → project → global order.
+    pub fn visible_pane_indices(&self, project_visible: bool, global_visible: bool) -> Vec<usize> {
+        self.panes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pane)| {
+                Self::pane_is_visible(pane, project_visible, global_visible).then_some(index)
+            })
+            .collect()
+    }
+
+    pub fn focused(&self) -> Option<&TodoPane> {
+        self.focus.and_then(|focus| self.panes.get(focus))
+    }
+
+    pub fn focused_mut(&mut self) -> Option<&mut TodoPane> {
+        self.focus.and_then(|focus| self.panes.get_mut(focus))
+    }
+}
+
+/// The scope chooser raised by `M` (move) and `C` (copy) over the selected
+/// TODO. Targets are pane indices rather than scopes so the in-memory pane and
+/// the persisted list are updated from one lookup.
+pub struct TodoScopeMoveState {
+    /// `true` for a copy (leaves the original in place, unstarted), `false`
+    /// for a move (re-files the same item, links and all).
+    pub copy: bool,
+    /// The item being re-filed, by id, so the list changing underneath the
+    /// prompt is noticed rather than acted on stale.
+    pub todo_id: String,
+    pub todo_title: String,
+    /// Candidate destinations as `(label, pane index)` — every pane but the
+    /// one the item is already in.
+    pub targets: Vec<(String, usize)>,
+    pub selected: usize,
+}
+
+impl TodoScopeMoveState {
+    pub fn move_cursor(&mut self, delta: isize) {
+        if self.targets.is_empty() {
+            return;
+        }
+        let last = self.targets.len() as isize - 1;
+        self.selected = ((self.selected as isize) + delta).clamp(0, last) as usize;
+    }
 }
 
 /// Single-line quick-capture of a TODO from inside a session view. The typed
-/// title is appended to the current project's list, auto-creating the list (and
-/// a TODOs session under the current feature) when the project has none yet.
-/// `view` is the session view to return to on commit/cancel.
+/// title is appended to the session feature's own worktree list — falling back
+/// to the project list when that feature sits on the repo root — auto-creating
+/// the list (and a TODOs session under the current feature) when there is none
+/// yet. `view` is the session view to return to on commit/cancel.
 pub struct TodoQuickCaptureState {
     pub view: ViewState,
     /// Name of the project the TODO will be added to (shown in the dialog).
     pub project_name: String,
+    /// Which list this capture will land in, named in the overlay so the
+    /// target is never a guess (e.g. `"Worktree · add-login"`).
+    pub list_label: String,
     /// The title being typed.
     pub input: String,
+}
+
+/// Collects the user's instruction before starting a fresh-context agent
+/// session (`Ctrl+Space` then `Shift+F`, `crate::app::handoff`), so the
+/// seeded prompt is complete on arrival instead of asking the user to type
+/// over a placeholder in the new session's compose box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshContextPromptSource {
+    Manual,
+    ContextHint,
+}
+
+pub struct FreshContextPromptState {
+    pub view: ViewState,
+    /// Feature the fresh session will be created in, shown in the dialog.
+    pub feature_name: String,
+    /// The instruction being typed.
+    pub input: String,
+    /// Whether the input came from the context-hint continuation generator.
+    pub source: FreshContextPromptSource,
 }
 
 /// Prompt shown when the feature that hosts a project's TODO list is deleted
@@ -3168,9 +3391,14 @@ pub struct TodoImplementChoiceState {
     pub fallback_fi: usize,
     /// The list's host feature id, when the list could be loaded.
     pub host_feature_id: Option<String>,
-    /// The candidate: its id, so it is re-resolved on confirm rather than
-    /// trusted (the list can change while this prompt is open), and its title
-    /// for display.
+    /// Which scope the candidate came from. Decides whether *Start another
+    /// agent on it* can spawn straight away (worktree) or has to ask which
+    /// feature to spawn in (project / global).
+    pub pane_kind: TodoPaneKind,
+    /// The candidate: its id, so it is re-resolved by id alone on confirm
+    /// (not trusted, and not tied to a remembered list — the item may have
+    /// been moved to a different list while this prompt was open), and its
+    /// title for display.
     pub todo_id: String,
     pub todo_title: String,
     /// TODOs already passed over by *Skip to next*, carried so a resumed scan
@@ -3188,6 +3416,123 @@ impl TodoImplementChoiceState {
 
     pub fn choice(&self) -> TodoImplementChoice {
         TodoImplementChoice::ALL[self.selected.min(TodoImplementChoice::ALL.len() - 1)]
+    }
+}
+
+/// A feature to put an agent on a project- or global-scoped TODO in
+/// (`AppMode::TodoSpawnTarget`).
+///
+/// A whole [`AppMode`] rather than a step inside [`TodoViewState`] for the
+/// same reason [`TodoImplementChoiceState`] is one: the dashboard's "implement
+/// next" reaches it with no overlay open. `origin` is the mode the key was
+/// pressed in, restored verbatim on cancel, so the prompt never costs the user
+/// their place in the list.
+pub struct TodoSpawnTargetState {
+    pub origin: Box<AppMode>,
+    /// The item to spawn on, carried by value: the overlay it came from may
+    /// not be open, and a global TODO's list is not reachable from `pi`.
+    pub todo: crate::db::todos::Todo,
+    /// Which scope the TODO came from, shown so the user knows why they are
+    /// being asked.
+    pub pane_kind: TodoPaneKind,
+    /// Candidates as `(label, pi, fi)`. A project-scoped TODO lists that
+    /// project's features; a global one lists every project's.
+    pub candidates: Vec<(String, usize, usize)>,
+    pub selected: usize,
+    /// Set when the user explicitly asked for a second agent on an item that
+    /// already has one, so the spawn does not reuse the existing session.
+    pub force_new: bool,
+}
+
+impl TodoSpawnTargetState {
+    pub fn move_cursor(&mut self, delta: isize) {
+        if self.candidates.is_empty() {
+            return;
+        }
+        let last = self.candidates.len() as isize - 1;
+        self.selected = ((self.selected as isize) + delta).clamp(0, last) as usize;
+    }
+
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.candidates
+            .get(self.selected)
+            .map(|(_, pi, fi)| (*pi, *fi))
+    }
+}
+
+/// What to do with the unfinished TODOs in a worktree list whose feature is
+/// being deleted (`AppMode::TodoDeleteDisposition`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoDeleteDisposition {
+    MoveToProject,
+    MoveToGlobal,
+    Delete,
+    Cancel,
+}
+
+impl TodoDeleteDisposition {
+    pub const ALL: [TodoDeleteDisposition; 4] = [
+        TodoDeleteDisposition::MoveToProject,
+        TodoDeleteDisposition::MoveToGlobal,
+        TodoDeleteDisposition::Delete,
+        TodoDeleteDisposition::Cancel,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TodoDeleteDisposition::MoveToProject => "Move them to the project list",
+            TodoDeleteDisposition::MoveToGlobal => "Move them to the global list",
+            TodoDeleteDisposition::Delete => "Delete them with the worktree",
+            TodoDeleteDisposition::Cancel => "Cancel — keep the feature",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            TodoDeleteDisposition::MoveToProject => {
+                "They stay with the project and show up in its pane."
+            }
+            TodoDeleteDisposition::MoveToGlobal => {
+                "They leave the project for the machine-wide list."
+            }
+            TodoDeleteDisposition::Delete => "The items go away for good, with the list.",
+            TodoDeleteDisposition::Cancel => {
+                "Nothing is deleted — the feature and its worktree stay."
+            }
+        }
+    }
+}
+
+/// The prompt raised before a feature is deleted while its worktree list still
+/// has unfinished items. Deleting a worktree is hard to reverse, so this is a
+/// blocking prompt: nothing is killed or removed until a choice is made, and
+/// *Cancel* returns to the dashboard with the feature intact.
+pub struct TodoDeleteDispositionState {
+    pub project_name: String,
+    pub feature_name: String,
+    /// The doomed feature's id. Carried so *Move to the project list* can host
+    /// a newly-created project list on a feature that will still be there
+    /// afterwards — hosting it on this one would hand the items straight to
+    /// the orphaned-list cleanup that runs once the deletion completes.
+    pub feature_id: String,
+    /// The worktree list and where it lives, so the disposition can be applied
+    /// without re-deriving it from indices that the deletion will invalidate.
+    pub project_id: String,
+    pub workdir: String,
+    pub list_id: String,
+    /// How many items are still open, stated in the prompt.
+    pub unfinished: usize,
+    pub selected: usize,
+}
+
+impl TodoDeleteDispositionState {
+    pub fn move_cursor(&mut self, delta: isize) {
+        let last = TodoDeleteDisposition::ALL.len() as isize - 1;
+        self.selected = ((self.selected as isize) + delta).clamp(0, last) as usize;
+    }
+
+    pub fn choice(&self) -> TodoDeleteDisposition {
+        TodoDeleteDisposition::ALL[self.selected.min(TodoDeleteDisposition::ALL.len() - 1)]
     }
 }
 
@@ -4132,10 +4477,24 @@ pub enum AppMode {
     #[allow(dead_code)] // Entered by the plan's Epic 4 dashboard key.
     Learning(Box<LearningViewState>),
     TodoQuickCapture(TodoQuickCaptureState),
+    /// Collect the user's instruction before starting a fresh-context agent
+    /// session (see `FreshContextPromptState`).
+    FreshContextPrompt(FreshContextPromptState),
     /// Re-home or delete a project's TODO list after its host feature is deleted.
     TodosHostReassign(TodosHostReassignState),
     /// "Implement next" landed on a TODO that already has work started for it.
     TodoImplementChoice(Box<TodoImplementChoiceState>),
+    /// Pick the feature to put an agent on a project- or global-scoped TODO
+    /// in. Those lists are not tied to one checkout, so there is no feature to
+    /// infer — the user names one, and it supplies the agent and mode.
+    TodoSpawnTarget(Box<TodoSpawnTargetState>),
+    /// A feature is about to be deleted and its worktree list still has
+    /// unfinished TODOs: move them to the project list, move them to the
+    /// global list, delete them, or cancel the deletion outright.
+    TodoDeleteDisposition(TodoDeleteDispositionState),
+    /// Confirm completing the TODO explicitly referenced by the embedded
+    /// agent session currently being viewed.
+    ConfirmTodoReferenceCompletion(TodoReferenceCompletionState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
@@ -4229,6 +4588,14 @@ pub enum AppMode {
     ConfirmResourceStart(Box<ResourceConfirmState>),
     /// Features that are idle and unattended, with per-row reclaim actions.
     Dormant(DormantViewState),
+    /// Global context-window/severity settings (`w` on the dashboard).
+    ContextSettings(ContextSettingsState),
+}
+
+/// The view to return to plus the stable TODO identity to complete.
+pub struct TodoReferenceCompletionState {
+    pub view: ViewState,
+    pub todo_id: String,
 }
 
 /// Pending dispatch of a finished review's feedback to a freshly-spun-up
@@ -4533,6 +4900,7 @@ pub struct MarkdownViewerState {
     pub rendered_lines: Vec<ratatui::text::Line<'static>>,
     pub return_to_picker: Option<MarkdownFilePickerState>,
     pub from_view: Option<ViewState>,
+    pub current_plan: bool,
 }
 
 pub enum MarkdownLoadingOperation {
@@ -4542,12 +4910,17 @@ pub enum MarkdownLoadingOperation {
     DiscoverFromViewer {
         viewer: MarkdownViewerState,
     },
+    DiscoverPlan {
+        view: ViewState,
+        feature_id: String,
+    },
     ReadPath {
         path: PathBuf,
         workdir: PathBuf,
         repo_root: Option<PathBuf>,
         view: ViewState,
         return_to_picker: Option<MarkdownFilePickerState>,
+        current_plan: bool,
     },
 }
 
@@ -4565,7 +4938,14 @@ pub struct MarkdownFilePickerState {
     pub query: String,
     pub workdir: PathBuf,
     pub repo_root: Option<PathBuf>,
+    pub purpose: MarkdownFilePickerPurpose,
     pub from_view: Option<ViewState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarkdownFilePickerPurpose {
+    Browse,
+    SelectPlan { feature_id: String },
 }
 
 #[derive(Clone)]
@@ -4666,6 +5046,10 @@ pub enum PendingStart {
     EnterView { auto_compose: bool },
     /// Jumping to a stopped feature from inside a session view (leader n/p).
     SwitchViewToFeature { pi: usize, fi: usize },
+    /// Creating and starting a newly accepted plan-mode feature. Unlike the
+    /// ordinary creation autostart, this operation can be parked because the
+    /// resource dialog retains the completed interview below.
+    PlannedFeature(Box<PendingPlanLaunch>),
 }
 
 /// The pre-start warning: what tripped, what it was about to do, and where to
@@ -4681,6 +5065,10 @@ pub struct ResourceConfirmState {
     /// Session view to restore after confirming or cancelling, when the start
     /// was initiated from inside an embedded session rather than the dashboard.
     pub from_view: Option<ViewState>,
+    /// Completed plan review restored verbatim when a planned feature start is
+    /// cancelled. Other resource-gate callers originate from the dashboard or
+    /// a session view and leave this empty.
+    pub plan_interview: Option<PlanInterviewState>,
 }
 
 pub enum HookNext {
@@ -5071,7 +5459,7 @@ impl CreateFeatureState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreparedFeatureLaunch {
     pub project_name: String,
     pub branch: String,
@@ -5092,6 +5480,19 @@ pub struct PreparedFeatureLaunch {
     /// Set when this launch was started from a TODO, so accepting the plan can
     /// link the created feature back to the row it came from.
     pub todo_origin: Option<TodoPlanOrigin>,
+}
+
+/// An accepted plan's exact deferred feature launch.
+///
+/// The resource confirmation owns this after the interview has written the
+/// plan but before the feature exists. Keeping the prepared launch and the
+/// accepted markdown together lets confirmation resume without rebuilding the
+/// wizard state, regenerating the plan, or losing the kickoff prompt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingPlanLaunch {
+    pub prepared: PreparedFeatureLaunch,
+    pub interview_key: String,
+    pub plan: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5191,7 +5592,26 @@ pub struct PlanInterviewState {
     pub brief: String,
     pub answers: Vec<Option<String>>,
     pub editor: TextEditor,
-    pub selected_option: usize,
+    /// The highlighted/picked option for the current choice question, or `None`
+    /// when nothing is picked — the state a user is in when they answer purely
+    /// with custom text. Parallel `selected_option`/`editor` are transient
+    /// scratch for the question on screen; the durable record is `answers` (the
+    /// serialized combined string) and `custom_answers` (the raw custom text).
+    pub selected_option: Option<usize>,
+    /// Raw free-text custom answer per question, positionally paired with
+    /// `questions`. Empty for a question with no custom text and for every
+    /// free-text question. Kept alongside `answers` so revisiting a choice
+    /// question restores the radio selection *and* the custom text rather than
+    /// a flat editable string, and persisted so a resumed/re-run interview can
+    /// do the same.
+    pub custom_answers: Vec<String>,
+    /// Whether the inline custom-answer editor (the `editor` buffer, reused for
+    /// a choice question) currently has focus. `e` opens it; committing or
+    /// cancelling returns focus to the option list without submitting.
+    pub custom_answer_focused: bool,
+    /// The custom-answer buffer captured when the editor was opened, restored
+    /// verbatim if the edit is cancelled with `Esc`.
+    pub custom_answer_backup: Option<String>,
     /// Where the accepted plan is written (`<workdir>/AMF_PLAN.md`). Held
     /// separately from `pending_launch` because an on-demand interview has an
     /// existing feature's workdir and no launch at all.
@@ -5292,6 +5712,10 @@ pub struct PlanInterviewState {
     /// previous one ([`Self::prior_answer_state`]) and
     /// [`Self::restore_prior_answer`] can put it back.
     pub prior_answers: HashMap<String, String>,
+    /// The custom-text half of a re-run's pre-filled choice answers, keyed by
+    /// question id, so [`Self::restore_prior_answer`] can put back both the
+    /// selection and the elaboration the previous interview accepted.
+    pub prior_custom_answers: HashMap<String, String>,
     /// The live session an accepted on-demand plan is being offered to. Only
     /// set in [`PlanInterviewPhase::KickoffHandoff`], which is only reached
     /// after the plan file is already on disk.
@@ -5383,7 +5807,10 @@ impl PlanInterviewState {
             brief: String::new(),
             answers: vec![None; answer_count],
             editor: TextEditor::new(String::new()),
-            selected_option: 0,
+            selected_option: None,
+            custom_answers: vec![String::new(); answer_count],
+            custom_answer_focused: false,
+            custom_answer_backup: None,
             workdir,
             pending_launch,
             abort_confirmation: false,
@@ -5420,6 +5847,7 @@ impl PlanInterviewState {
             resume_draft: None,
             prior_brief: None,
             prior_answers: HashMap::new(),
+            prior_custom_answers: HashMap::new(),
             kickoff_handoff: None,
             todo_origin: None,
         }
@@ -5516,41 +5944,51 @@ impl PlanInterviewState {
     ///
     /// Matching by id is not enough on its own for a select question: config can
     /// rewrite the same id's options, leaving a stored answer that names a choice
-    /// the question no longer offers. Such an answer is dropped rather than
-    /// pre-filled, because it is unselectable in the UI and would otherwise reach
-    /// the AI rounds and synthesis attached to the current question text.
+    /// the question no longer offers. That part of the answer is dropped rather
+    /// than pre-filled, because it is unselectable in the UI and would otherwise
+    /// reach the AI rounds and synthesis attached to the current question text.
+    /// A choice answer's custom-text half survives an option rewrite; only the
+    /// selection is re-validated.
     fn adopt_recorded_answers(&mut self, record: &PlanInterviewRecord) {
-        self.answers = self
-            .questions
-            .iter()
-            .map(|question| {
-                record
-                    .answer_for(&question.id)
-                    .filter(|answer| question.accepts_answer(answer))
-                    .map(str::to_string)
-            })
-            .collect();
-
+        // Carried AI questions are appended first so the structured pass below
+        // covers them too — the record still holds their options, answer, and
+        // custom text under the same id.
         let known: HashSet<&str> = self.questions.iter().map(|q| q.id.as_str()).collect();
-        let carried: Vec<(PlanQuestion, Option<String>)> = record
+        let carried: Vec<PlanQuestion> = record
             .questions
             .iter()
-            .enumerate()
-            .filter(|(_, question)| {
+            .filter(|question| {
                 matches!(question.source, QuestionSource::Ai { .. })
                     && !known.contains(question.id.as_str())
             })
-            .map(|(index, question)| {
-                (
-                    question.clone(),
-                    record.answers.get(index).cloned().flatten(),
-                )
+            .cloned()
+            .collect();
+        self.questions.extend(carried);
+
+        let adopted: Vec<(Option<String>, String)> = self
+            .questions
+            .iter()
+            .map(|question| {
+                let Some(raw) = record.answer_for(&question.id) else {
+                    return (None, String::new());
+                };
+                match &question.kind {
+                    PlanQuestionKind::FreeText => (Some(raw.to_string()), String::new()),
+                    PlanQuestionKind::Select(options) => {
+                        let stored_custom = record.custom_answer_for(&question.id);
+                        let (indices, custom) = split_choice_answer(raw, stored_custom, options);
+                        let labels: Vec<&str> = indices
+                            .iter()
+                            .filter_map(|&index| options.get(index))
+                            .map(String::as_str)
+                            .collect();
+                        (serialize_choice_answer(&labels, &custom), custom)
+                    }
+                }
             })
             .collect();
-        for (question, answer) in carried {
-            self.questions.push(question);
-            self.answers.push(answer);
-        }
+        self.answers = adopted.iter().map(|(answer, _)| answer.clone()).collect();
+        self.custom_answers = adopted.into_iter().map(|(_, custom)| custom).collect();
     }
 
     /// Adopt the feature's last accepted interview as this run's starting point,
@@ -5581,6 +6019,15 @@ impl PlanInterviewState {
             .filter_map(|(question, answer)| {
                 answer.clone().map(|answer| (question.id.clone(), answer))
             })
+            .collect();
+        // The custom-text half of a pre-filled choice answer, so Ctrl+R can put
+        // back the elaboration as well as the selection.
+        self.prior_custom_answers = self
+            .questions
+            .iter()
+            .zip(self.custom_answers.iter())
+            .filter(|(_, custom)| !custom.trim().is_empty())
+            .map(|(question, custom)| (question.id.clone(), custom.clone()))
             .collect();
 
         self.brief = self.prior_brief.clone().unwrap_or_default();
@@ -5614,8 +6061,20 @@ impl PlanInterviewState {
             .map(|question| self.prior_answers.get(&question.id).cloned())
             .collect();
         self.answers = baseline;
+        self.custom_answers = self
+            .questions
+            .iter()
+            .map(|question| {
+                self.prior_custom_answers
+                    .get(&question.id)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
         self.question_index = 0;
-        self.selected_option = 0;
+        self.selected_option = None;
+        self.custom_answer_focused = false;
+        self.custom_answer_backup = None;
         self.phase = PlanInterviewPhase::Brief;
         self.editor = TextEditor::new(self.brief.clone());
         true
@@ -5624,20 +6083,30 @@ impl PlanInterviewState {
     /// How the step on screen compares with the previously accepted answer for
     /// it, or `None` when there is no previous answer to compare against.
     pub fn prior_answer_state(&self) -> Option<PriorAnswerState> {
-        let (prior, current) = match self.phase {
-            PlanInterviewPhase::Brief => (self.prior_brief.as_deref()?, self.editor.text()),
+        let (prior, current): (String, String) = match self.phase {
+            PlanInterviewPhase::Brief => (
+                self.prior_brief.as_deref()?.to_string(),
+                self.editor.text().to_string(),
+            ),
             PlanInterviewPhase::StaticQuestions => {
                 let question = self.questions.get(self.question_index)?;
-                let prior = self.prior_answers.get(&question.id)?.as_str();
+                let prior = self.prior_answers.get(&question.id)?.clone();
                 match &question.kind {
-                    PlanQuestionKind::FreeText => (prior, self.editor.text()),
-                    PlanQuestionKind::Select(options) => (
-                        prior,
-                        options
-                            .get(self.selected_option)
+                    PlanQuestionKind::FreeText => (prior, self.editor.text().to_string()),
+                    // The whole choice answer — selection plus custom text —
+                    // compared as the one serialized string it is stored as, so
+                    // adding an elaboration to a kept option reads as "changed".
+                    PlanQuestionKind::Select(options) => {
+                        let labels: Vec<&str> = self
+                            .selected_option
+                            .and_then(|index| options.get(index))
                             .map(String::as_str)
-                            .unwrap_or_default(),
-                    ),
+                            .into_iter()
+                            .collect();
+                        let current = serialize_choice_answer(&labels, self.editor.text())
+                            .unwrap_or_default();
+                        (prior, current)
+                    }
                 }
             }
             _ => return None,
@@ -5680,18 +6149,22 @@ impl PlanInterviewState {
                         self.editor = TextEditor::new(prior);
                         true
                     }
-                    // Adoption keeps only answers the question still offers, so
-                    // this normally finds one. The lookup stays defensive: an
-                    // answer with nothing to select is reported as "nothing
+                    // Restore both halves the previous interview accepted: the
+                    // radio selection and the custom-text elaboration. Adoption
+                    // keeps only a selection the question still offers, so an
+                    // answer that survives as neither is reported as "nothing
                     // restored" rather than moving the highlight to option 0.
                     PlanQuestionKind::Select(options) => {
-                        match options.iter().position(|option| *option == prior) {
-                            Some(index) => {
-                                self.selected_option = index;
-                                true
-                            }
-                            None => false,
+                        let prior_custom = self.prior_custom_answers.get(&id).map(String::as_str);
+                        let (indices, custom) = split_choice_answer(&prior, prior_custom, options);
+                        if indices.is_empty() && custom.trim().is_empty() {
+                            return false;
                         }
+                        self.selected_option = indices.first().copied();
+                        self.editor = TextEditor::new(custom);
+                        self.custom_answer_focused = false;
+                        self.custom_answer_backup = None;
+                        true
                     }
                 }
             }
@@ -5712,6 +6185,14 @@ impl PlanInterviewState {
             brief: self.brief.clone(),
             questions: self.questions.clone(),
             answers: self.answers.clone(),
+            // The custom-text half of every choice answer, so a resumed or
+            // re-run interview can restore the selection and the elaboration
+            // together. Blank entries persist as `None`.
+            custom_answers: self
+                .custom_answers
+                .iter()
+                .map(|custom| (!custom.trim().is_empty()).then(|| custom.clone()))
+                .collect(),
             // A draft holds the plan only once one has been generated, so
             // resuming after synthesis does not silently re-spend those tokens.
             plan: self.synthesized_plan.clone(),
@@ -6073,6 +6554,8 @@ impl PlanInterviewState {
         }
         let first_new_index = self.questions.len();
         self.answers.extend(new_questions.iter().map(|_| None));
+        self.custom_answers
+            .extend(new_questions.iter().map(|_| String::new()));
         self.questions.extend(new_questions);
         self.phase = PlanInterviewPhase::StaticQuestions;
         self.question_index = first_new_index;
@@ -6087,33 +6570,51 @@ impl PlanInterviewState {
         }
     }
 
-    pub fn select_previous_option(&mut self) {
-        let option_count = self
-            .current_question()
+    fn current_option_count(&self) -> usize {
+        self.current_question()
             .and_then(|question| match &question.kind {
                 PlanQuestionKind::Select(options) => Some(options.len()),
                 PlanQuestionKind::FreeText => None,
             })
-            .unwrap_or(0);
-        if option_count > 0 {
-            self.selected_option = self
-                .selected_option
-                .checked_sub(1)
-                .unwrap_or(option_count - 1);
+            .unwrap_or(0)
+    }
+
+    /// Move the option highlight up, wrapping. From "nothing picked" this lands
+    /// on the last option — the arrows always settle on a real choice; leaving
+    /// the options untouched is how a user answers with custom text alone.
+    pub fn select_previous_option(&mut self) {
+        let option_count = self.current_option_count();
+        if option_count == 0 {
+            return;
         }
+        self.selected_option = Some(match self.selected_option {
+            None | Some(0) => option_count - 1,
+            Some(index) => index - 1,
+        });
     }
 
     pub fn select_next_option(&mut self) {
-        let option_count = self
-            .current_question()
-            .and_then(|question| match &question.kind {
-                PlanQuestionKind::Select(options) => Some(options.len()),
-                PlanQuestionKind::FreeText => None,
-            })
-            .unwrap_or(0);
-        if option_count > 0 {
-            self.selected_option = (self.selected_option + 1) % option_count;
+        let option_count = self.current_option_count();
+        if option_count == 0 {
+            return;
         }
+        self.selected_option = Some(match self.selected_option {
+            None => 0,
+            Some(index) => (index + 1) % option_count,
+        });
+    }
+
+    /// Return a choice question to the "nothing picked" state. Because the arrow
+    /// keys only ever move between real options, this is the sole way back once
+    /// a pick has been made — and "nothing picked" is a real answer: it is how a
+    /// user submits with custom text alone. Returns `false` when the current
+    /// question is not a choice or nothing was picked.
+    pub fn clear_option_selection(&mut self) -> bool {
+        if self.current_option_count() == 0 || self.selected_option.is_none() {
+            return false;
+        }
+        self.selected_option = None;
+        true
     }
 
     /// Save the current input and move to the next interview step.
@@ -6188,7 +6689,9 @@ impl PlanInterviewState {
                 self.save_current_draft();
                 self.phase = PlanInterviewPhase::Brief;
                 self.editor = TextEditor::new(self.brief.clone());
-                self.selected_option = 0;
+                self.selected_option = None;
+                self.custom_answer_focused = false;
+                self.custom_answer_backup = None;
                 true
             }
             PlanInterviewPhase::StaticQuestions => {
@@ -6292,7 +6795,23 @@ impl PlanInterviewState {
                     Some(text.to_string())
                 }
             }
-            PlanQuestionKind::Select(options) => options.get(self.selected_option).cloned(),
+            // A choice answer is the picked option label(s) and the trimmed
+            // custom text, combined into one plain string. Nothing picked and
+            // blank custom text records as no answer — which the gate below
+            // blocks for a required question, exactly as for free text.
+            PlanQuestionKind::Select(options) => {
+                let custom = self.editor.text().trim().to_string();
+                if let Some(slot) = self.custom_answers.get_mut(self.question_index) {
+                    *slot = custom.clone();
+                }
+                let labels: Vec<&str> = self
+                    .selected_option
+                    .and_then(|index| options.get(index))
+                    .map(String::as_str)
+                    .into_iter()
+                    .collect();
+                serialize_choice_answer(&labels, &custom)
+            }
         };
         if answer.is_none() && !question.optional && !allow_empty_optional {
             return Err(PlanInterviewAdvanceError::AnswerRequired);
@@ -6318,24 +6837,125 @@ impl PlanInterviewState {
         }
     }
 
+    /// Load the answer stored for the question now on screen into the transient
+    /// `selected_option` / `editor` scratch. For a choice question this rebuilds
+    /// the structured control from the serialized string and the stored custom
+    /// text, so revisiting an answered question shows the radio selection and
+    /// the custom-text box — never a flat editable string.
     fn load_current_answer(&mut self) {
         let existing = self
             .answers
             .get(self.question_index)
-            .and_then(|answer| answer.as_deref());
+            .and_then(|answer| answer.clone());
+        let stored_custom = self
+            .custom_answers
+            .get(self.question_index)
+            .cloned()
+            .unwrap_or_default();
+        self.custom_answer_focused = false;
+        self.custom_answer_backup = None;
         match self.questions.get(self.question_index).map(|q| &q.kind) {
             Some(PlanQuestionKind::FreeText) => {
-                self.editor = TextEditor::new(existing.unwrap_or_default().to_string());
-                self.selected_option = 0;
+                self.editor = TextEditor::new(existing.unwrap_or_default());
+                self.selected_option = None;
             }
             Some(PlanQuestionKind::Select(options)) => {
-                self.editor = TextEditor::new(String::new());
-                self.selected_option = existing
-                    .and_then(|answer| options.iter().position(|option| option == answer))
-                    .unwrap_or(0);
+                let stored = (!stored_custom.is_empty()).then_some(stored_custom.as_str());
+                let (indices, custom) = match existing.as_deref() {
+                    Some(combined) => split_choice_answer(combined, stored, options),
+                    None => (Vec::new(), stored_custom.clone()),
+                };
+                self.selected_option = indices.first().copied();
+                self.editor = TextEditor::new(custom);
             }
             None => {}
         }
+    }
+
+    /// Open the inline custom-answer editor for the choice question on screen.
+    /// The current buffer is stashed so `Esc` can restore it; `false` when the
+    /// phase or question is wrong or the editor is already focused.
+    pub fn open_custom_answer_editor(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::StaticQuestions || self.custom_answer_focused {
+            return false;
+        }
+        if !matches!(
+            self.current_question().map(|q| &q.kind),
+            Some(PlanQuestionKind::Select(_))
+        ) {
+            return false;
+        }
+        self.custom_answer_backup = Some(self.editor.text().to_string());
+        self.custom_answer_focused = true;
+        true
+    }
+
+    /// Commit the custom-answer edit: trim the buffer, record it, and return
+    /// focus to the option list without submitting the question. The serialized
+    /// answer is refreshed too, so a draft persisted right after a commit
+    /// round-trips even though the question has not been advanced through.
+    pub fn commit_custom_answer(&mut self) {
+        if !self.custom_answer_focused {
+            return;
+        }
+        let trimmed = self.editor.text().trim().to_string();
+        self.editor = TextEditor::new(trimmed.clone());
+        if let Some(slot) = self.custom_answers.get_mut(self.question_index) {
+            *slot = trimmed.clone();
+        }
+        let recorded = match self.questions.get(self.question_index).map(|q| &q.kind) {
+            Some(PlanQuestionKind::Select(options)) => {
+                let labels: Vec<&str> = self
+                    .selected_option
+                    .and_then(|index| options.get(index))
+                    .map(String::as_str)
+                    .into_iter()
+                    .collect();
+                Some(serialize_choice_answer(&labels, &trimmed))
+            }
+            _ => None,
+        };
+        if let Some(answer) = recorded
+            && let Some(slot) = self.answers.get_mut(self.question_index)
+        {
+            *slot = answer;
+        }
+        self.custom_answer_focused = false;
+        self.custom_answer_backup = None;
+    }
+
+    /// Abandon the custom-answer edit, restoring the buffer captured when it was
+    /// opened.
+    pub fn cancel_custom_answer(&mut self) {
+        if !self.custom_answer_focused {
+            return;
+        }
+        let restore = self.custom_answer_backup.take().unwrap_or_default();
+        self.editor = TextEditor::new(restore);
+        self.custom_answer_focused = false;
+    }
+
+    /// Forward a key to the focused custom-answer editor, enforcing the
+    /// character cap by reverting any edit that would exceed it (a paste, or a
+    /// keystroke at the limit).
+    pub fn custom_answer_handle_key(&mut self, key: crossterm::event::KeyEvent) {
+        if !self.custom_answer_focused {
+            return;
+        }
+        let before = self.editor.text().to_string();
+        self.editor.handle_key(key);
+        if self.editor.text().chars().count() > CUSTOM_ANSWER_MAX_LEN {
+            self.editor = TextEditor::new(before);
+        }
+    }
+
+    /// Whether the question on screen is a choice question (so the custom-answer
+    /// box is shown and `e` is bound).
+    pub fn current_question_is_choice(&self) -> bool {
+        matches!(
+            self.current_question().map(|q| &q.kind),
+            Some(PlanQuestionKind::Select(_))
+        )
     }
 }
 
@@ -6456,6 +7076,13 @@ pub enum VisibleItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key_char(c: char) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
 
     // ── SessionFilter::next ───────────────────────────────────
 
@@ -6835,15 +7462,135 @@ mod tests {
         state.editor = TextEditor::new("A useful feature".into());
         state.advance().unwrap();
 
+        // From "nothing picked" the up-arrow wraps to the last option.
         state.select_previous_option();
-        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.selected_option, Some(1));
         state.advance().unwrap();
         assert_eq!(state.answers[0].as_deref(), Some("Session"));
 
         assert!(state.back());
-        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.selected_option, Some(1));
         state.select_next_option();
-        assert_eq!(state.selected_option, 0);
+        assert_eq!(state.selected_option, Some(0));
+    }
+
+    #[test]
+    fn plan_interview_clear_option_selection_returns_to_nothing_picked() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        // No-op with nothing picked.
+        assert!(!state.clear_option_selection());
+
+        state.select_next_option();
+        assert_eq!(state.selected_option, Some(0));
+
+        // A stray pick can be undone in place.
+        assert!(state.clear_option_selection());
+        assert_eq!(state.selected_option, None);
+        assert!(!state.clear_option_selection());
+    }
+
+    #[test]
+    fn plan_interview_choice_question_takes_a_custom_answer_with_or_without_a_pick() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        // Custom text alone answers a required choice question.
+        assert!(state.open_custom_answer_editor());
+        state.custom_answer_handle_key(key_char('t'));
+        state.custom_answer_handle_key(key_char('u'));
+        state.custom_answer_handle_key(key_char('i'));
+        state.commit_custom_answer();
+        assert!(!state.custom_answer_focused);
+        assert_eq!(state.selected_option, None);
+        state.advance().unwrap();
+        assert_eq!(state.answers[0].as_deref(), Some("tui"));
+
+        // Revisiting re-presents the structured control: no pick, custom text
+        // back in the box.
+        assert!(state.back());
+        assert_eq!(state.selected_option, None);
+        assert_eq!(state.editor.text(), "tui");
+
+        // Pick an option and keep the elaboration: the two combine.
+        state.select_next_option();
+        assert_eq!(state.selected_option, Some(0));
+        state.advance().unwrap();
+        assert_eq!(state.answers[0].as_deref(), Some("Dashboard — tui"));
+
+        // And that round-trips back to selection + custom text.
+        assert!(state.back());
+        assert_eq!(state.selected_option, Some(0));
+        assert_eq!(state.editor.text(), "tui");
+    }
+
+    #[test]
+    fn plan_interview_blank_custom_answer_and_no_pick_stays_unanswered() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        // Nothing picked, custom text blank: a required question blocks submit.
+        assert_eq!(
+            state.advance(),
+            Err(PlanInterviewAdvanceError::AnswerRequired)
+        );
+        assert_eq!(state.answers[0], None);
+
+        // Esc restores the buffer the editor opened with.
+        assert!(state.open_custom_answer_editor());
+        state.custom_answer_handle_key(key_char('x'));
+        state.cancel_custom_answer();
+        assert_eq!(state.editor.text(), "");
+        assert!(!state.custom_answer_focused);
+    }
+
+    #[test]
+    fn plan_interview_custom_answer_enforces_the_length_cap() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where?".into(),
+            kind: PlanQuestionKind::Select(vec!["A".into(), "B".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: true,
+        };
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
+        state.editor = TextEditor::new("brief".into());
+        state.advance().unwrap();
+
+        assert!(state.open_custom_answer_editor());
+        state.editor = TextEditor::new("x".repeat(CUSTOM_ANSWER_MAX_LEN));
+        // One more character is rejected; the buffer is left at the cap.
+        state.custom_answer_handle_key(key_char('y'));
+        assert_eq!(state.editor.text().chars().count(), CUSTOM_ANSWER_MAX_LEN);
     }
 
     /// A record whose select answer names an option the question no longer
@@ -6916,10 +7663,11 @@ mod tests {
         assert!(state.resume_from_draft());
 
         assert_eq!(state.answers[0], None);
-        // The question is unanswered again, so the resume lands on it.
+        // The question is unanswered again, so the resume lands on it with
+        // nothing picked.
         assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
         assert_eq!(state.question_index, 0);
-        assert_eq!(state.selected_option, 0);
+        assert_eq!(state.selected_option, None);
     }
 
     /// A select answer the rewritten options still contain is pre-filled, and on
@@ -6935,7 +7683,7 @@ mod tests {
         assert_eq!(state.answers[0].as_deref(), Some("Session"));
         state.phase = PlanInterviewPhase::StaticQuestions;
         state.load_current_answer();
-        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.selected_option, Some(1));
         assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
     }
 
@@ -6984,6 +7732,7 @@ mod tests {
             brief: "Ship the interview.".into(),
             questions,
             answers,
+            custom_answers: Vec::new(),
             plan: None,
             ai_rounds_completed: 0,
             created_at: String::new(),

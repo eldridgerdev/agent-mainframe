@@ -1,10 +1,16 @@
 # Feature TODOs
 
-- **Status:** All epics shipped, including Epic 7 (plan mode from a
-  TODO). Epics 2–6 (session kind, native view, editing, spawn agent from a
-  TODO, quick-capture + scratchpad, help-overlay wiring, docs) plus Epic
-  1's final item — the host-feature deletion re-home/delete prompt
-  (`AppMode::TodosHostReassign`) — were complete before it.
+- **Status:** All epics shipped, including the Epic 8 follow-up for
+  independently showing project and global scopes, Epic 9 (durable not-started
+  / in-progress / completed lifecycle), Epic 8 (scoped lists — worktree /
+  project / global), and Epic 7 (plan mode from a TODO). Epics
+  2–6 (session kind, native view, editing, spawn agent from a TODO,
+  quick-capture + scratchpad, help-overlay wiring, docs) plus Epic 1's
+  final item — the host-feature deletion re-home/delete prompt
+  (`AppMode::TodosHostReassign`) — were complete before those.
+- **Superseded:** Epic 8 reversed two of the original interview
+  decisions — one list per project, and one TODOs session per project.
+  Both are marked below where they appear.
 - **Owner:** unassigned
 - **Relates to:** `SessionKind` (`src/project.rs`), session picker
   (`src/app/session_ops.rs`, `src/handlers/picker.rs`), composer seed
@@ -30,28 +36,40 @@ sent.
   `SessionKind::Todos` is added through the `S` session picker, "just
   like any other" session. If no TODOS session has been started for a
   project, nothing shows — there is no always-on row.
-- **At most one TODOS session per project.** Enforced across all of the
-  project's features. The picker hides/greys the option (or jumps to
-  the existing one) when the project already has a TODOS session. The
-  session lives under whichever feature it was created in; that feature
-  is the **host feature**, and all of the project's TODOs belong to it.
+- ~~**At most one TODOS session per project.**~~ **Superseded by Epic
+  8:** one TODOs session per **feature**, gated by
+  `Feature::has_todos_session()`. A feature's editor opens on its own
+  worktree list, with the project and global lists reachable as side
+  panes. The original decision — one session per project, hosted by
+  whichever feature created it — is what Epic 8 exists to undo: it put
+  work belonging to one checkout in the same list as work belonging to
+  every other.
 - **Native UI, not tmux-backed.** Opening the TODOS session enters a
   native AMF overlay/mode rather than attaching to a tmux pane.
   `SessionKind::Todos.is_agent_harness()` is `false` and no tmux window
   is created for it.
 - **SQLite persistence.** Stored in the existing `amf.db` via a new
   migration and access module — not in the `ProjectStore` JSON blob.
-- **Spawn into the host feature.** Launching an agent for a TODO always
+- **Spawn into the host feature.** Launching an agent for a TODO
   creates the new session inside the feature the TODO belongs to (same
   worktree/branch), seeds the composer with a generated prompt, and
   leaves it **editable before sending** (seeded, not auto-submitted).
-- **Item fields:** done checkbox, priority, notes/detail body, and a
-  link to the spawned session.
+  **Amended by Epic 8:** still true for a worktree-scoped TODO. A
+  project- or global-scoped TODO belongs to no one checkout, so there is
+  nothing to infer and the user picks the feature; that feature then
+  supplies the agent and mode exactly as a host feature would.
+- **Item fields:** lifecycle status (not started / in progress / completed),
+  priority, notes/detail body, and an optional agent-session association.
 - **Extras in scope:** reorder items, editable composer prompt before
   launch, a list-level "left off here" carry-over note, and
   quick-capture of a TODO from inside any session view.
 
 ## Proposed design
+
+> **Note:** this section records the design as originally proposed. The
+> schema and the one-session-per-project rule below were both reshaped
+> by **Epic 8** — see its checklist for the shipped shape
+> (`MIGRATION_025`, `TodoScope`, `Feature::has_todos_session()`).
 
 ### Data model
 
@@ -355,6 +373,186 @@ walking it: wrapped option details lost their hanging indent, since
 `Paragraph` wrapping restarts continuation lines at column zero
 (`detail_lines`).
 
+### Epic 8 — Scoped lists (worktree / project / global)
+
+Shipped. Undoes this doc's founding assumption that a project has one
+list. Work belonging to one checkout no longer sits in the same list as
+work belonging to every other, and the first feature to add a TODOs
+session no longer claims it for the whole repo. The decisions below come
+from a feature-discovery interview; the working plan lived in the
+branch's (gitignored) `AMF_PLAN.md`, so its conclusions are recorded
+here rather than linked.
+
+- [x] `TodoScope::{Worktree, Project, Global}` (`src/db/todos.rs`) is
+      the whole key to a list. A worktree list is keyed by **workdir
+      path**, not feature id — the list belongs to the checkout, not to
+      whichever row points at it. The variants are declared
+      narrowest-first and `rank()` makes that order explicit, because it
+      is also the order ties between scopes resolve.
+- [x] `MIGRATION_025` reshapes `todo_lists`: adds `scope` and `workdir`,
+      relaxes `project_id`/`feature_id` to nullable, and replaces the
+      `project_id UNIQUE` constraint with three partial unique indexes
+      (one project list per project, one worktree list per
+      (project, workdir), one global list per machine). A **table
+      rebuild**, not an `ALTER` — the last two changes cannot be
+      expressed any other way in SQLite — run with `foreign_keys` off in
+      both directions: with them on, `DROP TABLE todo_lists` would fire
+      `todos`' `ON DELETE CASCADE` and take every TODO in the database
+      with it, and `ALTER TABLE ... RENAME` would rewrite `todos`' own
+      `REFERENCES` clause to the temporary name. Existing rows are
+      backfilled to `scope='project'` with id, host feature, scratchpad,
+      and links intact.
+- [x] `Project::has_todos_session()` replaced by
+      `Feature::has_todos_session()`; both `s`-picker gates and the
+      create guard updated. A repo-root feature still gets a session —
+      its editor opens on the project + global panes, and under the
+      side-pane-only entry point that is its only route to the global
+      list.
+- [x] `TodoViewState` holds `panes: Vec<TodoPane>` ordered worktree →
+      project → global, each owning its list, items, cursor, scroll, and
+      scratchpad. Lists are *loaded* on open and created lazily on first
+      write, so an untouched scope leaves no row behind.
+- [x] One rule for "visible", used by both rendering and view-level actions:
+      the worktree pane is unconditional, while process-lifetime project and
+      global flags independently include or exclude those scopes. Both begin
+      visible on launch and are shared across TODO views without being written
+      to config or SQLite. A repo-root feature may hide both optional scopes;
+      labeled placeholders keep them discoverable while `I`, navigation, and
+      other cross-pane actions see no actionable list.
+- [x] Overlay keys: `Tab`/`BackTab` cycle focus across visible panes, `p`
+      toggles project visibility, `g` toggles global visibility, and `M`/`C`
+      move/copy across visible scopes. Hiding the focused pane advances focus
+      in worktree → project → global order with wraparound. To avoid
+      conflicts, priority is `P`, launching/planning is `Enter`, and the old
+      `\` combined reveal is removed.
+      `pane_slots` handles narrow terminals — 3 panes at ≥120 cols, 2 at
+      ≥72, 1 below, with the focused pane always drawn and the worktree
+      pane keeping its slot whenever there is room for a second.
+- [x] Move vs copy is a semantic difference: `move_todo` carries
+      `spawned_session_id`, `linked_feature_id`, and `in_progress` — the
+      same work, re-filed — while `copy_todo` clears all three, so two
+      panes never claim one session and "implement next" does not hold
+      both in reserve for work only one of them describes. Both append
+      at the destination's `sort_order` end.
+- [x] `next_todo_across(&[&[Todo]], skipped)` generalises
+      `next_todo_index` (kept as its `#[cfg(test)]` one-list form). It
+      concatenates the lists in scope order and **stable**-sorts by
+      priority rank, which gives the intended rule exactly: priority
+      first, scope as the between-list tie-break, manual `sort_order` as
+      the within-list one. The reserve-not-skip rule for started items is
+      unchanged, now across scopes.
+- [x] `AppMode::TodoSpawnTarget` — a feature picker for a project- or
+      global-scoped spawn, stashing its origin mode as `Box<AppMode>` for
+      the same reason `TodoImplementChoice` does: one of its two callers
+      has no overlay open. A project TODO lists that project's features,
+      a global one lists every project's.
+- [x] Session lookup is now **store-wide** (`session_indices_by_id`). A
+      TODO's agent used to be guaranteed to live in the list's host
+      feature; with project/global scopes and cross-scope moves it is
+      not, so "is this session still alive?" became a question about the
+      session rather than about which list holds the row.
+      `todos_reconcile_dead_sessions` uses the same lookup.
+- [x] `AppMode::TodoDeleteDisposition` gates `delete_feature` when the
+      feature's worktree list still holds unfinished items — move to the
+      project list, move to the global list, delete, or cancel. Blocking
+      by design: deleting a worktree is hard to reverse, and nothing is
+      killed or removed until it is answered. `apply_todo_disposition` is
+      split out from the confirm handler so the re-filing is testable
+      without driving a real tmux kill and worktree removal.
+- [x] Quick-capture (`Ctrl+Space` `N`) and Learning Mode's keep-as-TODO
+      both target `default_todo_scope(pi, fi)` — the feature's worktree
+      list, or the project's at the repo root — and the capture overlay
+      names the list it will write to.
+- [x] Project deletion drops the project's list **and** every worktree
+      list under it (`delete_todo_lists_for_project`); the global list
+      belongs to no project and survives.
+- [x] `README.md`, help overlay, `CLAUDE.md`'s Feature TODOs section, and
+      `CHANGELOG.md` updated; 27 new unit tests covering scope-aware
+      selection, move/copy link semantics, quick-capture target
+      resolution, pane visibility and focus, and every disposition
+      outcome.
+
+**Verified against a real database:** `MIGRATION_025` was run over a copy
+of a live `~/.config/amf/amf.db` — same list id, same host feature, all 23
+items intact, `carry_over` preserved, and `PRAGMA foreign_key_check`
+clean afterwards, with `todos` still referencing the rebuilt table.
+
+**Verified by running the app** (`scripts/dev/screenshot/amf-capture.sh`,
+throwaway repo + scratch instance): `p` and `g` independently hide their
+scopes, each hidden pane becomes a labeled placeholder without exposing its
+TODO contents, hiding the focused pane advances focus, and restoring a pane
+preserves its items. A repo-root feature can hide both project and global
+scopes at once without leaving an actionable pane. The earlier scoped-list
+flow also verified `M` move behavior, cross-scope `I`, deletion disposition,
+and the 200 / 100 / 60-column fallbacks.
+
+### Epic 9 — Durable TODO assignment lifecycle
+
+Shipped. Replaces the independent `done` / `in_progress` flags and loosely
+related spawned-session link with one explicit lifecycle plus an optional
+agent association. An item is reserved before AMF launches its agent, so the
+same TODO cannot accidentally be assigned twice and `I` has one authoritative
+definition of eligible work.
+
+- [x] `TodoStatus::{NotStarted, InProgress, Completed}` and `TodoWorkState`
+      define the valid states. `MIGRATION_028` adds the persisted status and
+      association, preserves completed rows, and maps every incomplete legacy
+      row to not started with no association.
+- [x] `Space` and `x` both cycle not started → in progress → completed; the
+      editor renders `[ ]`, `[~]`, and `[x]`, reports open / work-in-progress /
+      done counts, and the help overlay describes the same state machine.
+- [x] Direct TODO launches and accepted TODO-plan launches reserve the item
+      before creating an agent, save the new `FeatureSession` id once known,
+      and roll back to not started if agent creation or composer seeding fails.
+- [x] Starting the TODO plan workflow marks the originating item in progress
+      as soon as **Plan this TODO first** is confirmed, before the destination
+      picker. The shared idempotent transition preserves the item's scope,
+      order, content, priority, feature link, and any existing session
+      association across worktree, project, and global lists. Cancelling later
+      plan or feature setup leaves it in progress because planning already
+      began; direct agent launch failures keep their existing rollback.
+- [x] An explicit attempt to launch an in-progress TODO is blocked. Dashboard
+      and editor `I` selection consider only not-started items, while existing
+      priority, scope, and manual-order tie-breaking remain unchanged.
+- [x] Startup and status reconciliation clear an association whose session no
+      longer exists, but deliberately leave the TODO in progress; stopping or
+      deleting an agent is not evidence that the work itself is abandoned.
+- [x] Database, app-state, launch-flow, selection, reconciliation, rendering,
+      and migration tests cover the lifecycle and its failure paths.
+
+**Verified by running the app** in a throwaway AMF instance at 120×40: all
+three markers and counts rendered together, the launch chooser identified an
+in-progress item, a duplicate launch was blocked with an explanatory message,
+and dashboard `I` opened the TODO-specific composer with the item prompt seeded
+and unsent. The plan-start transition was separately captured before planning,
+at the destination picker, and after cancelling back to the list in
+`docs/screenshots/todo-assignment-lifecycle/`; the final frame shows `[~]` and
+`1 wip` while preserving the selected row.
+
+### Epic 10 — Active TODO references in agent sidebars
+
+Shipped. TODO-menu-launched agent sessions now retain a stable reference to
+their originating item. The embedded-session sidebar resolves the current
+TODO after scope moves and shows only the viewed session's TODO title and
+open/completed state. Confirmed completion leaves the reference visible;
+starting another TODO in that session replaces it. Deleting a TODO clears its
+session references.
+
+- [x] Persist TODO identity and TODO-menu launch provenance on sessions.
+- [x] Resolve moved TODOs by stable identity and maintain references across
+      move, completion, and deletion paths.
+- [x] Render the hidden-empty Active TODO sidebar section with title,
+      open/completed state, and completion hint.
+- [x] Add confirmation, cancellation, and completion feedback to
+      embedded-session handling and help.
+- [x] Add focused persistence, completion, resolution, deletion, and sidebar
+      rendering coverage.
+
+**Automated validation:** `cargo check`, `cargo clippy -- -D warnings`, and
+the full 2,334-test suite pass. Interactive multi-session spawning and
+completion still benefit from a live manual verification with provider
+credentials.
+
 ## Open (not built)
 
 - **Cancelling after the worktree exists** leaves an orphan checkout with
@@ -367,14 +565,34 @@ walking it: wrapped option details lost their hanging indent, since
 - **New-feature accept is unproven by a real run** — the
   `linked_feature_id` write and the harness kickoff need a live harness
   rather than a seeded draft. Pi's seeding path specifically is untested.
+- **Plan mode from a project- or global-scoped TODO** still offers
+  "here, in the host feature", resolving to whichever feature the editor
+  was opened under. Epic 8's pick-a-feature decision was scoped to
+  spawning an agent (`g`/`Enter`/`I`), not to the plan interview.
+- **Worktree keys are only separator-normalised** (`todo_workdir_key`).
+  Symlinks and case are not, so one checkout reachable by two different
+  real paths would get two lists. Left as-is because AMF stores the
+  workdir it created, so the paths it compares come from one source.
+- **The feature picker does not remember a target per TODO.** The cursor
+  defaults to the feature the editor was opened under, which was one
+  keypress in practice; revisit only if that default proves wrong often.
+- **The global list has no standalone entry point** — no dashboard key,
+  no `s`-picker entry, no leader command. It is reachable only as a side
+  pane of a TODO editor, which is also why a repo-root feature has to
+  keep getting a TODOs session.
 
 ## Resolved decisions
 
-- **Quick-capture with no list yet → auto-create.** If the project has
+- **Quick-capture with no list yet → auto-create.** If the feature has
   no TODOS session, quick-capture silently creates the `todo_lists` row
   (and the `Todos` session under the current feature) before appending
-  the item, so capture never fails.
-- **Host-feature deletion → prompt to re-home _or_ delete.** "Re-home"
+  the item, so capture never fails. **Amended by Epic 8:** the target is
+  the feature's own worktree list, or the project's when the feature sits
+  on the repo root, and the overlay names it.
+- **Host-feature deletion → prompt to re-home _or_ delete.** (Epic 8:
+  this is now about the **project**-scoped list only. A worktree list
+  belongs to a checkout rather than to a host feature, and it is settled
+  by the disposition prompt before the deletion runs.) "Re-home"
   means: the list itself is project-scoped, so rather than deleting all
   the TODOs along with the feature that happened to host them, AMF
   reassigns the list's `feature_id` to a different surviving feature of
@@ -388,7 +606,10 @@ walking it: wrapped option details lost their hanging indent, since
   rather than creating a second session. Create a new session only when
   there is no live linked session.
 - **Spawned-session agent settings → inherit.** Use the host feature's
-  configured agent / vibe / plan settings; no prompt.
+  configured agent / vibe / plan settings; no prompt. **Amended by Epic
+  8:** unchanged for a worktree TODO. For a project or global TODO the
+  settings are inherited from the feature the user picks — the prompt is
+  about *where*, never about the settings.
 - **Done items → keep visible, delete per-item.** Completed TODOs stay
   shown (strikethrough / grouped) indefinitely. There is no bulk "clear
   completed"; the per-item delete (`d`) fully removes an item. Deleting

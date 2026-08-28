@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use crate::project::{
     AgentKind, CURRENT_PROJECT_STORE_VERSION, Feature, FeatureSession, Project, ProjectStatus,
-    ProjectStore, SessionBookmark, SessionKind, TokenUsageSourceMatch, VibeMode,
+    ProjectStore, SessionBookmark, SessionKind, TodoSessionReference, TokenUsageSourceMatch,
+    VibeMode,
 };
 use crate::prompt_library::{PromptPlaceholder, PromptTemplate};
 use crate::token_tracking::TokenUsageSource;
@@ -231,7 +232,7 @@ fn load_prompt_templates(conn: &Connection) -> Result<Vec<PromptTemplate>> {
 /// One `features` row in SELECT column order (see `load_features`): id, name,
 /// branch, workdir, is_worktree, tmux_session, mode, review, plan_mode, agent,
 /// enable_chrome, status, summary, summary_updated_at, nickname, collapsed,
-/// created_at, last_accessed, ready.
+/// created_at, last_accessed, ready, triage_source, selected_plan_path.
 type FeatureRow = (
     String,
     String,
@@ -253,6 +254,7 @@ type FeatureRow = (
     String,
     bool,
     Option<String>,
+    Option<String>,
 );
 
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
@@ -260,7 +262,8 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         "SELECT id, name, branch, workdir, is_worktree, tmux_session,
                 mode, review, plan_mode, agent, enable_chrome, status,
                 summary, summary_updated_at, nickname, collapsed,
-                created_at, last_accessed, ready, triage_source
+                created_at, last_accessed, ready, triage_source,
+                selected_plan_path
          FROM features WHERE project_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -288,6 +291,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 row.get(17)?,
                 row.get(18)?,
                 row.get(19)?,
+                row.get(20)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -314,6 +318,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         last_accessed,
         ready,
         triage_source_json,
+        selected_plan_path,
     ) in rows
     {
         let sessions = load_sessions(conn, &feat_id)?;
@@ -340,6 +345,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
             summary,
             summary_updated_at: summary_updated_at_str.as_deref().map(dt_from_str),
             nickname,
+            selected_plan_path: selected_plan_path.map(PathBuf::from),
             // A malformed blob (hand-edited DB, or a row written by a future
             // schema) degrades to "not a triage feature" rather than failing
             // the whole store load.
@@ -355,7 +361,8 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
     let mut stmt = conn.prepare(
         "SELECT id, kind, label, tmux_window, claude_session_id,
                 token_usage_source, token_usage_source_match,
-                created_at, command, on_stop, pre_check
+                created_at, command, on_stop, pre_check,
+                todo_id, todo_launched_from_menu
          FROM feature_sessions WHERE feature_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -368,6 +375,12 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
                 label: row.get(2)?,
                 tmux_window: row.get(3)?,
                 claude_session_id: row.get(4)?,
+                todo_reference: row.get::<_, Option<String>>(11)?.map(|todo_id| {
+                    TodoSessionReference {
+                        todo_id,
+                        launched_from_todo_menu: row.get::<_, i64>(12).unwrap_or(0) != 0,
+                    }
+                }),
                 token_usage_source: row
                     .get::<_, Option<String>>(5)?
                     .as_deref()
@@ -490,9 +503,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                     id, project_id, name, branch, workdir, is_worktree,
                     tmux_session, mode, review, plan_mode, agent, enable_chrome,
                     status, summary, summary_updated_at, nickname, collapsed,
-                    created_at, last_accessed, ready, sort_order, triage_source
+                    created_at, last_accessed, ready, sort_order, triage_source,
+                    selected_plan_path
                 ) VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22
+                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23
                 )",
                 params![
                     feature.id,
@@ -520,6 +534,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         .triage_source
                         .as_ref()
                         .and_then(|link| serde_json::to_string(link).ok()),
+                    feature
+                        .selected_plan_path
+                        .as_ref()
+                        .map(|path| path.to_string_lossy()),
                 ],
             )?;
 
@@ -529,9 +547,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         id, feature_id, kind, label, tmux_window,
                         claude_session_id, token_usage_source,
                         token_usage_source_match, created_at,
-                        command, on_stop, pre_check, sort_order
+                        command, on_stop, pre_check, todo_id,
+                        todo_launched_from_menu, sort_order
                     ) VALUES (
-                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13
+                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15
                     )",
                     params![
                         session.id,
@@ -546,6 +565,15 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         session.command,
                         session.on_stop,
                         session.pre_check,
+                        session
+                            .todo_reference
+                            .as_ref()
+                            .map(|reference| &reference.todo_id),
+                        session
+                            .todo_reference
+                            .as_ref()
+                            .is_some_and(|reference| reference.launched_from_todo_menu)
+                            as i32,
                         si as i64,
                     ],
                 )?;
@@ -641,6 +669,10 @@ mod tests {
             label: "Claude 1".to_string(),
             tmux_window: "claude".to_string(),
             claude_session_id: Some("claude-abc123".to_string()),
+            todo_reference: Some(TodoSessionReference {
+                todo_id: "todo-123".to_string(),
+                launched_from_todo_menu: true,
+            }),
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -674,6 +706,9 @@ mod tests {
             summary: Some("did some stuff".to_string()),
             summary_updated_at: Some(Utc::now()),
             nickname: Some("myf".to_string()),
+            selected_plan_path: Some(PathBuf::from(
+                "/tmp/repo/.worktrees/my-feature/docs/current-plan.md",
+            )),
             // A companion PR-triage feature: the link that survives a restart
             // and lets PR Triage find and reuse this feature for the same PR.
             triage_source: Some(crate::project::TriageSource {
@@ -715,6 +750,13 @@ mod tests {
         assert_eq!(lf.summary, Some("did some stuff".to_string()));
         assert_eq!(lf.nickname, Some("myf".to_string()));
         assert_eq!(
+            lf.selected_plan_path,
+            Some(PathBuf::from(
+                "/tmp/repo/.worktrees/my-feature/docs/current-plan.md"
+            )),
+            "the feature's manual plan selection must survive a save/load round trip"
+        );
+        assert_eq!(
             lf.triage_source,
             Some(crate::project::TriageSource {
                 pr_number: 42,
@@ -729,6 +771,13 @@ mod tests {
         let ls = &lf.sessions[0];
         assert_eq!(ls.kind, SessionKind::Claude);
         assert_eq!(ls.claude_session_id, Some("claude-abc123".to_string()));
+        assert_eq!(
+            ls.todo_reference,
+            Some(TodoSessionReference {
+                todo_id: "todo-123".to_string(),
+                launched_from_todo_menu: true,
+            })
+        );
         assert!(ls.status_text.is_none()); // transient — never persisted
     }
 
@@ -827,6 +876,7 @@ mod tests {
                     summary: None,
                     summary_updated_at: None,
                     nickname: None,
+                    selected_plan_path: None,
                     triage_source: None,
                 },
                 Feature {
@@ -852,6 +902,7 @@ mod tests {
                     summary: None,
                     summary_updated_at: None,
                     nickname: None,
+                    selected_plan_path: None,
                     triage_source: None,
                 },
             ],

@@ -179,9 +179,7 @@ pub fn draw_plan_interview_dialog(
                 "Type an answer, or skip if this question is optional.",
                 theme,
             ),
-            Some(PlanQuestionKind::Select(options)) => {
-                draw_options(frame, chunks[2], options, state.selected_option, theme)
-            }
+            Some(PlanQuestionKind::Select(_)) => draw_select_answer(frame, chunks[2], state, theme),
             None => {}
         },
         PlanInterviewPhase::ResumePrompt => draw_resume_prompt(frame, chunks[2], state, theme),
@@ -237,6 +235,15 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
             message.to_string(),
             Style::default().fg(color),
         ))
+    } else if state.custom_answer_focused {
+        Line::from(vec![
+            hint("Enter", theme),
+            Span::raw(" done (back to options, not submitted)  "),
+            hint("Alt+Enter", theme),
+            Span::raw(" newline  "),
+            hint("Esc", theme),
+            Span::raw(" cancel edit"),
+        ])
     } else if state.phase == PlanInterviewPhase::ResumePrompt {
         Line::from(vec![
             hint("r", theme),
@@ -277,11 +284,22 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
     ) {
         Line::from(vec![hint("Esc", theme), Span::raw(" cancel")])
     } else {
-        Line::from(vec![
+        let mut spans = vec![
             hint("Enter", theme),
             Span::raw(" next  "),
             hint("Alt+Enter", theme),
             Span::raw(" newline  "),
+        ];
+        if state.current_question_is_choice() {
+            // `e` opens the always-present custom-answer box; `Enter` on the
+            // option list still submits the whole question. `Backspace` clears
+            // a pick so the answer can be custom text alone.
+            spans.push(hint("e", theme));
+            spans.push(Span::raw(" edit custom answer  "));
+            spans.push(hint("Backspace", theme));
+            spans.push(Span::raw(" clear pick  "));
+        }
+        spans.extend([
             hint("Ctrl+B", theme),
             Span::raw(" back  "),
             hint("Ctrl+S", theme),
@@ -292,7 +310,8 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
             Span::raw(" inspect dashboard  "),
             hint("Esc", theme),
             Span::raw(" cancel"),
-        ])
+        ]);
+        Line::from(spans)
     }
 }
 
@@ -1175,19 +1194,48 @@ fn draw_editor(
     frame.render_widget(input, area);
 }
 
+/// A choice question: the radio list, then the always-present custom-answer box
+/// beneath it. The box is a one-line summary when unfocused and an inline
+/// editor (with a `used/max` counter) when `e` has focused it.
+fn draw_select_answer(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    theme: &Theme,
+) {
+    let options = match state.current_question().map(|q| &q.kind) {
+        Some(PlanQuestionKind::Select(options)) => options.as_slice(),
+        _ => return,
+    };
+    let focused = state.custom_answer_focused;
+    let custom_height = if focused { 7 } else { 3 };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(custom_height)])
+        .split(area);
+
+    draw_options(frame, chunks[0], options, state.selected_option, theme);
+    draw_custom_answer_box(frame, chunks[1], state, focused, theme);
+}
+
 fn draw_options(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
     options: &[String],
-    selected: usize,
+    selected: Option<usize>,
     theme: &Theme,
 ) {
     let items = options
         .iter()
         .map(|option| ListItem::new(option.clone()))
         .collect::<Vec<_>>();
+    let title = if selected.is_none() {
+        " Options — none picked "
+    } else {
+        " Options "
+    };
     let list = List::new(items)
-        .block(Block::default().title(" Options ").borders(Borders::ALL))
+        .block(Block::default().title(title).borders(Borders::ALL))
         .highlight_symbol("› ")
         .highlight_style(
             Style::default()
@@ -1195,8 +1243,66 @@ fn draw_options(
                 .add_modifier(Modifier::BOLD),
         );
     let mut list_state =
-        ListState::default().with_selected((!options.is_empty()).then_some(selected));
+        ListState::default().with_selected(selected.filter(|_| !options.is_empty()));
     frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// The free-text custom-answer field shown under every choice question.
+fn draw_custom_answer_box(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    focused: bool,
+    theme: &Theme,
+) {
+    let used = state.editor.text().chars().count();
+    let max = crate::plan_interview::CUSTOM_ANSWER_MAX_LEN;
+    let border_color = if focused {
+        theme.primary.to_color()
+    } else {
+        theme.border.to_color()
+    };
+    let block = Block::default()
+        .title(format!(" Your own answer · {used}/{max} "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    if focused {
+        let body = Paragraph::new(editor_lines(
+            &state.editor,
+            theme,
+            "Type your answer — it is submitted alongside any option you pick",
+        ))
+        .block(block)
+        .wrap(Wrap { trim: false });
+        frame.render_widget(body, area);
+        return;
+    }
+
+    let text = state.editor.text();
+    let line = if text.trim().is_empty() {
+        Line::from(Span::styled(
+            "press e to type your own answer",
+            Style::default()
+                .fg(theme.text_muted.to_color())
+                .add_modifier(Modifier::ITALIC),
+        ))
+    } else {
+        let first = text.lines().next().unwrap_or_default();
+        let collapsed = if text.lines().nth(1).is_some() {
+            format!("{first} …")
+        } else {
+            first.to_string()
+        };
+        Line::from(vec![
+            Span::styled("e ", Style::default().fg(theme.warning.to_color())),
+            Span::styled(collapsed, Style::default().fg(theme.text.to_color())),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(line).block(block).wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn hint(key: &'static str, theme: &Theme) -> Span<'static> {

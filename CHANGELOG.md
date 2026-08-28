@@ -27,6 +27,15 @@ are tagged.
 
 ### Changed
 
+- **Planning a TODO into its own feature no longer proposes a sentence-long
+  branch name.** TODO titles are written as sentences, and the create-feature
+  wizard seeded the branch with the whole thing slugified — which then became
+  the worktree directory name, the tmux session name, and the dashboard row.
+  The seeded name is now shortened to at most 32 characters, cut on a word
+  boundary so it still reads as a name rather than a truncation. It is still
+  only a seed: the wizard opens on the branch field, so a name worth spelling
+  out in full is one keystroke away.
+
 - **The agent sidebar now always shows the viewed session's context usage,
   not only when it is nearing the limit.** The section (renamed from
   `Fresh Context` to `Context`) appears for every Claude, Codex, or opencode

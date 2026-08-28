@@ -918,6 +918,106 @@ impl PlanQuestion {
     }
 }
 
+/// Maximum length, in characters, of the free-text custom answer a user may
+/// attach to a choice question. Multi-line input is allowed and its newlines
+/// count toward this bound. A chosen default, not user-specified; enforced on
+/// every keystroke and paste into the custom-answer editor.
+pub const CUSTOM_ANSWER_MAX_LEN: usize = 500;
+
+/// Separator between picked option labels and the free custom text inside a
+/// serialized choice answer. Spaced with an em dash so it does not collide with
+/// a hyphenated option label.
+const CHOICE_CUSTOM_SEPARATOR: &str = " — ";
+
+/// Serialize a choice question's answer into the single plain string stored for
+/// it — deliberately indistinguishable from a plainly picked option, so every
+/// downstream consumer (the adaptive rounds, synthesis, the saved plan) needs
+/// no awareness of custom answers.
+///
+/// Selected option labels are joined with `", "`. When `custom_text` has
+/// non-whitespace content it is trimmed and appended after [`CHOICE_CUSTOM_SEPARATOR`].
+/// With nothing picked the string is just the trimmed custom text. Returns
+/// `None` when nothing is picked and the custom text is blank — that question
+/// stays unanswered.
+pub fn serialize_choice_answer(selected_labels: &[&str], custom_text: &str) -> Option<String> {
+    let custom = custom_text.trim();
+    let joined = selected_labels
+        .iter()
+        .map(|label| label.trim())
+        .filter(|label| !label.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    match (joined.is_empty(), custom.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(joined),
+        (true, false) => Some(custom.to_string()),
+        (false, false) => Some(format!("{joined}{CHOICE_CUSTOM_SEPARATOR}{custom}")),
+    }
+}
+
+/// Recover the structured `(selected option indices, custom text)` behind a
+/// stored choice answer, so revisiting an answered question can re-present the
+/// radio/checkbox control plus the custom-text box rather than a flat string.
+///
+/// `stored_custom` is the separately persisted custom text when the record
+/// carried one. A row without it is treated as a plain pre-feature answer:
+/// either it names current option(s) in full, or nothing this question can
+/// still use (the options were rewritten under it) and both halves come back
+/// empty so the caller drops it — a retired option label is never silently
+/// promoted to "custom text the user typed".
+pub fn split_choice_answer(
+    combined: &str,
+    stored_custom: Option<&str>,
+    options: &[String],
+) -> (Vec<usize>, String) {
+    let match_labels = |labels_part: &str| -> Vec<usize> {
+        let trimmed = labels_part.trim();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+        // An option label may itself contain `", "` (e.g. `"Yes, always"`).
+        // Match the whole string against the options first so such a label is
+        // recovered intact — this is what the pre-feature `o == answer` did —
+        // and only fall back to comma-splitting when the whole string is not
+        // itself an option.
+        if let Some(index) = options.iter().position(|option| option == trimmed) {
+            return vec![index];
+        }
+        trimmed
+            .split(", ")
+            .filter_map(|label| {
+                let label = label.trim();
+                options.iter().position(|option| option == label)
+            })
+            .collect()
+    };
+
+    if let Some(custom) = stored_custom
+        .map(str::trim)
+        .filter(|custom| !custom.is_empty())
+    {
+        let suffix = format!("{CHOICE_CUSTOM_SEPARATOR}{custom}");
+        let labels_part = combined
+            .strip_suffix(&suffix)
+            .or_else(|| combined.strip_suffix(custom))
+            .unwrap_or(combined);
+        return (match_labels(labels_part), custom.to_string());
+    }
+
+    let indices = match_labels(combined);
+    let joined = indices
+        .iter()
+        .filter_map(|&index| options.get(index))
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !indices.is_empty() && joined == combined.trim() {
+        (indices, String::new())
+    } else {
+        (Vec::new(), String::new())
+    }
+}
+
 /// The key a stored interview is filed under while the feature it plans does
 /// not exist yet.
 ///
@@ -1568,6 +1668,114 @@ mod tests {
         assert_eq!(
             questions[MAX_AI_QUESTIONS_PER_ROUND - 1].id,
             format!("q{}", MAX_AI_QUESTIONS_PER_ROUND - 1)
+        );
+    }
+
+    #[test]
+    fn serialize_choice_answer_combines_selection_and_custom_text() {
+        // Nothing to record.
+        assert_eq!(serialize_choice_answer(&[], "   "), None);
+        // Selection only — indistinguishable from a plainly picked option.
+        assert_eq!(
+            serialize_choice_answer(&["Dashboard"], ""),
+            Some("Dashboard".to_string())
+        );
+        // Custom text only.
+        assert_eq!(
+            serialize_choice_answer(&[], "  a bespoke answer  "),
+            Some("a bespoke answer".to_string())
+        );
+        // Combined: labels joined with ", ", then " — " and the trimmed text.
+        assert_eq!(
+            serialize_choice_answer(&["Dashboard", "Session"], "also the status bar"),
+            Some("Dashboard, Session — also the status bar".to_string())
+        );
+        // Multi-line custom text keeps its interior newlines.
+        assert_eq!(
+            serialize_choice_answer(&["Dashboard"], "line one\nline two\n"),
+            Some("Dashboard — line one\nline two".to_string())
+        );
+        // Blank labels contribute nothing.
+        assert_eq!(
+            serialize_choice_answer(&["", "  "], "just text"),
+            Some("just text".to_string())
+        );
+    }
+
+    #[test]
+    fn split_choice_answer_round_trips_serialize_choice_answer() {
+        let options = vec![
+            "Dashboard".to_string(),
+            "Session".to_string(),
+            "Status bar".to_string(),
+        ];
+
+        // Selection only.
+        let combined = serialize_choice_answer(&["Session"], "").unwrap();
+        assert_eq!(
+            split_choice_answer(&combined, None, &options),
+            (vec![1], String::new())
+        );
+
+        // Custom only — the record stores the same text separately.
+        let combined = serialize_choice_answer(&[], "bespoke").unwrap();
+        assert_eq!(
+            split_choice_answer(&combined, Some("bespoke"), &options),
+            (Vec::new(), "bespoke".to_string())
+        );
+
+        // Combined.
+        let combined =
+            serialize_choice_answer(&["Dashboard", "Status bar"], "and elsewhere").unwrap();
+        assert_eq!(
+            split_choice_answer(&combined, Some("and elsewhere"), &options),
+            (vec![0, 2], "and elsewhere".to_string())
+        );
+
+        // Multi-line custom text.
+        let combined = serialize_choice_answer(&["Dashboard"], "one\ntwo").unwrap();
+        assert_eq!(
+            split_choice_answer(&combined, Some("one\ntwo"), &options),
+            (vec![0], "one\ntwo".to_string())
+        );
+    }
+
+    #[test]
+    fn split_choice_answer_recovers_an_option_label_that_contains_a_comma() {
+        let options = vec![
+            "Yes, always".to_string(),
+            "No".to_string(),
+            "Ask each time".to_string(),
+        ];
+
+        // Legacy / selection-only row: the whole stored string is the label,
+        // so splitting it on ", " must not fragment it into non-matches.
+        assert_eq!(
+            split_choice_answer("Yes, always", None, &options),
+            (vec![0], String::new())
+        );
+
+        // Same label carried alongside a separately stored custom text.
+        let combined = serialize_choice_answer(&["Yes, always"], "with caveats").unwrap();
+        assert_eq!(
+            split_choice_answer(&combined, Some("with caveats"), &options),
+            (vec![0], "with caveats".to_string())
+        );
+    }
+
+    #[test]
+    fn split_choice_answer_drops_a_retired_option_rather_than_calling_it_custom_text() {
+        let options = vec!["Dashboard".to_string(), "Session".to_string()];
+        // A plain legacy row whose value is no longer an option: neither a
+        // current selection nor text the user typed.
+        assert_eq!(
+            split_choice_answer("Overlay", None, &options),
+            (Vec::new(), String::new())
+        );
+        // A plain legacy row that still names an option is pure selection.
+        assert_eq!(
+            split_choice_answer("Session", None, &options),
+            (vec![1], String::new())
         );
     }
 

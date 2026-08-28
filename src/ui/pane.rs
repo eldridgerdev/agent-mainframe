@@ -59,16 +59,21 @@ pub(crate) const SCROLLBAR_WIDTH: u16 = 1;
 pub(crate) struct AgentSidebarData {
     pub agent_kind: SessionKind,
     pub status_text: String,
+    /// Account-level rate-limit windows for this harness (the same `5h`/`7d`
+    /// figures the dashboard status bar shows), one per line. `None` when the
+    /// harness has no usage source or the cache is not warm yet — the box is
+    /// then omitted entirely.
+    pub usage_text: Option<String>,
     #[allow(dead_code)] // populated but not rendered yet
     pub model_text: Option<String>,
     pub prompt_text: String,
     pub work_text: Option<String>,
     pub todos_text: Option<String>,
-    /// TODO-menu-originated session references, resolved from AMF's TODO DB.
-    /// The section content is global (every reference across all projects).
+    /// The current session's TODO-menu-originated reference, resolved from
+    /// AMF's TODO DB.
     pub active_todos_text: Option<String>,
     /// Whether the *currently viewed* session itself carries a menu-launched
-    /// TODO reference. `leader z` / `leader Z` only act on the current
+    /// TODO reference. `leader z` acts only on the current
     /// session, so the header affordance is shown only when this is true.
     pub active_todo_affordance: bool,
     pub summary_text: String,
@@ -538,6 +543,24 @@ fn draw_startup_loading(
     frame.render_widget(paragraph, panel);
 }
 
+/// The "Active TODO" section draws its title on the top-left of its border and
+/// the completion hint on the top-right of the same border. The two labels are
+/// `" Active TODO "` (13 cols) and `" <leader z complete> "` (21 cols); below
+/// this width the section border (two columns narrower than the sidebar `area`)
+/// cannot hold both and ratatui overlays the hint onto the title. 42 leaves a
+/// margin over the 34-column minimum.
+const ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH: u16 = 42;
+
+/// Whether the `<leader z complete>` affordance can be shown on a sidebar
+/// section's border. `sidebar_width` is `draw_agent_sidebar`'s `area.width`
+/// (the full sidebar, borders included). Pure so the threshold is testable
+/// without a `Frame`.
+fn active_todo_hint_visible(section_title: &str, affordance: bool, sidebar_width: u16) -> bool {
+    section_title == "Active TODO"
+        && affordance
+        && sidebar_width >= ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH
+}
+
 fn draw_agent_sidebar(
     frame: &mut Frame,
     area: Rect,
@@ -580,6 +603,7 @@ fn draw_agent_sidebar(
     let fallback = AgentSidebarData {
         agent_kind,
         status_text: String::new(),
+        usage_text: None,
         model_text: None,
         prompt_text: String::new(),
         work_text: None,
@@ -651,14 +675,17 @@ fn draw_agent_sidebar(
                 .alignment(Alignment::Right),
             );
         }
-        // `leader z` / `leader Z` act only on the viewed session, so the
-        // header hint is shown only when that session has its own reference —
-        // not merely because some other session's reference populated the
-        // (globally-scoped) section body.
-        if sidebar_section.title == "Active TODOs" && data.active_todo_affordance {
+        // A narrow sidebar cannot fit both border labels; ratatui overlays the
+        // right-aligned hint onto "Active TODO". Show the affordance only when
+        // there is room for both (see ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH).
+        if active_todo_hint_visible(
+            sidebar_section.title,
+            data.active_todo_affordance,
+            area.width,
+        ) {
             block = block.title_top(
                 Line::from(Span::styled(
-                    " <leader z complete · Z clear> ",
+                    " <leader z complete> ",
                     Style::default().fg(theme.text_muted.to_color()),
                 ))
                 .alignment(Alignment::Right),
@@ -687,24 +714,38 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
         ));
     }
 
+    if let Some(usage_text) = data
+        .usage_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        sections.push(SidebarSection::new(
+            "Usage",
+            usage_text.to_string(),
+            Constraint::Length(usage_section_height(usage_text, section_width)),
+        ));
+    }
+
     if let Some(snapshot) = data.context_snapshot.as_ref() {
         let indicator = format_context_indicator(snapshot);
         // The reading is always shown; the fresh-context call to action is
         // appended only while the hint is eligible (warning/critical band and
-        // not dismissed). Its three labelled lines each wrap to two inner
-        // lines at the default 32-column sidebar width, so the ceiling has to
-        // clear five for the `Dismiss` row never to be clipped.
+        // not dismissed). The `Action:` row wraps to two inner lines at the
+        // default 32-column sidebar width, so with the reading and `Dismiss:`
+        // rows the ceiling has to clear four for `Dismiss` never to be
+        // clipped. The reading carries no `Usage:` label of its own now that
+        // a dedicated `Usage` section sits directly above it.
         let (body, min_lines, max_lines) = if data.context_hint_visible {
             (
                 format!(
-                    "Usage: {}\nAction: Fresh context: <leader F>\nDismiss: <leader X>",
+                    "{}\nAction: Fresh context: <leader F>\nDismiss: <leader X>",
                     indicator.text
                 ),
                 2,
                 6,
             )
         } else {
-            (format!("Usage: {}", indicator.text), 1, 3)
+            (indicator.text.clone(), 1, 3)
         };
         let height = sidebar_section_height(&body, section_width, min_lines, max_lines);
         sections.push(
@@ -765,7 +806,7 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
     }
     if let Some(active_todos_text) = data.active_todos_text.as_deref() {
         sections.push(SidebarSection::new(
-            "Active TODOs",
+            "Active TODO",
             active_todos_text.to_string(),
             Constraint::Length(sidebar_section_height(
                 active_todos_text,
@@ -799,10 +840,11 @@ fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
         "Status" => theme.warning.to_color(),
+        "Usage" => theme.usage_low.to_color(),
         "Prompt" => theme.secondary.to_color(),
         "Work" => theme.primary.to_color(),
         "Todos" => theme.success.to_color(),
-        "Active TODOs" => theme.success.to_color(),
+        "Active TODO" => theme.success.to_color(),
         "Summary" => theme.info.to_color(),
         "PR Triage" => theme.info.to_color(),
         "Plan" => theme.warning.to_color(),
@@ -848,6 +890,10 @@ fn status_section_height(body: &str, section_width: u16) -> u16 {
     sidebar_section_height(body, section_width, 1, 8)
 }
 
+fn usage_section_height(body: &str, section_width: u16) -> u16 {
+    sidebar_section_height(body, section_width, 1, 4)
+}
+
 fn summary_section_height(body: &str, section_width: u16) -> u16 {
     sidebar_section_height(body, section_width, 1, 4)
 }
@@ -855,7 +901,7 @@ fn summary_section_height(body: &str, section_width: u16) -> u16 {
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
     body.lines()
         .map(|line| {
-            if title == "Active TODOs" && line.ends_with(" · complete") {
+            if title == "Active TODO" && line.ends_with("State: completed") {
                 return Line::from(Span::styled(
                     line.to_string(),
                     Style::default()
@@ -1446,6 +1492,7 @@ mod tests {
         let mut data = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: String::new(),
+            usage_text: None,
             model_text: None,
             prompt_text: String::new(),
             work_text: None,
@@ -1461,16 +1508,36 @@ mod tests {
         assert!(
             sidebar_sections(&data, 30)
                 .iter()
-                .all(|section| section.title != "Active TODOs")
+                .all(|section| section.title != "Active TODO")
         );
 
-        data.active_todos_text =
-            Some("Project / Feature / TODO agent\nShip it · high · project · complete".to_string());
+        data.active_todos_text = Some("Ship it\nState: completed".to_string());
         let active = sidebar_sections(&data, 30)
             .into_iter()
-            .find(|section| section.title == "Active TODOs")
+            .find(|section| section.title == "Active TODO")
             .expect("referenced TODOs should render a dedicated section");
-        assert!(active.body.ends_with("complete"));
+        assert!(active.body.ends_with("State: completed"));
+    }
+
+    #[test]
+    fn active_todo_hint_needs_room_for_both_border_labels() {
+        // Too narrow: the title and the right-aligned hint would collide.
+        assert!(!active_todo_hint_visible("Active TODO", true, 30));
+        assert!(!active_todo_hint_visible(
+            "Active TODO",
+            true,
+            ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH - 1
+        ));
+        // Wide enough: both labels fit on the border.
+        assert!(active_todo_hint_visible(
+            "Active TODO",
+            true,
+            ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH
+        ));
+        assert!(active_todo_hint_visible("Active TODO", true, 120));
+        // Only the Active TODO section, and only when the affordance is live.
+        assert!(!active_todo_hint_visible("Active TODO", false, 120));
+        assert!(!active_todo_hint_visible("Prompt", true, 120));
     }
 
     #[test]
@@ -1506,6 +1573,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
@@ -1529,10 +1597,102 @@ mod tests {
     }
 
     #[test]
+    fn usage_section_sits_directly_under_status_when_present() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Ready".into(),
+            usage_text: Some("5h  62% left · 3h\n7d  90% left".into()),
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: "Current: AMF_PLAN.md".into(),
+            context_snapshot: None,
+            context_hint_visible: false,
+        };
+
+        let titles: Vec<&str> = sidebar_sections(&sidebar, 30)
+            .iter()
+            .map(|section| section.title)
+            .collect();
+
+        assert_eq!(titles.first(), Some(&"Status"));
+        assert_eq!(titles.get(1), Some(&"Usage"));
+    }
+
+    #[test]
+    fn usage_section_stays_under_status_with_every_other_section_populated() {
+        // The insertion point is right after the Status push and before
+        // every other block, so no populated section can wedge between
+        // Status and Usage.
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Ready".into(),
+            usage_text: Some("5h  62% left · 3h\n7d  90% left".into()),
+            model_text: Some("Model: claude".into()),
+            prompt_text: "Preview: keep going".into(),
+            work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: Some("○ one\n○ two".into()),
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: "Sidebar ready.".into(),
+            pr_triage_text: Some("1 open PR".into()),
+            plan_text: "Current: AMF_PLAN.md".into(),
+            context_snapshot: None,
+            context_hint_visible: false,
+        };
+
+        let titles: Vec<&str> = sidebar_sections(&sidebar, 30)
+            .iter()
+            .map(|section| section.title)
+            .collect();
+
+        assert_eq!(titles.first(), Some(&"Status"));
+        assert_eq!(titles.get(1), Some(&"Usage"));
+        // Sanity: the other optional sections really are present, just later.
+        assert!(titles.contains(&"Plan"));
+        assert!(titles.contains(&"PR Triage"));
+        assert!(titles.contains(&"Work"));
+        assert!(titles.contains(&"Prompt"));
+        assert!(titles.contains(&"Todos"));
+    }
+
+    #[test]
+    fn usage_section_is_omitted_when_absent() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: "Ready".into(),
+            usage_text: None,
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: None,
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
+        };
+
+        assert!(
+            !sidebar_sections(&sidebar, 30)
+                .iter()
+                .any(|section| section.title == "Usage")
+        );
+    }
+
+    #[test]
     fn plan_is_a_dedicated_sidebar_section() {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Ready".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: String::new(),
             work_text: None,
@@ -1560,6 +1720,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Ready".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: String::new(),
             work_text: None,
@@ -1586,7 +1747,7 @@ mod tests {
 
         assert_eq!(
             context.body,
-            "Usage: Ctx 70% WARNING · 70,000\nAction: Fresh context: <leader F>\nDismiss: <leader X>"
+            "Ctx 70% WARNING · 70,000\nAction: Fresh context: <leader F>\nDismiss: <leader X>"
         );
         assert_eq!(
             context.accent_band,
@@ -1603,6 +1764,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Ready".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: String::new(),
             work_text: None,
@@ -1628,7 +1790,7 @@ mod tests {
             .find(|section| section.title == "Context")
             .expect("a snapshot always renders a Context section");
 
-        assert_eq!(context.body, "Usage: Ctx 42% · 42,000");
+        assert_eq!(context.body, "Ctx 42% · 42,000");
         assert!(!context.body.contains("<leader F>"));
         assert_eq!(
             context.accent_band,
@@ -1641,6 +1803,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Ready".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: String::new(),
             work_text: None,
@@ -1666,6 +1829,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: String::new(),
+            usage_text: None,
             model_text: None,
             prompt_text: String::new(),
             work_text: None,
@@ -1703,6 +1867,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: String::new(),
+            usage_text: None,
             model_text: None,
             prompt_text: String::new(),
             work_text: None,
@@ -1737,7 +1902,10 @@ mod tests {
             .lines()
             .map(|line| (line.chars().count().max(1)).div_ceil(inner_width) as u16)
             .sum();
-        assert!(needed_inner_lines >= 5, "body should wrap past four lines");
+        assert!(
+            needed_inner_lines >= 4,
+            "body should wrap to at least four inner lines"
+        );
 
         let Constraint::Length(height) = context.constraint else {
             panic!("fresh context section uses a fixed height");
@@ -1753,6 +1921,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some(
@@ -1807,6 +1976,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
@@ -1856,6 +2026,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Waiting for input".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
@@ -1905,6 +2076,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Waiting for input".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
@@ -1950,6 +2122,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nInput: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: None,
@@ -1997,6 +2170,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
@@ -2124,6 +2298,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
@@ -2174,6 +2349,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
@@ -2225,6 +2401,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some(
@@ -2275,6 +2452,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: String::new(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
@@ -2322,6 +2500,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Input: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
@@ -2369,6 +2548,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Input: 1.2K tokens".into(),
+            usage_text: None,
             model_text: None,
             prompt_text: String::new(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),

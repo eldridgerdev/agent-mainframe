@@ -10,16 +10,55 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- **The agent sidebar now always shows the viewed session's context usage,
+  not only when it is nearing the limit.** The section (renamed from
+  `Fresh Context` to `Context`) appears for every Claude, Codex, or opencode
+  session that has a reading, in every band — a calm green line like
+  `Ctx 42% · 42,000` while there is headroom, turning amber then red as
+  pressure rises. At the warning or critical threshold the same section still
+  adds `Ctrl+Space`, then `F` to open a new session in the same feature with
+  an editable continuation prompt; `Ctrl+Space`, then `X` dismisses that call
+  to action while leaving the reading in place, and it returns after the
+  session clears or resets. Estimated and stale readings stay labeled, while
+  unavailable or reset-pending readings do not invent a percentage. No
+  migration is required.
+
+## [v0.41.0] - 2026-08-27
+
 ### Added
 
-- **TODO-launched agent sessions now keep their TODO visible in the agent
-  sidebar.** Each eligible session shows the TODO's title, priority, scope,
-  and current status, including completed items. From the embedded session,
-  press `Ctrl+Space`, then `z` to confirm completion, or `Z` to explicitly
-  clear the reference. TODO references follow items when they move between
-  scopes and are removed when an item is deleted. No migration is required;
-  existing sessions simply have no reference until launched from the TODO
-  menu.
+- **The embedded session sidebar now shows a Usage box.** Directly under
+  Status, it lists the current harness's account-level rate-limit windows —
+  the same 5h/7d figures the dashboard status bar shows — so you can check
+  your remaining headroom without leaving the session. It appears once the
+  usage numbers are known and is left out for harnesses that don't report
+  usage (OpenCode, Pi).
+
+- **Plan-mode multiple-choice questions now take your own free-text answer.**
+  Every select question in the guided plan interview shows a "Your own answer"
+  box beneath the options. Press `e` to type into it; you can answer purely
+  with your own text, or pick option(s) *and* add elaboration. `Enter` in the
+  box commits it and returns focus to the option list without submitting the
+  question; `Esc` discards the edit; `Enter` on the option list still submits.
+  Press `Backspace` to clear a pick and answer with custom text alone.
+  There is a 500-character limit (multi-line allowed) shown as a `used/500`
+  counter. A question with nothing picked and a blank custom answer stays
+  unanswered, exactly as before. The submitted answer is a single plain
+  string — picked labels, then ` — ` and your text — so the AI rounds and the
+  saved plan treat it like any other answer, and revisiting the question
+  restores the selection and the custom text rather than a flat string. Visual
+  proof regenerable via
+  `scripts/dev/screenshot/scenarios/plan-interview-custom-answer.txt`.
+
+- **TODO-launched agent sessions now keep their own TODO visible in the agent
+  sidebar.** The box shows only that TODO's title and whether it is open or
+  completed, and it remains visible after completion. From the embedded
+  session, press `Ctrl+Space`, then `z` to confirm completion. References
+  follow TODOs when they move between scopes and are removed when an item is
+  deleted. No migration is required; existing sessions simply have no
+  reference until launched from the TODO menu.
 
 - **The agent sidebar now always shows the viewed session's context usage.**
   A `Context` section appears for every Claude, Codex, or opencode session
@@ -58,7 +97,11 @@ are tagged.
 
 ### Migration
 
-- No migration is required. The Vim toggle is transient and is not persisted.
+- Schema migration 030 runs automatically on first launch, adding a
+  `custom_answers` column to the `plan_interviews` table so custom
+  plan-interview answers survive a resumed or re-run interview. Existing
+  rows backfill to "no custom answer"; no user action is required.
+- The Vim toggle is transient and is not persisted.
 
 ## [v0.40.0] - 2026-08-26
 

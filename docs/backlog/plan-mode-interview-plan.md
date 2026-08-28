@@ -731,6 +731,32 @@ interview with prior answers pre-filled, get an updated
       restores the parked interview automatically. Headless operations that
       are already spending agent tokens stay on screen until they finish so a
       completed result cannot be discarded while the interview is parked.
+- [x] Let a select question take a free-text custom answer. Every choice
+      question now shows an always-visible "Your own answer" box beneath the
+      options: `e` focuses an inline `TextEditor` (500-char cap, multi-line,
+      `used/500` counter), `Enter` there commits back to the option list
+      *without* submitting, `Esc` restores the pre-edit buffer, and `Enter` on
+      the option list still submits. The answer combines a picked option (or
+      none) with the trimmed custom text into one plain string
+      (`serialize_choice_answer`: `", "`-joined labels, then `" — "` + text;
+      custom-only when nothing is picked), so every downstream consumer — the
+      adaptive rounds, synthesis, the raw-Q&A fallback, the saved plan —
+      treats it like any other answer with no awareness of custom answers.
+      `selected_option` became `Option<usize>` so "nothing picked" is a real
+      state; a required question with no pick and blank custom text stays
+      blocked from submit. Revisiting an answered question (`back`,
+      resume-from-draft, an AI round appending questions) re-presents the
+      structured control — `split_choice_answer` rebuilds the radio selection
+      and the custom-text box from the stored string, and a retired option
+      label is dropped rather than promoted to "custom text". Persistence:
+      `PlanInterviewRecord` gained `custom_answers: Vec<Option<String>>`;
+      `MIGRATION_030` adds the `custom_answers` TEXT column (backfilled `'[]'`)
+      so a resumed/re-run interview restores both halves, and `Ctrl+R` on a
+      re-run restores selection + elaboration together. `PlanQuestionKind` is
+      still `FreeText`/`Select` (single) in this codebase — the helpers take
+      label slices so they are multi-select-ready if that kind is ever added.
+      Visual proof regenerable via
+      `scripts/dev/screenshot/scenarios/plan-interview-custom-answer.txt`.
 
 ## Open questions
 

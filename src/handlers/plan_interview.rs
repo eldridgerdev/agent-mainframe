@@ -69,6 +69,15 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return handle_plan_critique_key(app, key);
     }
 
+    // A focused custom-answer editor owns every key except the two that leave
+    // it: Enter commits (back to the option list, no submit) and Esc restores
+    // the buffer it opened with.
+    let custom_answer_focused =
+        matches!(&app.mode, AppMode::PlanInterview(state) if state.custom_answer_focused);
+    if custom_answer_focused {
+        return handle_custom_answer_editor_key(app, key);
+    }
+
     let is_select = matches!(
         &app.mode,
         AppMode::PlanInterview(state)
@@ -189,6 +198,29 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.continue_plan_interview_after_done()?;
             }
         }
+        // Open the always-available custom-answer box for a choice question.
+        // Free-text questions keep `e` as a literal character (handled by the
+        // text catch-all below).
+        KeyCode::Char('e') if is_select && key.modifiers.is_empty() => {
+            let opened = match &mut app.mode {
+                AppMode::PlanInterview(state) => state.open_custom_answer_editor(),
+                _ => false,
+            };
+            if opened {
+                app.message = None;
+            }
+        }
+        // Back to "nothing picked" — the arrows only move between real options,
+        // so without this a stray j/k/arrow commits a pick that cannot be
+        // undone within the question. Nothing picked is a valid answer (custom
+        // text alone).
+        KeyCode::Backspace | KeyCode::Delete if is_select && key.modifiers.is_empty() => {
+            if let AppMode::PlanInterview(state) = &mut app.mode
+                && state.clear_option_selection()
+            {
+                app.message = None;
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') if is_select => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 state.select_previous_option();
@@ -205,6 +237,40 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// The inline custom-answer editor for a choice question. `Enter` commits and
+/// returns focus to the option list *without* submitting the question; `Esc`
+/// restores the buffer captured when it opened; every other key edits, with the
+/// character cap enforced on each change. `Alt+Enter` inserts a newline —
+/// custom answers may be multi-line.
+fn handle_custom_answer_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.cancel_custom_answer();
+            }
+            app.message = None;
+        }
+        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::ALT) => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.commit_custom_answer();
+            }
+            app.persist_plan_interview_draft();
+            app.message = None;
+        }
+        _ => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                let event = if key.code == KeyCode::Enter {
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+                } else {
+                    key
+                };
+                state.custom_answer_handle_key(event);
+            }
+        }
     }
     Ok(())
 }

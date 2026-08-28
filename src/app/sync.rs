@@ -1192,7 +1192,7 @@ impl App {
             );
         }
 
-        // Rebuild the Active TODOs sidebar text here rather than per frame:
+        // Rebuild active TODO sidebar text here rather than per frame:
         // each referenced session costs two SQLite queries to resolve.
         self.refresh_active_todos_sidebar_cache();
     }

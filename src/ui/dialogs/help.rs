@@ -108,6 +108,14 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ),
         ("Alt+Enter", "Insert a newline (free-text answers)"),
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
+        (
+            "Backspace",
+            "Clear the picked option (back to nothing picked; lets you answer with custom text alone)",
+        ),
+        (
+            "e",
+            "Type your own answer to a select question (submitted with any picked option; Enter still submits)",
+        ),
         ("Ctrl+B", "Return to the previous question"),
         ("Ctrl+S", "Skip an optional question"),
         ("Ctrl+R", "Restore the previous interview's answer (re-run)"),
@@ -240,7 +248,6 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("b", "Show/hide sidebar"),
         ("v", "Expand/collapse todos"),
         ("Ctrl+Space z", "Complete this session's referenced TODO"),
-        ("Ctrl+Space Z", "Clear this session's TODO reference"),
         ("N", "Quick-capture a TODO for this worktree"),
         ("t / T", "Cycle next/prev session"),
         ("w", "Session switcher"),

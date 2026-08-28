@@ -499,18 +499,21 @@ Acceptance criteria:
 
 - [x] Calculate provider-specific active-context estimates and record
       known model context windows.
-- [x] Render context pressure in agent session rows, with direct/estimated,
-      stale, warning, critical, and reset states.
+- [x] Render context pressure in agent session rows and in a `Context`
+      section of the Claude, Codex, and opencode sidebars, in every band
+      (calm/warning/critical), with direct/estimated, stale, warning,
+      critical, and reset states.
 - [ ] Render latest-turn usage and recent burn in the session row/sidebar.
 - [x] Add configurable context-window-size and warning/critical percentage
       thresholds, global via `AppConfig` and a dedicated dashboard dialog
       (`w`, `src/app/context_settings.rs`, `src/context_tracking.rs`).
       Cumulative token/dollar usage thresholds and per-utility-call budgets
       are still open.
-- [x] Add a selected-session sidebar warning when context pressure reaches
-      the warning or critical band, with a dismiss-and-rearm lifecycle.
-      Dashboard-wide alerts and broader repeated-alert deduplication remain
-      open.
+- [x] Show the viewed session's context reading in the sidebar in every
+      band, and at the warning or critical band add a fresh-context call to
+      action with a dismiss-and-rearm lifecycle (dismiss quiets the action
+      but keeps the reading). Dashboard-wide alerts and broader
+      repeated-alert deduplication remain open.
 - [ ] Introduce a capability-driven resume/compact/fresh dialog.
 - [ ] Make normal restart semantics consistent across Claude, Codex,
       and opencode.

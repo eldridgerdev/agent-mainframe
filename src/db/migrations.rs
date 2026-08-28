@@ -132,6 +132,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist TODO-menu launch references on agent sessions",
             MIGRATION_029,
         ),
+        (
+            "Store per-choice-question custom answers alongside plan-interview answers",
+            MIGRATION_030,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -761,20 +765,33 @@ ALTER TABLE feature_sessions
     ADD COLUMN todo_launched_from_menu INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// A JSON array, positionally paired with `answers`, holding the free-text
+/// custom answer a user attached to each choice question (`null` for a question
+/// with none, and for every free-text question). Kept apart from `answers` —
+/// which stays the single serialized string every downstream consumer reads —
+/// so a resumed or re-run interview can restore the radio selection and the
+/// elaboration together instead of a flat string. Existing rows backfill to an
+/// empty array, which `load` squares up to the question count.
+const MIGRATION_030: &str = "
+ALTER TABLE plan_interviews ADD COLUMN custom_answers TEXT NOT NULL DEFAULT '[]';
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
-    /// the todo tables 011 built, and the reply-draft table 013/014 built.
-    /// Fixtures that seed a version this high have to stand up everything later
-    /// migrations alter — 022 alters `pr_comment_reply_drafts` and 023 alters
-    /// `todos`.
+    /// the todo tables 011 built, the reply-draft table 013/014 built, and the
+    /// plan-interviews table 016 built. Fixtures that seed a version this high
+    /// have to stand up everything later migrations alter — 022 alters
+    /// `pr_comment_reply_drafts`, 023 alters `todos`, and 030 alters
+    /// `plan_interviews`.
     fn seed_pre_learning_schema(conn: &Connection) {
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
     }
 
     /// A DB last touched before Learning Mode existed (schema version 18)
@@ -797,7 +814,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 29);
+        assert_eq!(version, 30);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -892,13 +909,15 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 29);
+        assert_eq!(version, 30);
     }
 
     #[test]
     fn migration_029_leaves_existing_sessions_without_todo_provenance() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
+        // 030 replays after 029 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -925,6 +944,37 @@ mod tests {
         assert_eq!(reference, (None, 0));
     }
 
+    /// Migration 030 adds `custom_answers` to plan-interview rows written before
+    /// it existed. They backfill to `'[]'`, which `db::plan_interviews::load`
+    /// squares up to the question count as "no custom answer anywhere".
+    #[test]
+    fn migration_030_backfills_plan_interviews_with_an_empty_custom_answers_array() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (29, datetime('now'), 'seed');
+             INSERT INTO plan_interviews
+                (feature_id, stage, feature_name, brief, questions, answers,
+                 ai_rounds_completed, created_at, updated_at)
+             VALUES ('f1', 'draft', 'feature', 'brief', '[]', '[]', 0,
+                     datetime('now'), datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let custom_answers: String = conn
+            .query_row(
+                "SELECT custom_answers FROM plan_interviews WHERE feature_id = 'f1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(custom_answers, "[]");
+    }
+
     /// Migration 023 adds `linked_feature_id` to TODOs written before it
     /// existed. They come back NULL — "never planned into a feature" — which is
     /// what every pre-023 TODO actually is, and leaves `spawned_session_id`
@@ -934,6 +984,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
+        // 030 replays after 023 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -975,6 +1027,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
+        // 030 replays after 024 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -1013,6 +1067,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
+        // 030 replays after 028 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(super::MIGRATION_023).unwrap();
         conn.execute_batch(super::MIGRATION_024).unwrap();
         conn.execute_batch(super::MIGRATION_025).unwrap();
@@ -1133,10 +1189,12 @@ mod tests {
     fn migration_022_leaves_existing_reply_drafts_without_provenance() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
-        // 023 replays after 022 here and alters `todos`, so it has to exist.
+        // 023 replays after 022 here and alters `todos`, so it has to exist;
+        // 030 replays too and alters `plan_interviews`.
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -1172,7 +1230,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 29);
+        assert_eq!(rows, 30);
     }
 
     /// Features written before selected-plan persistence existed acquire a
@@ -1184,6 +1242,8 @@ mod tests {
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_015).unwrap();
+        // 030 replays after 027 and alters `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(super::MIGRATION_023).unwrap();
         conn.execute_batch(super::MIGRATION_024).unwrap();
         conn.execute_batch(super::MIGRATION_025).unwrap();
@@ -1220,7 +1280,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 29);
+        assert_eq!(version, 30);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

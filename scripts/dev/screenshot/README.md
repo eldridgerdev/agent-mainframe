@@ -248,6 +248,12 @@ list of one or more of:
   Button 64 is wheel up, 0 is a left press, 3 a release.
   `scenarios/plan-review-mouse-scroll.txt` is a worked example.
 
+  `scenarios/ai-review-completed-fixture.txt` is the approved exception for a
+  completed AI Review visual: it calls `seed-ai-review-fixture.sh`, which
+  writes deterministic cache data and opens the pane without invoking an
+  agent, spending tokens, or calling GitHub. Do not replace it with a live
+  `A` review in CI.
+
 Blank lines and lines starting with `#` are skipped, so comments can
 explain what a step does or which real keybinding it exercises. Multiple
 `|`-delimited parts run in order on one line, e.g.:
@@ -270,6 +276,8 @@ And two seed payloads for use with `--seed`, mirroring the
 
 - `seed-project.json` — a `create-project` payload (has a `path` key).
 - `seed-feature.json` — a `create-feature` payload (has a `branch` key).
+- `ai-review-completed-fixture.txt` — shows a completed AI review and its
+  post-confirmation disclosure using the deterministic fixture helper.
 
 Copy any of these as a starting point for a new scenario or seed file.
 

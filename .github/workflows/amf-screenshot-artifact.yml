@@ -57,6 +57,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   capture:
@@ -100,6 +101,11 @@ jobs:
           SEED: ${{ inputs.seed }}
           SEED_FEATURE: ${{ inputs.seed_feature }}
           CONFIG_FILE: ${{ inputs.config }}
+          # This token is read-only and is used only for optional GitHub reads
+          # in screenshot scenarios. AI-review fixtures must not start a live
+          # credentialed agent review in CI.
+          GH_TOKEN: ${{ github.token }}
+          AMF_SCREENSHOT_PR_NUMBER: ${{ inputs.pr_number }}
           OUT_DIR: ${{ runner.temp }}/amf-screenshot-output
         run: |
           set -euo pipefail

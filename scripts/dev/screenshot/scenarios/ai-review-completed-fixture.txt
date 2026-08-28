@@ -1,0 +1,16 @@
+# AI Review completed fixture: an offline, deterministic visual test for a
+# completed review and its post confirmation. It seeds the cache and opens the
+# pane; it never launches a headless agent or contacts GitHub.
+#
+# In GitHub Actions, AMF_SCREENSHOT_PR_NUMBER and GITHUB_REPOSITORY are set by
+# amf-screenshot-artifact.yml. For a local run, export both values first.
+
+run:AMF_BIN="$AMF_BIN" "$SCRIPT_DIR/seed-ai-review-fixture.sh" >/dev/null
+wait:300
+note:The completed AI Review pane shows a persisted finding, its run summary, and the review attribution behavior without spending agent tokens.
+shot:completed-ai-review
+
+key:W
+wait:200
+note:The publish confirmation makes the AI-authored review disclosure visible before a human can send it to GitHub.
+shot:ai-review-post-confirmation

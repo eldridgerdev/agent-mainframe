@@ -1,9 +1,44 @@
-shot:dashboard
-key:?|wait:200
-key:PageDown|wait:200
-key:PageDown|wait:200
-key:PageDown|wait:200
-key:PageDown|wait:200
-key:PageDown|wait:200
-key:PageDown|wait:200
-shot:active-todo-commands
+# sidebar-todo-proof: creates a throwaway feature and seeds a TODO-menu
+# association on its agent session, then shows the session-local sidebar
+# before and after completion. All setup runs inside the capture harness's
+# private XDG state.
+
+run:$AMF_BIN automation create-project --file scripts/dev/screenshot/scenarios/sidebar-todo-proof-project.json
+run:if ! tmux has-session -t amf-sidebar-todo-proof-sidebar-todo-proof 2>/dev/null; then tmux new-session -d -s amf-sidebar-todo-proof-sidebar-todo-proof -n codex -c "$PWD"; fi
+run:python3 scripts/dev/screenshot/seed-sidebar-todo.py "$XDG_CONFIG_HOME/amf/amf.db"
+
+# Automation runs after the TUI has loaded, so restart it against the seeded
+# scratch database before navigating the newly created feature.
+run:tmux respawn-pane -k -t "$SESSION" "$AMF_BIN"
+# Do not send navigation keys until the respawned TUI has reloaded the seeded
+# project. A fixed delay races on busy runners and makes the keys land on the
+# empty dashboard instead.
+run:for i in {1..50}; do tmux capture-pane -p -t "$SESSION" > "$XDG_STATE_HOME/sidebar-todo-pane.txt"; grep -q "sidebar-todo-proof" "$XDG_STATE_HOME/sidebar-todo-pane.txt" && break; sleep 0.2; done
+# respawn-pane is asynchronous; give the new event loop time to own the pane
+# before sending the first key (the project name can still be visible from the
+# pre-respawn frame).
+wait:7000
+
+# Search reaches the Codex session directly, including while its project tree
+# is collapsed. Codex is enabled in the isolated CI workspace.
+key:/|wait:500
+text:Codex 1|wait:500
+key:Enter|wait:750
+key:Enter|wait:1000
+shot:active-todo-open
+
+# Complete the referenced TODO from the embedded-session leader command.
+key:C-Space|wait:500
+key:z|wait:700
+shot:active-todo-completion-confirmation
+key:Enter|wait:700
+shot:active-todo-completed
+
+# Return to the dashboard, open this feature's native TODOs session, and show
+# the same item marked complete in the TODO feature itself.
+key:C-q|wait:750
+key:/|wait:500
+text:TODOs|wait:500
+key:Enter|wait:750
+key:Enter|wait:1000
+shot:todo-feature-completed

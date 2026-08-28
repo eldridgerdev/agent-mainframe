@@ -41,6 +41,11 @@ reusable.
 
 When the scenario needs existing data, pass `--seed` and optionally `--seed-feature`. Use the payload shapes in `scripts/dev/screenshot/scenarios/seed-project.json`, `seed-feature.json`, and `docs/automation/`.
 
+For a screenshot of an already-completed AI Review, use
+`scenarios/ai-review-completed-fixture.txt`. It uses AMF's deterministic
+`seed-ai-review` fixture; CI must never start a live `A` review or depend on a
+logged-in Claude/Codex harness for visual proof.
+
 ## Capture and render
 
 Run the scenario with a persistent output directory:

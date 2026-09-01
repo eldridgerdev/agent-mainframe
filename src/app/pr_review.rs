@@ -432,6 +432,12 @@ pub enum FixTarget {
     /// triage agent writes can't mutate the source feature — at the cost of an
     /// explicit integration step to land the fixes on the PR branch.
     NewFeature,
+    /// Another feature that already exists in the store — its live agent
+    /// session receives the "address the feedback" prompt. Final-review only:
+    /// PR Triage's picker never offers this row (it has no reason to route a
+    /// PR's fixes into an unrelated feature), so PR-Triage code paths treat it
+    /// exactly like [`FixTarget::ExistingLive`].
+    ExistingFeature,
 }
 
 impl FixTarget {
@@ -441,6 +447,7 @@ impl FixTarget {
             FixTarget::DedicatedReview => "dedicated triage session",
             FixTarget::ExistingLive => "existing live session",
             FixTarget::NewFeature => "triage feature",
+            FixTarget::ExistingFeature => "another feature's session",
         }
     }
 
@@ -450,6 +457,7 @@ impl FixTarget {
             FixTarget::DedicatedReview => "dedicated",
             FixTarget::ExistingLive => "live",
             FixTarget::NewFeature => "new feature",
+            FixTarget::ExistingFeature => "other feature",
         }
     }
 
@@ -558,7 +566,10 @@ pub(crate) fn fix_session_index(
     dedicated_label: &str,
 ) -> Option<usize> {
     match target {
-        FixTarget::ExistingLive => feature
+        // `ExistingFeature` is final-review's "route into a feature you pick"
+        // row; once the caller has swapped in that feature, resolving its first
+        // agent session is identical to `ExistingLive`.
+        FixTarget::ExistingLive | FixTarget::ExistingFeature => feature
             .sessions
             .iter()
             .position(|s| s.kind.is_agent_harness()),
@@ -4026,7 +4037,10 @@ impl App {
                 )?;
                 Ok((pi, fi, si))
             }
-            FixTarget::ExistingLive => {
+            // `ExistingFeature` never reaches PR Triage's resolver (its picker
+            // doesn't offer the row); handled alongside `ExistingLive` for
+            // exhaustiveness.
+            FixTarget::ExistingLive | FixTarget::ExistingFeature => {
                 anyhow::bail!("no live agent session to reuse — switch to the dedicated target (t)")
             }
         }

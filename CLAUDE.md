@@ -76,6 +76,10 @@ app/
 ├── commands.rs      # command picker
 ├── rename.rs        # session renaming
 ├── review.rs        # trigger_final_review()
+├── review_destination.rs # final-review "dispatch fixes to…" picker:
+│                    # this feature / a dedicated session / another
+│                    # feature / a new companion feature (own worktree,
+│                    # ReviewSource link, push-or-cherry-pick integration)
 ├── plan_interview.rs # guided discovery, AI rounds, plan review
 ├── todos.rs         # scoped TODOs overlay (worktree/project/global
 │                    # panes, add, edit, toggle, reorder, move/copy,
@@ -209,6 +213,8 @@ Key dispatch per mode:
      pickers, keep-as-TODO editor, help overlay
    - `resource_gate.rs` - pre-start agent/memory warning
    - `dormant.rs` - dormant-features overlay
+   - `review_destination.rs` - final-review destination picker,
+     companion-feature setup, and companion→source integration overlay
 - `centered_rect(percent_x, percent_y, area) -> Rect`
 - `ansi_to_ratatui_text(raw, cols, rows) -> Vec<Line>`
 
@@ -235,6 +241,8 @@ Key dispatch is split across focused modules:
 - `handlers/learning.rs` - Learning Mode overlay key dispatch
   (layered: help → pickers → question prompt → answer pane)
 - `handlers/dormant.rs` - dormant-features overlay key dispatch
+- `handlers/review_destination.rs` - final-review destination picker,
+  companion-feature setup, and integration-overlay key dispatch
 - `handlers/mouse.rs` - mouse event handling
 
 ### Feature TODOs

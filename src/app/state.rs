@@ -1013,9 +1013,28 @@ pub struct DiffViewerState {
     /// first review or when the agent left no `**Agent:**` replies.
     pub prior_agent_responses: std::collections::HashMap<String, Vec<AgentResponse>>,
     /// Where a finished review's "address this feedback" prompt is dispatched:
-    /// the feature's existing agent pane (the default, unchanged behaviour) or a
-    /// fresh dedicated review session. Toggled with `t` in the review viewer.
+    /// the feature's existing agent pane (the default), a fresh dedicated review
+    /// session, another existing feature's session, or a brand-new companion
+    /// feature. Chosen via the destination picker opened with `t`.
     pub fix_target: crate::app::pr_review::FixTarget,
+    /// `Feature::id` the destination points at, for
+    /// [`crate::app::pr_review::FixTarget::ExistingFeature`] (a feature the
+    /// reviewer picked) and `NewFeature` (the companion feature created at
+    /// picker-confirm time). `None` for the two in-feature targets.
+    pub fix_target_feature_id: Option<String>,
+    /// Harness chosen for the dedicated / companion review session, when the
+    /// picker resolved one up front. `None` for the in-feature targets and for
+    /// the dedicated target when the harness is still to be picked at finish.
+    pub review_harness: Option<crate::project::AgentKind>,
+    /// When `Some`, the destination picker is open over the review viewer (`t`):
+    /// choosing where the finished review's "address the feedback" prompt is
+    /// dispatched. A sub-state, like PR Triage's `harness_pick`.
+    pub destination_pick: Option<ReviewDestinationPickState>,
+    /// When `Some`, the compact companion-feature setup overlay is open: the
+    /// reviewer picked "New feature…" in the destination picker and is choosing
+    /// the companion's preset / harness / vibe mode / branch before it is
+    /// created. Reuses PR Triage's [`TriageFeatureSetupState`].
+    pub review_feature_setup: Option<TriageFeatureSetupState>,
     /// True while the reviewer is typing a diff search query in the prompt
     /// (opened with `/`). Takes precedence over every other key binding.
     pub editing_search: bool,
@@ -1206,6 +1225,10 @@ impl DiffViewerState {
             has_prior_review: false,
             prior_agent_responses: std::collections::HashMap::new(),
             fix_target: crate::app::pr_review::FixTarget::ExistingLive,
+            fix_target_feature_id: None,
+            review_harness: None,
+            destination_pick: None,
+            review_feature_setup: None,
             editing_search: false,
             search_query: String::new(),
             search_matches: Vec::new(),
@@ -2533,6 +2556,57 @@ pub struct PrReviewReturn {
     pub state: PrReviewState,
 }
 
+/// One row of the final-review destination picker
+/// ([`ReviewDestinationPickState`]). Mirrors PR Triage's
+/// [`crate::app::pr_review::FixTargetPickRow`] but adds a row per *other*
+/// feature in the store, so a review's fixes can be routed into an unrelated
+/// feature's agent session.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReviewDestinationRow {
+    /// The reviewed feature's own first agent session (carries its label when
+    /// one exists, so the picker names exactly where the prompt lands).
+    ExistingLive(Option<String>),
+    /// A fresh dedicated "Final Review" session on this harness, in the
+    /// reviewed feature.
+    Dedicated(crate::project::AgentKind),
+    /// Another feature that already exists in the store — its first agent
+    /// session receives the prompt.
+    ExistingFeature { feature_id: String, label: String },
+    /// Create a brand-new companion feature (opens the compact setup overlay).
+    NewFeature,
+}
+
+impl ReviewDestinationRow {
+    pub fn label(&self) -> String {
+        match self {
+            ReviewDestinationRow::ExistingLive(Some(name)) => {
+                format!("This feature's live session ({name})")
+            }
+            ReviewDestinationRow::ExistingLive(None) => "This feature's live session".to_string(),
+            ReviewDestinationRow::Dedicated(agent) => {
+                format!("Dedicated review session ({})", agent.display_name())
+            }
+            ReviewDestinationRow::ExistingFeature { label, .. } => {
+                format!("Another feature: {label}")
+            }
+            ReviewDestinationRow::NewFeature => {
+                "New feature… (isolated worktree, own harness + mode)".to_string()
+            }
+        }
+    }
+}
+
+/// The final-review destination picker, opened with `t` in the review viewer
+/// and held as a sub-state of [`DiffViewerState`] (mirroring PR Triage's
+/// `harness_pick` on `PrReviewState`). One modal list; choosing a row resolves
+/// `DiffViewerState.fix_target` (+ `review_harness` / `fix_target_feature_id`),
+/// except `NewFeature`, which opens `review_feature_setup`.
+#[derive(Debug, Clone)]
+pub struct ReviewDestinationPickState {
+    pub rows: Vec<ReviewDestinationRow>,
+    pub selected: usize,
+}
+
 /// Single-select fix-target picker shown before the first fix/batch of a PR
 /// Triage pane visit: whether fixes go to the feature's existing live
 /// session, or a dedicated triage session pinned to a specific harness.
@@ -2715,6 +2789,13 @@ pub struct TriageIntegrateState {
     /// Set once an integration succeeded, so the overlay reports the outcome
     /// instead of inviting the same action again.
     pub done: Option<String>,
+    /// Companion feature id captured when the overlay opened. The final-review
+    /// companion flow (`AppMode::ReviewIntegrate`) sets this so the confirm
+    /// step re-resolves the exact feature by id rather than by a branch-name
+    /// scan, which can collide across projects (`<branch>-review-fixes` is only
+    /// unique within its repo). PR Triage leaves it `None` — it re-resolves
+    /// from PR context instead.
+    pub companion_feature_id: Option<String>,
 }
 
 impl TriageIntegrateState {
@@ -4594,6 +4675,12 @@ pub enum AppMode {
     /// no review session exists yet). The feedback file is already written; this
     /// only governs where the "address the feedback" prompt is dispatched.
     ReviewHarnessPick(ReviewHarnessPickState),
+    /// Landing a companion review feature's commits back on the source feature's
+    /// branch (push or cherry-pick). Opened with `t` on the dashboard for a
+    /// feature carrying a [`crate::project::ReviewSource`] link. Reuses PR
+    /// Triage's [`TriageIntegrateState`] (`triage_branch` = the companion
+    /// branch, `pr_branch` = the source feature's branch).
+    ReviewIntegrate(TriageIntegrateState),
     /// Soft warning shown before starting an agent when the machine is already
     /// at the concurrency cap and/or low on memory. Confirming starts anyway.
     ConfirmResourceStart(Box<ResourceConfirmState>),

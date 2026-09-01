@@ -39,6 +39,20 @@ are tagged.
 
 ### Changed
 
+- **The final review's `t` key now picks where fixes are applied, not just
+  live-vs-dedicated.** It used to flip silently between the feature's own agent
+  session and a fresh dedicated "Final Review" session. `t` now opens a
+  destination picker — modelled on PR Triage's — with four choices: this
+  feature's live session, a dedicated review session on a harness you pick,
+  **another existing feature's** agent session, or **a brand-new companion
+  feature** (its own worktree branched from the feature under review, with its
+  own harness and vibe mode). The companion keeps its fixes isolated; landing
+  them back on the source branch is an explicit step — press `t` on that
+  feature's dashboard row to push or cherry-pick its commits. The footer target
+  label and the review `?` help overlay reflect the new options. Reviews in
+  progress are unaffected; the default target is still this feature's live
+  session.
+
 - **Planning a TODO into its own feature no longer proposes a sentence-long
   branch name.** TODO titles are written as sentences, and the create-feature
   wizard seeded the branch with the whole thing slugified — which then became

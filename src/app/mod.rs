@@ -32,6 +32,7 @@ pub mod remote_control;
 mod rename;
 pub(crate) mod resource_gate;
 pub(crate) mod review;
+pub(crate) mod review_destination;
 pub(crate) mod review_memory;
 mod search;
 mod session_config;

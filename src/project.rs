@@ -369,6 +369,14 @@ pub struct Feature {
     /// triage was started from. `None` for every ordinary feature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_source: Option<TriageSource>,
+    /// Set only on a **companion review feature**: the isolated worktree the
+    /// final review creates when the reviewer picks the "New feature…"
+    /// destination. Like `triage_source` this ties the companion back to the
+    /// feature the review was run from and records the commit it was branched
+    /// from (the base of the integration commit range). `None` for every
+    /// ordinary feature and for PR-triage companions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_source: Option<ReviewSource>,
 }
 
 /// The PR and source feature a companion triage feature was created for. Also
@@ -389,6 +397,22 @@ pub struct TriageSource {
     pub pr_branch: String,
     /// Commit the companion worktree was branched from. Everything after it on
     /// the triage branch is what integration pushes or cherry-picks back.
+    pub base_sha: String,
+}
+
+/// The source feature a **companion review feature** was created from (the
+/// final review's "New feature…" destination). Kept separate from
+/// [`TriageSource`] because there is no PR involved: integration lands the
+/// companion's commits on the source feature's own branch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewSource {
+    /// `Feature::id` of the feature the final review was run from.
+    pub source_feature_id: String,
+    /// The source feature's branch — the ref integration pushes onto or
+    /// cherry-picks into.
+    pub target_branch: String,
+    /// Commit the companion worktree was branched from. Everything after it on
+    /// the companion branch is what integration pushes or cherry-picks back.
     pub base_sha: String,
 }
 
@@ -431,6 +455,8 @@ struct FeatureDe {
     selected_plan_path: Option<PathBuf>,
     #[serde(default)]
     triage_source: Option<TriageSource>,
+    #[serde(default)]
+    review_source: Option<ReviewSource>,
 }
 
 impl<'de> Deserialize<'de> for Feature {
@@ -465,6 +491,7 @@ impl<'de> Deserialize<'de> for Feature {
             nickname: feature.nickname,
             selected_plan_path: feature.selected_plan_path,
             triage_source: feature.triage_source,
+            review_source: feature.review_source,
         })
     }
 }
@@ -584,6 +611,7 @@ impl Feature {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         }
     }
 
@@ -1189,6 +1217,7 @@ impl ProjectStore {
                             nickname: None,
                             selected_plan_path: None,
                             triage_source: None,
+                            review_source: None,
                         }
                     })
                     .collect();
@@ -1531,6 +1560,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         }
     }
 
@@ -1593,6 +1623,7 @@ mod tests {
                     nickname: None,
                     selected_plan_path: None,
                     triage_source: None,
+                    review_source: None,
                 }],
                 created_at: Utc::now(),
                 preferred_agent: AgentKind::Claude,
@@ -1674,6 +1705,7 @@ mod tests {
                         nickname: Some("nick".to_string()),
                         selected_plan_path: None,
                         triage_source: None,
+                        review_source: None,
                     },
                     Feature {
                         id: "feature-2".to_string(),
@@ -1700,6 +1732,7 @@ mod tests {
                         nickname: None,
                         selected_plan_path: None,
                         triage_source: None,
+                        review_source: None,
                     },
                 ],
                 created_at: Utc::now(),

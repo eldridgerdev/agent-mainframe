@@ -844,6 +844,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("q/Esc", key_style()),
             Span::raw(" skip"),
         ]),
+        AppMode::ReviewIntegrate(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" choose  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" run  "),
+            Span::styled("q/Esc", key_style()),
+            Span::raw(" close"),
+        ]),
         // The plan interview is a full-viewport modal: `draw_plan_interview_dialog`
         // runs after this bar and clears the whole frame, so nothing written
         // here reaches the screen. Its per-phase hints — including which

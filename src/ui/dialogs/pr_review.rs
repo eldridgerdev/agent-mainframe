@@ -2578,6 +2578,7 @@ mod tests {
             selected: 0,
             error: None,
             done: None,
+            companion_feature_id: None,
         }
     }
 

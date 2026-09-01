@@ -2789,6 +2789,13 @@ pub struct TriageIntegrateState {
     /// Set once an integration succeeded, so the overlay reports the outcome
     /// instead of inviting the same action again.
     pub done: Option<String>,
+    /// Companion feature id captured when the overlay opened. The final-review
+    /// companion flow (`AppMode::ReviewIntegrate`) sets this so the confirm
+    /// step re-resolves the exact feature by id rather than by a branch-name
+    /// scan, which can collide across projects (`<branch>-review-fixes` is only
+    /// unique within its repo). PR Triage leaves it `None` — it re-resolves
+    /// from PR context instead.
+    pub companion_feature_id: Option<String>,
 }
 
 impl TriageIntegrateState {

@@ -3518,6 +3518,9 @@ impl App {
     /// - `NewFeature` targets the companion feature the picker created: its
     ///   "Final Review" session normally already exists; if it's gone, it is
     ///   recreated on `review_harness` (the harness the setup overlay chose).
+    ///   If the companion feature itself no longer resolves, the feedback is
+    ///   reported as saved and nothing is dispatched — it is never redirected
+    ///   into the reviewed feature (that would defeat the isolation guarantee).
     ///
     /// Sets `self.message` and `self.mode`.
     fn dispatch_review_feedback(
@@ -3539,14 +3542,34 @@ impl App {
         });
 
         // `ExistingFeature` / `NewFeature` route into the feature the picker
-        // resolved by id; the other two stay in the reviewed feature. A stale
-        // id (feature deleted between picking and finishing) falls back to the
-        // reviewed feature so the feedback still reaches an agent.
-        let indices = match fix_target {
+        // resolved by id; the other two stay in the reviewed feature.
+        let resolved_by_id = match fix_target {
             FixTarget::ExistingFeature | FixTarget::NewFeature => fix_target_feature_id
                 .as_deref()
-                .and_then(|id| self.feature_indices_by_id(id))
-                .or(source_indices),
+                .and_then(|id| self.feature_indices_by_id(id)),
+            FixTarget::ExistingLive | FixTarget::DedicatedReview => None,
+        };
+
+        // `NewFeature` dispatches into an *isolated* companion feature. If its
+        // id no longer resolves — companion deleted, or it failed to persist,
+        // between picking the destination and finishing the review — there is
+        // nothing safe to fall back to: pasting into (or spinning up a "Final
+        // Review" session inside) the *reviewed* feature would break the very
+        // isolation guarantee the companion flow advertises. Report and park;
+        // the feedback file is already written.
+        if fix_target == FixTarget::NewFeature && resolved_by_id.is_none() {
+            self.message = Some(format!(
+                "{summary} (feedback saved; the companion review feature is gone — nothing dispatched)"
+            ));
+            self.mode = AppMode::Viewing(from_view);
+            return;
+        }
+
+        // A stale `ExistingFeature` id (the picked feature was deleted between
+        // picking and finishing) falls back to the reviewed feature so the
+        // feedback still reaches an agent.
+        let indices = match fix_target {
+            FixTarget::ExistingFeature | FixTarget::NewFeature => resolved_by_id.or(source_indices),
             FixTarget::ExistingLive | FixTarget::DedicatedReview => source_indices,
         };
         let Some((pi, fi)) = indices else {
@@ -3578,10 +3601,11 @@ impl App {
                 self.message = Some(summary);
                 self.mode = AppMode::Viewing(from_view);
             }
-            // The companion feature exists but its "Final Review" window is
-            // gone (or never came up) — recreate it on the harness the setup
-            // overlay chose and paste there. The feedback file is already
-            // written, so warn rather than park.
+            // The companion feature resolved (the guard above returned early if
+            // it hadn't), but its "Final Review" window is gone (or never came
+            // up) — recreate it on the harness the setup overlay chose and
+            // paste there. The feedback file is already written, so warn rather
+            // than park.
             FixTarget::NewFeature => {
                 match self.create_dedicated_review_session(
                     pi,

@@ -601,6 +601,7 @@ impl App {
         let Some(link) = feature.review_source.clone() else {
             return;
         };
+        let companion_feature_id = feature.id.clone();
         let companion_workdir = feature.workdir.clone();
         let companion_branch = feature.branch.clone();
 
@@ -636,6 +637,7 @@ impl App {
             selected: 0,
             error: None,
             done: None,
+            companion_feature_id: Some(companion_feature_id),
         });
     }
 
@@ -658,15 +660,18 @@ impl App {
     /// is never forced, and the cherry-pick refuses a dirty source worktree.
     /// Results stay in the overlay.
     pub fn review_integrate_confirm(&mut self) -> Result<()> {
-        let Some((choice, companion_branch, target_branch, blocked)) = (match &self.mode {
-            AppMode::ReviewIntegrate(state) => Some((
-                state.focused(),
-                state.triage_branch.clone(),
-                state.pr_branch.clone(),
-                state.source_dirty.clone(),
-            )),
-            _ => None,
-        }) else {
+        let Some((choice, companion_branch, target_branch, blocked, companion_feature_id)) =
+            (match &self.mode {
+                AppMode::ReviewIntegrate(state) => Some((
+                    state.focused(),
+                    state.triage_branch.clone(),
+                    state.pr_branch.clone(),
+                    state.source_dirty.clone(),
+                    state.companion_feature_id.clone(),
+                )),
+                _ => None,
+            })
+        else {
             return Ok(());
         };
 
@@ -677,13 +682,16 @@ impl App {
             return Ok(());
         }
 
-        // Re-resolve the companion + source worktrees from the store.
-        let Some((pi, fi)) = self.store.projects.iter().enumerate().find_map(|(pi, p)| {
-            p.features
-                .iter()
-                .position(|f| f.branch == companion_branch && f.review_source.is_some())
-                .map(|fi| (pi, fi))
-        }) else {
+        // Re-resolve the companion by the feature id captured when the overlay
+        // opened — never by a branch-name scan. Two projects can each review a
+        // feature of the same name, producing companion branches with the same
+        // generated name (`<branch>-review-fixes`); a scan could then match the
+        // wrong project's feature and run the push / cherry-pick against the
+        // wrong repo.
+        let Some((pi, fi)) = companion_feature_id
+            .as_deref()
+            .and_then(|id| self.feature_indices_by_id(id))
+        else {
             self.set_review_integrate_error("The companion feature no longer exists".to_string());
             return Ok(());
         };
@@ -737,6 +745,104 @@ impl App {
         self.log_warn("review", format!("Companion integration failed: {message}"));
         if let AppMode::ReviewIntegrate(state) = &mut self.mode {
             state.error = Some(message);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Selection;
+    use crate::app::state::TriageIntegration;
+    use crate::project::{AgentKind, Project, ProjectStore};
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use std::collections::HashMap;
+
+    fn companion(project: &str, branch: &str, source_id: &str) -> Feature {
+        let mut f = Feature::new(
+            branch.to_string(),
+            branch.to_string(),
+            std::path::PathBuf::from(format!("/tmp/{project}/{branch}")),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        f.review_source = Some(ReviewSource {
+            source_feature_id: source_id.to_string(),
+            target_branch: "feat".to_string(),
+            base_sha: "deadbeef".to_string(),
+        });
+        f
+    }
+
+    /// The integration overlay must re-resolve its companion by the feature id
+    /// captured when it opened — never by a branch-name scan across every
+    /// project, which collides when two repos each review a same-named feature
+    /// (both companion branches are then called `feat-review-fixes`).
+    #[test]
+    fn review_integrate_resolves_the_companion_by_id_not_a_cross_project_branch_scan() {
+        let mut p0 = Project::new("p0".into(), "/tmp/p0".into(), true, AgentKind::Claude);
+        p0.features
+            .push(companion("p0", "feat-review-fixes", "p0-src"));
+        let mut p1 = Project::new("p1".into(), "/tmp/p1".into(), true, AgentKind::Claude);
+        p1.features
+            .push(companion("p1", "feat-review-fixes", "p1-src"));
+
+        let store = ProjectStore {
+            version: 2,
+            projects: vec![p0, p1],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        // Open the overlay for *project 1's* companion.
+        app.selection = Selection::Feature(1, 0);
+        app.open_review_integrate();
+        let p1_companion_id = app.store.projects[1].features[0].id.clone();
+        match &app.mode {
+            AppMode::ReviewIntegrate(state) => assert_eq!(
+                state.companion_feature_id.as_deref(),
+                Some(p1_companion_id.as_str())
+            ),
+            _ => panic!("integration overlay should be open"),
+        }
+
+        // Project 1's companion is deleted out from under the open overlay.
+        app.store.projects[1].features.remove(0);
+
+        // Confirming must fail cleanly, not fall through to project 0's
+        // identically-named companion branch.
+        if let AppMode::ReviewIntegrate(state) = &mut app.mode {
+            state.selected = TriageIntegration::ALL
+                .iter()
+                .position(|o| *o == TriageIntegration::Push)
+                .unwrap();
+        }
+        app.review_integrate_confirm().unwrap();
+        match &app.mode {
+            AppMode::ReviewIntegrate(state) => {
+                assert!(
+                    state
+                        .error
+                        .as_deref()
+                        .is_some_and(|e| e.contains("no longer exists")),
+                    "got {:?}",
+                    state.error
+                );
+                assert!(state.done.is_none());
+            }
+            _ => panic!("still in the overlay"),
         }
     }
 }

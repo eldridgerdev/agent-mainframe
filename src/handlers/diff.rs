@@ -2053,6 +2053,101 @@ index 1111111..2222222 100644
     }
 
     #[test]
+    fn finishing_new_feature_with_a_gone_companion_never_touches_the_reviewed_feature() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Only the reviewed feature exists — the companion the picker created
+        // has been deleted (its id no longer resolves).
+        let reviewed = Feature::new(
+            "feature".to_string(),
+            "feature".to_string(),
+            dir.path().to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        let mut project = Project::new(
+            "demo".to_string(),
+            dir.path().to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
+        project.features.push(reviewed);
+
+        // A bare mock: any tmux call (a paste, or spinning up a session) panics.
+        let tmux = MockTmuxOps::new();
+
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+        let mut state = DiffViewerState::new(
+            ViewState::new(
+                "demo".into(),
+                "feature".into(),
+                "amf-feature".into(),
+                "claude".into(),
+                "Claude".into(),
+                SessionKind::Claude,
+                VibeMode::Vibeless,
+                true,
+            ),
+            dir.path().to_path_buf(),
+        );
+        state.review = true;
+        state.fix_target = crate::app::pr_review::FixTarget::NewFeature;
+        state.fix_target_feature_id = Some("companion-that-was-deleted".to_string());
+        state.review_harness = Some(AgentKind::Claude);
+        state.files = vec![DiffFile {
+            old_path: Some("a.rs".into()),
+            path: "a.rs".into(),
+            status: DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        }];
+        app.mode = AppMode::DiffViewer(state);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        for c in "fix".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        finish_review(&mut app);
+
+        // Feedback is still saved and the viewer returns to the feature view…
+        assert!(dir.path().join(".claude/final-review-feedback.md").exists());
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert!(
+            app.message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("companion review feature is gone")
+        );
+        // …but no "Final Review" session was created inside the reviewed feature.
+        assert!(
+            app.store.projects[0].features[0]
+                .sessions
+                .iter()
+                .all(|s| s.label != crate::app::review::FINAL_REVIEW_SESSION_LABEL)
+        );
+    }
+
+    #[test]
     fn finishing_with_feedback_prompts_the_agent() {
         let dir = tempfile::TempDir::new().unwrap();
 

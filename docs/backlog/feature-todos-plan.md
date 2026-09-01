@@ -553,6 +553,49 @@ the full 2,334-test suite pass. Interactive multi-session spawning and
 completion still benefit from a live manual verification with provider
 credentials.
 
+### Epic 11 — Spawn a TODO into a new feature without plan mode
+
+Shipped. Epic 7 made a new branch + worktree for a TODO reachable **only**
+through "Plan this TODO first" → "In a new feature", so someone who wanted a
+fresh checkout but not a discovery interview had no route — and for a
+project- or global-scoped TODO the non-plan "Start an agent on this TODO"
+could target only an existing feature (Epic 8's `TodoSpawnTarget` picker).
+
+- [x] `TodoLaunchAction` gains a third variant, `SpawnInNewFeature`, shown in
+      the launch chooser between "Start an agent on this TODO" and "Plan this
+      TODO first". `TodoLaunchStep::Choice` and its cursor/`option_count`
+      derive from `TodoLaunchAction::ALL`, so the extra option needed no
+      handler or draw changes beyond a taller modal.
+- [x] `start_todo_spawn_in_new_feature` shares `start_todo_in_new_feature`
+      with Epic 7's plan route: the create-feature wizard is pre-seeded the
+      same way (branch = shortened title, agent/mode from the resolved host
+      feature, `todo_origin` set), but `plan_mode` stays **off** and the
+      composer seed stashed for the launch is the TODO itself
+      (`todo_spawn_prompt`), not a plan brief. Declines with a reason when
+      the project is not a git repository.
+- [x] `App::pending_todo_spawn_prompt` mirrors `pending_todo_plan_brief` —
+      app-level so it survives the `on_worktree_created` hook detour that
+      rebuilds the launch. Taken unconditionally by
+      `finish_feature_launch_with_resource_approval`, read only when the
+      launch carries a `todo_origin` and is not a plan run.
+- [x] `finish_todo_spawn_in_new_feature` closes the loop once the wizard
+      builds the feature: links the row (`set_todo_linked_feature`), reserves
+      and associates the feature's initial agent session, tags it with a
+      `TodoSessionReference`, marks the TODO in progress, and seeds that
+      session's composer unsent. A launch that never autostarts still gets
+      the feature link so a later `Enter` on the row jumps to it.
+- [x] `CHANGELOG.md`, this doc, and unit coverage for the new chooser option
+      (count, ordering, git-gate refusal, and wizard pre-seed with plan mode
+      off). Adjusted `scenarios/todo-auto-in-progress.txt`, whose chooser
+      navigation assumed "Plan this TODO first" was the second option.
+
+**Verified by running the app** (`scripts/dev/screenshot/amf-capture.sh`,
+throwaway git repo + scratch instance, `scenarios/todo-spawn-new-feature.txt`):
+`Enter` on an unlinked TODO shows the three-option chooser with the new
+middle option and its detail line; selecting it opens the ordinary
+create-feature wizard on its branch step with the title pre-filled and
+`Plan: [ ]` unchecked — no plan interview.
+
 ## Open (not built)
 
 - **Cancelling after the worktree exists** leaves an orphan checkout with

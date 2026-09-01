@@ -3274,24 +3274,32 @@ pub struct TodoPlanOrigin {
     pub host_feature_id: String,
 }
 
-/// What `g`/`Enter` on an unlinked TODO offers: the original spawn, or a plan
-/// interview.
+/// What `g`/`Enter` on an unlinked TODO offers: spawn in an existing feature,
+/// spawn in a fresh worktree, or run a plan interview first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TodoLaunchAction {
-    /// Today's behavior: an agent session in the host feature, composer seeded
-    /// with the TODO, editable and unsent.
+    /// Today's behavior: an agent session in the host feature (or, for a
+    /// project/global TODO, a feature the user picks), composer seeded with the
+    /// TODO, editable and unsent.
     SpawnSession,
+    /// Create a new AMF feature and git worktree for this TODO — no plan
+    /// interview — then seed its agent with the TODO.
+    SpawnInNewFeature,
     /// Run the guided plan interview with the TODO as its brief.
     PlanMode,
 }
 
 impl TodoLaunchAction {
-    pub const ALL: [TodoLaunchAction; 2] =
-        [TodoLaunchAction::SpawnSession, TodoLaunchAction::PlanMode];
+    pub const ALL: [TodoLaunchAction; 3] = [
+        TodoLaunchAction::SpawnSession,
+        TodoLaunchAction::SpawnInNewFeature,
+        TodoLaunchAction::PlanMode,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             TodoLaunchAction::SpawnSession => "Start an agent on this TODO",
+            TodoLaunchAction::SpawnInNewFeature => "Start an agent in a new feature",
             TodoLaunchAction::PlanMode => "Plan this TODO first",
         }
     }
@@ -3300,6 +3308,9 @@ impl TodoLaunchAction {
         match self {
             TodoLaunchAction::SpawnSession => {
                 "Opens a session in this feature with the TODO in the composer, unsent."
+            }
+            TodoLaunchAction::SpawnInNewFeature => {
+                "Creates a new branch and worktree, then seeds its agent with the TODO, unsent."
             }
             TodoLaunchAction::PlanMode => {
                 "Runs the discovery interview, then starts work from the plan you accept."

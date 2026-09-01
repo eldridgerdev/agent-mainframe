@@ -845,6 +845,14 @@ pub struct App {
     /// `todo_origin`, so an unrelated feature created afterwards cannot pick up
     /// a stale brief.
     pub pending_todo_plan_brief: Option<String>,
+    /// Composer seed for a "start an agent in a new feature" spawn from a TODO,
+    /// waiting for the create-feature wizard to finish. Kept here rather than on
+    /// the wizard state for the same reason [`Self::pending_todo_plan_brief`]
+    /// is: the wizard can detour through an `on_worktree_created` hook that
+    /// rebuilds its launch from scratch. Taken unconditionally by
+    /// `finish_feature_launch_with_resource_approval`, and only read when that
+    /// launch carries a `todo_origin` and is not a plan run.
+    pub pending_todo_spawn_prompt: Option<String>,
     /// Process-lifetime visibility for the project TODO scope. This is shared
     /// by every TODO view but intentionally resets whenever AMF starts.
     pub todo_project_visible: bool,
@@ -2365,6 +2373,7 @@ impl App {
             mode: AppMode::Normal,
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
+            pending_todo_spawn_prompt: None,
             todo_project_visible: true,
             todo_global_visible: true,
             message: None,
@@ -2614,6 +2623,7 @@ impl App {
             mode: AppMode::Normal,
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
+            pending_todo_spawn_prompt: None,
             todo_project_visible: true,
             todo_global_visible: true,
             message: None,

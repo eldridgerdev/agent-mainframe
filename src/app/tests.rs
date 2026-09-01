@@ -19396,7 +19396,8 @@ fn esc_walks_back_from_destination_to_chooser_to_the_list() {
     seed_selected_todo(&mut app, "plan me");
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
-    // Move to "Plan this TODO first" and take it.
+    // Move to "Plan this TODO first" (the third option) and take it.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
     assert!(matches!(
@@ -19408,7 +19409,7 @@ fn esc_walks_back_from_destination_to_chooser_to_the_list() {
     assert!(
         matches!(
             launch_step(&app),
-            Some(crate::app::TodoLaunchStep::Choice { selected: 1, .. })
+            Some(crate::app::TodoLaunchStep::Choice { selected: 2, .. })
         ),
         "Esc returns to the chooser with the cursor on the option that got here"
     );
@@ -19436,6 +19437,7 @@ fn starting_then_cancelling_todo_planning_keeps_it_in_progress_and_preserves_the
     }
 
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
@@ -19467,8 +19469,84 @@ fn starting_then_cancelling_todo_planning_keeps_it_in_progress_and_preserves_the
     }
 }
 
-/// The cursor clamps rather than wraps: with two options, wrapping makes j and
-/// k the same key and the highlight appears not to move.
+/// The chooser's middle option starts an agent in a fresh worktree without a
+/// plan interview — the answer to "I don't want to plan this, but I don't want
+/// to reuse an existing checkout either".
+#[test]
+fn chooser_middle_option_is_spawn_in_a_new_feature() {
+    assert_eq!(
+        crate::app::TodoLaunchAction::ALL[1],
+        crate::app::TodoLaunchAction::SpawnInNewFeature
+    );
+
+    let mut app = todos_app();
+    seed_selected_todo(&mut app, "no plan, new worktree");
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
+    assert_eq!(launch_step(&app).unwrap().selected(), 1);
+
+    // The project in `todos_app()` is not a git repo, so the route declines
+    // rather than opening a wizard that could not create a worktree — and it
+    // says why instead of doing nothing.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    assert!(matches!(app.mode, AppMode::Todos(_)), "stays in the overlay");
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("git repository")),
+        "the refusal names the reason, got {:?}",
+        app.toasts.last().map(|t| t.message.clone())
+    );
+    // Nothing was committed: the TODO is untouched and no seed was stashed.
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(!state.panes[0].todos[0].work.status.is_in_progress())
+        }
+        _ => unreachable!(),
+    }
+    assert!(app.pending_todo_spawn_prompt.is_none());
+    assert!(app.pending_todo_plan_brief.is_none());
+}
+
+/// On a git-backed project the same option pre-seeds the create-feature wizard
+/// with the TODO — plan mode off — and stashes the TODO as the composer seed
+/// for the launch to pick up once the feature exists.
+#[test]
+fn spawn_in_new_feature_seeds_the_wizard_with_plan_mode_off() {
+    let mut app = todos_app();
+    if let Some(project) = app.store.projects.get_mut(0) {
+        project.is_git = true;
+    }
+    app.store.available_harnesses = vec![AgentKind::Claude];
+    seed_selected_todo(&mut app, "carve out the parser");
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert!(!state.plan_mode, "this route is explicitly not plan mode");
+            assert!(state.use_worktree);
+            assert_eq!(
+                state.todo_origin.as_ref().map(|o| o.todo_title.as_str()),
+                Some("carve out the parser")
+            );
+        }
+        _ => panic!("expected the create-feature wizard"),
+    }
+    assert!(app.pending_todo_plan_brief.is_none(), "not a plan run");
+    assert!(
+        app.pending_todo_spawn_prompt
+            .as_deref()
+            .is_some_and(|p| p.contains("carve out the parser")),
+        "the TODO is stashed as the composer seed"
+    );
+}
+
+/// The cursor clamps rather than wraps: wrapping would make j and k at the ends
+/// look like they did nothing.
 #[test]
 fn chooser_cursor_clamps_at_both_ends() {
     let mut app = todos_app();
@@ -19482,12 +19560,12 @@ fn chooser_cursor_clamps_at_both_ends() {
         "k at the top stays"
     );
 
-    for _ in 0..3 {
+    for _ in 0..5 {
         crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('j'))).unwrap();
     }
     assert_eq!(
         launch_step(&app).unwrap().selected(),
-        1,
+        2,
         "j past the end stays"
     );
 }

@@ -723,7 +723,12 @@ fn draw_launch_step(
     step: &TodoLaunchStep,
     theme: &Theme,
 ) {
-    let area = centered_rect(64, 46, frame.area());
+    let pct_y = match step {
+        // Three options, each with a detail line, plus header and footer.
+        TodoLaunchStep::Choice { .. } => 56,
+        TodoLaunchStep::Destination { .. } => 46,
+    };
+    let area = centered_rect(64, pct_y, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = match step {

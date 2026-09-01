@@ -12,6 +12,18 @@ are tagged.
 
 ### Added
 
+- **A TODO can now start an agent in a brand-new feature without plan
+  mode.** Pressing `Enter` on an unlinked TODO used to offer two choices —
+  "Start an agent on this TODO" (which, for a project- or global-scoped
+  TODO, could only pick an *existing* feature) and "Plan this TODO first".
+  Getting a fresh branch and worktree for a TODO therefore meant sitting
+  through the discovery interview. The chooser now has a third option,
+  "Start an agent in a new feature": it opens the normal create-feature
+  wizard pre-filled with a branch name from the TODO title and plan mode
+  left off, and once the feature exists it links the TODO to it and seeds
+  that feature's agent with the TODO, unsent. It declines with a reason on
+  a project that is not a git repository. Requires no migration.
+
 - **AMF's own AI review (`W`) now carries model, token, and cost
   attribution.** After a run completes, the AI Review pane shows a line
   naming the harness and model that produced the findings plus the run's

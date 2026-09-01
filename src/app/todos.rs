@@ -1244,8 +1244,13 @@ impl App {
             state.launch = match state.launch.take() {
                 Some(TodoLaunchStep::Destination { origin, .. }) => Some(TodoLaunchStep::Choice {
                     origin,
-                    // Return the cursor to the option that got here.
-                    selected: 1,
+                    // Return the cursor to the option that got here — the
+                    // destination step is only reachable from "Plan this TODO
+                    // first".
+                    selected: TodoLaunchAction::ALL
+                        .iter()
+                        .position(|a| *a == TodoLaunchAction::PlanMode)
+                        .unwrap_or(0),
                 }),
                 _ => None,
             };
@@ -1263,6 +1268,13 @@ impl App {
             (_, Some(TodoLaunchAction::SpawnSession), _) => {
                 self.close_todo_launch_step();
                 self.todos_spawn_agent()
+            }
+            (_, Some(TodoLaunchAction::SpawnInNewFeature), _) => {
+                let origin = step.origin().clone();
+                // `start_todo_spawn_in_new_feature` reads the selected TODO from
+                // the still-open overlay, so close only the launch sub-step.
+                self.close_todo_launch_step();
+                self.start_todo_spawn_in_new_feature(origin)
             }
             (_, Some(TodoLaunchAction::PlanMode), _) => {
                 self.todos_mark_in_progress(&step.origin().todo_id, None)?;
@@ -1618,6 +1630,127 @@ impl App {
             }
             return Err(e);
         }
+        Ok(())
+    }
+
+    /// Finish a "start an agent in a new feature" launch once the create-feature
+    /// wizard has built the feature: link the TODO row to it, reserve and
+    /// associate the feature's initial agent session, tag that session as this
+    /// TODO's, and seed its composer with `prompt` — editable and unsent.
+    ///
+    /// Called from `finish_feature_launch_with_resource_approval` for a launch
+    /// that carries a `todo_origin` and is not a plan run. Best-effort about the
+    /// feature link (the feature exists either way; a missing link just degrades
+    /// the next `Enter` to the chooser) and about the session provenance write,
+    /// matching the rest of the TODO-spawn path.
+    pub(crate) fn finish_todo_spawn_in_new_feature(
+        &mut self,
+        origin: &TodoPlanOrigin,
+        pi: usize,
+        fi: usize,
+        prompt: String,
+    ) -> Result<()> {
+        let feature_id = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| f.id.clone());
+        if let (Some(feature_id), Some(db)) = (feature_id.as_deref(), self.db.as_ref())
+            && let Err(e) = db.set_todo_linked_feature(&origin.todo_id, feature_id)
+        {
+            self.log_warn(
+                "todos",
+                format!("created feature for TODO but couldn't link it: {e}"),
+            );
+        }
+
+        let Some(todo) = self.find_todo_by_id(&origin.todo_id) else {
+            self.mode = AppMode::Normal;
+            self.push_toast_warning(
+                "Feature created, but its TODO is gone; no agent was seeded",
+            );
+            return Ok(());
+        };
+        if todo.work.status == TodoStatus::Completed {
+            self.mode = AppMode::Normal;
+            self.push_toast_warning(
+                "Feature created, but this TODO is completed; no agent was seeded",
+            );
+            return Ok(());
+        }
+
+        let reserved_here = todo.work.status != TodoStatus::InProgress;
+        if reserved_here && !self.todos_reserve_launch(&todo)? {
+            self.mode = AppMode::Normal;
+            self.push_toast_warning(
+                "This TODO is already in progress; its new feature's agent was not seeded",
+            );
+            return Ok(());
+        }
+
+        let si = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .and_then(|f| f.sessions.iter().position(|s| s.kind.is_agent_harness()));
+        let Some(si) = si else {
+            if reserved_here {
+                self.todos_rollback_launch_best_effort(&origin.todo_id);
+            }
+            self.mode = AppMode::Normal;
+            self.push_toast_error("The new feature has no agent session to seed");
+            return Ok(());
+        };
+        let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
+
+        if let Some(session) = self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+            .and_then(|f| f.sessions.get_mut(si))
+        {
+            session.todo_reference = Some(crate::project::TodoSessionReference {
+                todo_id: origin.todo_id.clone(),
+                launched_from_todo_menu: true,
+            });
+        }
+        if let Err(e) = self.save() {
+            self.log_warn(
+                "todos",
+                format!("seeded TODO feature but couldn't save its reference: {e}"),
+            );
+        }
+        self.refresh_active_todos_sidebar_cache();
+
+        if let Err(e) = self.todos_mark_in_progress(&origin.todo_id, Some(&session_id)) {
+            if reserved_here {
+                self.todos_rollback_launch_best_effort(&origin.todo_id);
+            }
+            return Err(e);
+        }
+
+        self.selection = Selection::Session(pi, fi, si);
+        if let Err(e) = self
+            .enter_view_without_auto_compose()
+            .and_then(|_| self.open_compose_seeded(prompt))
+        {
+            if reserved_here {
+                self.todos_rollback_launch_best_effort(&origin.todo_id);
+            }
+            return Err(e);
+        }
+        self.push_toast_info(format!(
+            "TODO linked to new feature '{}'",
+            self.store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .map(|f| f.name.as_str())
+                .unwrap_or("")
+        ));
         Ok(())
     }
 

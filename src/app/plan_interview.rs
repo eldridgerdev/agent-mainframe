@@ -343,6 +343,30 @@ impl App {
     /// the existing flow — the wizard creates the worktree, hands the launch to
     /// the interview, and the interview's accept creates the feature.
     pub(crate) fn start_todo_plan_in_new_feature(&mut self, origin: TodoPlanOrigin) -> Result<()> {
+        self.start_todo_in_new_feature(origin, true)
+    }
+
+    /// Start an agent on a TODO in a **new** feature and git worktree, without
+    /// a plan interview.
+    ///
+    /// The counterpart to [`Self::start_todo_plan_in_new_feature`] for the
+    /// "start an agent in a new feature" chooser option: the wizard creates the
+    /// worktree exactly the same way, but `plan_mode` stays off and the launch
+    /// finishes by seeding the new feature's agent with the TODO
+    /// (`finish_todo_spawn_in_new_feature`) rather than opening an interview.
+    pub(crate) fn start_todo_spawn_in_new_feature(&mut self, origin: TodoPlanOrigin) -> Result<()> {
+        self.start_todo_in_new_feature(origin, false)
+    }
+
+    /// Shared setup for both "in a new feature" routes: pre-seed the
+    /// create-feature wizard from the selected TODO and stash the composer seed
+    /// (a plan brief, or the TODO itself) for the launch to pick up once the
+    /// wizard hands over.
+    fn start_todo_in_new_feature(
+        &mut self,
+        origin: TodoPlanOrigin,
+        plan_mode: bool,
+    ) -> Result<()> {
         let Some(ctx) = self.selected_todo_context() else {
             self.push_toast_warning("No TODO selected");
             return Ok(());
@@ -350,8 +374,20 @@ impl App {
         let (todo, pi, scratchpad) = (ctx.todo, ctx.pi, ctx.scratchpad);
         let fi =
             self.resolve_todo_host_feature(pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
-        let provenance = self.todo_provenance(pi, fi, &todo);
-        let brief = Self::compose_plan_brief(&todo, scratchpad.as_deref(), &provenance);
+
+        if !self.store.projects.get(pi).is_some_and(|p| p.is_git) {
+            self.push_toast_warning(
+                "This project has no git repository, so a new worktree cannot be created",
+            );
+            return Ok(());
+        }
+
+        let seed = if plan_mode {
+            let provenance = self.todo_provenance(pi, fi, &todo);
+            Self::compose_plan_brief(&todo, scratchpad.as_deref(), &provenance)
+        } else {
+            Self::todo_spawn_prompt(&todo)
+        };
         let host = self
             .store
             .projects
@@ -374,8 +410,8 @@ impl App {
         state.branch_error = None;
         state.step = crate::app::CreateFeatureStep::Branch;
         state.use_worktree = true;
-        // Plan mode is the whole point of this route, not a default to toggle.
-        state.plan_mode = true;
+        // The route chose this, not a default to toggle.
+        state.plan_mode = plan_mode;
         state.todo_origin = Some(origin);
         if let Some((agent, mode)) = host {
             state.agent = agent;
@@ -383,10 +419,14 @@ impl App {
             state.session_name = session_name_for_agent(&state.agent);
         }
 
-        // The composed brief is stashed for `start_plan_interview` to pick up
-        // once the wizard hands over: the interview state does not exist yet,
-        // and the wizard has nowhere to keep a brief.
-        self.pending_todo_plan_brief = Some(brief);
+        // The seed is stashed for the launch to pick up once the wizard hands
+        // over: neither the interview state nor the new feature's session
+        // exists yet, and the wizard has nowhere to keep it.
+        if plan_mode {
+            self.pending_todo_plan_brief = Some(seed);
+        } else {
+            self.pending_todo_spawn_prompt = Some(seed);
+        }
         self.message = None;
         Ok(())
     }

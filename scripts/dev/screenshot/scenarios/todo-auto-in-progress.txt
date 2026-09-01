@@ -33,10 +33,13 @@ key:Enter
 wait:400
 shot:todo-before-planning
 
-# Open Start Work and choose "Plan this TODO first". Confirming this choice is
-# the in-progress transition point, before either destination is accepted.
+# Open Start Work and choose "Plan this TODO first" (the third option, after
+# "Start an agent on this TODO" and "Start an agent in a new feature").
+# Confirming this choice is the in-progress transition point, before either
+# destination is accepted.
 key:g
 wait:300
+key:j
 key:j
 wait:200
 key:Enter

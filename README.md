@@ -372,6 +372,7 @@ Press `Enter` on a TODO to start work on it. AMF asks how:
 | Choice | What happens |
 | --- | --- |
 | **Start an agent on this TODO** | Opens a session with the TODO in the composer, unsent — in this feature for a worktree TODO, or in a feature you pick for a project or global one. |
+| **Start an agent in a new feature** | Opens the ordinary create-feature wizard, pre-filled with a branch name from the TODO title and plan mode off; once the feature exists, the TODO is linked to it and its agent is seeded with the TODO, unsent. Needs a git repository. |
 | **Plan this TODO first** | Runs the guided plan interview, with the TODO's title, notes, and the list scratchpad already filled in as the feature brief — editable before the first question. |
 
 If you choose to plan it, AMF then asks where the plan should land: **here**, in

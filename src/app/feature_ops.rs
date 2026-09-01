@@ -413,6 +413,11 @@ impl App {
         prepared: PreparedFeatureLaunch,
         resource_approved: bool,
     ) -> Result<()> {
+        // Taken unconditionally so a seed left behind by an abandoned wizard
+        // cannot leak into a later launch; only read below when this launch is
+        // a non-plan TODO spawn.
+        let todo_spawn_seed = self.pending_todo_spawn_prompt.take();
+
         let existing_pending = self
             .store
             .projects
@@ -518,6 +523,25 @@ impl App {
             }
             self.save()?;
             if started {
+                // A non-plan "start an agent in a new feature" spawn from a
+                // TODO: link the row to this feature and seed its agent with the
+                // TODO. The plan variant is handled by `resume_accepted_plan_launch`.
+                if let Some(origin) = prepared.todo_origin.clone().filter(|_| !prepared.plan_mode) {
+                    let prompt = todo_spawn_seed.unwrap_or_else(|| {
+                        // The normal seed carries the TODO's notes as well as
+                        // its title; only fall back to the title-only prompt
+                        // when the TODO itself can no longer be found.
+                        self.find_todo_by_id(&origin.todo_id)
+                            .map(|todo| Self::todo_spawn_prompt(&todo))
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "Please address this TODO item for this feature:\n\n{}",
+                                    origin.todo_title.trim()
+                                )
+                            })
+                    });
+                    return self.finish_todo_spawn_in_new_feature(&origin, pi, fi, prompt);
+                }
                 if let Some(prompt) = prepared.startup_prompt {
                     self.selection = Selection::Feature(pi, fi);
                     match self.enter_view_without_auto_compose() {
@@ -543,7 +567,45 @@ impl App {
         }
 
         if !started {
-            // `autostart_allowed` already reported why.
+            // `autostart_allowed` already reported why. The feature still
+            // exists, so a non-plan TODO spawn should at least link its row to
+            // it — the agent seed waits until the user starts the feature.
+            if let Some(origin) = prepared
+                .todo_origin
+                .as_ref()
+                .filter(|_| !prepared.plan_mode)
+            {
+                // Locate the just-created feature the same way the started
+                // branch does — by project position, then the last feature —
+                // rather than by `name == branch`, which are distinct fields
+                // that diverge under slugify or a user-edited name.
+                let feature_id = self
+                    .store
+                    .projects
+                    .iter()
+                    .position(|p| p.name == prepared.project_name)
+                    .and_then(|pi| {
+                        let fi = self.store.projects[pi].features.len().saturating_sub(1);
+                        self.store.projects[pi].features.get(fi)
+                    })
+                    .map(|f| f.id.clone());
+                match feature_id {
+                    Some(feature_id) => {
+                        if let Some(db) = self.db.as_ref()
+                            && let Err(e) = db.set_todo_linked_feature(&origin.todo_id, &feature_id)
+                        {
+                            self.log_warn(
+                                "todos",
+                                format!("created feature for TODO but couldn't link it: {e}"),
+                            );
+                        }
+                    }
+                    None => self.log_warn(
+                        "todos",
+                        "created feature for TODO but couldn't locate it to link".to_string(),
+                    ),
+                }
+            }
             return Ok(());
         }
 

@@ -20693,7 +20693,7 @@ fn planning_a_todo_into_a_new_feature_attaches_the_active_todo_sidebar_reference
 fn starting_a_host_feature_plan_session_attaches_the_active_todo_sidebar_reference() {
     let mut tmux = MockTmuxOps::new();
     tmux.expect_list_sessions().returning(|| Ok(vec![]));
-    tmux.expect_list_panes().returning(|| vec![]);
+    tmux.expect_list_panes().returning(Vec::new);
     tmux.expect_session_exists().return_const(true);
     tmux.expect_create_window().returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()

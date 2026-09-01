@@ -20620,6 +20620,186 @@ fn referenced_todo_completion_updates_db_and_retains_reference() {
     assert!(cached.ends_with("State: completed"));
 }
 
+/// Planning a TODO into a brand-new feature must leave the same sidebar
+/// provenance the direct "start an agent in a new feature" route records:
+/// `link_todo_to_new_feature` tags the feature's initial agent session, the
+/// active-TODO cache picks it up, and the row's work state names that session.
+#[test]
+fn planning_a_todo_into_a_new_feature_attaches_the_active_todo_sidebar_reference() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let session_id = app.store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Claude 1".to_string())
+        .id
+        .clone();
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db = crate::db::AmfDb::open(tmp.path()).unwrap();
+    let list = db
+        .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+        .unwrap();
+    let todo = db
+        .add_todo(&list.id, "wire the sidebar", None, TodoPriority::High)
+        .unwrap();
+    app.db = Some(db);
+    // Plan mode marks the row in progress when it begins, before the feature
+    // exists, so it has no session association yet.
+    app.todos_mark_in_progress(&todo.id, None).unwrap();
+
+    let origin = TodoPlanOrigin {
+        todo_id: todo.id.clone(),
+        list_id: list.id.clone(),
+        todo_title: "wire the sidebar".to_string(),
+        host_feature_id: "feat-1".to_string(),
+    };
+    app.link_todo_to_new_feature(&origin, "my-project", "my-feat");
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    let reference = session
+        .todo_reference
+        .as_ref()
+        .expect("the planned feature's agent session carries a TODO reference");
+    assert_eq!(reference.todo_id, todo.id);
+    assert!(reference.launched_from_todo_menu);
+
+    let cached = app
+        .active_todos_sidebar_cache
+        .get(&session_id)
+        .expect("linking refreshes the planned session's active TODO cache");
+    assert!(cached.contains("wire the sidebar"));
+    assert!(cached.ends_with("State: open"));
+
+    let loaded = app
+        .db
+        .as_ref()
+        .unwrap()
+        .find_todo_by_id(&todo.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.linked_feature_id.as_deref(), Some("feat-1"));
+    assert_eq!(
+        loaded.work.agent_session_id.as_deref(),
+        Some(session_id.as_str())
+    );
+}
+
+/// The host-feature plan route (`start_todo_plan_session`) spins up a fresh
+/// agent session on the accepted plan; that session must carry the same
+/// sidebar reference the non-plan routes record.
+#[test]
+fn starting_a_host_feature_plan_session_attaches_the_active_todo_sidebar_reference() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_list_sessions().returning(|| Ok(vec![]));
+    tmux.expect_list_panes().returning(|| vec![]);
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
+    tmux.expect_select_window().returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.max_concurrent_agents = 8;
+    app.config.low_memory_warn_mb = 0;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db = crate::db::AmfDb::open(tmp.path()).unwrap();
+    let list = db
+        .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+        .unwrap();
+    let todo = db
+        .add_todo(&list.id, "plan then build", None, TodoPriority::High)
+        .unwrap();
+    app.db = Some(db);
+    app.todos_mark_in_progress(&todo.id, None).unwrap();
+
+    let origin = TodoPlanOrigin {
+        todo_id: todo.id.clone(),
+        list_id: list.id.clone(),
+        todo_title: "plan then build".to_string(),
+        host_feature_id: "feat-1".to_string(),
+    };
+    app.start_todo_plan_session(
+        &origin,
+        std::path::Path::new("/tmp/test-workdir"),
+        "plan.md",
+    )
+    .unwrap();
+
+    let session = app.store.projects[0].features[0]
+        .sessions
+        .iter()
+        .find(|s| {
+            s.todo_reference
+                .as_ref()
+                .is_some_and(|r| r.todo_id == todo.id)
+        })
+        .expect("the plan session is tagged with its TODO");
+    assert!(
+        session
+            .todo_reference
+            .as_ref()
+            .unwrap()
+            .launched_from_todo_menu
+    );
+
+    let cached = app
+        .active_todos_sidebar_cache
+        .get(&session.id)
+        .expect("starting the plan session refreshes its active TODO cache");
+    assert!(cached.contains("plan then build"));
+}
+
+/// `attach_launched_todo_reference` is the shared write behind both plan
+/// routes: set the provenance, persist, refresh the cache — and no-op cleanly
+/// if the session index has gone stale.
+#[test]
+fn attach_launched_todo_reference_records_provenance_and_survives_a_stale_index() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let session_id = app.store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Claude 1".to_string())
+        .id
+        .clone();
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db = crate::db::AmfDb::open(tmp.path()).unwrap();
+    let list = db
+        .create_todo_list(&test_project_scope("proj-1"), Some("feat-1"))
+        .unwrap();
+    let todo = db
+        .add_todo(&list.id, "attach me", None, TodoPriority::Med)
+        .unwrap();
+    app.db = Some(db);
+
+    app.attach_launched_todo_reference(0, 0, 0, &todo.id);
+
+    assert!(
+        app.store.projects[0].features[0].sessions[0]
+            .todo_reference
+            .as_ref()
+            .is_some_and(|r| r.todo_id == todo.id && r.launched_from_todo_menu)
+    );
+    assert!(
+        app.active_todos_sidebar_cache
+            .get(&session_id)
+            .is_some_and(|c| c.contains("attach me"))
+    );
+
+    // An out-of-range session index is a no-op, not a panic.
+    app.attach_launched_todo_reference(0, 0, 9, &todo.id);
+}
+
 #[test]
 fn request_todo_reference_completion_without_db_warns_instead_of_opening_dialog() {
     let mut app = App::new_for_test(

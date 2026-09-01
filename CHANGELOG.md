@@ -159,6 +159,18 @@ are tagged.
 
 ### Fixed
 
+- **A TODO started through plan mode now shows its "Active TODO" box in the
+  agent sidebar.** The two direct spawn routes ("start an agent on this
+  TODO" and "start an agent in a new feature") tagged the launched session
+  with its originating TODO, but the two plan-mode routes — "plan this TODO"
+  in the host feature and in a new feature — only recorded the
+  feature-level link. The planned agent's sidebar therefore never showed
+  which TODO it was working, and `leader z` had nothing to complete.
+  Both plan routes now attach the same session reference, so the sidebar
+  section and its completion hint appear regardless of how the agent was
+  launched. The new-feature plan route also records the session on the
+  TODO's work state, matching the non-plan route.
+
 - Fixed the new usage line above being unreadable when its row was
   selected in the add-session picker, in themes (including the default)
   where the selection highlight and the line's muted text color matched.

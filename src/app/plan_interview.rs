@@ -1781,35 +1781,41 @@ impl App {
             && matches!(&self.mode, AppMode::PlanInterview(state) if state.pending_launch.is_none())
     }
 
-    /// Point the origin TODO at the feature its plan just created.
+    /// Point the origin TODO at the feature its plan just created, and tie the
+    /// feature's initial agent session back to the TODO so the embedded sidebar
+    /// renders the "Active TODO" section — the same provenance the non-plan
+    /// new-feature route records in `finish_todo_spawn_in_new_feature`.
     ///
     /// Best-effort and non-fatal: the feature and its plan exist either way,
     /// and failing the accept over a bookkeeping write would cost the user the
     /// interview. A missing link degrades to the chooser on the next `g`.
-    fn link_todo_to_new_feature(
+    pub(crate) fn link_todo_to_new_feature(
         &mut self,
         origin: &TodoPlanOrigin,
         project_name: &str,
         branch: &str,
     ) {
-        let feature_id = self
+        let indices = self
             .store
-            .find_project(project_name)
-            .and_then(|project| {
-                project
+            .projects
+            .iter()
+            .position(|project| project.name == project_name)
+            .and_then(|pi| {
+                self.store.projects[pi]
                     .features
                     .iter()
-                    .find(|feature| feature.name == branch)
-            })
-            .map(|feature| feature.id.clone());
+                    .position(|feature| feature.name == branch)
+                    .map(|fi| (pi, fi))
+            });
 
-        let Some(feature_id) = feature_id else {
+        let Some((pi, fi)) = indices else {
             self.log_warn(
                 "todos",
                 format!("planned feature '{branch}' not found; TODO left unlinked"),
             );
             return;
         };
+        let feature_id = self.store.projects[pi].features[fi].id.clone();
 
         if let Some(db) = self.db.as_ref()
             && let Err(e) = db.set_todo_linked_feature(&origin.todo_id, &feature_id)
@@ -1818,6 +1824,35 @@ impl App {
             return;
         }
         self.push_toast_info(format!("TODO linked to new feature '{branch}'"));
+
+        // Attach the reference to the feature's initial agent session so the
+        // embedded sidebar renders the "Active TODO" section, matching the
+        // non-plan new-feature route (`finish_todo_spawn_in_new_feature`). The
+        // session rows exist as soon as the feature is created — whether or not
+        // it started — so the sidebar picks this up the first time the session
+        // is viewed.
+        let Some(si) = self.store.projects[pi].features[fi]
+            .sessions
+            .iter()
+            .position(|session| session.kind.is_agent_harness())
+        else {
+            return;
+        };
+        let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
+        self.attach_launched_todo_reference(pi, fi, si, &origin.todo_id);
+
+        // The row is already in progress (plan mode marked it when it began);
+        // this only records which session is doing the work, matching the
+        // non-plan route. Harmless if repeated.
+        if let Err(e) = self.todos_mark_in_progress(&origin.todo_id, Some(&session_id)) {
+            self.log_warn(
+                "todos",
+                format!(
+                    "couldn't associate the planned session with TODO {}: {e}",
+                    origin.todo_id
+                ),
+            );
+        }
     }
 
     /// Start an agent on an accepted host-feature TODO plan.
@@ -1827,7 +1862,7 @@ impl App {
     /// else. The seed names the plan file explicitly, because the harness's
     /// injected instruction block points at `AMF_PLAN.md` and this plan is
     /// deliberately not that file.
-    fn start_todo_plan_session(
+    pub(crate) fn start_todo_plan_session(
         &mut self,
         origin: &TodoPlanOrigin,
         workdir: &Path,
@@ -1880,6 +1915,13 @@ impl App {
         };
 
         let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
+
+        // Tie the session to its TODO so the embedded sidebar renders the
+        // "Active TODO" section, matching the non-plan spawn routes
+        // (`todos_spawn_agent`, `finish_todo_spawn_in_new_feature`). Without
+        // this the plan-launched agent has no visible link back to its item.
+        self.attach_launched_todo_reference(pi, fi, si, &origin.todo_id);
+
         if planned_todo.is_some()
             && let Err(e) = self.todos_mark_in_progress(&origin.todo_id, Some(&session_id))
         {

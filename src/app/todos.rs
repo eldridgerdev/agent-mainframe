@@ -1667,9 +1667,7 @@ impl App {
 
         let Some(todo) = self.find_todo_by_id(&origin.todo_id) else {
             self.mode = AppMode::Normal;
-            self.push_toast_warning(
-                "Feature created, but its TODO is gone; no agent was seeded",
-            );
+            self.push_toast_warning("Feature created, but its TODO is gone; no agent was seeded");
             return Ok(());
         };
         if todo.work.status == TodoStatus::Completed {

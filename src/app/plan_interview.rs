@@ -362,11 +362,7 @@ impl App {
     /// create-feature wizard from the selected TODO and stash the composer seed
     /// (a plan brief, or the TODO itself) for the launch to pick up once the
     /// wizard hands over.
-    fn start_todo_in_new_feature(
-        &mut self,
-        origin: TodoPlanOrigin,
-        plan_mode: bool,
-    ) -> Result<()> {
+    fn start_todo_in_new_feature(&mut self, origin: TodoPlanOrigin, plan_mode: bool) -> Result<()> {
         let Some(ctx) = self.selected_todo_context() else {
             self.push_toast_warning("No TODO selected");
             return Ok(());

@@ -526,11 +526,7 @@ impl App {
                 // A non-plan "start an agent in a new feature" spawn from a
                 // TODO: link the row to this feature and seed its agent with the
                 // TODO. The plan variant is handled by `resume_accepted_plan_launch`.
-                if let Some(origin) = prepared
-                    .todo_origin
-                    .clone()
-                    .filter(|_| !prepared.plan_mode)
-                {
+                if let Some(origin) = prepared.todo_origin.clone().filter(|_| !prepared.plan_mode) {
                     let prompt = todo_spawn_seed.unwrap_or_else(|| {
                         format!(
                             "Please address this TODO item for this feature:\n\n{}",
@@ -567,7 +563,10 @@ impl App {
             // `autostart_allowed` already reported why. The feature still
             // exists, so a non-plan TODO spawn should at least link its row to
             // it — the agent seed waits until the user starts the feature.
-            if let Some(origin) = prepared.todo_origin.as_ref().filter(|_| !prepared.plan_mode)
+            if let Some(origin) = prepared
+                .todo_origin
+                .as_ref()
+                .filter(|_| !prepared.plan_mode)
                 && let Some(feature_id) = self
                     .store
                     .projects

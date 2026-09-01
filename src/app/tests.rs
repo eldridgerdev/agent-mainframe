@@ -19490,7 +19490,10 @@ fn chooser_middle_option_is_spawn_in_a_new_feature() {
     // rather than opening a wizard that could not create a worktree — and it
     // says why instead of doing nothing.
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
-    assert!(matches!(app.mode, AppMode::Todos(_)), "stays in the overlay");
+    assert!(
+        matches!(app.mode, AppMode::Todos(_)),
+        "stays in the overlay"
+    );
     assert!(
         app.toasts
             .last()

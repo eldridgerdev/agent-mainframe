@@ -592,8 +592,7 @@ impl App {
                 match feature_id {
                     Some(feature_id) => {
                         if let Some(db) = self.db.as_ref()
-                            && let Err(e) =
-                                db.set_todo_linked_feature(&origin.todo_id, &feature_id)
+                            && let Err(e) = db.set_todo_linked_feature(&origin.todo_id, &feature_id)
                         {
                             self.log_warn(
                                 "todos",

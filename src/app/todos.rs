@@ -1727,6 +1727,7 @@ impl App {
             if reserved_here {
                 self.todos_rollback_launch_best_effort(&origin.todo_id);
             }
+            self.mode = AppMode::Normal;
             return Err(e);
         }
 
@@ -1738,6 +1739,7 @@ impl App {
             if reserved_here {
                 self.todos_rollback_launch_best_effort(&origin.todo_id);
             }
+            self.mode = AppMode::Normal;
             return Err(e);
         }
         self.push_toast_info(format!(

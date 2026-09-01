@@ -528,10 +528,17 @@ impl App {
                 // TODO. The plan variant is handled by `resume_accepted_plan_launch`.
                 if let Some(origin) = prepared.todo_origin.clone().filter(|_| !prepared.plan_mode) {
                     let prompt = todo_spawn_seed.unwrap_or_else(|| {
-                        format!(
-                            "Please address this TODO item for this feature:\n\n{}",
-                            origin.todo_title.trim()
-                        )
+                        // The normal seed carries the TODO's notes as well as
+                        // its title; only fall back to the title-only prompt
+                        // when the TODO itself can no longer be found.
+                        self.find_todo_by_id(&origin.todo_id)
+                            .map(|todo| Self::todo_spawn_prompt(&todo))
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "Please address this TODO item for this feature:\n\n{}",
+                                    origin.todo_title.trim()
+                                )
+                            })
                     });
                     return self.finish_todo_spawn_in_new_feature(&origin, pi, fi, prompt);
                 }
@@ -567,20 +574,38 @@ impl App {
                 .todo_origin
                 .as_ref()
                 .filter(|_| !prepared.plan_mode)
-                && let Some(feature_id) = self
+            {
+                // Locate the just-created feature the same way the started
+                // branch does — by project position, then the last feature —
+                // rather than by `name == branch`, which are distinct fields
+                // that diverge under slugify or a user-edited name.
+                let feature_id = self
                     .store
                     .projects
                     .iter()
-                    .find(|p| p.name == prepared.project_name)
-                    .and_then(|p| p.features.iter().find(|f| f.name == prepared.branch))
-                    .map(|f| f.id.clone())
-                && let Some(db) = self.db.as_ref()
-                && let Err(e) = db.set_todo_linked_feature(&origin.todo_id, &feature_id)
-            {
-                self.log_warn(
-                    "todos",
-                    format!("created feature for TODO but couldn't link it: {e}"),
-                );
+                    .position(|p| p.name == prepared.project_name)
+                    .and_then(|pi| {
+                        let fi = self.store.projects[pi].features.len().saturating_sub(1);
+                        self.store.projects[pi].features.get(fi)
+                    })
+                    .map(|f| f.id.clone());
+                match feature_id {
+                    Some(feature_id) => {
+                        if let Some(db) = self.db.as_ref()
+                            && let Err(e) =
+                                db.set_todo_linked_feature(&origin.todo_id, &feature_id)
+                        {
+                            self.log_warn(
+                                "todos",
+                                format!("created feature for TODO but couldn't link it: {e}"),
+                            );
+                        }
+                    }
+                    None => self.log_warn(
+                        "todos",
+                        "created feature for TODO but couldn't locate it to link".to_string(),
+                    ),
+                }
             }
             return Ok(());
         }

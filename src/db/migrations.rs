@@ -136,6 +136,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Store per-choice-question custom answers alongside plan-interview answers",
             MIGRATION_030,
         ),
+        (
+            "Link a companion review feature back to the feature its final review ran from",
+            MIGRATION_031,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -776,6 +780,15 @@ const MIGRATION_030: &str = "
 ALTER TABLE plan_interviews ADD COLUMN custom_answers TEXT NOT NULL DEFAULT '[]';
 ";
 
+/// The final review's "New feature…" destination creates a companion feature on
+/// its own branch, seeded from the reviewed feature's branch head. Like
+/// `triage_source` (MIGRATION_015) the link back to the source feature is a
+/// whole-read/whole-write JSON blob on a small minority of features, so it's
+/// one nullable column rather than three.
+const MIGRATION_031: &str = "
+ALTER TABLE features ADD COLUMN review_source TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -814,7 +827,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -909,7 +922,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
     }
 
     #[test]
@@ -950,6 +963,9 @@ mod tests {
     #[test]
     fn migration_030_backfills_plan_interviews_with_an_empty_custom_answers_array() {
         let conn = Connection::open_in_memory().unwrap();
+        // 031 replays after 030 and alters `features`, so the base schema has
+        // to be present even though this test is about `plan_interviews`.
+        conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
@@ -1230,7 +1246,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 30);
+        assert_eq!(rows, 31);
     }
 
     /// Features written before selected-plan persistence existed acquire a
@@ -1280,7 +1296,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

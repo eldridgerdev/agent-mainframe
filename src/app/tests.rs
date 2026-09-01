@@ -1320,6 +1320,7 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -1368,6 +1369,7 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -3016,6 +3018,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                     "/tmp/test-repo/.worktrees/worktree-newer/docs/accepted.md",
                 )),
                 triage_source: None,
+                review_source: None,
             },
             Feature {
                 id: "feat-repo".to_string(),
@@ -3042,6 +3045,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                 nickname: None,
                 selected_plan_path: None,
                 triage_source: None,
+                review_source: None,
             },
         ],
         created_at: now,
@@ -6606,6 +6610,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let store = ProjectStore {
         version: 4,
@@ -7682,6 +7687,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -8184,6 +8190,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -9672,6 +9679,7 @@ fn store_with_worktree_agent(
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -9893,6 +9901,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -9957,6 +9966,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -10027,6 +10037,7 @@ fn store_with_single_agent_session(
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -10180,6 +10191,7 @@ fn sync_session_status_shows_agent_token_usage() {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -10533,6 +10545,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -10666,6 +10679,7 @@ fn sync_session_status_does_not_infer_stale_codex_usage_for_new_session() {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -10779,6 +10793,7 @@ fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -10875,6 +10890,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -12586,6 +12602,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -12815,6 +12832,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -18163,6 +18181,7 @@ fn store_with_review_project(repo: &std::path::Path) -> ProjectStore {
         nickname: None,
         selected_plan_path: None,
         triage_source: None,
+        review_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -25325,6 +25344,7 @@ fn store_with_agents(agents: &[AgentKind]) -> ProjectStore {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         })
         .collect();
 

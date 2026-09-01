@@ -367,6 +367,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         };
 
         let store = ProjectStore {

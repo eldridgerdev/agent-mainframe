@@ -41,6 +41,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ),
         ("P", "Run a plan interview for this feature"),
         ("T", "Theme picker"),
+        (
+            "t",
+            "Companion review feature: land its commits on the source branch",
+        ),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
         ("r", "Rename session/feature"),

@@ -1855,6 +1855,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_review_harness_pick(frame, state, &app.theme);
     }
 
+    if let AppMode::ReviewIntegrate(state) = &app.mode {
+        super::dialogs::draw_review_integrate(frame, state, &app.theme);
+    }
+
     if let AppMode::DebugLog(state) = &app.mode {
         super::dialogs::draw_debug_log(
             frame,
@@ -2202,6 +2206,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         };
         App::new_for_test(
             ProjectStore {
@@ -2541,6 +2546,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         };
         feature.add_session_named(SessionKind::Claude, "Claude 1".to_string());
         let project = Project {
@@ -3124,6 +3130,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -3231,6 +3238,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -3341,6 +3349,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -3451,6 +3460,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -3546,6 +3556,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         };
         let project = Project {
             id: "proj-1".into(),

@@ -232,7 +232,8 @@ fn load_prompt_templates(conn: &Connection) -> Result<Vec<PromptTemplate>> {
 /// One `features` row in SELECT column order (see `load_features`): id, name,
 /// branch, workdir, is_worktree, tmux_session, mode, review, plan_mode, agent,
 /// enable_chrome, status, summary, summary_updated_at, nickname, collapsed,
-/// created_at, last_accessed, ready, triage_source, selected_plan_path.
+/// created_at, last_accessed, ready, triage_source, selected_plan_path,
+/// review_source.
 type FeatureRow = (
     String,
     String,
@@ -255,6 +256,7 @@ type FeatureRow = (
     bool,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
@@ -263,7 +265,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 mode, review, plan_mode, agent, enable_chrome, status,
                 summary, summary_updated_at, nickname, collapsed,
                 created_at, last_accessed, ready, triage_source,
-                selected_plan_path
+                selected_plan_path, review_source
          FROM features WHERE project_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -292,6 +294,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 row.get(18)?,
                 row.get(19)?,
                 row.get(20)?,
+                row.get(21)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -319,6 +322,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         ready,
         triage_source_json,
         selected_plan_path,
+        review_source_json,
     ) in rows
     {
         let sessions = load_sessions(conn, &feat_id)?;
@@ -350,6 +354,11 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
             // schema) degrades to "not a triage feature" rather than failing
             // the whole store load.
             triage_source: triage_source_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
+            // Same degradation rule as `triage_source`: a malformed blob reads
+            // as "not a companion review feature" rather than failing the load.
+            review_source: review_source_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str(json).ok()),
         });
@@ -504,9 +513,9 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                     tmux_session, mode, review, plan_mode, agent, enable_chrome,
                     status, summary, summary_updated_at, nickname, collapsed,
                     created_at, last_accessed, ready, sort_order, triage_source,
-                    selected_plan_path
+                    selected_plan_path, review_source
                 ) VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23
+                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24
                 )",
                 params![
                     feature.id,
@@ -538,6 +547,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         .selected_plan_path
                         .as_ref()
                         .map(|path| path.to_string_lossy()),
+                    feature
+                        .review_source
+                        .as_ref()
+                        .and_then(|link| serde_json::to_string(link).ok()),
                 ],
             )?;
 
@@ -717,6 +730,14 @@ mod tests {
                 pr_branch: "feature/my-feature".to_string(),
                 base_sha: "abc123".to_string(),
             }),
+            // A companion review feature's link back to the feature its final
+            // review ran from — the parallel of `triage_source` for the "New
+            // feature…" review destination.
+            review_source: Some(crate::project::ReviewSource {
+                source_feature_id: "feat-source".to_string(),
+                target_branch: "feature/my-feature".to_string(),
+                base_sha: "def456".to_string(),
+            }),
         };
 
         let project = Project {
@@ -765,6 +786,15 @@ mod tests {
                 base_sha: "abc123".to_string(),
             }),
             "the PR/source-feature link must survive a save/load round trip"
+        );
+        assert_eq!(
+            lf.review_source,
+            Some(crate::project::ReviewSource {
+                source_feature_id: "feat-source".to_string(),
+                target_branch: "feature/my-feature".to_string(),
+                base_sha: "def456".to_string(),
+            }),
+            "the companion review feature's source link must survive a save/load round trip"
         );
 
         assert_eq!(lf.sessions.len(), 1);
@@ -878,6 +908,7 @@ mod tests {
                     nickname: None,
                     selected_plan_path: None,
                     triage_source: None,
+                    review_source: None,
                 },
                 Feature {
                     id: "feat-skip".to_string(),
@@ -904,6 +935,7 @@ mod tests {
                     nickname: None,
                     selected_plan_path: None,
                     triage_source: None,
+                    review_source: None,
                 },
             ],
             created_at: Utc::now(),

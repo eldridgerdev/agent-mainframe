@@ -497,8 +497,21 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       just leaves it for later. Reuses the PR-review `FixTarget` toggle (now
       parameterized by session label) and `create_dedicated_review_session`
       (now accepting a label + optional harness override).
-
-### Round 2 (planned)
+- [x] Choose *where* review fixes are applied (not just live vs. dedicated) —
+      `t` now opens a destination picker (`AppMode::DiffViewer` sub-state
+      `destination_pick`, `src/app/review_destination.rs` +
+      `src/handlers/review_destination.rs` + `src/ui/dialogs/review_destination.rs`),
+      modelled on PR Triage's fix-target picker. Four rows: this feature's live
+      session, a dedicated review session per enabled harness, **any other
+      existing feature** (`FixTarget::ExistingFeature`, routed by feature id),
+      and **a new companion feature** — an isolated worktree branched from the
+      feature under review with its own harness / vibe mode / branch
+      (`TriageFeatureSetupState` reused; `Feature.review_source` +
+      `MIGRATION_031` persist the link). The companion carries an integration
+      step: dashboard `t` on a `review_source` feature opens a push /
+      cherry-pick overlay (`AppMode::ReviewIntegrate`, reuses
+      `triage_feature.rs`'s git helpers). `dispatch_review_feedback` routes all
+      four; the footer target label and the `?` help overlay were updated.
 
 - [x] AI co-reviewer first pass (pre-fill draft comments) — press `A` in
       the final review to run a headless Claude pass over the **current

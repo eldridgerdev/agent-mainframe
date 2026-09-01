@@ -301,6 +301,12 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('T') => {
             app.start_theme_picker();
         }
+        // Land a companion review feature's commits back on its source branch.
+        // A no-op (with a hint) unless the selected feature carries a
+        // `ReviewSource` link.
+        KeyCode::Char('t') => {
+            app.open_review_integrate();
+        }
         KeyCode::Char('p') => {
             app.start_syntax_language_picker();
         }

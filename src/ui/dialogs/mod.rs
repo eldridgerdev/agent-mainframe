@@ -20,6 +20,7 @@ mod pr_review;
 mod project;
 mod prompt_library;
 mod resource_gate;
+mod review_destination;
 mod review_harness;
 mod search;
 mod session;
@@ -59,6 +60,9 @@ pub use prompt_library::{
     draw_placeholder_fill, draw_prompt_editor, draw_prompt_library, draw_skill_picker,
 };
 pub use resource_gate::draw_resource_confirm_dialog;
+pub use review_destination::{
+    draw_review_destination_pick, draw_review_feature_setup, draw_review_integrate,
+};
 pub use review_harness::draw_review_harness_pick;
 pub use search::draw_search_dialog;
 pub use session::{

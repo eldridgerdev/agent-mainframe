@@ -21,6 +21,7 @@ mod picker;
 mod plan_interview;
 mod pr_review;
 mod prompt_library;
+mod review_destination;
 mod search;
 mod skill_picker;
 mod todos;
@@ -75,6 +76,10 @@ pub use pr_review::{
 };
 pub use prompt_library::{
     handle_placeholder_fill_key, handle_prompt_editor_key, handle_prompt_library_key,
+};
+pub use review_destination::{
+    handle_review_destination_pick_key, handle_review_feature_setup_key,
+    handle_review_integrate_key,
 };
 pub use search::handle_search_key;
 pub use skill_picker::handle_skill_picker_key;
@@ -174,6 +179,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::HarnessSetup(_) => handle_harness_setup_key(app, key.code),
         AppMode::ConfigWizard(_) => handle_config_wizard_key(app, key),
         AppMode::ReviewHarnessPick(_) => handle_review_harness_pick_key(app, key.code),
+        AppMode::ReviewIntegrate(_) => handle_review_integrate_key(app, key.code),
         AppMode::ContextSettings(_) => handle_context_settings_key(app, key),
     }
 }

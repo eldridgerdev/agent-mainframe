@@ -207,6 +207,14 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     if state.help_open {
         draw_review_help_modal(frame, state, theme);
     }
+    // The destination picker and the companion-feature setup it can open sit on
+    // top of everything (they capture every key while shown).
+    if let Some(pick) = &state.destination_pick {
+        super::draw_review_destination_pick(frame, pick, theme);
+    }
+    if let Some(setup) = &state.review_feature_setup {
+        super::draw_review_feature_setup(frame, setup, theme);
+    }
 }
 
 /// The review key surface, grouped by what the reviewer is trying to do. This
@@ -306,7 +314,10 @@ const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Finishing",
         &[
-            ("t", "Fix target: the live agent pane / a dedicated session"),
+            (
+                "t",
+                "Choose where fixes go: this feature, a dedicated session, another feature, or a new one",
+            ),
             ("X", "Also apply remaining suggestions when finishing"),
             ("q", "Review summary, then finish"),
             (
@@ -2640,11 +2651,14 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
     }
     second_line.push(key("t"));
     let (target_label, target_color) = match state.fix_target {
-        // `NewFeature` is PR-Triage-only; the final review's `t` toggle never
-        // produces it, so it renders as the dedicated target it behaves like.
-        crate::app::pr_review::FixTarget::DedicatedReview
-        | crate::app::pr_review::FixTarget::NewFeature => {
+        crate::app::pr_review::FixTarget::DedicatedReview => {
             (" target: dedicated  ", theme.info.to_color())
+        }
+        crate::app::pr_review::FixTarget::NewFeature => {
+            (" target: new feature  ", theme.info.to_color())
+        }
+        crate::app::pr_review::FixTarget::ExistingFeature => {
+            (" target: other feature  ", theme.info.to_color())
         }
         crate::app::pr_review::FixTarget::ExistingLive => {
             (" target: live  ", theme.text_muted.to_color())

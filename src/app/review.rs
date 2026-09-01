@@ -3038,31 +3038,13 @@ impl App {
         self.message = Some(msg);
     }
 
-    /// Toggle where a finished review's "address the feedback" prompt is
-    /// dispatched: the feature's existing agent pane (default) or a fresh
-    /// dedicated review session (the reviewer picks the harness at finish).
+    /// Open the destination picker (`t`): choose where a finished review's
+    /// "address the feedback" prompt is dispatched — the feature's existing
+    /// agent pane, a fresh dedicated review session, another existing feature's
+    /// session, or a brand-new companion feature. Replaces the old two-state
+    /// toggle; see [`Self::review_destination_pick_confirm`].
     pub fn diff_review_toggle_fix_target(&mut self) {
-        let msg = if let AppMode::DiffViewer(state) = &mut self.mode {
-            if !state.review {
-                return;
-            }
-            state.fix_target = match state.fix_target {
-                FixTarget::ExistingLive => FixTarget::DedicatedReview,
-                // `NewFeature` is a PR-Triage-only target (it needs a PR to
-                // seed a companion worktree from); the final review's toggle
-                // only ever cycles the two in-feature targets.
-                FixTarget::DedicatedReview | FixTarget::NewFeature => FixTarget::ExistingLive,
-            };
-            match state.fix_target {
-                FixTarget::DedicatedReview | FixTarget::NewFeature => {
-                    "Fixes will run in a fresh dedicated review session (you'll pick the harness)"
-                }
-                FixTarget::ExistingLive => "Fixes go to the feature's existing agent session",
-            }
-        } else {
-            return;
-        };
-        self.message = Some(msg.to_string());
+        self.open_review_destination_picker();
     }
 
     /// Finish the review. If the project has a `final_review_check_command`
@@ -3234,6 +3216,8 @@ impl App {
             general_feedback,
             from_view,
             fix_target,
+            fix_target_feature_id,
+            review_harness,
             applied_suggestions,
             suggestion_apply_failures,
         ) = match std::mem::replace(&mut self.mode, AppMode::Normal) {
@@ -3246,6 +3230,8 @@ impl App {
                 state.general_feedback,
                 state.from_view,
                 state.fix_target,
+                state.fix_target_feature_id,
+                state.review_harness,
                 state.applied_suggestions,
                 state.suggestion_apply_failures,
             ),
@@ -3508,25 +3494,41 @@ impl App {
             // Dispatch the "address the feedback" prompt to the chosen target.
             // This sets `self.message` and `self.mode` (it may open the harness
             // picker when a fresh dedicated session is needed).
-            self.dispatch_review_feedback(from_view, format!("{summary}{pr_note}"), fix_target);
+            self.dispatch_review_feedback(
+                from_view,
+                format!("{summary}{pr_note}"),
+                fix_target,
+                fix_target_feature_id,
+                review_harness,
+            );
         }
         Ok(())
     }
 
     /// Dispatch a finished review's "address the feedback" prompt to the agent
-    /// session chosen by `fix_target`, then return to the feature view. For the
-    /// existing-pane target this pastes into the feature's first agent session
-    /// (the shipped behaviour). For the dedicated target it reuses an existing
-    /// "Final Review" session, or — when none exists — opens the harness picker
-    /// so the reviewer chooses which harness runs the fixes. Sets `self.message`
-    /// and `self.mode`.
+    /// session chosen by `fix_target`, then return to the feature view.
+    ///
+    /// - `ExistingLive` pastes into the reviewed feature's first agent session
+    ///   (the shipped behaviour).
+    /// - `DedicatedReview` reuses an existing "Final Review" session in the
+    ///   reviewed feature, or — when none exists — opens the harness picker so
+    ///   the reviewer chooses which harness runs the fixes.
+    /// - `ExistingFeature` pastes into the first agent session of the feature
+    ///   the destination picker resolved (`fix_target_feature_id`).
+    /// - `NewFeature` targets the companion feature the picker created: its
+    ///   "Final Review" session normally already exists; if it's gone, it is
+    ///   recreated on `review_harness` (the harness the setup overlay chose).
+    ///
+    /// Sets `self.message` and `self.mode`.
     fn dispatch_review_feedback(
         &mut self,
         from_view: ViewState,
         summary: String,
         fix_target: FixTarget,
+        fix_target_feature_id: Option<String>,
+        review_harness: Option<crate::project::AgentKind>,
     ) {
-        let indices = self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+        let source_indices = self.store.projects.iter().enumerate().find_map(|(pi, p)| {
             if p.name != from_view.project_name {
                 return None;
             }
@@ -3535,6 +3537,18 @@ impl App {
                 .position(|f| f.name == from_view.feature_name)
                 .map(|fi| (pi, fi))
         });
+
+        // `ExistingFeature` / `NewFeature` route into the feature the picker
+        // resolved by id; the other two stay in the reviewed feature. A stale
+        // id (feature deleted between picking and finishing) falls back to the
+        // reviewed feature so the feedback still reaches an agent.
+        let indices = match fix_target {
+            FixTarget::ExistingFeature | FixTarget::NewFeature => fix_target_feature_id
+                .as_deref()
+                .and_then(|id| self.feature_indices_by_id(id))
+                .or(source_indices),
+            FixTarget::ExistingLive | FixTarget::DedicatedReview => source_indices,
+        };
         let Some((pi, fi)) = indices else {
             self.message = Some(summary);
             self.mode = AppMode::Viewing(from_view);
@@ -3560,14 +3574,46 @@ impl App {
         match fix_target {
             // No agent session to paste into — report and stop (shipped
             // behaviour for a feature whose agent isn't running).
-            FixTarget::ExistingLive => {
+            FixTarget::ExistingLive | FixTarget::ExistingFeature => {
                 self.message = Some(summary);
                 self.mode = AppMode::Viewing(from_view);
             }
+            // The companion feature exists but its "Final Review" window is
+            // gone (or never came up) — recreate it on the harness the setup
+            // overlay chose and paste there. The feedback file is already
+            // written, so warn rather than park.
+            FixTarget::NewFeature => {
+                match self.create_dedicated_review_session(
+                    pi,
+                    fi,
+                    FINAL_REVIEW_SESSION_LABEL,
+                    review_harness,
+                    StartIntent::Warn("the review agent"),
+                ) {
+                    Ok(si) => {
+                        let (session, window) = {
+                            let feature = &self.store.projects[pi].features[fi];
+                            (
+                                feature.tmux_session.clone(),
+                                feature.sessions[si].tmux_window.clone(),
+                            )
+                        };
+                        let suffix = self.paste_review_prompt(&session, &window);
+                        self.message =
+                            Some(format!("{summary}{suffix} (companion review feature)"));
+                    }
+                    Err(e) => {
+                        self.show_error(e);
+                        self.message = Some(format!(
+                            "{summary} (feedback saved; couldn't start the companion review session)"
+                        ));
+                    }
+                }
+                self.mode = AppMode::Viewing(from_view);
+            }
             // A dedicated session must be spun up; let the reviewer pick which
-            // harness runs the fixes before it is created. (`NewFeature` never
-            // reaches the final review — see `diff_review_toggle_fix_target`.)
-            FixTarget::DedicatedReview | FixTarget::NewFeature => {
+            // harness runs the fixes before it is created.
+            FixTarget::DedicatedReview => {
                 let harnesses = if self.store.available_harnesses.is_empty() {
                     vec![self.store.projects[pi].preferred_agent.clone()]
                 } else {

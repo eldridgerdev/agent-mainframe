@@ -76,6 +76,21 @@ impl ImplementNextCtx {
     }
 }
 
+/// Collapse any embedded newlines (and the whitespace around them) into single
+/// spaces so a single-line field — a TODO title — can never persist a value that
+/// breaks list rendering. The vim keymap on the inline editor makes this
+/// reachable: `o`/`O`/`J` and multi-line register pastes all insert `\n`.
+fn flatten_single_line(text: &str) -> String {
+    if !text.contains(['\n', '\r']) {
+        return text.to_string();
+    }
+    text.split(['\n', '\r'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl App {
     // ----- scopes ---------------------------------------------------------
 
@@ -647,13 +662,18 @@ impl App {
 
         match target {
             TodoEditTarget::New => {
-                let title = text.trim();
+                // Title/New are single-line: the vim keymap can forward line-opening
+                // commands (`o`/`O`/`J`, multi-line paste) that insert newlines, so
+                // flatten them before they reach list rendering.
+                let title = flatten_single_line(&text);
+                let title = title.trim();
                 if !title.is_empty() {
                     self.todos_add(title.to_string())?;
                 }
             }
             TodoEditTarget::Title => {
-                let title = text.trim();
+                let title = flatten_single_line(&text);
+                let title = title.trim();
                 if !title.is_empty() {
                     self.todos_update_selected(|t| t.title = title.to_string())?;
                 }

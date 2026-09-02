@@ -19879,6 +19879,25 @@ fn todos_vim_normal_mode_edit_commits() {
 }
 
 #[test]
+fn todos_vim_line_open_newline_is_flattened_out_of_title() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "foo");
+
+    // Vim on (Insert), Esc to Normal, `o` opens a line below and drops into
+    // Insert there — inserting a `\n` into this single-line field. Type on the
+    // new line, then commit with plain Enter.
+    crate::handlers::handle_todos_key(&mut app, ke_ctrl(KeyCode::Char('t'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('o'))).unwrap();
+    type_str(&mut app, "bar");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    // The persisted title is a single line, not "foo\nbar".
+    assert_eq!(todo_titles(&app), vec!["foo bar"]);
+}
+
+#[test]
 fn todos_toggle_done_sinks_item_below_open() {
     let mut app = todos_app();
     app.todos_begin_add();

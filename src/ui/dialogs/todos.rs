@@ -1087,14 +1087,15 @@ fn draw_editor(frame: &mut Frame, editor: &TodoEditor, theme: &Theme) {
     let (title, base_hint) = editor_chrome(&editor.target);
     // The cancel key and vim affordance depend on the keymap: plain mode cancels
     // on Esc, vim mode gives Esc to the editor (Insert→Normal) and cancels on
-    // Ctrl+Q.
+    // Ctrl+Q. The mode indicator leads the line so it survives right-truncation
+    // in a modal narrower than the full hint.
     let hint = match editor.editor.vim_mode() {
         None => format!("{base_hint}   Esc: cancel   Ctrl+T: vim"),
         Some(crate::editor::VimMode::Normal) => {
-            format!("{base_hint}   Ctrl+Q: cancel   Ctrl+T: vim off   NORMAL")
+            format!("NORMAL   {base_hint}   Ctrl+Q: cancel   Ctrl+T: vim off")
         }
         Some(crate::editor::VimMode::Insert) => {
-            format!("{base_hint}   Ctrl+Q: cancel   Ctrl+T: vim off   INSERT")
+            format!("INSERT   {base_hint}   Ctrl+Q: cancel   Ctrl+T: vim off")
         }
     };
     let block = Block::default()

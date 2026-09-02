@@ -256,6 +256,34 @@ pub struct AiReviewFinding {
     pub published: bool,
 }
 
+/// Cache key for [`App::ai_review_finding_fix_costs`]. The per-frame result
+/// only changes when the open pane's PR identity or the anchors of its
+/// findings change, so the (triage DB load + full cached-review JSON parse +
+/// a sibling query per correlated finding) is memoized against this rather
+/// than recomputed on every render tick. Cleared outright whenever the pane
+/// is (re)opened or a new `A` run lands, so a fix cost attributed in PR
+/// Triage between visits is still picked up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AiReviewFixCostKey {
+    pub pr_number: u32,
+    pub head_sha: String,
+    pub anchors: Vec<(Option<String>, Option<u32>, Option<crate::diff::DiffSide>)>,
+}
+
+impl AiReviewFixCostKey {
+    fn for_state(state: &crate::app::AiReviewState) -> Self {
+        Self {
+            pr_number: state.pr.number,
+            head_sha: state.pr.head_sha.clone(),
+            anchors: state
+                .findings
+                .iter()
+                .map(|f| (f.path.clone(), f.line, f.side))
+                .collect(),
+        }
+    }
+}
+
 /// Progress of the background AI PR review (`A`): the one headless agent pass
 /// over the PR diff. `Reviewing` fires once with a token estimate right
 /// before the paid call; structured harness activity and usage may follow;
@@ -917,6 +945,10 @@ impl App {
     /// return to.
     pub fn open_ai_review_for_pr(&mut self, workdir: PathBuf, pr: PrRef) {
         self.ai_review_return_to = None;
+        // A fix cost may have been attributed in PR Triage since this pane was
+        // last open; a stale memo keyed on the same (unchanged) findings would
+        // hide it. Recompute on the first render of the reopened pane.
+        self.ai_review_fix_cost_cache = None;
         let cached = self.db.as_ref().and_then(|db| {
             db.load_ai_review_cache(pr.number, &pr.head_sha)
                 .ok()
@@ -1204,7 +1236,33 @@ impl App {
     /// The AI Review pane has no fix action of its own — a finding's fix cost
     /// only exists once it has been posted, picked up in PR Triage as an
     /// ordinary comment, and fixed there. This is the read-back of that.
-    pub(crate) fn ai_review_finding_fix_costs(&self) -> Vec<Option<String>> {
+    ///
+    /// Called once per render tick from `ui::dashboard::draw`, so the actual
+    /// work (a triage DB load, a full `serde_json` parse of the cached PR
+    /// review, and a sibling query per correlated finding) is memoized against
+    /// [`AiReviewFixCostKey`] and only recomputed when the pane's PR identity
+    /// or its findings' anchors change. The cache is cleared outright on pane
+    /// (re)open and whenever an `A` run lands, so a fix cost attributed back in
+    /// PR Triage between visits is still picked up.
+    pub(crate) fn ai_review_finding_fix_costs(&mut self) -> Vec<Option<String>> {
+        let AppMode::AiReview(state) = &self.mode else {
+            return Vec::new();
+        };
+        let key = AiReviewFixCostKey::for_state(state);
+        if let Some((cached_key, cached)) = &self.ai_review_fix_cost_cache
+            && *cached_key == key
+        {
+            return cached.clone();
+        }
+        let computed = self.compute_ai_review_finding_fix_costs();
+        self.ai_review_fix_cost_cache = Some((key, computed.clone()));
+        computed
+    }
+
+    /// The uncached body of [`Self::ai_review_finding_fix_costs`] — see that
+    /// method for what the result means and why this one isn't called directly
+    /// from the render path.
+    fn compute_ai_review_finding_fix_costs(&self) -> Vec<Option<String>> {
         let AppMode::AiReview(state) = &self.mode else {
             return Vec::new();
         };
@@ -1906,6 +1964,9 @@ impl App {
                     if let Some(state) = landed {
                         self.mode = AppMode::AiReview(state);
                     }
+                    // A landed run replaces the finding set (or its anchors),
+                    // so the fix-cost memo no longer applies.
+                    self.ai_review_fix_cost_cache = None;
                     changed = true;
                     break;
                 }

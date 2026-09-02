@@ -3416,7 +3416,15 @@ impl App {
                 && let Some(c) = state.review.comments.iter_mut().find(|c| c.id == *id)
             {
                 c.triage = TriageState::Fixing;
-                c.batch_id = batch_id.clone();
+                // Only a real batch stamps membership. On the single-comment
+                // (`f`) path `batch_id` is `None`; assigning it here would
+                // clear the in-memory `batch_id` of a comment that was already
+                // part of an earlier batch (the DB value survives via the
+                // `COALESCE` stickiness, but the `⧉` marker and `[`/`]` jump
+                // would stop working for it until the pane is re-entered).
+                if is_batch {
+                    c.batch_id = batch_id.clone();
+                }
             }
             self.persist_triage(
                 pr_number,

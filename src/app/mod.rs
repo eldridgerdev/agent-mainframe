@@ -1038,6 +1038,13 @@ pub struct App {
     /// agent session, the PR picker), which close straight to `Normal` —
     /// matching how `close_pr_review` already behaves for those.
     pub ai_review_return_to: Option<Box<AppMode>>,
+    /// Memoized result of [`Self::ai_review_finding_fix_costs`], valid only
+    /// while its key still matches the open AI Review pane. Recomputed lazily
+    /// (a triage DB load + a full cached-review JSON parse + a sibling query
+    /// per correlated finding) when the key changes, instead of every render
+    /// tick; cleared on pane (re)open and when an `A` run lands.
+    pub(crate) ai_review_fix_cost_cache:
+        Option<(ai_review::AiReviewFixCostKey, Vec<Option<String>>)>,
     /// Background PR Triage refresh kicked off only after GitHub confirms an
     /// AI Review post. Separate from `pr_review_bg` so it can update a stashed
     /// pane without changing the current AI Review mode.
@@ -2446,6 +2453,7 @@ impl App {
             ai_review_progress: None,
             ai_review_pending: None,
             ai_review_return_to: None,
+            ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
             gh_current_user: None,
@@ -2696,6 +2704,7 @@ impl App {
             ai_review_progress: None,
             ai_review_pending: None,
             ai_review_return_to: None,
+            ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
             gh_current_user: None,

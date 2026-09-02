@@ -14086,6 +14086,66 @@ fn pr_review_inject_fix_targets_dialogs_original_comment_after_selection_moves()
 }
 
 #[test]
+fn single_comment_fix_keeps_a_batched_comments_in_memory_batch_id() {
+    // Regression: fixing one comment with `f` set `c.batch_id = batch_id` for
+    // every targeted comment, and `batch_id` is `None` on the single-comment
+    // path — so a comment that was already part of an earlier combined batch
+    // had its in-memory `batch_id` cleared, dropping its `⧉` marker and
+    // `[`/`]` sibling jump until the pane was re-entered. The single-comment
+    // path must leave an existing `batch_id` alone.
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    let db_dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
+    enter_pr_review_for_feature(&mut app, 2);
+
+    // Comment id 1 was resolved as part of an earlier batch; comment id 2 is
+    // the one now being fixed on its own.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1; // comment id 2
+        state.fix_target_picked = true;
+        if let Some(c) = state.review.comments.iter_mut().find(|c| c.id == 1) {
+            c.batch_id = Some("earlier-batch".to_string());
+        }
+    }
+
+    app.pr_review_open_fix_confirm();
+    app.pr_review_inject_fix().unwrap();
+
+    let stashed = &app
+        .pr_review_return
+        .as_ref()
+        .expect("f stashes the pane state")
+        .state;
+    assert_eq!(
+        stashed
+            .review
+            .comments
+            .iter()
+            .find(|c| c.id == 1)
+            .unwrap()
+            .batch_id
+            .as_deref(),
+        Some("earlier-batch"),
+        "a single-comment fix must not clear an unrelated comment's batch_id"
+    );
+    assert_eq!(
+        stashed
+            .review
+            .comments
+            .iter()
+            .find(|c| c.id == 2)
+            .unwrap()
+            .batch_id,
+        None,
+        "the single-comment fix target itself gets no batch id"
+    );
+}
+
+#[test]
 fn pr_review_i_opens_syntax_picker_for_selected_comment_file() {
     let mut app = pr_review_test_app();
     enter_pr_review(&mut app, 2); // comments have paths src/file{id}.rs (Rust)
@@ -14258,6 +14318,18 @@ fn ai_review_finding_fix_costs_correlate_to_resolved_batched_comments() {
             None,
         ]
     );
+
+    // The result is memoized: a second call with the pane's findings unchanged
+    // answers from `ai_review_fix_cost_cache` without re-hitting the DB. Prove
+    // it by dropping the DB and confirming the same answer still comes back.
+    assert!(app.ai_review_fix_cost_cache.is_some());
+    app.db = None;
+    assert_eq!(app.ai_review_finding_fix_costs(), costs);
+
+    // Clearing the memo (what pane (re)open and a landed `A` run do) forces a
+    // recompute — now with no DB, so every finding falls back to `None`.
+    app.ai_review_fix_cost_cache = None;
+    assert_eq!(app.ai_review_finding_fix_costs(), vec![None, None, None]);
 }
 
 /// Enter the AI Review pane against the `store_with_feature` feature so tests

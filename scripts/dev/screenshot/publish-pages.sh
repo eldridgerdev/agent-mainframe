@@ -24,8 +24,12 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") --pr <number> --scenario <file> [options]
 
-Dispatch a protected Pages-preview capture. The workflow itself is always run
-from main; only its capture job checks out --ref. Failures warn by default.
+Dispatch the isolated capture workflow (run from main; only its capture job
+checks out --ref), then download this run's rendered frames and deploy the
+private Pages gallery from this machine. The Cloudflare credentials never enter
+CI: authenticate locally with 'wrangler login' or CLOUDFLARE_API_TOKEN, set
+CLOUDFLARE_ACCOUNT_ID, and have wrangler on PATH or npx available. Failures warn
+by default.
 
   --pr <number>          Pull request to update (required)
   --scenario <file>      Repository-relative scenario (required)
@@ -65,6 +69,20 @@ done
 [[ -n "$SCENARIO" ]] || warn "--scenario is required"
 [[ -n "$SUMMARY" && ${#SUMMARY} -le 600 ]] || warn "--summary is required and must be 600 characters or fewer"
 command -v gh >/dev/null 2>&1 || warn "GitHub CLI (gh) is not installed"
+if command -v wrangler >/dev/null 2>&1; then
+  WRANGLER=(wrangler)
+elif command -v npx >/dev/null 2>&1; then
+  WRANGLER=(npx --yes wrangler@4)
+else
+  warn "need wrangler on PATH or npx available to deploy Cloudflare Pages"
+fi
+# Auth is either an explicit API token or a completed `wrangler login` (OAuth).
+# Check now so a missing login doesn't burn a full CI capture that can't publish.
+if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]] && ! "${WRANGLER[@]}" whoami >/dev/null 2>&1; then
+  warn "no Cloudflare auth: export CLOUDFLARE_API_TOKEN or run 'wrangler login'"
+fi
+# Not a secret, but needed so the deploy picks the right account non-interactively.
+[[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || warn "CLOUDFLARE_ACCOUNT_ID is not set"
 cd "$REPO_ROOT" || warn "cannot enter repository root"
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || warn "could not resolve GitHub repository"
 ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
@@ -88,7 +106,7 @@ done
 request_id="$(date +%Y%m%d-%H%M%S)-$$"
 if ! gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$WORKFLOW_REF" \
   --raw-field "ref=$REF" --raw-field "scenario=$SCENARIO" \
-  --raw-field "pr_number=$PR_NUMBER" --raw-field "summary=$SUMMARY" --raw-field "geometry=$GEOMETRY" \
+  --raw-field "pr_number=$PR_NUMBER" --raw-field "geometry=$GEOMETRY" \
   --raw-field "gif=$GIF" --raw-field "request_id=$request_id" "${optional_inputs[@]}"; then
   warn "could not dispatch the Pages workflow; ensure main is pushed and gh is authenticated"
 fi
@@ -112,13 +130,32 @@ for _ in {1..180}; do
   [[ "$state" == completed* ]] && break
   sleep 5
 done
-[[ "$state" == "completed success" ]] || warn "Pages workflow did not succeed ($state): https://github.com/$REPO/actions/runs/$run_id"
+[[ "$state" == "completed success" ]] || warn "capture workflow did not succeed ($state): https://github.com/$REPO/actions/runs/$run_id"
 
-url="https://pr-${PR_NUMBER}.${PROJECT}.pages.dev"
+# Privileged half runs here, not in CI. The capture job checked out --ref; this
+# machine only ever touches the rendered frames it uploaded.
+workdir="$(mktemp -d "${TMPDIR:-/tmp}/amf-pages.XXXXXX")"
 fragment="$(mktemp "${TMPDIR:-/tmp}/amf-pages-fragment.XXXXXX")"
 body="$(mktemp "${TMPDIR:-/tmp}/amf-pages-body.XXXXXX")"
 updated="$(mktemp "${TMPDIR:-/tmp}/amf-pages-updated.XXXXXX")"
-trap 'rm -f "$fragment" "$body" "$updated"' EXIT
+trap 'rm -rf "$workdir"; rm -f "$fragment" "$body" "$updated"' EXIT
+
+artifact_name="amf-screenshot-pr-${PR_NUMBER}-${run_id}"
+gh run download "$run_id" --repo "$REPO" --name "$artifact_name" --dir "$workdir/capture" \
+  || warn "capture succeeded but its artifact could not be downloaded: https://github.com/$REPO/actions/runs/$run_id"
+
+python3 "$SCRIPT_DIR/build_static_gallery.py" \
+  --input-dir "$workdir/capture" --output-dir "$workdir/pages" \
+  --pr-number "$PR_NUMBER" --summary "$SUMMARY" \
+  || warn "downloaded the capture but the restricted gallery could not be built"
+
+# --commit-dirty: the gallery lives in a temp dir, but wrangler still warns
+# about this script's own repo checkout being dirty. It is irrelevant here.
+"${WRANGLER[@]}" pages deploy "$workdir/pages" \
+  --project-name="$PROJECT" --branch="pr-${PR_NUMBER}" --commit-dirty=true \
+  || warn "gallery built but 'wrangler pages deploy' failed; check 'wrangler whoami' / CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID"
+
+url="https://pr-${PR_NUMBER}.${PROJECT}.pages.dev"
 printf '<!-- amf:screenshots:start -->\n### Visual proof\n\n[Open the private screenshot gallery for PR #%s](%s)\n\nRestricted to approved Cloudflare Access reviewers.\n<!-- amf:screenshots:end -->\n' "$PR_NUMBER" "$url" >"$fragment"
 gh pr view "$PR_NUMBER" --repo "$REPO" --json body --jq .body >"$body" 2>/dev/null || warn "gallery is ready but the existing PR body could not be read: $url"
 python3 "$SCRIPT_DIR/update_pr_body.py" --body-file "$body" --fragment-file "$fragment" --output-file "$updated" || warn "gallery is ready but markers could not be updated: $url"

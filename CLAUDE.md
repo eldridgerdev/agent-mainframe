@@ -695,7 +695,14 @@ debug log with level ERROR.
 Use `amf:screenshot` only for an explicit user request for visual proof. To
 publish to an open PR, require separate explicit authorization and run
 `scripts/dev/screenshot/publish-pages.sh --strict` only after the ref and
-scenario are pushed. The command requires the `eldridgerdev` GitHub identity,
-updates only the marked PR-body section, and may wait for the protected
-`screenshot-pages` environment to be approved. Never bypass that approval or
-place raw ANSI/text captures or Actions artifact URLs in the PR.
+scenario are pushed. The command requires the `eldridgerdev` GitHub identity
+and updates only the marked PR-body section. It dispatches the isolated capture
+workflow (which alone checks out the ref), then downloads that run's rendered
+frames and deploys the private Cloudflare Pages gallery **from the local
+machine** — so it needs local Cloudflare auth (`wrangler login` or
+`CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` set, plus `wrangler` (or
+`npx`). There is no `screenshot-pages`
+environment and no per-run approval any more: the Pages credentials never enter
+CI, and the capture-vs-deploy split (deploy never runs ref code) is what keeps
+that safe. Never place raw ANSI/text captures or Actions artifact URLs in the
+PR.

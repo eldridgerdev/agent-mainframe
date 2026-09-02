@@ -161,6 +161,24 @@ A and B are the two independent P0 tracks; everything else layers on top.
       published URL as the primary deliverable instead of file paths. →
       `.claude/skills/amf-screenshot/SKILL.md`.
 
+- [x] **Follow-up, from real use.** The two-job CI workflow (unprivileged
+      capture + a `screenshot-pages` environment holding the Cloudflare token)
+      paused every single run on a manual environment approval, even though the
+      only actor allowed to dispatch it is the repo owner and it is always the
+      owner running `publish-pages.sh` locally. The required-reviewer gate was
+      never what made this safe — the job split (deploy never checks out the
+      captured ref) and secret scoping are. So the privileged half moved to the
+      operator's machine: the workflow is now **capture-only** and uploads
+      rendered frames as an internal artifact; `publish-pages.sh` waits for the
+      run, `gh run download`s it, builds the CSP-locked gallery with the new
+      `build_static_gallery.py`, and runs `wrangler pages deploy` locally with
+      wrangler authenticated by `wrangler login` (or `CLOUDFLARE_API_TOKEN`) and
+      `CLOUDFLARE_ACCOUNT_ID` set. No GitHub environment, no per-run approval,
+      and no Cloudflare credential ever enters CI. →
+      `.github/workflows/amf-screenshot-artifact.yml`,
+      `scripts/dev/screenshot/publish-pages.sh`,
+      `scripts/dev/screenshot/build_static_gallery.py`.
+
 ### Epic G — docs + high-fidelity path (P2; needs B)
 - [x] `scripts/dev/screenshot/README.md`: usage, scenario format,
       isolation model.

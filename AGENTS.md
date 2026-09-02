@@ -280,7 +280,13 @@ Use the repository `amf-screenshot` skill only when the user explicitly asks
 for visual proof. When the user also explicitly asks to publish that proof to
 an open PR, use `scripts/dev/screenshot/publish-pages.sh --strict` after the
 ref and scenario are pushed. The publisher requires the `eldridgerdev` GitHub
-identity, writes only the marked PR-body region, and may wait for approval of
-the protected `screenshot-pages` environment. Do not bypass that approval or
-claim publication succeeded until the command succeeds. Raw ANSI/text captures
-and Actions artifact URLs are internal and must not be placed in the PR.
+identity and writes only the marked PR-body region. It dispatches the isolated
+capture workflow (the only job that checks out the ref), then downloads that
+run's rendered frames and deploys the private Cloudflare Pages gallery from the
+local machine — so it needs local Cloudflare auth (`wrangler login` or
+`CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` set, plus `wrangler` (or
+`npx`). There is no `screenshot-pages`
+environment or per-run approval: the Pages credentials never enter CI, and the
+capture-vs-deploy split keeps that safe. Do not claim publication succeeded
+until the command does. Raw ANSI/text captures and Actions artifact URLs are
+internal and must not be placed in the PR.

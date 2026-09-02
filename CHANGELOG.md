@@ -12,6 +12,12 @@ are tagged.
 
 ### Fixed
 
+- **PR Triage fix prompts can now be reviewed and redirected without editing.**
+  The injection confirmation dialog now scrolls long prompts with `Ctrl+J/K`
+  or `Page Up/Down` before edit mode is entered. Press `t` to return to the
+  destination picker and choose another live, dedicated, or companion session;
+  any edits already made to the prompt are retained. No migration is required.
+
 - **The Active TODO sidebar now keeps its completion shortcut visible.** When
   an agent session is associated with a TODO, its `Active TODO` box shows
   `Ctrl+Space`, then `z` in the header just like the Prompt and Plan boxes

@@ -353,7 +353,8 @@ fn handle_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
 /// Key handling while the fix confirm/edit dialog is open.
 ///
-/// Confirm view (`editing == false`): `⏎` injects, `e` edits, `esc`/`q` cancel.
+/// Confirm view (`editing == false`): `⏎` injects, `e` edits, `t` changes the
+/// destination, and scroll keys inspect a long prompt without editing.
 /// Edit mode (`editing == true`): keystrokes flow to the prompt editor, which
 /// now supports vim (toggle with `Ctrl+T`), scrolling (`Ctrl+J/K`,
 /// `PgUp/PgDn`), and a `Tab` submit gesture that coexists with multi-line
@@ -409,6 +410,15 @@ fn handle_fix_confirm_key(app: &mut App, key: KeyEvent, editing: bool) -> Result
     match key.code {
         KeyCode::Enter => app.pr_review_inject_fix()?,
         KeyCode::Char('e') => app.pr_review_fix_edit(),
+        KeyCode::Char('t') => app.pr_review_change_fix_target(),
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.pr_review_fix_scroll(1)
+        }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.pr_review_fix_scroll(-1)
+        }
+        KeyCode::PageDown => app.pr_review_fix_scroll(FIX_PAGE_STEP),
+        KeyCode::PageUp => app.pr_review_fix_scroll(-FIX_PAGE_STEP),
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_fix(),
         _ => {}
     }

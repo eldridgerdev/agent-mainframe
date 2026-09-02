@@ -2902,6 +2902,15 @@ impl App {
     /// otherwise the single-comment fix confirm. Neither re-checks the pick,
     /// so this can't loop back into the picker.
     pub(crate) fn pr_review_continue_after_harness(&mut self) {
+        // A target change from an already-open confirmation dialog must retain
+        // the exact prompt the user reviewed (and possibly edited). The picker
+        // is only changing where it will be delivered, not what will be sent.
+        if matches!(&self.mode, AppMode::PrReview(state) if state.fix_confirm.is_some()) {
+            if let AppMode::PrReview(state) = &mut self.mode {
+                state.pending_batch = false;
+            }
+            return;
+        }
         let batch = matches!(&self.mode, AppMode::PrReview(state) if state.pending_batch);
         if batch {
             self.pr_review_show_batch_confirm();
@@ -3030,14 +3039,24 @@ impl App {
         self.pr_review_continue_after_harness();
     }
 
-    /// Cancel the fix-target picker without choosing — aborts this fix; the
-    /// user can press `f`/`B` again. Nothing is marked picked, so the picker
-    /// reappears, and any pending batch is discarded.
+    /// Cancel the fix-target picker without choosing. During initial setup this
+    /// aborts the pending fix; when opened from an existing confirmation dialog
+    /// it simply returns to that dialog with its target unchanged.
     pub fn pr_review_harness_pick_cancel(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.harness_pick = None;
             state.pending_batch = false;
         }
+    }
+
+    /// Re-open the fix-target picker from a confirmation dialog. The dialog
+    /// remains intact behind the picker, so cancelling keeps the current
+    /// target and confirming a new one preserves any prompt edits.
+    pub fn pr_review_change_fix_target(&mut self) {
+        if !matches!(&self.mode, AppMode::PrReview(state) if state.fix_confirm.is_some()) {
+            return;
+        }
+        self.pr_review_open_harness_pick();
     }
 
     /// Whether the fix-target picker is accepting the dedicated session name.

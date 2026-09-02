@@ -1250,7 +1250,7 @@ fn draw_fix_confirm(
             "[tab] inject   [^t] vim   [esc] done editing"
         }
     } else {
-        "[⏎] inject   [e] edit   [esc] cancel"
+        "[⏎] inject   [e] edit   [t] target   [^j/k] scroll   [esc] cancel"
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(

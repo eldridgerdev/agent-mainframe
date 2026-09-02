@@ -73,7 +73,9 @@ When the branch and scenario are pushed and the user wants the proof attached to
 an **open** PR, run the repository's agent-driven publisher. The deploy step
 runs locally, so wrangler must be authenticated (`wrangler login` or
 `CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` must be set, and `wrangler`
-(or `npx`) must be available:
+(or `npx`) must be available. That Cloudflare setup is a one-time job for the
+repository owner: if `publish-pages.sh` reports missing auth, surface the
+warning and stop — do not run `wrangler login` or mint a token yourself.
 
 ```bash
 scripts/dev/screenshot/publish-pages.sh \

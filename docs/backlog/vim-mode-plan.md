@@ -33,6 +33,10 @@ These already work and are NOT part of the backlog below:
 - Final-review PR-triage comment and suggestion editors can opt into the same
   Vim behavior for the current review session with `Ctrl+T`; new reviews
   start with Vim mode disabled.
+- The scoped-TODOs overlay's inline edits (add / title / notes / scratchpad)
+  opt into Vim with `Ctrl+T`, remembered for the life of the overlay; `Ctrl+Q`
+  cancels an edit when Vim's `Esc` is busy switching Insert→Normal. A fresh
+  overlay starts with Vim disabled.
 
 ## Architecture Gaps (foundational prerequisites)
 
@@ -124,10 +128,10 @@ Not editing features, but related vim-mode polish:
 
 ## Notes
 
-- Surfaces in scope today: the Compose box, the Steering Prompt, and
-  final-review PR-triage comment and suggestion editors. Reach to other
-  inputs (feature-creation fields, search query) is a separate decision and
-  not tracked here.
+- Surfaces in scope today: the Compose box, the Steering Prompt,
+  final-review PR-triage comment and suggestion editors, and the scoped-TODOs
+  overlay's inline edits. Reach to other inputs (feature-creation fields,
+  search query) is a separate decision and not tracked here.
 - Each feature should land with unit tests in the `tests` module of
   `src/editor.rs`, mirroring the existing test style.
 - Cursor is a byte offset over a `String`; keep all new motions

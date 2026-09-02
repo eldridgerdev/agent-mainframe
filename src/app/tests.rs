@@ -19326,6 +19326,7 @@ fn todo_view_with(todos: Vec<crate::db::todos::Todo>) -> TodoViewState {
         }],
         focus: Some(0),
         editor: None,
+        todo_vim_enabled: false,
         pending_delete: false,
         launch: None,
         scope_move: None,
@@ -19779,6 +19780,102 @@ fn todos_edit_title_replaces_text() {
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert_eq!(todo_titles(&app), vec!["new"]);
+}
+
+/// A `KeyEvent` carrying Ctrl, for the vim-toggle / cancel chords.
+fn ke_ctrl(code: KeyCode) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::CONTROL)
+}
+
+#[test]
+fn todos_ctrl_t_toggles_vim_and_is_remembered_for_later_edits() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+
+    // Ctrl+T turns vim on mid-edit; like the compose box it lands in Insert so
+    // typing continues uninterrupted.
+    crate::handlers::handle_todos_key(&mut app, ke_ctrl(KeyCode::Char('t'))).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.todo_vim_enabled);
+            assert_eq!(
+                state.editor.as_ref().unwrap().editor.vim_mode(),
+                Some(crate::editor::VimMode::Insert)
+            );
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+
+    // Commit and reopen: the remembered choice seeds the next editor as vim,
+    // and a freshly seeded vim editor opens in Normal mode.
+    type_str(&mut app, "task one");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    assert_eq!(todo_titles(&app), vec!["task one"]);
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('e'))).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(
+            state.editor.as_ref().unwrap().editor.vim_mode(),
+            Some(crate::editor::VimMode::Normal)
+        ),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_esc_in_vim_insert_returns_to_normal_without_cancelling() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    crate::handlers::handle_todos_key(&mut app, ke_ctrl(KeyCode::Char('t'))).unwrap();
+    type_str(&mut app, "x");
+    // Esc should go back to Normal mode — not close the editor.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(
+            state
+                .editor
+                .as_ref()
+                .expect("editor still open")
+                .editor
+                .vim_mode(),
+            Some(crate::editor::VimMode::Normal)
+        ),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_ctrl_q_cancels_the_edit_in_vim_mode() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    crate::handlers::handle_todos_key(&mut app, ke_ctrl(KeyCode::Char('t'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke_ctrl(KeyCode::Char('q'))).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.editor.is_none(), "Ctrl+Q discards the edit");
+            assert!(state.todo_vim_enabled, "the keymap choice outlives the edit");
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+    assert!(todo_titles(&app).is_empty());
+}
+
+#[test]
+fn todos_vim_normal_mode_edit_commits() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "chore");
+    app.todos_commit_edit().unwrap();
+
+    // Re-open, turn on vim (lands in Insert), Esc to Normal, then `0x` deletes
+    // the leading "c" as a real normal-mode command rather than typed text.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('e'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke_ctrl(KeyCode::Char('t'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('0'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('x'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert_eq!(todo_titles(&app), vec!["hore"]);
 }
 
 #[test]

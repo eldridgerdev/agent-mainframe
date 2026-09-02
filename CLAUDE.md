@@ -288,7 +288,10 @@ overlay:
   legacy name `carry_over`), so moving focus never disturbs the pane being
   left. Lists are *loaded* on open and created lazily on first write
   (`todos_ensure_list_id_for`), so an untouched scope leaves no row behind.
-  An inline `TextEditor` handles title/notes/scratchpad edits.
+  An inline `TextEditor` handles title/notes/scratchpad edits; `Ctrl+T` opts
+  it into the Vim keymap (`todos_toggle_edit_vim`), remembered on
+  `TodoViewState::todo_vim_enabled` for the life of the overlay, and `Ctrl+Q`
+  cancels an edit (the escape hatch Vim's `Esc` gives up to Insert→Normal).
 - **What "visible" means, in one rule.** `TodoViewState::pane_is_visible`
   (also `visible_pane_indices`, used by both draw and key handling) and
   `App::visible_todo_scopes()` (scan) implement the same thing: the

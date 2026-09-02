@@ -253,6 +253,7 @@ impl App {
             panes,
             focus,
             editor: None,
+            todo_vim_enabled: false,
             pending_delete: false,
             launch: None,
             scope_move: None,
@@ -550,14 +551,36 @@ impl App {
 
     // ----- inline editing -----------------------------------------------
 
-    /// Begin an inline edit, seeding the editor with `initial` text.
+    /// Begin an inline edit, seeding the editor with `initial` text. The keymap
+    /// follows the overlay's remembered `todo_vim_enabled` choice; a vim editor
+    /// opens in Normal mode.
     fn todos_begin_edit(&mut self, target: crate::app::TodoEditTarget, initial: String) {
         use crate::app::TodoEditor;
         use crate::editor::TextEditor;
         if let AppMode::Todos(state) = &mut self.mode {
-            state.editor = Some(TodoEditor {
-                target,
-                editor: TextEditor::new(initial),
+            let editor = if state.todo_vim_enabled {
+                TextEditor::with_vim_normal(initial)
+            } else {
+                TextEditor::new(initial)
+            };
+            state.editor = Some(TodoEditor { target, editor });
+        }
+    }
+
+    /// Toggle the vim keymap on the active inline edit, remembering the choice
+    /// on the overlay so later edits in this session keep it. No-op when no
+    /// edit is open.
+    pub fn todos_toggle_edit_vim(&mut self) {
+        if let AppMode::Todos(state) = &mut self.mode
+            && let Some(ed) = &mut state.editor
+        {
+            ed.editor.toggle_vim();
+            let on = ed.editor.vim_mode().is_some();
+            state.todo_vim_enabled = on;
+            self.push_toast_info(if on {
+                "Vim mode enabled"
+            } else {
+                "Vim mode disabled"
             });
         }
     }

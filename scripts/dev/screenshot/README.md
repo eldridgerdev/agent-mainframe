@@ -163,26 +163,37 @@ scripts/dev/screenshot/publish-pages.sh \
 
 Add `--gif` when an animation is wanted and `--geometry 160x44` when the
 scenario needs another fixed size. The invoking agent needs an authenticated
-`gh` CLI session with permission to dispatch Actions and edit the PR. The
-scenario must exist on the pushed ref; screenshots never need to be committed.
+`gh` CLI session with permission to dispatch Actions and edit the PR, and — for
+the deploy step, which now runs locally — Cloudflare auth (a completed
+`wrangler login`, or `CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` set, and
+`wrangler` on `PATH` (or `npx`). The scenario must exist on the pushed ref;
+screenshots never need to be committed.
 
 The workflow must already be present on the repository's default branch before
 the command can dispatch it; the capture itself may target any pushed ref.
 
-The command dispatches `.github/workflows/amf-screenshot-artifact.yml`. Its
-unprivileged capture job builds AMF on an isolated runner, runs
-`amf-capture.sh`, and renders PNGs. A separate `screenshot-pages` deployment
-job does not check out or execute the requested ref; it receives only rendered
-images via a 14-day internal artifact, creates a script-free gallery with a
-restrictive Content Security Policy, and deploys it to the dedicated
-Cloudflare Pages preview branch `pr-<number>`.
+The command dispatches `.github/workflows/amf-screenshot-artifact.yml`, which
+is **capture-only**: one unprivileged job builds AMF on an isolated runner,
+runs `amf-capture.sh`, renders PNGs, and uploads them as a 14-day internal
+artifact. It holds no deployment credentials and there is no environment gate.
+
+`publish-pages.sh` then waits for that run, downloads its artifact with
+`gh run download`, runs `build_static_gallery.py` to produce a script-free
+`index.html` (images inlined as `data:` URIs) plus a `_headers` file with a
+`default-src 'none'` Content-Security-Policy, and deploys that directory to the
+Cloudflare Pages preview branch `pr-<number>` with `wrangler pages deploy` —
+all on the local machine. The Pages credentials never enter CI. Safety rests on
+the split itself: the deploy step only ever handles rendered images, never the
+requested ref's code.
+
+The internal capture artifact contains:
 
 - numbered `.ansi` captures and escape-free `.txt` assertion twins;
 - rendered PNG frames and, when requested, `capture.gif`;
 - `capture-metadata.json`; and
 - a self-contained `gallery.html` with images embedded in the HTML.
 
-After success, the publisher replaces only the PR body region between
+After the deploy, the publisher replaces only the PR body region between
 `<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->` with the
 stable private Pages URL. In the Pages project, enable **Settings > General >
 Enable access policy** before publishing evidence; raw ANSI/text captures remain
@@ -195,18 +206,27 @@ reviewer-facing sentence describing the visible state and what it proves. The
 required `--summary` describes the overall flow. Pages renders the summary and
 an ordered walkthrough with each note under **What this proves**.
 
-Capture, authentication, workflow, artifact, and PR-body failures print an
-actionable `warning:` and return success by default so a larger PR workflow can
-continue. Pass `--strict` when the caller needs a nonzero exit status instead.
+Capture, authentication, workflow, artifact, download, gallery-build, deploy,
+and PR-body failures print an actionable `warning:` and return success by
+default so a larger PR workflow can continue. Pass `--strict` when the caller
+needs a nonzero exit status instead.
 
 ### Deployment safeguards
 
-Only the GitHub account `eldridgerdev` may execute the screenshot workflow, and
-all requests share one global concurrency group. Agents therefore must use that
-account's authenticated `gh` session. The `screenshot-pages` GitHub environment
-holds the Cloudflare token; configure it with a required reviewer and disable
-administrator bypassing so the deployment job cannot access that token until a
-reviewer approves it. This is deliberately stricter than the capture job.
+Only the GitHub account `eldridgerdev` may execute the capture workflow (the
+`if: github.actor == 'eldridgerdev'` gate on the job), and all dispatches share
+one concurrency group so a burst just queues one Rust build at a time. Agents
+must use that account's authenticated `gh` session.
+
+The Cloudflare Pages deploy runs on the operator's machine, from
+`publish-pages.sh`. Authenticate wrangler locally — `wrangler login` (OAuth,
+nothing stored by us) or an `CLOUDFLARE_API_TOKEN` export — and set
+`CLOUDFLARE_ACCOUNT_ID` (an identifier, not a secret). There is no
+`screenshot-pages` GitHub environment and no per-run approval: no Cloudflare
+credential is ever stored in GitHub, and the deploy step only ever sees rendered
+images downloaded from the capture artifact — it never checks out or executes
+the captured ref. If auth or `wrangler` is missing, the script warns and stops
+before dispatching a capture it could not publish.
 
 The runner installs the Codex CLI so a fresh scratch instance can pass AMF's
 harness setup for UI-only scenarios. Scenarios that launch an agent still need

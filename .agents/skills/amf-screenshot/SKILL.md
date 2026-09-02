@@ -70,7 +70,10 @@ Match `--cols` and `--rows` to the capture geometry. Pass `--gif` to the driver 
 Search the escape-free `.txt` twins for the expected dialog titles, labels, entered text, and status messages. Do not read `.ansi` files into context. Then use the local image viewer on one or two representative PNGs to check layout, clipping, and color.
 
 When the branch and scenario are pushed and the user wants the proof attached to
-an **open** PR, run the repository's agent-driven publisher:
+an **open** PR, run the repository's agent-driven publisher. The deploy step
+runs locally, so wrangler must be authenticated (`wrangler login` or
+`CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` must be set, and `wrangler`
+(or `npx`) must be available:
 
 ```bash
 scripts/dev/screenshot/publish-pages.sh \
@@ -82,7 +85,9 @@ scripts/dev/screenshot/publish-pages.sh \
 ```
 
 Add `--gif` only when the user asks for animation. The command dispatches the
-private Cloudflare Pages workflow and replaces only the PR body section between
+isolated **capture-only** workflow, then locally downloads the rendered frames,
+builds a script-free CSP-locked gallery, deploys it to Cloudflare Pages with
+`wrangler`, and replaces only the PR body section between
 `<!-- amf:screenshots:start -->` and `<!-- amf:screenshots:end -->`. The
 Pages gallery is restricted by Cloudflare Access; raw ANSI/text captures remain
 in a 14-day internal artifact and screenshots are never committed to the branch.
@@ -91,16 +96,17 @@ with their `note:` explanation under **What this proves**.
 
 Publication is a real external write and must be explicitly requested. The
 publisher accepts only the `eldridgerdev` GitHub identity; it rejects another
-`gh` login before dispatching. It serializes requests, and the
-`screenshot-pages` environment may wait for a required human approval before
-the deployment job can read its Cloudflare token. Never bypass that gate. If
-approval or publication does not finish, report the actionable warning and do
-not claim that the PR has visual proof.
+`gh` login before dispatching, and serializes capture dispatches. There is no
+`screenshot-pages` environment or per-run approval: the Cloudflare token stays
+on the local machine and never enters CI, and the deploy step only handles
+rendered images, never the captured ref's code. If capture, deploy, or the PR
+update does not finish, report the actionable warning and do not claim that the
+PR has visual proof.
 
 Return the publication result as the primary result:
 
 - Link the PR and private Cloudflare Pages gallery.
-- Say when a Pages approval is still pending; do not expose artifact URLs or
+- Report any warning the command printed; do not expose artifact URLs or
   raw ANSI/text captures in the PR.
 - If no PR publication was requested, link every local PNG or GIF in story order and give each one a short caption describing what it proves.
 

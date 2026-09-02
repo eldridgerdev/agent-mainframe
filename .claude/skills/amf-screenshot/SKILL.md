@@ -142,8 +142,10 @@ frame.
 
 The repository's selected publication backend is a Cloudflare Pages preview.
 Publication is a real PR-body write: do it only when the user explicitly asks.
-The branch and scenario must be pushed, the target PR must be open, and `gh`
-must be authenticated as `eldridgerdev`. Run:
+The branch and scenario must be pushed, the target PR must be open, `gh` must be
+authenticated as `eldridgerdev`, and the deploy step (which runs locally, not in
+CI) needs Cloudflare auth (`wrangler login` or `CLOUDFLARE_API_TOKEN`),
+`CLOUDFLARE_ACCOUNT_ID` set, plus `wrangler` on `PATH` or `npx` available. Run:
 
 ```bash
 scripts/dev/screenshot/publish-pages.sh \
@@ -154,9 +156,11 @@ scripts/dev/screenshot/publish-pages.sh \
   --strict
 ```
 
-Add `--gif` only when the user asks for animation. The command runs the
-isolated harness on GitHub, deploys a private Pages gallery, and replaces only
-the PR section delimited by
+Add `--gif` only when the user asks for animation. The command dispatches the
+isolated **capture-only** workflow on GitHub, then — on this machine —
+downloads that run's rendered frames, builds a script-free CSP-locked gallery,
+deploys it to Cloudflare Pages with `wrangler`, and replaces only the PR
+section delimited by
 `<!-- amf:screenshots:start -->`/`<!-- amf:screenshots:end -->`. The PR link
 opens the Cloudflare Access-protected gallery. Raw ANSI/text captures remain in
 a 14-day internal artifact; no screenshot files are committed.
@@ -164,12 +168,13 @@ The gallery starts with `--summary`, then presents an ordered walkthrough whose
 **What this proves** captions come from the scenario's `note:` entries.
 
 The command prints an actionable `warning:` and exits successfully by default
-when capture, authentication, workflow, artifact, or PR-body update fails, so
-the surrounding PR workflow can continue. Use `--strict` when a nonzero exit
-is required; agents publishing proof must use it. The workflow permits only
-the `eldridgerdev` actor and serializes all requests. The protected
-`screenshot-pages` environment may wait for a required human approval before
-the deployment job receives Cloudflare credentials. Do not bypass that gate;
-report that approval is pending and do not claim publication completed. The
-Claude-specific `Artifact` tool may still be used for a secondary
-in-conversation preview, but never put its raw ANSI/text output in the PR.
+when capture, authentication, workflow, artifact, download, gallery-build,
+`wrangler` deploy, or PR-body update fails, so the surrounding PR workflow can
+continue. Use `--strict` when a nonzero exit is required; agents publishing
+proof must use it. The capture workflow permits only the `eldridgerdev` actor
+and serializes dispatches. There is no `screenshot-pages` environment or per-run
+approval any more: the Cloudflare token stays on the local machine and never
+enters CI, and the deploy step only ever handles rendered images, never the
+captured ref's code. The Claude-specific `Artifact` tool may still be used for a
+secondary in-conversation preview, but never put its raw ANSI/text output in the
+PR.

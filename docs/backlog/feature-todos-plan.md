@@ -565,6 +565,12 @@ the cache); the new-feature route additionally associates the session on the
 row's work state, matching the non-plan route. Covered by three focused
 tests.
 
+**Follow-up fix (2026-09-01):** The Active TODO header originally hid its
+completion hint below a width threshold, unlike the Prompt and Plan headers.
+It now always shows the compact `Ctrl+Space`, then `z` affordance whenever a
+referenced TODO is available, with a key-dispatch regression test confirming
+that the chord reaches the completion confirmation and persists the result.
+
 ### Epic 11 — Spawn a TODO into a new feature without plan mode
 
 Shipped. Epic 7 made a new branch + worktree for a TODO reachable **only**

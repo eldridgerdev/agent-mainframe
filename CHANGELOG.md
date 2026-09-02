@@ -10,6 +10,19 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Active TODO sidebar now keeps its completion shortcut visible.** When
+  an agent session is associated with a TODO, its `Active TODO` box shows
+  `Ctrl+Space`, then `z` in the header just like the Prompt and Plan boxes
+  show their shortcuts, including in narrow sidebars. No migration is
+  required.
+
+- **Pasting into the native TODO editor now works reliably.** Pasted text is
+  inserted into the active TODO field without submitting the dialog. TODO
+  titles remain single-line, while notes and scratchpads retain pasted line
+  breaks. No migration is required.
+
 ### Added
 
 - **A TODO can now start an agent in a brand-new feature without plan

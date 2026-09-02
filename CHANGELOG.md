@@ -25,6 +25,15 @@ are tagged.
 
 ### Added
 
+- **The native TODO editor can now use Vim keybindings.** Every inline edit
+  in the scoped-TODOs overlay — add, edit title, edit notes, and the
+  scratchpad — takes `Ctrl+T` to toggle the Vim keymap, matching the Compose
+  box and the final-review editors. The choice is remembered for the life of
+  the overlay (a fresh overlay starts with Vim off), a freshly opened Vim
+  editor lands in Normal mode, and `Ctrl+Q` cancels an edit since Vim's `Esc`
+  switches Insert→Normal instead. The hint line under the editor shows the
+  active mode. Requires no migration.
+
 - **A TODO can now start an agent in a brand-new feature without plan
   mode.** Pressing `Enter` on an unlinked TODO used to offer two choices —
   "Start an agent on this TODO" (which, for a project- or global-scoped

@@ -1060,19 +1060,15 @@ fn draw_hint(
     frame.render_widget(Paragraph::new(hint), area);
 }
 
-/// Title and a multi-line hint for each edit target.
+/// Title and the leading (keymap-independent) part of the hint for each edit
+/// target. `draw_editor` appends the cancel key and vim affordance, which
+/// differ between plain and vim mode.
 fn editor_chrome(target: &TodoEditTarget) -> (&'static str, &'static str) {
     match target {
-        TodoEditTarget::New => (" New TODO ", "Enter: add   Esc: cancel"),
-        TodoEditTarget::Title => (" Edit title ", "Enter: save   Esc: cancel"),
-        TodoEditTarget::Notes => (
-            " Edit notes ",
-            "Enter: save   Alt+Enter: newline   Esc: cancel",
-        ),
-        TodoEditTarget::Scratchpad => (
-            " Scratchpad ",
-            "Enter: save   Alt+Enter: newline   Esc: cancel",
-        ),
+        TodoEditTarget::New => (" New TODO ", "Enter: add"),
+        TodoEditTarget::Title => (" Edit title ", "Enter: save"),
+        TodoEditTarget::Notes => (" Edit notes ", "Enter: save   Alt+Enter: newline"),
+        TodoEditTarget::Scratchpad => (" Scratchpad ", "Enter: save   Alt+Enter: newline"),
     }
 }
 
@@ -1088,7 +1084,20 @@ fn draw_editor(frame: &mut Frame, editor: &TodoEditor, theme: &Theme) {
     };
     crate::ui::draw_modal_overlay(frame, area, theme);
 
-    let (title, hint) = editor_chrome(&editor.target);
+    let (title, base_hint) = editor_chrome(&editor.target);
+    // The cancel key and vim affordance depend on the keymap: plain mode cancels
+    // on Esc, vim mode gives Esc to the editor (Insert→Normal) and cancels on
+    // Ctrl+Q. The mode indicator leads the line so it survives right-truncation
+    // in a modal narrower than the full hint.
+    let hint = match editor.editor.vim_mode() {
+        None => format!("{base_hint}   Esc: cancel   Ctrl+T: vim"),
+        Some(crate::editor::VimMode::Normal) => {
+            format!("NORMAL   {base_hint}   Ctrl+Q: cancel   Ctrl+T: vim off")
+        }
+        Some(crate::editor::VimMode::Insert) => {
+            format!("INSERT   {base_hint}   Ctrl+Q: cancel   Ctrl+T: vim off")
+        }
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -1374,6 +1383,7 @@ mod tests {
             ],
             focus: None,
             editor: None,
+            todo_vim_enabled: false,
             pending_delete: false,
             launch: None,
             scope_move: None,

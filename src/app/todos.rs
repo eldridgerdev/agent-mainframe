@@ -76,6 +76,21 @@ impl ImplementNextCtx {
     }
 }
 
+/// Collapse any embedded newlines (and the whitespace around them) into single
+/// spaces so a single-line field — a TODO title — can never persist a value that
+/// breaks list rendering. The vim keymap on the inline editor makes this
+/// reachable: `o`/`O`/`J` and multi-line register pastes all insert `\n`.
+fn flatten_single_line(text: &str) -> String {
+    if !text.contains(['\n', '\r']) {
+        return text.to_string();
+    }
+    text.split(['\n', '\r'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl App {
     // ----- scopes ---------------------------------------------------------
 
@@ -253,6 +268,7 @@ impl App {
             panes,
             focus,
             editor: None,
+            todo_vim_enabled: false,
             pending_delete: false,
             launch: None,
             scope_move: None,
@@ -550,14 +566,36 @@ impl App {
 
     // ----- inline editing -----------------------------------------------
 
-    /// Begin an inline edit, seeding the editor with `initial` text.
+    /// Begin an inline edit, seeding the editor with `initial` text. The keymap
+    /// follows the overlay's remembered `todo_vim_enabled` choice; a vim editor
+    /// opens in Normal mode.
     fn todos_begin_edit(&mut self, target: crate::app::TodoEditTarget, initial: String) {
         use crate::app::TodoEditor;
         use crate::editor::TextEditor;
         if let AppMode::Todos(state) = &mut self.mode {
-            state.editor = Some(TodoEditor {
-                target,
-                editor: TextEditor::new(initial),
+            let editor = if state.todo_vim_enabled {
+                TextEditor::with_vim_normal(initial)
+            } else {
+                TextEditor::new(initial)
+            };
+            state.editor = Some(TodoEditor { target, editor });
+        }
+    }
+
+    /// Toggle the vim keymap on the active inline edit, remembering the choice
+    /// on the overlay so later edits in this session keep it. No-op when no
+    /// edit is open.
+    pub fn todos_toggle_edit_vim(&mut self) {
+        if let AppMode::Todos(state) = &mut self.mode
+            && let Some(ed) = &mut state.editor
+        {
+            ed.editor.toggle_vim();
+            let on = ed.editor.vim_mode().is_some();
+            state.todo_vim_enabled = on;
+            self.push_toast_info(if on {
+                "Vim mode enabled"
+            } else {
+                "Vim mode disabled"
             });
         }
     }
@@ -624,13 +662,18 @@ impl App {
 
         match target {
             TodoEditTarget::New => {
-                let title = text.trim();
+                // Title/New are single-line: the vim keymap can forward line-opening
+                // commands (`o`/`O`/`J`, multi-line paste) that insert newlines, so
+                // flatten them before they reach list rendering.
+                let title = flatten_single_line(&text);
+                let title = title.trim();
                 if !title.is_empty() {
                     self.todos_add(title.to_string())?;
                 }
             }
             TodoEditTarget::Title => {
-                let title = text.trim();
+                let title = flatten_single_line(&text);
+                let title = title.trim();
                 if !title.is_empty() {
                     self.todos_update_selected(|t| t.title = title.to_string())?;
                 }

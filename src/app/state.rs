@@ -3215,6 +3215,11 @@ pub struct TodoViewState {
     pub focus: Option<usize>,
     /// Active inline edit, if any (add/edit title/notes/scratchpad).
     pub editor: Option<TodoEditor>,
+    /// Whether inline edits open with the vim keymap. Remembered on the state
+    /// (not the editor, which is rebuilt for each edit) for the life of the
+    /// overlay; a fresh overlay starts with vim off, matching the other opt-in
+    /// editor surfaces (compose, final review). Toggled with `Ctrl+T`.
+    pub todo_vim_enabled: bool,
     /// Set when a delete is awaiting y/n confirmation.
     pub pending_delete: bool,
     /// Active launch step (chooser / destination), layered over the list.

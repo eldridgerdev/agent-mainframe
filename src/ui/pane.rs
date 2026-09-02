@@ -787,15 +787,23 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
         ));
     }
     if let Some(active_todos_text) = data.active_todos_text.as_deref() {
+        // The box only needs to name the TODO, not carry its whole body: clamp
+        // the title (the first line) to two wrapped lines and keep the `State:`
+        // row that follows verbatim.
+        let inner_width = section_width.saturating_sub(2).max(1) as usize;
+        let (title, rest) = match active_todos_text.split_once('\n') {
+            Some((title, rest)) => (title, Some(rest)),
+            None => (active_todos_text, None),
+        };
+        let clamped_title = clamp_to_lines(title, inner_width, 2);
+        let body = match rest {
+            Some(rest) => format!("{clamped_title}\n{rest}"),
+            None => clamped_title,
+        };
         sections.push(SidebarSection::new(
             "Active TODO",
-            active_todos_text.to_string(),
-            Constraint::Length(sidebar_section_height(
-                active_todos_text,
-                section_width,
-                2,
-                10,
-            )),
+            body.clone(),
+            Constraint::Length(sidebar_section_height(&body, section_width, 2, 3)),
         ));
     }
     if is_opencode && !data.summary_text.trim().is_empty() {
@@ -845,6 +853,58 @@ fn context_band_color(band: ContextBand, theme: &Theme) -> Color {
         ContextBand::Warning => theme.warning.to_color(),
         ContextBand::Critical => theme.danger.to_color(),
     }
+}
+
+/// Word-wrap `text` at `width` columns and keep at most `max_lines` of it,
+/// appending an ellipsis to the final line when content had to be dropped.
+/// Mirrors the word wrapping ratatui applies to the sidebar body closely
+/// enough for a fixed-width section.
+fn clamp_to_lines(text: &str, width: usize, max_lines: usize) -> String {
+    let width = width.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let word_len = word.chars().count();
+        if !current.is_empty() {
+            if current.chars().count() + 1 + word_len <= width {
+                current.push(' ');
+                current.push_str(word);
+                continue;
+            }
+            lines.push(std::mem::take(&mut current));
+        }
+        if word_len <= width {
+            current.push_str(word);
+        } else {
+            let mut chunk = String::new();
+            for ch in word.chars() {
+                chunk.push(ch);
+                if chunk.chars().count() == width {
+                    lines.push(std::mem::take(&mut chunk));
+                }
+            }
+            current = chunk;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    if lines.len() <= max_lines {
+        return lines.join("\n");
+    }
+
+    lines.truncate(max_lines);
+    if let Some(last) = lines.last_mut() {
+        let mut trimmed: String = last.chars().take(width.saturating_sub(1)).collect();
+        while trimmed.ends_with(' ') {
+            trimmed.pop();
+        }
+        trimmed.push('…');
+        *last = trimmed;
+    }
+    lines.join("\n")
 }
 
 fn sidebar_section_height(
@@ -1499,6 +1559,52 @@ mod tests {
             .find(|section| section.title == "Active TODO")
             .expect("referenced TODOs should render a dedicated section");
         assert!(active.body.ends_with("State: completed"));
+    }
+
+    #[test]
+    fn active_todo_section_clamps_a_long_title_to_two_lines() {
+        let mut data = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
+            status_text: String::new(),
+            usage_text: None,
+            model_text: None,
+            prompt_text: String::new(),
+            work_text: None,
+            todos_text: None,
+            active_todos_text: Some(format!("{}\nState: open", "word ".repeat(60).trim())),
+            active_todo_affordance: false,
+            summary_text: String::new(),
+            pr_triage_text: None,
+            plan_text: String::new(),
+            context_snapshot: None,
+            context_hint_visible: false,
+        };
+        let active = sidebar_sections(&data, 30)
+            .into_iter()
+            .find(|section| section.title == "Active TODO")
+            .expect("a referenced TODO renders a section");
+        let title_lines: Vec<&str> = active
+            .body
+            .lines()
+            .take_while(|line| !line.starts_with("State:"))
+            .collect();
+        assert_eq!(title_lines.len(), 2, "title clamps to two lines");
+        assert!(
+            title_lines.last().unwrap().ends_with('…'),
+            "dropped content is marked"
+        );
+        assert!(
+            active.body.ends_with("State: open"),
+            "the State row is kept verbatim"
+        );
+
+        // A short title is left untouched.
+        data.active_todos_text = Some("Ship it\nState: open".to_string());
+        let active = sidebar_sections(&data, 30)
+            .into_iter()
+            .find(|section| section.title == "Active TODO")
+            .unwrap();
+        assert_eq!(active.body, "Ship it\nState: open");
     }
 
     #[test]

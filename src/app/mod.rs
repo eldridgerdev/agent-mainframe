@@ -16,6 +16,7 @@ mod diff;
 pub(crate) mod dormant;
 pub(crate) mod editor_ops;
 mod feature_ops;
+pub(crate) mod fix_cost;
 mod handoff;
 mod hooks;
 pub(crate) mod learning;

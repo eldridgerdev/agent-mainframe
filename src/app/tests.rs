@@ -14071,7 +14071,7 @@ fn pr_review_inject_fix_targets_dialogs_original_comment_after_selection_moves()
         "the newly-selected comment must not be marked Fixing"
     );
     assert_eq!(
-        triage.get(&2).map(|(state, _)| *state),
+        triage.get(&2).map(|row| row.state),
         Some(crate::app::pr_review::TriageState::Fixing),
         "the dialog's original comment must still be marked Fixing"
     );
@@ -14181,6 +14181,83 @@ fn sample_ai_review_finding(body: &str) -> crate::app::ai_review::AiReviewFindin
         skipped: false,
         published: false,
     }
+}
+
+#[test]
+fn ai_review_finding_fix_costs_correlate_to_resolved_batched_comments() {
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    let mut app = pr_review_test_app();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+
+    // A cached review with two code comments (ids 1 and 2, on src/file1.rs:1
+    // and src/file2.rs:2) to correlate findings against.
+    let review = pr_review_with_comments(2);
+    app.db
+        .as_ref()
+        .unwrap()
+        .save_pr_review_cache(&review)
+        .unwrap();
+
+    // Comment 1 was fixed in a combined batch and resolved; comment 2 wasn't
+    // touched.
+    let db = app.db.as_ref().unwrap();
+    db.save_pr_comment_triage(
+        7,
+        "sha",
+        1,
+        crate::app::pr_review::TriageState::Fixing,
+        None,
+        Some("batch-z"),
+    )
+    .unwrap();
+    db.save_pr_comment_triage(
+        7,
+        "sha",
+        1,
+        crate::app::pr_review::TriageState::Done,
+        None,
+        None,
+    )
+    .unwrap();
+    // Comment 2 is in the same batch but was never resolved — the partial-batch
+    // rule means it must contribute no cost line.
+    db.save_pr_comment_triage(
+        7,
+        "sha",
+        2,
+        crate::app::pr_review::TriageState::Fixing,
+        None,
+        Some("batch-z"),
+    )
+    .unwrap();
+    db.set_pr_comment_batch_fix_cost(7, "batch-z", "$0.09")
+        .unwrap();
+
+    let pr = review.pr.clone();
+    let mut state = sample_ai_review_state(std::path::PathBuf::from("/tmp/wd"), pr);
+    // Finding 0 matches comment 1 (resolved, batched); finding 1 matches
+    // comment 2 (batched but unresolved); finding 2 matches nothing.
+    let mut f0 = sample_ai_review_finding("race");
+    f0.path = Some("src/file1.rs".to_string());
+    f0.line = Some(1);
+    let mut f1 = sample_ai_review_finding("style");
+    f1.path = Some("src/file2.rs".to_string());
+    f1.line = Some(2);
+    let mut f2 = sample_ai_review_finding("orphan");
+    f2.path = Some("src/other.rs".to_string());
+    f2.line = Some(9);
+    state.findings = vec![f0, f1, f2];
+    app.mode = AppMode::AiReview(state);
+
+    let costs = app.ai_review_finding_fix_costs();
+    assert_eq!(
+        costs,
+        vec![
+            Some("Fix cost (est.): $0.09 · combined (2)".to_string()),
+            None,
+            None,
+        ]
+    );
 }
 
 /// Enter the AI Review pane against the `store_with_feature` feature so tests
@@ -15898,7 +15975,7 @@ fn pr_review_agent_draft_without_provenance_discloses_unknown_details() {
     );
     assert_eq!(
         metadata.usage_disclosure(),
-        "estimated tokens unavailable · estimated cost unavailable"
+        "estimated tokens unavailable · Fix cost (est.): unavailable"
     );
 }
 
@@ -16394,6 +16471,43 @@ fn pr_review_i_is_noop_for_comment_without_file_path() {
     );
 }
 
+#[test]
+fn pr_review_jump_sibling_cycles_within_the_batch_and_hints_otherwise() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 4);
+    // Comments 1 and 3 (indices 0 and 2) were fixed in one combined batch.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.comments[0].batch_id = Some("batch-x".to_string());
+        state.review.comments[2].batch_id = Some("batch-x".to_string());
+        state.selected = 0;
+    }
+
+    app.pr_review_jump_sibling(true);
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    assert_eq!(state.selected, 2, "forward jump lands on the other sibling");
+
+    app.pr_review_jump_sibling(true);
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    assert_eq!(state.selected, 0, "jump cycles back around");
+
+    // A comment that isn't part of any batch: no move, and a hint toast.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1;
+    }
+    app.pr_review_jump_sibling(true);
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review pane");
+    };
+    assert_eq!(
+        state.selected, 1,
+        "no sibling jump off a non-batched comment"
+    );
+}
+
 /// Enter the review pane with comments built from `(id, path, author, is_bot)`
 /// tuples, in that fetch order, for exercising `sort_mode`.
 fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool)]) {
@@ -16756,6 +16870,7 @@ fn pr_comment_of_kind(
         is_resolved: false,
         triage: crate::app::pr_review::TriageState::Untriaged,
         local_note: None,
+        batch_id: None,
         github_id: None,
         github_review_id: None,
     }

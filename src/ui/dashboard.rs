@@ -1235,6 +1235,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if matches!(app.mode, AppMode::AiReview(_)) {
         let ai_review_running = app.ai_review_bg.is_some();
+        let finding_fix_costs = app.ai_review_finding_fix_costs();
         if let AppMode::AiReview(state) = &mut app.mode {
             super::dialogs::draw_ai_review(
                 frame,
@@ -1242,6 +1243,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.theme,
                 ai_review_running,
                 &app.throbber_state,
+                &finding_fix_costs,
             );
         }
         super::draw_toasts(frame, &app.toasts, &app.theme);

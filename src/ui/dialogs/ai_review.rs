@@ -182,6 +182,7 @@ fn finding_location(f: &AiReviewFinding) -> String {
 fn finding_list_line(
     index: usize,
     f: &AiReviewFinding,
+    has_combined_cost: bool,
     theme: &Theme,
     width: usize,
 ) -> Line<'static> {
@@ -201,13 +202,18 @@ fn finding_list_line(
     };
     let marker_span = format!("[{marker}] ");
     let index_span = format!("{}. ", index + 1);
-    let prefix_width = marker_span.chars().count() + index_span.chars().count();
+    // `⧉` flags a finding that was fixed in PR Triage as part of a combined
+    // batch (its shared cost shows in the detail pane).
+    let combined_span = if has_combined_cost { "⧉ " } else { "" };
+    let prefix_width =
+        marker_span.chars().count() + index_span.chars().count() + combined_span.chars().count();
     let location = truncate_left(&finding_location(f), width.saturating_sub(prefix_width));
     let snippet = f.body.lines().next().unwrap_or("").to_string();
 
     Line::from(vec![
         Span::styled(marker_span, Style::default().fg(marker_color)),
         Span::styled(index_span, Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(combined_span, Style::default().fg(theme.info.to_color())),
         Span::styled(
             location,
             Style::default()
@@ -221,7 +227,13 @@ fn finding_list_line(
     ])
 }
 
-fn draw_finding_list(frame: &mut Frame, area: Rect, state: &AiReviewState, theme: &Theme) {
+fn draw_finding_list(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AiReviewState,
+    theme: &Theme,
+    finding_fix_costs: &[Option<String>],
+) {
     let block = pane_block(theme)
         .border_style(Style::default().fg(theme.primary.to_color()))
         .title(" Findings ");
@@ -244,7 +256,8 @@ fn draw_finding_list(frame: &mut Frame, area: Rect, state: &AiReviewState, theme
         .iter()
         .enumerate()
         .map(|(i, f)| {
-            let line = finding_list_line(i, f, theme, width);
+            let has_combined = finding_fix_costs.get(i).is_some_and(Option::is_some);
+            let line = finding_list_line(i, f, has_combined, theme, width);
             if i == state.selected {
                 Line::from(
                     line.spans
@@ -269,6 +282,7 @@ fn draw_finding_detail(
     frame: &mut Frame,
     area: Rect,
     finding: Option<&AiReviewFinding>,
+    fix_cost_line: Option<&str>,
     scroll: usize,
     theme: &Theme,
 ) -> usize {
@@ -297,6 +311,16 @@ fn draw_finding_detail(
     }
     lines.push(Line::from(header_spans));
     lines.push(Line::from(chip("ai", theme.info.to_color())));
+    // Shown only when this finding was posted and then fixed in PR Triage as
+    // part of a combined batch — the shared cost of that one agent run.
+    if let Some(fix_cost_line) = fix_cost_line {
+        lines.push(Line::from(Span::styled(
+            fix_cost_line.to_string(),
+            Style::default()
+                .fg(theme.info.to_color())
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
 
     if let Some(hunk) = &f.diff_hunk {
         lines.push(divider(width, theme));
@@ -336,6 +360,7 @@ pub fn draw_ai_review(
     theme: &Theme,
     ai_review_running: bool,
     throbber_state: &throbber_widgets_tui::ThrobberState,
+    finding_fix_costs: &[Option<String>],
 ) {
     let area = frame.area();
     // A sub-header line naming the harness/model that produced the current
@@ -412,11 +437,14 @@ pub fn draw_ai_review(
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(outer[2]);
-    draw_finding_list(frame, body[0], state, theme);
+    draw_finding_list(frame, body[0], state, theme, finding_fix_costs);
     let detail_lines = draw_finding_detail(
         frame,
         body[1],
         state.findings.get(state.selected),
+        finding_fix_costs
+            .get(state.selected)
+            .and_then(Option::as_deref),
         state.detail_scroll,
         theme,
     );
@@ -804,7 +832,14 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw_ai_review(frame, &mut state.origin, &Theme::default(), true, &throbber)
+                draw_ai_review(
+                    frame,
+                    &mut state.origin,
+                    &Theme::default(),
+                    true,
+                    &throbber,
+                    &[],
+                )
             })
             .unwrap();
         let rendered = terminal
@@ -853,7 +888,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let throbber = throbber_widgets_tui::ThrobberState::default();
         terminal
-            .draw(|frame| draw_ai_review(frame, state, &Theme::default(), false, &throbber))
+            .draw(|frame| draw_ai_review(frame, state, &Theme::default(), false, &throbber, &[]))
             .unwrap();
         terminal
             .backend()

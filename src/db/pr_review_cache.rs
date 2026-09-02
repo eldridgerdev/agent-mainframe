@@ -93,6 +93,7 @@ mod tests {
                 is_resolved: false,
                 triage: TriageState::Untriaged,
                 local_note: None,
+                batch_id: None,
                 github_id: None,
                 github_review_id: None,
             }],

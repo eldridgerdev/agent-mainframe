@@ -1195,6 +1195,73 @@ impl App {
         }
     }
 
+    /// For each finding in the open AI Review pane, the `Fix cost (est.): …`
+    /// line to show — `Some` only when the finding correlates (by
+    /// `path`/`line`/`side`) to a PR comment that was resolved as part of a
+    /// combined batch. Indexed 1:1 with `state.findings`; all-`None` without a
+    /// DB or a cached review to match findings against.
+    ///
+    /// The AI Review pane has no fix action of its own — a finding's fix cost
+    /// only exists once it has been posted, picked up in PR Triage as an
+    /// ordinary comment, and fixed there. This is the read-back of that.
+    pub(crate) fn ai_review_finding_fix_costs(&self) -> Vec<Option<String>> {
+        let AppMode::AiReview(state) = &self.mode else {
+            return Vec::new();
+        };
+        let none_for_each = || vec![None; state.findings.len()];
+        let Some(db) = self.db.as_ref() else {
+            return none_for_each();
+        };
+        let triage = db
+            .load_pr_comment_triage(state.pr.number)
+            .unwrap_or_default();
+        let review = db
+            .load_pr_review_cache(state.pr.number, &state.pr.head_sha)
+            .ok()
+            .flatten();
+        let comments: &[crate::app::pr_review::PrComment] =
+            review.as_ref().map_or(&[], |r| r.comments.as_slice());
+
+        state
+            .findings
+            .iter()
+            .map(|finding| {
+                let fpath = finding.path.as_deref()?;
+                let fline = finding.line?;
+                let fside = finding.side.map(|side| match side {
+                    crate::diff::DiffSide::Old => "LEFT",
+                    crate::diff::DiffSide::New => "RIGHT",
+                });
+                let comment = comments.iter().find(|c| {
+                    c.path.as_deref() == Some(fpath)
+                        && c.line == Some(fline)
+                        && match (fside, c.side.as_deref()) {
+                            (Some(a), Some(b)) => a == b,
+                            _ => true,
+                        }
+                })?;
+                let row = triage.get(&comment.id)?;
+                let batch_id = row.batch_id.as_deref()?;
+                // Partial-batch rule: the badge/cost is shown only for a
+                // resolved sibling.
+                let resolved = comment.is_resolved
+                    || matches!(row.state, crate::app::pr_review::TriageState::Done);
+                if !resolved {
+                    return None;
+                }
+                let sibling_count = db
+                    .pr_comment_triage_batch_siblings(state.pr.number, batch_id)
+                    .map(|ids| ids.len())
+                    .unwrap_or(1)
+                    .max(1);
+                Some(crate::app::fix_cost::fix_cost_line(
+                    row.batch_fix_cost.as_deref(),
+                    Some(crate::app::fix_cost::CombinedBatch { sibling_count }),
+                ))
+            })
+            .collect()
+    }
+
     pub fn ai_review_scroll_detail_up(&mut self, amount: usize) {
         if let AppMode::AiReview(state) = &mut self.mode {
             state.detail_scroll = state.detail_scroll.saturating_sub(amount);
@@ -2785,6 +2852,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             is_resolved: false,
             triage: crate::app::pr_review::TriageState::Untriaged,
             local_note: None,
+            batch_id: None,
             github_id: None,
             github_review_id: None,
         };

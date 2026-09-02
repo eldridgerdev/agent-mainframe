@@ -177,7 +177,7 @@ impl AmfDb {
         pr_terminal_state::delete(&self.conn, repo, branch)
     }
 
-    /// Local triage rows for `pr_number` as `comment_id -> (state, note)`,
+    /// Local triage rows for `pr_number` as `comment_id -> TriageRow`,
     /// across every head SHA (triage survives a push).
     pub fn load_pr_comment_triage(
         &self,
@@ -186,6 +186,9 @@ impl AmfDb {
         pr_comment_triage::load(&self.conn, pr_number)
     }
 
+    /// Upsert a comment's triage state/note. `batch_id` is sticky — `Some`
+    /// stamps combined-batch membership, `None` leaves any existing membership
+    /// in place (see [`pr_comment_triage::upsert`]).
     pub fn save_pr_comment_triage(
         &self,
         pr_number: u32,
@@ -193,8 +196,32 @@ impl AmfDb {
         comment_id: u64,
         state: crate::app::pr_review::TriageState,
         note: Option<&str>,
+        batch_id: Option<&str>,
     ) -> Result<()> {
-        pr_comment_triage::upsert(&self.conn, pr_number, head_sha, comment_id, state, note)
+        pr_comment_triage::upsert(
+            &self.conn, pr_number, head_sha, comment_id, state, note, batch_id,
+        )
+    }
+
+    /// Comment ids sharing `batch_id` in `pr_number` — the siblings of a
+    /// combined-batch fix.
+    pub fn pr_comment_triage_batch_siblings(
+        &self,
+        pr_number: u32,
+        batch_id: &str,
+    ) -> Result<Vec<u64>> {
+        pr_comment_triage::batch_sibling_ids(&self.conn, pr_number, batch_id)
+    }
+
+    /// Persist the shared fix cost across a batch's sibling rows (first writer
+    /// wins). Returns rows updated.
+    pub fn set_pr_comment_batch_fix_cost(
+        &self,
+        pr_number: u32,
+        batch_id: &str,
+        cost: &str,
+    ) -> Result<usize> {
+        pr_comment_triage::set_batch_fix_cost(&self.conn, pr_number, batch_id, cost)
     }
 
     pub fn begin_pr_comment_reply_draft(

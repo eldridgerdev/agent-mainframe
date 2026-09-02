@@ -145,7 +145,10 @@ Publication is a real PR-body write: do it only when the user explicitly asks.
 The branch and scenario must be pushed, the target PR must be open, `gh` must be
 authenticated as `eldridgerdev`, and the deploy step (which runs locally, not in
 CI) needs Cloudflare auth (`wrangler login` or `CLOUDFLARE_API_TOKEN`),
-`CLOUDFLARE_ACCOUNT_ID` set, plus `wrangler` on `PATH` or `npx` available. Run:
+`CLOUDFLARE_ACCOUNT_ID` set, plus `wrangler` on `PATH` or `npx` available. That
+Cloudflare setup is a one-time job for the repository owner: if
+`publish-pages.sh` reports missing auth, surface the warning and stop — do not
+run `wrangler login` or mint a token yourself. Run:
 
 ```bash
 scripts/dev/screenshot/publish-pages.sh \

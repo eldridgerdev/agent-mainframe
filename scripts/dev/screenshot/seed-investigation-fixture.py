@@ -3,19 +3,21 @@
 
 Usage: seed-investigation-fixture.py <db_path> <repo_root> [pr_number]
 
-Never invokes a model. Makes one read-only `gh pr view` call (from
-<repo_root>) to learn the target PR's head SHA so the seeded
-`pr_review_cache` row is a cache hit when PR Triage opens that PR by
-number — which lets the pane show hand-written review comments with no
-live comment fetch.
+Fully offline — no model, no network. Uses `git rev-parse HEAD` in <repo_root>
+for the PR head SHA so the seeded `pr_review_cache` row is a cache hit the
+moment PR Triage resolves that branch's PR: the pane then shows hand-written
+review comments with no live comment fetch.
+
+`pr_number` defaults to the pull request opened from this branch (602 for the
+Investigate feature branch); the demo project's feature sits on that branch, so
+`G` resolves straight to it.
 
 Seeds:
-  * a `features` row (workdir = <repo_root>) so the demo project has a
-    feature to select and `pr_investigations` rows can resolve a project id;
+  * a `features` row (workdir = <repo_root>) so the demo project has a feature;
   * a `pr_review_cache` row: a normalized PrReview with two inline review
     comments, one of them a question;
   * a `pr_investigations` row: a *completed* read-only investigation of that
-    question, with a markdown answer and one follow-up turn.
+    question, with a Markdown answer and one follow-up turn.
 """
 import json
 import subprocess
@@ -25,15 +27,14 @@ from datetime import datetime, timedelta, timezone
 
 db_path = sys.argv[1]
 repo_root = sys.argv[2]
-pr_number = int(sys.argv[3]) if len(sys.argv) > 3 else 434
+pr_number = int(sys.argv[3]) if len(sys.argv) > 3 else 602
 
 OWNER, REPO = "eldridgerdev", "agent-mainframe"
 QUESTION_ID = 700101
 CHANGE_ID = 700102
 
 head_sha = subprocess.run(
-    ["gh", "pr", "view", str(pr_number), "--json", "headRefOid", "-q", ".headRefOid"],
-    cwd=repo_root,
+    ["git", "-C", repo_root, "rev-parse", "HEAD"],
     check=True,
     capture_output=True,
     text=True,
@@ -131,8 +132,7 @@ FOLLOW_UPS = [
 CONTEXT = (
     "Investigate this PR review comment. Someone triaging the pull request "
     "flagged it as a question to answer, not a change to make.\n\n"
-    f"PR #{pr_number}: pr-review: fix G reopening an already-closed/merged PR\n\n"
-    "PR description:\n(none)\n\n"
+    f"PR #{pr_number}\n\nPR description:\n(none)\n\n"
     "--- The review comment ---\n"
     "File: src/app/pr_review.rs:911\n"
     "Comment (@aria-reviews): Does this handle the empty-changeset case ...\n"

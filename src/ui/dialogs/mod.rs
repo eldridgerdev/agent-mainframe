@@ -51,9 +51,9 @@ pub use learning::draw_learning_view;
 pub use markdown::{draw_markdown_loading, draw_markdown_viewer};
 pub use plan_interview::draw_plan_interview_dialog;
 pub use pr_review::{
-    PrReviewUsage, draw_pr_number_prompt, draw_pr_picker, draw_pr_review, draw_pr_review_loading,
-    draw_review_memory_bootstrap_running, draw_review_memory_compact_review,
-    draw_review_memory_compact_running,
+    PrReviewUsage, draw_pr_investigation_loading, draw_pr_number_prompt, draw_pr_picker,
+    draw_pr_review, draw_pr_review_loading, draw_review_memory_bootstrap_running,
+    draw_review_memory_compact_review, draw_review_memory_compact_running,
 };
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use prompt_library::{

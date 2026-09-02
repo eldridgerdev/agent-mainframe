@@ -970,6 +970,11 @@ pub struct App {
     pub(crate) confirmed_no_terminal_pr: HashSet<String>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
+    /// Receiver for the blocking read-only PR-comment investigation (`v` → `f`
+    /// in PR Triage). One at a time; `Some` only while `AppMode::
+    /// PrInvestigationLoading` is showing. See
+    /// `app::pr_review::poll_pr_investigation_bg`.
+    pub pr_investigation_bg: Option<Receiver<pr_review::InvestigationOutcome>>,
     /// Receiver for the background AI-adaptive plan-interview round (a
     /// headless harness call). Carries the round number alongside the
     /// result so a late-arriving response can be matched or discarded. See
@@ -1284,6 +1289,7 @@ impl App {
             // sits frozen, reading as "nothing is happening" even though the
             // background thread is working.
             AppMode::PrReviewLoading(_)
+            | AppMode::PrInvestigationLoading(_)
             | AppMode::ReviewMemoryBootstrapRunning(_)
             | AppMode::ReviewMemoryCompactRunning(_)
             | AppMode::AiReviewRunning(_) => true,
@@ -2440,6 +2446,7 @@ impl App {
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
             pr_review_bg: None,
+            pr_investigation_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
@@ -2691,6 +2698,7 @@ impl App {
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
             pr_review_bg: None,
+            pr_investigation_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,

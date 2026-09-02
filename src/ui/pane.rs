@@ -543,22 +543,11 @@ fn draw_startup_loading(
     frame.render_widget(paragraph, panel);
 }
 
-/// The "Active TODO" section draws its title on the top-left of its border and
-/// the completion hint on the top-right of the same border. The two labels are
-/// `" Active TODO "` (13 cols) and `" <leader z complete> "` (21 cols); below
-/// this width the section border (two columns narrower than the sidebar `area`)
-/// cannot hold both and ratatui overlays the hint onto the title. 42 leaves a
-/// margin over the 34-column minimum.
-const ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH: u16 = 42;
-
-/// Whether the `<leader z complete>` affordance can be shown on a sidebar
-/// section's border. `sidebar_width` is `draw_agent_sidebar`'s `area.width`
-/// (the full sidebar, borders included). Pure so the threshold is testable
-/// without a `Frame`.
-fn active_todo_hint_visible(section_title: &str, affordance: bool, sidebar_width: u16) -> bool {
-    section_title == "Active TODO"
-        && affordance
-        && sidebar_width >= ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH
+/// Whether the Active TODO section should show its completion keybind. Keep
+/// this consistent with the Prompt and Plan sections: the compact chord is
+/// always visible whenever the action is available.
+fn active_todo_hint_visible(section_title: &str, affordance: bool) -> bool {
+    section_title == "Active TODO" && affordance
 }
 
 fn draw_agent_sidebar(
@@ -675,17 +664,10 @@ fn draw_agent_sidebar(
                 .alignment(Alignment::Right),
             );
         }
-        // A narrow sidebar cannot fit both border labels; ratatui overlays the
-        // right-aligned hint onto "Active TODO". Show the affordance only when
-        // there is room for both (see ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH).
-        if active_todo_hint_visible(
-            sidebar_section.title,
-            data.active_todo_affordance,
-            area.width,
-        ) {
+        if active_todo_hint_visible(sidebar_section.title, data.active_todo_affordance) {
             block = block.title_top(
                 Line::from(Span::styled(
-                    " <leader z complete> ",
+                    " <leader z> ",
                     Style::default().fg(theme.text_muted.to_color()),
                 ))
                 .alignment(Alignment::Right),
@@ -1520,24 +1502,11 @@ mod tests {
     }
 
     #[test]
-    fn active_todo_hint_needs_room_for_both_border_labels() {
-        // Too narrow: the title and the right-aligned hint would collide.
-        assert!(!active_todo_hint_visible("Active TODO", true, 30));
-        assert!(!active_todo_hint_visible(
-            "Active TODO",
-            true,
-            ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH - 1
-        ));
-        // Wide enough: both labels fit on the border.
-        assert!(active_todo_hint_visible(
-            "Active TODO",
-            true,
-            ACTIVE_TODO_HINT_MIN_SIDEBAR_WIDTH
-        ));
-        assert!(active_todo_hint_visible("Active TODO", true, 120));
+    fn active_todo_hint_matches_other_sidebar_keybind_affordances() {
+        assert!(active_todo_hint_visible("Active TODO", true));
         // Only the Active TODO section, and only when the affordance is live.
-        assert!(!active_todo_hint_visible("Active TODO", false, 120));
-        assert!(!active_todo_hint_visible("Prompt", true, 120));
+        assert!(!active_todo_hint_visible("Active TODO", false));
+        assert!(!active_todo_hint_visible("Prompt", true));
     }
 
     #[test]

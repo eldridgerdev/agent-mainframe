@@ -20598,7 +20598,7 @@ fn ordinary_duplicate_spawn_for_in_progress_todo_is_blocked_without_side_effects
 }
 
 #[test]
-fn referenced_todo_completion_updates_db_and_retains_reference() {
+fn active_todo_completion_keybind_updates_db_and_retains_reference() {
     let mut app = App::new_for_test(
         store_with_feature(ProjectStatus::Active),
         Box::new(MockTmuxOps::new()),
@@ -20644,8 +20644,28 @@ fn referenced_todo_completion_updates_db_and_retains_reference() {
         VibeMode::default(),
         false,
     ));
-    app.request_todo_reference_completion();
-    app.confirm_todo_reference_completion().unwrap();
+    crate::handlers::handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
+        24,
+    )
+    .unwrap();
+    crate::handlers::handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
+        24,
+    )
+    .unwrap();
+    assert!(matches!(
+        app.mode,
+        AppMode::ConfirmTodoReferenceCompletion(_)
+    ));
+    crate::handlers::handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        24,
+    )
+    .unwrap();
 
     let loaded = app
         .db

@@ -903,9 +903,16 @@ pub fn draw_pr_review(
     if let Some(pick) = &state.mark_pick {
         draw_mark_pick(frame, pick, state.selected_comment(), theme);
     }
-    // Fix confirm/edit dialog overlays the pane when open.
+    // Fix confirm/edit dialog overlays the pane when open — but not while the
+    // fix-target picker or triage-feature setup is stacked on top of it (via
+    // `t`). Those capture all keyboard input and are drawn earlier, so the
+    // opaque fix-confirm block would completely occlude the dialog the user is
+    // actually driving. It stays in `state` and repaints once they close.
     let fix_target = state.fix_target;
-    if let Some(confirm) = &mut state.fix_confirm {
+    if state.harness_pick.is_none()
+        && state.new_feature_setup.is_none()
+        && let Some(confirm) = &mut state.fix_confirm
+    {
         draw_fix_confirm(
             frame,
             confirm,
@@ -2656,6 +2663,79 @@ mod tests {
     fn fix_confirm_hides_branch_mismatch_warning_when_absent() {
         let rendered = render_fix_confirm(None);
         assert!(!rendered.contains("this worktree is on"));
+    }
+
+    /// Render the whole triage pane so overlay stacking order is exercised.
+    fn render_pr_review(state: &mut PrReviewState) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = Theme::default();
+        let pricing = crate::token_tracking::TokenPricingConfig::default();
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_pr_review(
+                    frame,
+                    state,
+                    &theme,
+                    super::PrReviewUsage {
+                        cumulative: None,
+                        visit: None,
+                        pricing: &pricing,
+                    },
+                    None,
+                    &crate::app::ai_review::AiReviewTriageStatus::NotRun,
+                    None,
+                    None,
+                );
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn fix_target_picker_is_not_occluded_by_a_retained_fix_confirm() {
+        let mut state = pr_review_state_with_comments(
+            vec![pr_comment_of_kind(1, CommentKind::Inline)],
+            crate::app::pr_review::PrSortMode::FetchOrder,
+        );
+        // `t` from the confirm dialog reopens the picker while the dialog
+        // stays in state behind it.
+        state.fix_confirm = Some(crate::app::FixConfirmState {
+            editor: crate::editor::TextEditor::new("fix this".to_string()),
+            editing: false,
+            scroll: 0,
+            sync_to_cursor: false,
+            batch: None,
+            reply_draft_requests: Vec::new(),
+        });
+        state.harness_pick = Some(crate::app::HarnessPickState {
+            rows: vec![
+                crate::app::pr_review::FixTargetPickRow::ExistingLive(None),
+                crate::app::pr_review::FixTargetPickRow::Dedicated(
+                    crate::project::AgentKind::Claude,
+                ),
+            ],
+            selected: 0,
+            session_name: None,
+        });
+
+        let rendered = render_pr_review(&mut state);
+        assert!(
+            rendered.contains("Run this PR's fixes on:"),
+            "the reopened fix-target picker must stay visible"
+        );
+        assert!(
+            !rendered.contains("Inject fix into agent session"),
+            "the retained fix-confirm dialog must not paint over the picker"
+        );
     }
 
     fn render_memory_add(scope: crate::app::review_memory::MemoryScope) -> String {

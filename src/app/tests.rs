@@ -17351,6 +17351,38 @@ fn pr_review_fix_confirm_can_change_target_without_losing_edits() {
     }
 }
 
+#[test]
+fn pr_review_reopened_target_picker_highlights_current_target() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 1);
+    app.pr_review_open_fix_confirm();
+    app.pr_review_harness_pick_confirm();
+    app.pr_review_harness_pick_confirm();
+
+    // Redirect the fix to the existing live session, then reopen the picker
+    // the way "review and redirect" does.
+    app.pr_review_change_fix_target();
+    app.pr_review_harness_pick_move(-1); // Dedicated default -> existing live (row 0).
+    app.pr_review_harness_pick_confirm();
+    app.pr_review_change_fix_target();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let pick = state.harness_pick.as_ref().expect("picker reopened");
+            assert_eq!(
+                pick.selected, 0,
+                "reopened picker should highlight the current ExistingLive target, not the dedicated default"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
 fn reply_editor_text(app: &App) -> String {
     match &app.mode {
         AppMode::PrReview(state) => state.reply.as_ref().unwrap().editor.text().to_string(),

@@ -119,6 +119,15 @@ are tagged.
   unavailable or reset-pending readings do not invent a percentage. No
   migration is required.
 
+- **Publishing screenshot proof to a PR no longer waits for a manual
+  approval.** The publish flow used to dispatch a two-job workflow whose
+  deploy half sat behind a protected GitHub environment, so every run paused
+  until someone clicked approve. The workflow is now capture-only and the
+  private Cloudflare Pages gallery is deployed from your own machine instead —
+  nothing waits for a reviewer, and the Cloudflare credentials never enter CI.
+  This is contributor tooling for the AMF repository itself and does not affect
+  managed projects.
+
 ### Migration
 
 - The AI review attribution adds an optional field to the existing
@@ -130,6 +139,12 @@ are tagged.
   startup; existing triage rows keep both as `NULL` (not part of any batch)
   and are unaffected. No downgrade step is needed — an older AMF simply
   ignores the columns.
+
+- Publishing screenshot proof to a PR now deploys from your machine, so it
+  needs a one-time local setup: authenticate wrangler (`wrangler login`, or a
+  `CLOUDFLARE_API_TOKEN` scoped to Cloudflare Pages · Edit) and set
+  `CLOUDFLARE_ACCOUNT_ID`. The `screenshot-pages` GitHub environment is no
+  longer used and can be deleted along with its `CLOUDFLARE_*` secrets.
 
 ## [v0.41.0] - 2026-08-27
 

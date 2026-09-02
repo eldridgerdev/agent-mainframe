@@ -10,6 +10,13 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pasting into the native TODO editor now works reliably.** Pasted text is
+  inserted into the active TODO field without submitting the dialog. TODO
+  titles remain single-line, while notes and scratchpads retain pasted line
+  breaks. No migration is required.
+
 ### Added
 
 - **A TODO can now start an agent in a brand-new feature without plan

@@ -1,6 +1,8 @@
 use anyhow::Result;
 
-use crate::app::{App, AppMode, CreateFeatureStep, CreateProjectStep, PromptEditorFocus};
+use crate::app::{
+    App, AppMode, CreateFeatureStep, CreateProjectStep, PromptEditorFocus, TodoEditTarget,
+};
 use crate::tmux::TmuxManager;
 
 pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
@@ -127,6 +129,24 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                         state.editor.insert_str(text);
                     }
                 }
+            }
+        }
+        AppMode::Todos(_) => {
+            if let AppMode::Todos(state) = &mut app.mode
+                && let Some(editor) = &mut state.editor
+            {
+                // Titles are single-line: discard line breaks instead of letting
+                // a pasted newline submit the edit. Notes and scratchpads use
+                // the editor's existing multi-line representation.
+                let text = match editor.target {
+                    TodoEditTarget::New | TodoEditTarget::Title => {
+                        text.split(['\n', '\r']).collect::<String>()
+                    }
+                    TodoEditTarget::Notes | TodoEditTarget::Scratchpad => {
+                        text.replace("\r\n", "\n").replace('\r', "\n")
+                    }
+                };
+                editor.editor.insert_str(&text);
             }
         }
         AppMode::PlaceholderFill(_) => {

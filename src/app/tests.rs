@@ -19704,6 +19704,57 @@ fn todos_add_via_handler_appends_and_selects() {
 }
 
 #[test]
+fn pasting_into_a_todo_title_inserts_text_and_saves() {
+    let mut app = todos_app();
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.todos_begin_add();
+
+    crate::handlers::handle_paste(&mut app, "buy oat milk").unwrap();
+    assert!(matches!(
+        &app.mode,
+        AppMode::Todos(state)
+            if state.editor.as_ref().is_some_and(|editor| editor.editor.text() == "buy oat milk"
+                && editor.editor.cursor() == "buy oat milk".len())
+    ));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert_eq!(todo_titles(&app), vec!["buy oat milk"]);
+    let list = app
+        .db
+        .as_ref()
+        .unwrap()
+        .todo_list(&test_project_scope("proj-1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        app.db.as_ref().unwrap().todos(&list.id).unwrap()[0].title,
+        "buy oat milk"
+    );
+}
+
+#[test]
+fn pasting_newlines_into_todo_editors_is_safe_and_preserves_notes() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    crate::handlers::handle_paste(&mut app, "first\r\nsecond\nthird").unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    assert_eq!(todo_titles(&app), vec!["firstsecondthird"]);
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('o'))).unwrap();
+    crate::handlers::handle_paste(&mut app, "line one\r\nline two\rline three").unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(
+            state.panes[0].todos[0].body.as_deref(),
+            Some("line one\nline two\nline three")
+        ),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
 fn todos_empty_title_is_not_added() {
     let mut app = todos_app();
     app.todos_begin_add();

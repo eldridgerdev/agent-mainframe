@@ -19852,7 +19852,10 @@ fn todos_ctrl_q_cancels_the_edit_in_vim_mode() {
     match &app.mode {
         AppMode::Todos(state) => {
             assert!(state.editor.is_none(), "Ctrl+Q discards the edit");
-            assert!(state.todo_vim_enabled, "the keymap choice outlives the edit");
+            assert!(
+                state.todo_vim_enabled,
+                "the keymap choice outlives the edit"
+            );
         }
         _ => panic!("expected Todos overlay"),
     }

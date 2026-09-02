@@ -67,6 +67,22 @@ are tagged.
 
 ### Changed
 
+- **PR Triage now attributes a combined batch fix's cost to every comment it
+  resolved, and marks it as shared.** When you fix several review comments in
+  one `B` batch, the single agent run's cost used to be invisible per issue.
+  Each resolved comment in the batch now discloses the *whole run's* cost —
+  relabelled `Fix cost (est.):` in the reply dialog and in the reply posted to
+  GitHub — followed by `· combined (N)` and, in the posted text, a plain line
+  explaining it was one of N comments handled in a single run and the figure is
+  shared. In the comment list, batched comments carry a `⧉` marker that
+  brightens on the siblings of whichever comment is selected, and `[` / `]`
+  jump between them. The badge and cost appear only on comments that were
+  actually resolved; a batch comment you never replied to shows nothing.
+  AMF's own AI Review (`W`) shows the same `Fix cost (est.): … · combined (N)`
+  on a finding once it has been posted and then fixed in PR Triage as part of
+  a batch, matched back by file and line. Single-comment fixes are unchanged,
+  and triage records written before this release are left as-is.
+
 - **The final review's `t` key now picks where fixes are applied, not just
   live-vs-dedicated.** It used to flip silently between the feature's own agent
   session and a fresh dedicated "Final Review" session. `t` now opens a
@@ -108,6 +124,12 @@ are tagged.
 - The AI review attribution adds an optional field to the existing
   `ai_review_cache` JSON rows; older cache entries load unchanged and simply
   show no attribution until the next run.
+
+- Schema migration 032 adds two nullable columns (`batch_id`,
+  `batch_fix_cost`) to `pr_comment_triage`. It applies automatically on
+  startup; existing triage rows keep both as `NULL` (not part of any batch)
+  and are unaffected. No downgrade step is needed — an older AMF simply
+  ignores the columns.
 
 ## [v0.41.0] - 2026-08-27
 

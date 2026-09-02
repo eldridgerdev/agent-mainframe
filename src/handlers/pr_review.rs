@@ -12,8 +12,9 @@ const FIX_PAGE_STEP: isize = 10;
 /// Key handling for the full-screen PR Triage pane.
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
-/// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `B`
-/// inject one combined prompt for all marked comments, `R` opens the
+/// refresh from GitHub, and exit. `[` / `]` jump between comments that were
+/// fixed together in one combined batch. Action keys: `f` fix, `space` mark /
+/// `B` inject one combined prompt for all marked comments, `R` opens the
 /// reply-kind picker (Done / not-needed), `M` add to memory, `m` opens the
 /// "Mark" picker (Done (local) / Skip (local) / Resolve on GitHub), `i`
 /// install syntax highlighting for the selected comment's file, `A` opens the
@@ -63,6 +64,8 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::PageUp => app.pr_review_scroll_detail_up(DETAIL_SCROLL_STEP * 2),
         KeyCode::Down | KeyCode::Char('j') => app.pr_review_select_next(),
         KeyCode::Up | KeyCode::Char('k') => app.pr_review_select_prev(),
+        KeyCode::Char(']') => app.pr_review_jump_sibling(true),
+        KeyCode::Char('[') => app.pr_review_jump_sibling(false),
         KeyCode::Char('h') => app.pr_review_toggle_resolved(),
         KeyCode::Char('o') => app.pr_review_cycle_sort(),
         KeyCode::Char('f') => app.pr_review_open_fix_confirm(),

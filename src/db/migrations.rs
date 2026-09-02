@@ -140,6 +140,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Link a companion review feature back to the feature its final review ran from",
             MIGRATION_031,
         ),
+        (
+            "Add batch_id to PR-comment triage rows for combined-batch fix-cost attribution",
+            MIGRATION_032,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -789,18 +793,40 @@ const MIGRATION_031: &str = "
 ALTER TABLE features ADD COLUMN review_source TEXT;
 ";
 
+/// When several PR-triage comments are fixed together in one agent batch, each
+/// resolved comment records the shared batch id so the fix cost can be
+/// attributed to the whole batch, sibling comments can be highlighted, and the
+/// posted GitHub replies can note the combined batch.
+///
+/// `batch_fix_cost` is the preformatted USD figure the batch's single agent run
+/// cost, written once when the first sibling is resolved (the reply-draft that
+/// the live delta is derived from is deleted on post, so the figure has to be
+/// captured durably). Every sibling in the batch reads the same string.
+///
+/// Both columns are nullable with no backfill: pre-existing triage rows stay
+/// `NULL` (not part of any batch), matching the "new batches only" decision. A
+/// plain `ALTER TABLE ADD COLUMN` suffices — `pr_comment_triage` has no
+/// constraint that needs dropping, so no table rebuild (cf.
+/// MIGRATION_014/015/023/029/030).
+const MIGRATION_032: &str = "
+ALTER TABLE pr_comment_triage ADD COLUMN batch_id TEXT;
+ALTER TABLE pr_comment_triage ADD COLUMN batch_fix_cost TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
-    /// the todo tables 011 built, the reply-draft table 013/014 built, and the
-    /// plan-interviews table 016 built. Fixtures that seed a version this high
-    /// have to stand up everything later migrations alter — 022 alters
-    /// `pr_comment_reply_drafts`, 023 alters `todos`, and 030 alters
-    /// `plan_interviews`.
+    /// the todo tables 011 built, the triage table 009 built and 010 re-keyed,
+    /// the reply-draft table 013/014 built, and the plan-interviews table 016
+    /// built. Fixtures that seed a version this high have to stand up everything
+    /// later migrations alter — 022 alters `pr_comment_reply_drafts`, 023 alters
+    /// `todos`, 030 alters `plan_interviews`, and 032 alters `pr_comment_triage`.
     fn seed_pre_learning_schema(conn: &Connection) {
         conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
@@ -827,7 +853,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 31);
+        assert_eq!(version, 32);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -922,14 +948,17 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 31);
+        assert_eq!(version, 32);
     }
 
     #[test]
     fn migration_029_leaves_existing_sessions_without_todo_provenance() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
-        // 030 replays after 029 and alters `plan_interviews`.
+        // 030 replays after 029 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage`, so its table (009, re-keyed by 010) is needed too.
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
@@ -964,8 +993,11 @@ mod tests {
     fn migration_030_backfills_plan_interviews_with_an_empty_custom_answers_array() {
         let conn = Connection::open_in_memory().unwrap();
         // 031 replays after 030 and alters `features`, so the base schema has
-        // to be present even though this test is about `plan_interviews`.
+        // to be present even though this test is about `plan_interviews`; 032
+        // alters `pr_comment_triage` (009, re-keyed by 010).
         conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
@@ -1000,7 +1032,10 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
-        // 030 replays after 023 and alters `plan_interviews`.
+        // 030 replays after 023 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
@@ -1043,7 +1078,10 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
-        // 030 replays after 024 and alters `plan_interviews`.
+        // 030 replays after 024 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
@@ -1083,7 +1121,10 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
-        // 030 replays after 028 and alters `plan_interviews`.
+        // 030 replays after 028 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(super::MIGRATION_023).unwrap();
         conn.execute_batch(super::MIGRATION_024).unwrap();
@@ -1206,7 +1247,10 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         // 023 replays after 022 here and alters `todos`, so it has to exist;
-        // 030 replays too and alters `plan_interviews`.
+        // 030 replays too and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
@@ -1246,7 +1290,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 31);
+        assert_eq!(rows, 32);
     }
 
     /// Features written before selected-plan persistence existed acquire a
@@ -1258,7 +1302,10 @@ mod tests {
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_015).unwrap();
-        // 030 replays after 027 and alters `plan_interviews`.
+        // 030 replays after 027 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(super::MIGRATION_023).unwrap();
         conn.execute_batch(super::MIGRATION_024).unwrap();
@@ -1296,7 +1343,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 31);
+        assert_eq!(version, 32);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

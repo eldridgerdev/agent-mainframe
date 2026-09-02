@@ -320,6 +320,11 @@ pub struct ReplyGenerationMetadata {
     pub model: Option<String>,
     pub estimated_tokens: Option<u64>,
     pub estimated_cost: Option<String>,
+    /// Set when this comment was resolved as part of a combined batch (`B`):
+    /// the `estimated_*` figures are the whole run's cost, shared across every
+    /// resolved comment in the batch. Drives the `· combined (N)` marker in the
+    /// disclosure and the batch note in the posted reply.
+    pub combined_batch: Option<crate::app::fix_cost::CombinedBatch>,
 }
 
 impl ReplyGenerationMetadata {
@@ -333,6 +338,7 @@ impl ReplyGenerationMetadata {
             model: None,
             estimated_tokens: None,
             estimated_cost: None,
+            combined_batch: None,
         }
     }
 
@@ -350,19 +356,36 @@ impl ReplyGenerationMetadata {
             .map(crate::token_tracking::format_token_count)
             .map(|tokens| format!("~{tokens}"))
             .unwrap_or_else(|| "unavailable".to_string());
-        let cost = self.estimated_cost.as_deref().unwrap_or("unavailable");
-        format!("estimated tokens {tokens} · estimated cost {cost}")
+        format!(
+            "estimated tokens {tokens} · {}",
+            crate::app::fix_cost::fix_cost_line(
+                self.estimated_cost.as_deref(),
+                self.combined_batch
+            )
+        )
     }
 
     /// Compact GitHub-flavored Markdown line inserted immediately above the
     /// stable attribution footer. Missing provider telemetry is explicit rather
     /// than silently dropping one of the promised provenance fields.
+    ///
+    /// A batched fix adds a second italic line spelling out — for a PR reader
+    /// who isn't an AMF user — that this comment was one of several fixed in a
+    /// single agent run and that the cost above is the whole run's, shared.
     pub fn disclosure(&self) -> String {
-        format!(
+        let mut out = format!(
             "_{} · {}_",
             self.source_disclosure(),
             self.usage_disclosure()
-        )
+        );
+        if let Some(batch) = self.combined_batch {
+            let n = batch.sibling_count.max(1);
+            let comments = if n == 1 { "comment" } else { "comments" };
+            out.push_str(&format!(
+                "\n_Fixed as one of {n} {comments} handled in a single combined agent run; the fix cost above is that run's total, shared across them._"
+            ));
+        }
+        out
     }
 }
 
@@ -748,6 +771,13 @@ pub struct PrComment {
     pub is_resolved: bool,
     pub triage: TriageState,
     pub local_note: Option<String>,
+    /// Set when this comment was resolved as part of a combined batch (`B`):
+    /// every resolved comment in that batch shares the id. Drives the "combined"
+    /// badge and sibling highlighting, and is noted in the posted GitHub reply.
+    /// `#[serde(default)]` so cached `pr_review_cache` rows written before this
+    /// field existed still deserialize (as `None`, i.e. not part of a batch).
+    #[serde(default)]
+    pub batch_id: Option<String>,
     /// Real GitHub comment/review id, when known independent of `id` (kept for
     /// forward compatibility with cached rows; currently always `None` for a
     /// fetched comment, which already uses `id` directly).
@@ -1398,6 +1428,7 @@ pub fn normalize(
             is_resolved,
             triage: TriageState::default(),
             local_note: None,
+            batch_id: None,
             github_id: None,
             github_review_id: c.pull_request_review_id,
         });
@@ -1429,6 +1460,7 @@ pub fn normalize(
             is_resolved: false,
             triage: TriageState::default(),
             local_note: None,
+            batch_id: None,
             github_id: None,
             github_review_id: Some(r.id),
         });
@@ -1455,6 +1487,7 @@ pub fn normalize(
             is_resolved: false,
             triage: TriageState::default(),
             local_note: None,
+            batch_id: None,
             github_id: None,
             github_review_id: None,
         });
@@ -1952,9 +1985,10 @@ impl App {
             }
         };
         for comment in &mut review.comments {
-            if let Some((state, note)) = triage.get(&comment.id) {
-                comment.triage = *state;
-                comment.local_note = note.clone();
+            if let Some(row) = triage.get(&comment.id) {
+                comment.triage = row.state;
+                comment.local_note = row.note.clone();
+                comment.batch_id = row.batch_id.clone();
             }
         }
     }
@@ -1968,13 +2002,39 @@ impl App {
         comment_id: u64,
         state: TriageState,
         note: Option<&str>,
+        batch_id: Option<&str>,
     ) {
         let result = match self.db.as_ref() {
-            Some(db) => db.save_pr_comment_triage(pr_number, head_sha, comment_id, state, note),
+            Some(db) => {
+                db.save_pr_comment_triage(pr_number, head_sha, comment_id, state, note, batch_id)
+            }
             None => return,
         };
         if let Err(e) = result {
             self.log_warn("pr_review", format!("triage persist failed: {e}"));
+        }
+    }
+
+    /// Persist a resolved combined-batch comment's shared fix cost onto every
+    /// sibling triage row that doesn't have one yet (first writer wins). No-op
+    /// without a DB, when the comment isn't part of a batch, or when the cost is
+    /// already recorded. Non-fatal on failure.
+    fn persist_batch_fix_cost(&mut self, pr_number: u32, comment_id: u64, cost: &str) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let batch_id = match db.load_pr_comment_triage(pr_number) {
+            Ok(map) => map.get(&comment_id).and_then(|row| row.batch_id.clone()),
+            Err(e) => {
+                self.log_warn("pr_review", format!("batch fix-cost lookup failed: {e}"));
+                return;
+            }
+        };
+        let Some(batch_id) = batch_id else {
+            return;
+        };
+        if let Err(e) = db.set_pr_comment_batch_fix_cost(pr_number, &batch_id, cost) {
+            self.log_warn("pr_review", format!("batch fix-cost persist failed: {e}"));
         }
     }
 
@@ -2093,7 +2153,14 @@ impl App {
         }) else {
             return;
         };
-        self.persist_triage(pr_number, &head_sha, comment_id, state, note.as_deref());
+        self.persist_triage(
+            pr_number,
+            &head_sha,
+            comment_id,
+            state,
+            note.as_deref(),
+            None,
+        );
     }
 
     /// Open the "Mark" picker (`m`): a three-row choice between local `Done`,
@@ -2600,6 +2667,46 @@ impl App {
                 state.selected = prev;
                 state.detail_scroll = 0;
             }
+        }
+    }
+
+    /// Move the selection to the next (`forward`) or previous visible comment
+    /// that shares the selected comment's combined-batch id (`]` / `[`),
+    /// cycling within the batch. A hint (no move) when the selection isn't part
+    /// of a batch, or when no other sibling is currently in view.
+    pub fn pr_review_jump_sibling(&mut self, forward: bool) {
+        let mut hint: Option<&'static str> = None;
+        if let AppMode::PrReview(state) = &mut self.mode {
+            match state.selected_comment().and_then(|c| c.batch_id.clone()) {
+                None => hint = Some("This comment isn't part of a combined batch"),
+                Some(batch_id) => {
+                    let siblings: Vec<usize> = state
+                        .visible_indices()
+                        .into_iter()
+                        .filter(|&i| {
+                            state.review.comments[i].batch_id.as_deref() == Some(batch_id.as_str())
+                        })
+                        .collect();
+                    if siblings.len() < 2 {
+                        hint = Some("No other comments from this batch are in view");
+                    } else {
+                        let cur = siblings
+                            .iter()
+                            .position(|&i| i == state.selected)
+                            .unwrap_or(0);
+                        let next = if forward {
+                            (cur + 1) % siblings.len()
+                        } else {
+                            (cur + siblings.len() - 1) % siblings.len()
+                        };
+                        state.selected = siblings[next];
+                        state.detail_scroll = 0;
+                    }
+                }
+            }
+        }
+        if let Some(hint) = hint {
+            self.push_toast_warning(hint);
         }
     }
 
@@ -3336,6 +3443,13 @@ impl App {
         let provenance = self.reply_draft_provenance(pi, fi, si);
         self.begin_reply_draft_requests(pr_number, &reply_draft_requests, provenance.as_ref());
 
+        // A combined batch (`B`) gets one shared id, stamped on every comment it
+        // resolves so the single run's fix cost can be attributed to the whole
+        // batch, sibling rows can be highlighted, and the posted GitHub replies
+        // can note the batch. A single-comment fix carries no batch id. A UUID
+        // keeps it unique across projects in the global SQLite store.
+        let batch_id = is_batch.then(|| uuid::Uuid::new_v4().to_string());
+
         // The fix is committed: mark every targeted comment `Fixing` and persist
         // before we leave the pane, so re-opening the review (cache hit) shows
         // the state.
@@ -3344,8 +3458,24 @@ impl App {
                 && let Some(c) = state.review.comments.iter_mut().find(|c| c.id == *id)
             {
                 c.triage = TriageState::Fixing;
+                // Only a real batch stamps membership. On the single-comment
+                // (`f`) path `batch_id` is `None`; assigning it here would
+                // clear the in-memory `batch_id` of a comment that was already
+                // part of an earlier batch (the DB value survives via the
+                // `COALESCE` stickiness, but the `⧉` marker and `[`/`]` jump
+                // would stop working for it until the pane is re-entered).
+                if is_batch {
+                    c.batch_id = batch_id.clone();
+                }
             }
-            self.persist_triage(pr_number, &head_sha, *id, TriageState::Fixing, None);
+            self.persist_triage(
+                pr_number,
+                &head_sha,
+                *id,
+                TriageState::Fixing,
+                None,
+                batch_id.as_deref(),
+            );
         }
         // A batch consumes the marked set once it's committed.
         if is_batch {
@@ -3611,14 +3741,21 @@ impl App {
             None
         };
         let has_draft = draft.is_some();
+        // If this comment was fixed inside a combined batch, the disclosed cost
+        // is the whole run's — mark it `combined` and carry the sibling count
+        // into the posted reply.
+        let combined_batch = self.combined_batch_for(pr_number, comment_id);
         // Read off the draft's own record of the session that wrote it, not the
         // pane's current fix target — which a re-opened triage pane has already
         // reset to the default.
         let generation_metadata = draft.as_ref().map(|draft| {
             let provenance = self.decode_reply_draft_provenance(draft.provenance.as_deref());
             match provenance {
-                Some(provenance) => self.reply_generation_metadata(&provenance),
-                None => ReplyGenerationMetadata::unattributed(),
+                Some(provenance) => self.reply_generation_metadata(&provenance, combined_batch),
+                None => ReplyGenerationMetadata {
+                    combined_batch,
+                    ..ReplyGenerationMetadata::unattributed()
+                },
             }
         });
         let seed = match draft {
@@ -3777,7 +3914,26 @@ impl App {
             }
             state.reply = None;
         }
-        self.persist_triage(pr.number, &pr.head_sha, comment_id, triage, note.as_deref());
+        // `None` batch id keeps any existing combined-batch membership (sticky
+        // via COALESCE) — a `Done`/`Skipped` reply must not un-batch the row.
+        self.persist_triage(
+            pr.number,
+            &pr.head_sha,
+            comment_id,
+            triage,
+            note.as_deref(),
+            None,
+        );
+        // A batched comment resolving: capture the run's shared cost durably
+        // now, before `clear_reply_draft` deletes the draft the live figure is
+        // derived from — so every sibling and the AI Review pane can show the
+        // same number afterwards.
+        if let Some(meta) = &generation_metadata
+            && meta.combined_batch.is_some()
+            && let Some(cost) = meta.estimated_cost.clone()
+        {
+            self.persist_batch_fix_cost(pr.number, comment_id, &cost);
+        }
         self.clear_reply_draft(pr.number, comment_id);
         // Posting can flip a thread's resolution (e.g. GitHub auto-resolves, or
         // the reviewer resolved meanwhile), so re-pull thread state to keep the
@@ -4394,6 +4550,7 @@ impl App {
     fn reply_generation_metadata(
         &self,
         provenance: &ReplyDraftProvenance,
+        combined_batch: Option<crate::app::fix_cost::CombinedBatch>,
     ) -> ReplyGenerationMetadata {
         let live = self.feature_session_by_id(&provenance.session_id);
         let model = live
@@ -4413,7 +4570,32 @@ impl App {
             estimated_cost: usage.as_ref().map(|usage| {
                 crate::token_tracking::format_token_cost(usage, &self.config.token_pricing)
             }),
+            combined_batch,
         }
+    }
+
+    /// The combined-batch context for `comment_id` in `pr_number`, if that
+    /// comment was resolved as part of a `B` batch: its `batch_id`'s sibling
+    /// count. `None` for a single-comment fix, a pre-`MIGRATION_032` row, or
+    /// when there is no DB. Cheap enough to call on the reply path.
+    fn combined_batch_for(
+        &self,
+        pr_number: u32,
+        comment_id: u64,
+    ) -> Option<crate::app::fix_cost::CombinedBatch> {
+        let db = self.db.as_ref()?;
+        let batch_id = db
+            .load_pr_comment_triage(pr_number)
+            .ok()?
+            .get(&comment_id)?
+            .batch_id
+            .clone()?;
+        let siblings = db
+            .pr_comment_triage_batch_siblings(pr_number, &batch_id)
+            .ok()?;
+        (!siblings.is_empty()).then_some(crate::app::fix_cost::CombinedBatch {
+            sibling_count: siblings.len(),
+        })
     }
 
     pub fn pr_review_scroll_detail_up(&mut self, amount: usize) {
@@ -5035,6 +5217,7 @@ mod tests {
             is_resolved: false,
             triage: TriageState::default(),
             local_note: None,
+            batch_id: None,
             github_id: None,
             github_review_id: None,
         }
@@ -5418,6 +5601,7 @@ mod tests {
             is_resolved: false,
             triage: TriageState::Untriaged,
             local_note: None,
+            batch_id: None,
             github_id: None,
             github_review_id: None,
         }
@@ -6017,6 +6201,7 @@ mod tests {
             is_resolved: false,
             triage: TriageState::Untriaged,
             local_note: None,
+            batch_id: None,
         };
         let mut bot = human.clone();
         bot.is_bot = true;
@@ -6149,14 +6334,30 @@ mod tests {
             model: Some("gpt-5.5".to_string()),
             estimated_tokens: Some(1_500),
             estimated_cost: Some("$0.04".to_string()),
+            combined_batch: None,
         };
         assert_eq!(
             append_reply_attribution("Fixed the guard.", true, Some(&metadata)),
-            "Fixed the guard.\n\n_AI generation: harness Codex · model gpt-5.5 · estimated tokens ~1.5k · estimated cost $0.04_\n\n— drafted by AI via AMF"
+            "Fixed the guard.\n\n_AI generation: harness Codex · model gpt-5.5 · estimated tokens ~1.5k · Fix cost (est.): $0.04_\n\n— drafted by AI via AMF"
         );
         assert_eq!(
             append_reply_attribution("Done in `abc123`.", false, Some(&metadata)),
             "Done in `abc123`.\n\n— posted via AMF"
+        );
+    }
+
+    #[test]
+    fn agent_drafted_reply_in_a_combined_batch_marks_the_shared_cost() {
+        let metadata = ReplyGenerationMetadata {
+            harness: Some("Codex".to_string()),
+            model: Some("gpt-5.5".to_string()),
+            estimated_tokens: Some(1_500),
+            estimated_cost: Some("$0.04".to_string()),
+            combined_batch: Some(crate::app::fix_cost::CombinedBatch { sibling_count: 3 }),
+        };
+        assert_eq!(
+            append_reply_attribution("Fixed the guard.", true, Some(&metadata)),
+            "Fixed the guard.\n\n_AI generation: harness Codex · model gpt-5.5 · estimated tokens ~1.5k · Fix cost (est.): $0.04 · combined (3)_\n_Fixed as one of 3 comments handled in a single combined agent run; the fix cost above is that run's total, shared across them._\n\n— drafted by AI via AMF"
         );
     }
 

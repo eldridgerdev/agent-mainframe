@@ -845,10 +845,18 @@ pub fn draw_pr_review(
         "h hide-resolved"
     };
     // The batch hint shows the marked count so the user knows what `B` combines.
-    let batch_hint = match state.marked.len() {
+    let mut batch_hint = match state.marked.len() {
         0 => "space mark".to_string(),
         n => format!("space mark · B combine({n})"),
     };
+    // Only offer the sibling-jump keys when the selected comment was actually
+    // fixed as part of a combined batch — otherwise they are a no-op.
+    if state
+        .selected_comment()
+        .is_some_and(|c| c.batch_id.is_some())
+    {
+        batch_hint.push_str(" · [/] siblings");
+    }
     let key_text = if state
         .selected_comment()
         .is_some_and(PrComment::is_amf_followup_reply)
@@ -1792,6 +1800,10 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
         return;
     }
 
+    // The selected comment's combined-batch id, so its sibling rows can be
+    // marked more brightly than other (unrelated) batch members.
+    let selected_batch_id = state.selected_comment().and_then(|c| c.batch_id.clone());
+
     // Inner width available for row text (block borders take one column each side).
     let inner_width = area.width.saturating_sub(2) as usize;
     // Under `PrSortMode::Conversations`, a divider row is inserted ahead of
@@ -1813,6 +1825,7 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
         items.push(ListItem::new(comment_list_line(
             comment,
             is_marked,
+            batch_rel(comment, selected_batch_id.as_deref(), i == state.selected),
             theme,
             inner_width,
         )));
@@ -1853,9 +1866,28 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
 /// One row in the comment list: a batch-mark dot, a local-triage checkbox, a
 /// resolution marker, author, location, snippet. Long paths are truncated from
 /// the left so the filename and line number stay visible when the row is narrow.
+/// How a list row relates to the *currently selected* comment's combined
+/// batch. Drives the `⧉` marker: absent when the row isn't part of any batch,
+/// dim for an unrelated batch, bright when it's a sibling of the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchRel {
+    None,
+    OtherBatch,
+    Sibling,
+}
+
+fn batch_rel(c: &PrComment, selected_batch_id: Option<&str>, is_selected_row: bool) -> BatchRel {
+    match c.batch_id.as_deref() {
+        None => BatchRel::None,
+        Some(id) if !is_selected_row && selected_batch_id == Some(id) => BatchRel::Sibling,
+        Some(_) => BatchRel::OtherBatch,
+    }
+}
+
 fn comment_list_line<'a>(
     c: &'a PrComment,
     is_marked: bool,
+    batch_rel: BatchRel,
     theme: &Theme,
     width: usize,
 ) -> Line<'a> {
@@ -1864,6 +1896,13 @@ fn comment_list_line<'a>(
     let marker = if c.is_resolved { "✓" } else { " " };
     // A leading `●` flags comments marked (space) for the `F` batch fix.
     let mark = if is_marked { "●" } else { " " };
+    // `⧉` flags a comment that was fixed as part of a combined batch (`B`);
+    // rendered brightly on the selected comment's own siblings so `[`/`]` has
+    // a visible target.
+    let batch_span = match batch_rel {
+        BatchRel::None => String::new(),
+        _ => "⧉ ".to_string(),
+    };
     let location = match (&c.path, c.line) {
         (Some(path), Some(line)) => format!("{path}:{line}"),
         (Some(path), None) => path.clone(),
@@ -1886,6 +1925,7 @@ fn comment_list_line<'a>(
     // location and left-ellipsize so the tail (filename:line) survives.
     let prefix_width = mark_span.chars().count()
         + triage_span.chars().count()
+        + batch_span.chars().count()
         + marker_span.chars().count()
         + author_span.chars().count()
         + attribution_span.chars().count();
@@ -1907,6 +1947,15 @@ fn comment_list_line<'a>(
             } else {
                 triage_color(c.triage, theme)
             }),
+        ),
+        Span::styled(
+            batch_span,
+            match batch_rel {
+                BatchRel::Sibling => Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD),
+                _ => Style::default().fg(theme.text_muted.to_color()),
+            },
         ),
         Span::styled(
             marker_span,
@@ -2877,6 +2926,7 @@ mod tests {
                 model: Some("gpt-5.5".to_string()),
                 estimated_tokens: Some(1_500),
                 estimated_cost: Some("$0.04".to_string()),
+                combined_batch: None,
             }),
             original_seed: "Fixed the guard.\n\nDone in `abc123`.".to_string(),
             editing: false,
@@ -2899,7 +2949,7 @@ mod tests {
         assert!(rendered.contains("AI generation: harness Codex"));
         assert!(rendered.contains("model gpt-5.5"));
         assert!(rendered.contains("estimated tokens ~1.5k"));
-        assert!(rendered.contains("estimated cost $0.04"));
+        assert!(rendered.contains("Fix cost (est.): $0.04"));
         assert!(!rendered.contains("posted via AMF"));
     }
 
@@ -2920,6 +2970,7 @@ mod tests {
                 model: Some("anthropic/claude-opus-4-5-20251101".to_string()),
                 estimated_tokens: Some(1_500),
                 estimated_cost: Some("$0.04".to_string()),
+                combined_batch: None,
             }),
             original_seed: "Fixed the guard.".to_string(),
             editing: false,
@@ -2944,8 +2995,8 @@ mod tests {
         // each one's tail proves it wrapped rather than being clipped.
         assert!(has("AI generation: harness Opencode · model"));
         assert!(has("anthropic/claude-opus-4-5-20251101"));
-        assert!(has("estimated tokens ~1.5k · estimated cost"));
-        assert!(has("$0.04"));
+        assert!(has("estimated tokens ~1.5k · Fix cost"));
+        assert!(has("(est.): $0.04"));
         assert!(has("will post with a \"— drafted by AI via"));
         assert!(has("AMF\" footer"));
         // The reply body and the key hints keep their rows.
@@ -3013,6 +3064,7 @@ mod tests {
             is_resolved: false,
             triage: crate::app::pr_review::TriageState::Untriaged,
             local_note: None,
+            batch_id: None,
             github_id: None,
             github_review_id: None,
         }

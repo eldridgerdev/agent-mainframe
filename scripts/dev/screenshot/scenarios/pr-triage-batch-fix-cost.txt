@@ -1,0 +1,22 @@
+# Combined-batch fix-cost attribution (offline).
+#
+# Seeds the deterministic AI-review fixture, then injects a pr_review_cache
+# comment + two pr_comment_triage rows that share a batch_id (one resolved,
+# carrying the shared run cost). No model, no GitHub. Proves that a finding
+# whose PR comment was fixed in a combined batch shows the shared
+# "Fix cost (est.): $X · combined (N)" line and the ⧉ marker.
+#
+# Local run needs: export AMF_SCREENSHOT_PR_NUMBER=<n> GITHUB_REPOSITORY=owner/name
+
+run:AMF_BIN="$AMF_BIN" "$SCRIPT_DIR/seed-ai-review-fixture.sh" >/dev/null
+wait:400
+run:python3 "$SCRIPT_DIR/seed-batch-fix-cost-fixture.py" "$XDG_CONFIG_HOME/amf/amf.db" "$AMF_SCREENSHOT_PR_NUMBER" "$(git rev-parse HEAD)"
+wait:600
+# Nudge the selection so the pane recomputes the per-finding fix costs, and
+# let the first-run "harness configured" toast expire before capturing.
+key:j
+wait:200
+key:k
+wait:4500
+note:The AI Review detail pane shows the shared cost of the single agent run that fixed this finding as part of a combined batch — relabelled "Fix cost (est.):" and marked "combined (2)" so it reads as one figure spread across the batch, not a per-issue charge. The finding row carries a ⧉ marker for the same reason.
+shot:ai-review-combined-fix-cost

@@ -2731,6 +2731,40 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       test, which needs `wl-paste`/`xclip` and is unrelated); strict Clippy and
       formatting clean. → `src/ui/list.rs`, `CHANGELOG.md`.
 
+- [x] **Combined-batch fix cost is attributed to every resolved comment,
+      marked as shared.** A `B` batch is one agent run, so its cost was
+      invisible per issue. On dispatch, `pr_review_inject_fix` now stamps one
+      UUID `batch_id` on every selected comment's `pr_comment_triage` row
+      (migration 032 adds nullable `batch_id` + `batch_fix_cost`; pre-existing
+      rows stay `NULL`). `upsert`'s `batch_id` is sticky (`COALESCE`) so the
+      later `Done` write keeps it. When the first sibling is resolved,
+      `set_batch_fix_cost` records the run's cost string across the batch
+      (first-writer-wins) — captured *before* `clear_reply_draft` deletes the
+      draft the live figure comes from. A shared helper
+      (`src/app/fix_cost.rs`) renders it everywhere as
+      `Fix cost (est.): $X · combined (N)`: in the PR Triage reply dialog and
+      the posted GitHub reply (which also gets a plain sentence explaining the
+      shared figure), and — matched back by `path`/`line`/`side` —
+      on an AI Review finding that was posted and then batch-fixed. PR Triage
+      list rows gain a `⧉` marker that brightens on the selected comment's
+      siblings, and `[` / `]` jump between them. Only *resolved* batch comments
+      show the cost/badge (partial-batch rule); an unresolved sibling shows
+      nothing. Investigated whether any pane sums per-issue costs (the triage
+      header + AI review attribution are session/run meters, not sums) — nothing
+      double-counts. Final-review feedback is out of scope (shows no per-issue
+      cost). Offline screenshot fixture added
+      (`scripts/dev/screenshot/scenarios/pr-triage-batch-fix-cost.txt`).
+      Unit-tested (helper output; `batch_id` round-trip + stickiness; sibling
+      query; first-writer-wins cost; sibling-jump cycling; batched reply
+      disclosure; AI-review correlation incl. the partial-batch case);
+      `cargo test -j2 --bin amf` 2393 passed, fmt + clippy clean. →
+      `src/db/migrations.rs`, `src/db/pr_comment_triage.rs`, `src/db/mod.rs`,
+      `src/app/fix_cost.rs`, `src/app/pr_review.rs`, `src/app/ai_review.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dialogs/ai_review.rs`, `src/ui/dashboard.rs`, `CHANGELOG.md`.
+
+      **Shipped, 2026-09-02.**
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

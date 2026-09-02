@@ -2840,15 +2840,24 @@ impl App {
     }
 
     /// Open the single-select fix-target picker: an "existing live session"
-    /// row plus one "dedicated session" row per allowed harness, highlighting
-    /// the project's preferred agent's dedicated row by default (matching
-    /// `FixTarget::default()`). No-op if no harnesses are available for a
-    /// dedicated session — falls back to the existing-live-less default
-    /// (dedicated, no explicit harness) and skips straight to the confirm
-    /// dialog, since there'd be nothing to choose between anyway.
+    /// row plus one "dedicated session" row per allowed harness. The
+    /// highlighted row reflects the *current* `fix_target` (and, for a
+    /// dedicated target, `review_harness`), so a picker reopened from a
+    /// confirm dialog to inspect the destination can be confirmed without
+    /// silently moving the fix; on a first open, where `fix_target` is still
+    /// `FixTarget::default()` with no pinned harness, this lands on the
+    /// project's preferred agent's dedicated row. No-op if no harnesses are
+    /// available for a dedicated session — falls back to the
+    /// existing-live-less default (dedicated, no explicit harness) and skips
+    /// straight to the confirm dialog, since there'd be nothing to choose
+    /// between anyway.
     fn pr_review_open_harness_pick(&mut self) {
-        let workdir = match &self.mode {
-            AppMode::PrReview(state) => state.workdir.clone(),
+        let (workdir, current_target, current_harness) = match &self.mode {
+            AppMode::PrReview(state) => (
+                state.workdir.clone(),
+                state.fix_target,
+                state.review_harness.clone(),
+            ),
             _ => return,
         };
         let agents = self.allowed_agents_for_project_path(&workdir);
@@ -2875,7 +2884,21 @@ impl App {
         // the one the cursor lands on.
         rows.push(FixTargetPickRow::NewFeature);
         // +1: rows[0] is the ExistingLive row, so the dedicated default shifts by one.
-        let selected = dedicated_default + 1;
+        let dedicated_selected = dedicated_default + 1;
+        // Highlight the row the fix currently points at. PR Triage never offers
+        // the `ExistingFeature` row and treats it like `ExistingLive`, so both
+        // map to rows[0]. A dedicated target prefers the row for its pinned
+        // harness, falling back to the project default when none is set yet.
+        let selected = match current_target {
+            FixTarget::ExistingLive | FixTarget::ExistingFeature => 0,
+            FixTarget::NewFeature => rows.len() - 1,
+            FixTarget::DedicatedReview => current_harness
+                .and_then(|h| {
+                    rows.iter()
+                        .position(|r| matches!(r, FixTargetPickRow::Dedicated(a) if *a == h))
+                })
+                .unwrap_or(dedicated_selected),
+        };
         if let AppMode::PrReview(state) = &mut self.mode {
             state.harness_pick = Some(HarnessPickState {
                 rows,
@@ -2902,6 +2925,15 @@ impl App {
     /// otherwise the single-comment fix confirm. Neither re-checks the pick,
     /// so this can't loop back into the picker.
     pub(crate) fn pr_review_continue_after_harness(&mut self) {
+        // A target change from an already-open confirmation dialog must retain
+        // the exact prompt the user reviewed (and possibly edited). The picker
+        // is only changing where it will be delivered, not what will be sent.
+        if matches!(&self.mode, AppMode::PrReview(state) if state.fix_confirm.is_some()) {
+            if let AppMode::PrReview(state) = &mut self.mode {
+                state.pending_batch = false;
+            }
+            return;
+        }
         let batch = matches!(&self.mode, AppMode::PrReview(state) if state.pending_batch);
         if batch {
             self.pr_review_show_batch_confirm();
@@ -3030,14 +3062,24 @@ impl App {
         self.pr_review_continue_after_harness();
     }
 
-    /// Cancel the fix-target picker without choosing — aborts this fix; the
-    /// user can press `f`/`B` again. Nothing is marked picked, so the picker
-    /// reappears, and any pending batch is discarded.
+    /// Cancel the fix-target picker without choosing. During initial setup this
+    /// aborts the pending fix; when opened from an existing confirmation dialog
+    /// it simply returns to that dialog with its target unchanged.
     pub fn pr_review_harness_pick_cancel(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.harness_pick = None;
             state.pending_batch = false;
         }
+    }
+
+    /// Re-open the fix-target picker from a confirmation dialog. The dialog
+    /// remains intact behind the picker, so cancelling keeps the current
+    /// target and confirming a new one preserves any prompt edits.
+    pub fn pr_review_change_fix_target(&mut self) {
+        if !matches!(&self.mode, AppMode::PrReview(state) if state.fix_confirm.is_some()) {
+            return;
+        }
+        self.pr_review_open_harness_pick();
     }
 
     /// Whether the fix-target picker is accepting the dedicated session name.

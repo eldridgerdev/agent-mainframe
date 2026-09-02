@@ -17293,6 +17293,96 @@ fn pr_review_fix_scroll_moves_offset_and_clears_cursor_follow() {
     assert_eq!(pr_review_fix_confirm(&app).scroll, 0);
 }
 
+#[test]
+fn pr_review_fix_confirm_scrolls_before_editing() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_fix_confirm();
+
+    crate::handlers::handle_pr_review_key(
+        &mut app,
+        KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+    )
+    .unwrap();
+    assert_eq!(pr_review_fix_confirm(&app).scroll, 10);
+    assert!(!pr_review_fix_confirm(&app).sync_to_cursor);
+
+    crate::handlers::handle_pr_review_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    assert_eq!(pr_review_fix_confirm(&app).scroll, 9);
+}
+
+#[test]
+fn pr_review_fix_confirm_can_change_target_without_losing_edits() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 1);
+    app.pr_review_open_fix_confirm();
+    app.pr_review_harness_pick_confirm();
+    app.pr_review_harness_pick_confirm();
+    app.pr_review_fix_edit();
+    assert!(app.pr_review_fix_editor_key(KeyEvent::from(KeyCode::Char('Z'))));
+    app.pr_review_fix_stop_edit();
+    let prompt = pr_review_fix_confirm(&app).editor.text().to_string();
+
+    app.pr_review_change_fix_target();
+    assert!(app.pr_review_harness_picking());
+    app.pr_review_harness_pick_move(-1); // Dedicated default -> existing live.
+    app.pr_review_harness_pick_confirm();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(
+                state.fix_target,
+                crate::app::pr_review::FixTarget::ExistingLive
+            );
+            assert_eq!(state.fix_confirm.as_ref().unwrap().editor.text(), prompt);
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_reopened_target_picker_highlights_current_target() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 1);
+    app.pr_review_open_fix_confirm();
+    app.pr_review_harness_pick_confirm();
+    app.pr_review_harness_pick_confirm();
+
+    // Redirect the fix to the existing live session, then reopen the picker
+    // the way "review and redirect" does.
+    app.pr_review_change_fix_target();
+    app.pr_review_harness_pick_move(-1); // Dedicated default -> existing live (row 0).
+    app.pr_review_harness_pick_confirm();
+    app.pr_review_change_fix_target();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let pick = state.harness_pick.as_ref().expect("picker reopened");
+            assert_eq!(
+                pick.selected, 0,
+                "reopened picker should highlight the current ExistingLive target, not the dedicated default"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
 fn reply_editor_text(app: &App) -> String {
     match &app.mode {
         AppMode::PrReview(state) => state.reply.as_ref().unwrap().editor.text().to_string(),

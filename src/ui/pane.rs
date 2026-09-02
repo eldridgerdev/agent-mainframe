@@ -1589,8 +1589,14 @@ mod tests {
             .take_while(|line| !line.starts_with("State:"))
             .collect();
         assert_eq!(title_lines.len(), 2, "title clamps to two lines");
-        assert!(title_lines.last().unwrap().ends_with('…'), "dropped content is marked");
-        assert!(active.body.ends_with("State: open"), "the State row is kept verbatim");
+        assert!(
+            title_lines.last().unwrap().ends_with('…'),
+            "dropped content is marked"
+        );
+        assert!(
+            active.body.ends_with("State: open"),
+            "the State row is kept verbatim"
+        );
 
         // A short title is left untouched.
         data.active_todos_text = Some("Ship it\nState: open".to_string());

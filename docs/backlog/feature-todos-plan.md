@@ -553,6 +553,18 @@ the full 2,334-test suite pass. Interactive multi-session spawning and
 completion still benefit from a live manual verification with provider
 credentials.
 
+**Follow-up fix (2026-09-01):** Only the two direct spawn routes
+(`todos_spawn_agent`, `finish_todo_spawn_in_new_feature`) attached the
+session reference; both plan-mode routes — `start_todo_plan_session` (host
+feature) and `link_todo_to_new_feature` (new feature, via
+`resume_accepted_plan_launch`) — recorded only the DB `linked_feature_id`,
+so a TODO started through plan mode showed no "Active TODO" sidebar box and
+`leader z` had nothing to complete. Both now call a shared
+`attach_launched_todo_reference` (set `TodoSessionReference`, save, refresh
+the cache); the new-feature route additionally associates the session on the
+row's work state, matching the non-plan route. Covered by three focused
+tests.
+
 ### Epic 11 — Spawn a TODO into a new feature without plan mode
 
 Shipped. Epic 7 made a new branch + worktree for a TODO reachable **only**

@@ -2447,6 +2447,46 @@ impl App {
         self.db.as_ref()?.resolve_todo_by_id(todo_id).ok()?
     }
 
+    /// Record on session `(pi, fi, si)` that it was launched for `todo_id` from
+    /// the TODO menu, persist that, and refresh the sidebar cache so the
+    /// embedded view's "Active TODO" section appears without waiting for the
+    /// next status sync.
+    ///
+    /// Shared by the plan-launch routes (`start_todo_plan_session`,
+    /// `link_todo_to_new_feature`); the direct-spawn routes
+    /// (`todos_spawn_agent`, `finish_todo_spawn_in_new_feature`) inline the
+    /// same three steps because they interleave them with launch rollback.
+    /// Best-effort about the save, matching those routes: a live harness is
+    /// kept even if its provenance write fails.
+    pub(crate) fn attach_launched_todo_reference(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+        todo_id: &str,
+    ) {
+        let Some(session) = self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|project| project.features.get_mut(fi))
+            .and_then(|feature| feature.sessions.get_mut(si))
+        else {
+            return;
+        };
+        session.todo_reference = Some(crate::project::TodoSessionReference {
+            todo_id: todo_id.to_string(),
+            launched_from_todo_menu: true,
+        });
+        if let Err(e) = self.save() {
+            self.log_warn(
+                "todos",
+                format!("recorded a TODO session reference but couldn't save it: {e}"),
+            );
+        }
+        self.refresh_active_todos_sidebar_cache();
+    }
+
     /// Rebuild the cached per-session active-TODO sidebar text from current persisted
     /// TODO data. Each TODO-menu-originated session reference resolves two
     /// SQLite queries, so this runs on status sync and after local mutations

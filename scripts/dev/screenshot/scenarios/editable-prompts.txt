@@ -5,8 +5,10 @@
 # (feature / project / global) -> the harness picker -> the help panel.
 #
 # Needs a seeded project + one feature so the manager offers all three scopes.
-# The committed seeds point the project at "." (the repo checkout), which is
-# what the CI capture workflow / publish-pages.sh use:
+# The committed seeds point the project at "." (the repo checkout) and create
+# the feature with the `codex` harness -- that is the only harness the CI
+# capture runner installs; `claude` is rejected there ("Harness 'Claude' is
+# not allowed for this workspace"). This is what publish-pages.sh uses:
 #
 #   scripts/dev/screenshot/amf-capture.sh \
 #     --scenario     scripts/dev/screenshot/scenarios/editable-prompts.txt \

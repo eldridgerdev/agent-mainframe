@@ -144,6 +144,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add batch_id to PR-comment triage rows for combined-batch fix-cost attribution",
             MIGRATION_032,
         ),
+        (
+            "Add pr_investigations table for PR Triage's read-only Investigate action",
+            MIGRATION_033,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -813,6 +817,47 @@ ALTER TABLE pr_comment_triage ADD COLUMN batch_id TEXT;
 ALTER TABLE pr_comment_triage ADD COLUMN batch_fix_cost TEXT;
 ";
 
+/// PR Triage's Investigate action: a strictly read-only headless investigation
+/// of one review comment whose answer persists and reopens with the triage
+/// overlay (like Learning Mode Q&A). One row per `(project_id, PR#, comment id)`
+/// — Investigate is single-item and never batched, so no shared id is needed.
+///
+/// Like todo lists and Learning Mode history this data lives *outside* the
+/// `ProjectStore` JSON blob, so `project_id` is plain TEXT with no FK to
+/// `projects` and cleanup on project deletion is explicit
+/// (`delete_pr_investigations_for_project`). The App layer keeps the rows in
+/// memory as the source of truth, so the feature works with no DB at all; these
+/// rows just make it survive a restart.
+///
+/// `head_sha` records the PR head the investigation ran against (staleness
+/// signal, exactly as `pr_comment_triage` uses it — not part of the identity,
+/// so a push doesn't orphan the finding). `answer` is NULL until the run
+/// returns; `follow_ups` is a JSON array of `{question, answer, harness,
+/// created_at}` turns (Learning Mode `F` re-runs with the prior turn as
+/// context). `status` is one of `running` / `complete` / `failed` /
+/// `dismissed`; a row is written `running` *before* the blocking call so a
+/// crash mid-run is visible on reopen rather than a silent gap.
+const MIGRATION_033: &str = "
+CREATE TABLE IF NOT EXISTS pr_investigations (
+    project_id       TEXT NOT NULL,
+    pr_number        INTEGER NOT NULL,
+    comment_id       INTEGER NOT NULL,
+    head_sha         TEXT NOT NULL DEFAULT '',
+    harness          TEXT NOT NULL DEFAULT 'claude',
+    context_snapshot TEXT NOT NULL DEFAULT '',
+    answer           TEXT,
+    follow_ups       TEXT NOT NULL DEFAULT '[]',
+    status           TEXT NOT NULL DEFAULT 'running',
+    error            TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (project_id, pr_number, comment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_investigations_pr
+    ON pr_investigations(project_id, pr_number);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -853,7 +898,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 32);
+        assert_eq!(version, 33);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -948,7 +993,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 32);
+        assert_eq!(version, 33);
     }
 
     #[test]
@@ -1290,7 +1335,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 32);
+        assert_eq!(rows, 33);
     }
 
     /// Features written before selected-plan persistence existed acquire a
@@ -1343,7 +1388,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 32);
+        assert_eq!(version, 33);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

@@ -279,6 +279,25 @@ impl HeadlessRunner {
         run_command(harness, &spec, workdir, prompt, model)
     }
 
+    /// The **strictly read-only** entry the PR-triage "Investigate" flow uses
+    /// (`AMF_PLAN.md`). A named seam over [`read_only_command_for`] so the
+    /// read-only contract is greppable and cannot be swapped for a
+    /// tool-enabled path ([`Self::run`] / [`Self::run_with_progress`]) in a
+    /// later refactor without it being obvious. The command it builds cannot
+    /// edit files, run shell commands, or apply patches, and repo-controlled
+    /// config (settings files, hooks, plugins, MCP servers) cannot loosen it —
+    /// so no Vibeless edit-review hook and no worktree write is reachable from
+    /// an investigation. `debug_assert`s that the spec really is read-only.
+    pub fn run_investigation(harness: &AgentKind, workdir: &Path, prompt: &str) -> Result<String> {
+        let spec = read_only_command_for(harness)?;
+        debug_assert!(
+            headless_command_is_read_only(harness, &spec),
+            "investigation headless command for {harness:?} is not read-only: {:?}",
+            spec.args
+        );
+        run_command(harness, &spec, workdir, prompt, None)
+    }
+
     /// Run a headless pass while reporting sanitized provider activity.
     ///
     /// Every built-in harness has a structured event mode. Provider payloads
@@ -1118,6 +1137,53 @@ fn command_for(harness: &AgentKind, restricted: bool) -> HeadlessCommand {
 
 /// Commands used when the model must investigate a repository without being
 /// able to alter it.
+/// Positive per-harness check that a [`HeadlessCommand`] can only read the
+/// repository. Deliberately conservative: absence of an explicit restriction
+/// counts as *not* read-only, because e.g. Claude with no `--tools` flag runs
+/// its full default toolset (Bash/Edit/Write). Backs the `run_investigation`
+/// `debug_assert` and its test.
+fn headless_command_is_read_only(harness: &AgentKind, cmd: &HeadlessCommand) -> bool {
+    let value_after = |flag: &str| -> Option<&str> {
+        cmd.args
+            .iter()
+            .position(|a| *a == flag)
+            .and_then(|i| cmd.args.get(i + 1))
+            .copied()
+    };
+    let no_loose_permission = !cmd.args.windows(2).any(|w| {
+        w[0] == "--permission-mode" && matches!(w[1], "acceptEdits" | "bypassPermissions")
+    });
+    let read_only_tools = |list: &str, allowed: &[&str]| {
+        list.split([',', ' '])
+            .filter(|t| !t.is_empty())
+            .all(|t| allowed.iter().any(|a| a.eq_ignore_ascii_case(t)))
+    };
+    match harness {
+        AgentKind::Claude => {
+            cmd.args.contains(&"--safe-mode")
+                && value_after("--tools")
+                    .is_some_and(|t| read_only_tools(t, &["read", "glob", "grep"]))
+                && no_loose_permission
+        }
+        // Codex's headless command is an ephemeral read-only sandbox.
+        AgentKind::Codex => value_after("--sandbox") == Some("read-only"),
+        AgentKind::Opencode => {
+            cmd.args.contains(&"--pure")
+                && cmd.envs.iter().any(|(k, v)| {
+                    *k == "OPENCODE_PERMISSION"
+                        && (*v == OPENCODE_READ_ONLY_PERMISSION
+                            || *v == OPENCODE_RESTRICTED_PERMISSION)
+                })
+        }
+        AgentKind::Pi => {
+            (cmd.args.contains(&"--no-tools")
+                || value_after("--tools")
+                    .is_some_and(|t| read_only_tools(t, &["read", "grep", "find", "ls"])))
+                && cmd.args.contains(&"--no-approve")
+        }
+    }
+}
+
 fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
     match harness {
         AgentKind::Claude => Ok(HeadlessCommand {
@@ -1420,6 +1486,50 @@ mod tests {
         );
         assert!(pi.args.contains(&"--no-extensions"));
         assert!(pi.args.contains(&"--no-approve"));
+    }
+
+    /// The PR-triage "Investigate" contract: `run_investigation`'s command is
+    /// read-only for every harness, and the predicate that guards it is not
+    /// vacuous — a tool-enabled command fails it.
+    #[test]
+    fn investigation_headless_command_is_read_only_for_every_harness() {
+        for harness in [
+            AgentKind::Claude,
+            AgentKind::Codex,
+            AgentKind::Opencode,
+            AgentKind::Pi,
+        ] {
+            let spec = read_only_command_for(&harness).unwrap();
+            assert!(
+                headless_command_is_read_only(&harness, &spec),
+                "{harness:?} read-only command is not recognised as read-only"
+            );
+        }
+
+        // Sanity: the *unrestricted* Claude command (no `--tools` cap → full
+        // default toolset) is correctly rejected, so the check has teeth.
+        assert!(!headless_command_is_read_only(
+            &AgentKind::Claude,
+            &command_for(&AgentKind::Claude, false)
+        ));
+        // ...and a hand-built command that re-enables editing is rejected too.
+        let loosened = HeadlessCommand {
+            binary: "claude".into(),
+            args: vec![
+                "-p",
+                "--safe-mode",
+                "--tools",
+                "Read,Edit,Bash",
+                "--permission-mode",
+                "acceptEdits",
+            ],
+            trailing: vec![],
+            envs: vec![],
+        };
+        assert!(!headless_command_is_read_only(
+            &AgentKind::Claude,
+            &loosened
+        ));
     }
 
     #[test]

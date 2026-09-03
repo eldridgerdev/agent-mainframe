@@ -2512,6 +2512,110 @@ pub struct PrReviewState {
     /// Kept alongside the pending count so a successful zero-finding run or a
     /// failure remains distinguishable from a review that has never run.
     pub ai_review_last_run: Option<crate::app::ai_review::AiReviewRun>,
+    /// Persisted read-only investigations for this PR (the `v` → `f` flow),
+    /// loaded from `pr_investigations` on entry and the in-memory source of
+    /// truth while the overlay is open. Keyed by comment id (one per comment).
+    pub investigations: Vec<crate::db::pr_investigations::PrInvestigation>,
+    /// When `Some`, the per-run harness picker for a pending investigation is
+    /// open over the pane (reuses the flat Learning-Mode `m` picker shape).
+    pub investigation_harness_pick: Option<InvestigationHarnessPick>,
+    /// When `Some`, the action menu for the selected comment's completed
+    /// investigation is open (`a`): convert to fix / add to batch / ask
+    /// follow-up / dismiss / keep as TODO.
+    pub investigation_action_pick: Option<InvestigationActionPick>,
+    /// When `Some`, the follow-up question editor is open for one investigation
+    /// (Learning Mode `F` behaviour — the answer re-runs headless with the
+    /// prior turn as context).
+    pub investigation_follow_up: Option<InvestigationFollowUpDraft>,
+    /// A submitted follow-up question waiting on the harness picker, so
+    /// [`crate::app::App::pr_review_investigation_harness_confirm`] knows the
+    /// run is a follow-up (not a fresh investigation) and for which comment.
+    pub pending_follow_up: Option<PendingFollowUp>,
+}
+
+/// One row of the completed-investigation action menu (`a`). Fix and batch
+/// are deliberately absent — `f` and `B` act on a comment normally whether or
+/// not it has an investigation; the findings just stay visible in the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvestigationAction {
+    /// Open an editable reply draft prefilled from the answer; on approve it
+    /// posts via the existing `gh` reply path and marks the comment `Replied`.
+    PostReply,
+    /// Re-run headless with the prior question+answer as context.
+    AskFollowUp,
+    /// Mark the finding handled without acting on it.
+    Dismiss,
+    /// Write the finding to a scoped TODO list.
+    KeepAsTodo,
+}
+
+impl InvestigationAction {
+    pub const ALL: [InvestigationAction; 4] = [
+        InvestigationAction::PostReply,
+        InvestigationAction::AskFollowUp,
+        InvestigationAction::Dismiss,
+        InvestigationAction::KeepAsTodo,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            InvestigationAction::PostReply => "Post a reply (editable draft)",
+            InvestigationAction::AskFollowUp => "Ask a follow-up",
+            InvestigationAction::Dismiss => "Dismiss the finding",
+            InvestigationAction::KeepAsTodo => "Keep as a TODO",
+        }
+    }
+}
+
+/// The completed-investigation action menu (`a`), a sub-state of
+/// [`PrReviewState`] like the other PR-triage pickers.
+#[derive(Debug, Clone)]
+pub struct InvestigationActionPick {
+    /// The comment whose investigation this menu acts on (re-resolved on
+    /// confirm, since a background refresh can move the selection).
+    pub comment_id: u64,
+    pub selected: usize,
+}
+
+/// The inline follow-up question editor for one investigation.
+#[derive(Debug, Clone)]
+pub struct InvestigationFollowUpDraft {
+    pub comment_id: u64,
+    pub editor: crate::editor::TextEditor,
+}
+
+/// A submitted follow-up question, parked while the harness picker is open.
+#[derive(Debug, Clone)]
+pub struct PendingFollowUp {
+    pub comment_id: u64,
+    pub question: String,
+}
+
+/// Flat single-select harness picker shown before an investigation runs — the
+/// operator picks the harness per investigation. Mirrors
+/// [`crate::app::LearningHarnessPicker`].
+#[derive(Debug, Clone)]
+pub struct InvestigationHarnessPick {
+    pub harnesses: Vec<crate::project::AgentKind>,
+    pub selected: usize,
+}
+
+/// Transient state while a blocking read-only investigation runs off the UI
+/// thread. Holds the PR-triage pane to restore when the run returns, so the
+/// overlay is modal for exactly the duration of the call (the deliberate
+/// contrast with Learning Mode's non-blocking queue).
+#[derive(Debug, Clone)]
+pub struct PrInvestigationLoadState {
+    /// The pane to return to once the run finishes (or is cancelled).
+    pub review: Box<PrReviewState>,
+    /// The comment being investigated.
+    pub comment_id: u64,
+    /// The harness the operator picked for this run.
+    pub harness: crate::project::AgentKind,
+    /// Start of the run, for the loading frame's elapsed-time line.
+    pub started_at: std::time::Instant,
+    pub pr_number: u32,
+    pub pr_url: String,
 }
 
 /// Identity of the PR Triage refresh started after a successful AI Review
@@ -4639,6 +4743,9 @@ pub enum AppMode {
     PrReviewLoading(PrReviewLoadState),
     /// Triaging a PR's comments in the full-screen PR Triage pane.
     PrReview(PrReviewState),
+    /// Running a strictly read-only investigation of one review comment off the
+    /// UI thread; shows a modal loading frame over the stashed PR Triage pane.
+    PrInvestigationLoading(PrInvestigationLoadState),
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.
     ReviewMemoryBootstrapRunning(BootstrapRunState),

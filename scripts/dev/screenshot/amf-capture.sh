@@ -378,6 +378,12 @@ if [[ "$first_screen" == "Configure Agent Harnesses" ]]; then
         done
         if [[ "$harness_resolved" == *"(installed)" ]]; then
             harness_installed=1
+            # Which harness the scratch instance ends up with is
+            # environment-dependent (Claude locally, Codex on the CI runner).
+            # Export the lowercase slug so a seed can say "agent": "__HARNESS__"
+            # and match whatever this run enabled.
+            CAPTURE_HARNESS_SLUG="$(printf '%s' "$harness_name" | tr '[:upper:]' '[:lower:]')"
+            export CAPTURE_HARNESS_SLUG
             break
         fi
         tmux send-keys -t "$SESSION" j
@@ -403,6 +409,35 @@ if [[ "$first_screen" == "Configure Agent Harnesses" ]]; then
     fi
 fi
 echo "dashboard ready" >&2
+
+# A committed seed can't carry two things it sometimes needs: an absolute
+# path to *this* checkout (the running AMF instance resolves a relative
+# `path` against its own scratch CWD, so `"path": "."` lands on a non-git
+# dir), and the harness this scratch instance actually enabled (Claude
+# locally, Codex on the CI runner). A seed may use the literal tokens
+# __REPO_ROOT__ (in `path`/`workspace_path`) and __HARNESS__ (in `agent`);
+# we expand them in a temp copy and seed from that.
+SEED_TMPDIR=""
+expand_seed_tokens() {
+    local src="$1"
+    if ! grep -q '__REPO_ROOT__\|__HARNESS__' "$src"; then
+        printf '%s' "$src"
+        return
+    fi
+    [[ -n "$SEED_TMPDIR" ]] || SEED_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/amf-seed.XXXXXX")"
+    local dst="$SEED_TMPDIR/$(basename "$src")"
+    REPO_ROOT="$REPO_ROOT" HARNESS="${CAPTURE_HARNESS_SLUG:-claude}" python3 - "$src" "$dst" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    text = f.read()
+text = text.replace("__REPO_ROOT__", os.environ["REPO_ROOT"])
+text = text.replace("__HARNESS__", os.environ["HARNESS"])
+with open(dst, "w") as f:
+    f.write(text)
+PY
+    printf '%s' "$dst"
+}
 
 # The automation JSON shape (docs/automation/*.template.json) has no
 # "action" field of its own -- the CLI subcommand IS the action, so we
@@ -437,14 +472,17 @@ if [[ -n "$SEED" ]]; then
         echo "error: could not infer automation action from seed file '$SEED' (expected a 'path' key for create-project, a 'branch' key for create-feature, or a 'workspace_path' key for create-batch-features)" >&2
         exit 1
     fi
-    echo "seeding: $AMF_BIN automation $kind --file $SEED" >&2
-    "$AMF_BIN" automation "$kind" --file "$SEED"
+    seed_file="$(expand_seed_tokens "$SEED")"
+    echo "seeding: $AMF_BIN automation $kind --file $seed_file" >&2
+    "$AMF_BIN" automation "$kind" --file "$seed_file"
 fi
 
 if [[ -n "$SEED_FEATURE" ]]; then
-    echo "seeding: $AMF_BIN automation create-feature --file $SEED_FEATURE" >&2
-    "$AMF_BIN" automation create-feature --file "$SEED_FEATURE"
+    seed_feature_file="$(expand_seed_tokens "$SEED_FEATURE")"
+    echo "seeding: $AMF_BIN automation create-feature --file $seed_feature_file" >&2
+    "$AMF_BIN" automation create-feature --file "$seed_feature_file"
 fi
+[[ -n "$SEED_TMPDIR" ]] && rm -rf "$SEED_TMPDIR"
 
 run_scenario() {
     local file="$1"

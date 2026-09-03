@@ -27,9 +27,10 @@ Usage: $(basename "$0") --pr <number> --scenario <file> [options]
 Dispatch the isolated capture workflow (run from main; only its capture job
 checks out --ref), then download this run's rendered frames and deploy the
 private Pages gallery from this machine. The Cloudflare credentials never enter
-CI: authenticate locally with 'wrangler login' or CLOUDFLARE_API_TOKEN, set
-CLOUDFLARE_ACCOUNT_ID, and have wrangler on PATH or npx available. Failures warn
-by default.
+CI: set CLOUDFLARE_API_TOKEN (the owner keeps it in ~/.secrets/cf-amf-pages.env,
+sourced by the 'amf-publish-screenshots' shell wrapper) and CLOUDFLARE_ACCOUNT_ID,
+and have wrangler on PATH or npx available. 'wrangler login' also works but is
+unreliable here; prefer the token. Failures warn by default.
 
   --pr <number>          Pull request to update (required)
   --scenario <file>      Repository-relative scenario (required)
@@ -76,10 +77,12 @@ elif command -v npx >/dev/null 2>&1; then
 else
   warn "need wrangler on PATH or npx available to deploy Cloudflare Pages"
 fi
-# Auth is either an explicit API token or a completed `wrangler login` (OAuth).
-# Check now so a missing login doesn't burn a full CI capture that can't publish.
+# Auth is an explicit API token (preferred) or a completed `wrangler login`.
+# Check now so missing auth doesn't burn a full CI capture that can't publish.
+# The owner keeps the token in ~/.secrets/cf-amf-pages.env; the
+# `amf-publish-screenshots` shell wrapper sources it before calling this script.
 if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]] && ! "${WRANGLER[@]}" whoami >/dev/null 2>&1; then
-  warn "no Cloudflare auth: export CLOUDFLARE_API_TOKEN or run 'wrangler login'"
+  warn "no Cloudflare auth: export CLOUDFLARE_API_TOKEN (see ~/.secrets/cf-amf-pages.env / the amf-publish-screenshots wrapper)"
 fi
 # Not a secret, but needed so the deploy picks the right account non-interactively.
 [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || warn "CLOUDFLARE_ACCOUNT_ID is not set"
@@ -153,7 +156,7 @@ python3 "$SCRIPT_DIR/build_static_gallery.py" \
 # about this script's own repo checkout being dirty. It is irrelevant here.
 "${WRANGLER[@]}" pages deploy "$workdir/pages" \
   --project-name="$PROJECT" --branch="pr-${PR_NUMBER}" --commit-dirty=true \
-  || warn "gallery built but 'wrangler pages deploy' failed; check 'wrangler whoami' / CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID"
+  || warn "gallery built but 'wrangler pages deploy' failed; check CLOUDFLARE_API_TOKEN (~/.secrets/cf-amf-pages.env) / CLOUDFLARE_ACCOUNT_ID"
 
 url="https://pr-${PR_NUMBER}.${PROJECT}.pages.dev"
 printf '<!-- amf:screenshots:start -->\n### Visual proof\n\n[Open the private screenshot gallery for PR #%s](%s)\n\nRestricted to approved Cloudflare Access reviewers.\n<!-- amf:screenshots:end -->\n' "$PR_NUMBER" "$url" >"$fragment"

@@ -5,13 +5,13 @@
 # (feature / project / global) -> the harness picker -> the help panel.
 #
 # Needs a seeded project + one feature so the manager offers all three scopes.
-# Copy scenarios/seed-project.json and scenarios/seed-feature.json, fill in an
-# absolute repo `path` in the project seed, and run:
+# The committed seeds point the project at "." (the repo checkout), which is
+# what the CI capture workflow / publish-pages.sh use:
 #
 #   scripts/dev/screenshot/amf-capture.sh \
-#     --scenario   scripts/dev/screenshot/scenarios/editable-prompts.txt \
-#     --seed        <filled>/seed-project.json \
-#     --seed-feature <filled>/seed-feature.json \
+#     --scenario     scripts/dev/screenshot/scenarios/editable-prompts.txt \
+#     --seed         scripts/dev/screenshot/scenarios/editable-prompts-seed-project.json \
+#     --seed-feature scripts/dev/screenshot/scenarios/editable-prompts-seed-feature.json \
 #     --geometry 150x44
 
 # Let the seed's harness-config toast clear first.

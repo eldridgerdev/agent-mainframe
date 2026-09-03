@@ -189,9 +189,11 @@ are tagged.
   ignores the columns.
 
 - Publishing screenshot proof to a PR now deploys from your machine, so it
-  needs a one-time local setup: authenticate wrangler (`wrangler login`, or a
-  `CLOUDFLARE_API_TOKEN` scoped to Cloudflare Pages · Edit) and set
-  `CLOUDFLARE_ACCOUNT_ID`. The `screenshot-pages` GitHub environment is no
+  needs a one-time local setup: put a `CLOUDFLARE_API_TOKEN` scoped to
+  Cloudflare Pages · Edit in the environment (the maintainer keeps it in
+  `~/.secrets/cf-amf-pages.env`, sourced by the `amf-publish-screenshots` shell
+  wrapper) and set `CLOUDFLARE_ACCOUNT_ID`. `wrangler login` also works but is
+  unreliable; prefer the token. The `screenshot-pages` GitHub environment is no
   longer used and can be deleted along with its `CLOUDFLARE_*` secrets.
 
 ## [v0.41.0] - 2026-08-27

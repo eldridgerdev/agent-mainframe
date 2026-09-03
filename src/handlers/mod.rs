@@ -76,10 +76,10 @@ pub use pr_review::{
     handle_pr_review_key, handle_pr_review_loading_key, handle_review_memory_bootstrap_running_key,
     handle_review_memory_compact_review_key, handle_review_memory_compact_running_key,
 };
+pub use precall::handle_prompt_precall_key;
 pub use prompt_library::{
     handle_placeholder_fill_key, handle_prompt_editor_key, handle_prompt_library_key,
 };
-pub use precall::handle_prompt_precall_key;
 pub use prompt_overrides::handle_prompt_overrides_key;
 pub use review_destination::{
     handle_review_destination_pick_key, handle_review_feature_setup_key,

@@ -64,7 +64,11 @@ fn source_badge(theme: &Theme, source: PromptSource) -> Span<'static> {
 fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme: &Theme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(3), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
         .split(area);
 
     frame.render_widget(
@@ -136,7 +140,11 @@ fn draw_editor(frame: &mut Frame, area: Rect, state: &PromptOverridesState, them
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(3), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
         .split(area);
 
     frame.render_widget(
@@ -190,7 +198,11 @@ fn draw_scope_picker(frame: &mut Frame, area: Rect, state: &PromptOverridesState
     let Some(edit) = &state.edit else { return };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     frame.render_widget(
@@ -210,7 +222,12 @@ fn draw_scope_picker(frame: &mut Frame, area: Rect, state: &PromptOverridesState
         .map(|(i, scope)| {
             let sel = i == edit.scope_index;
             let (marker, style) = if sel {
-                ("› ", Style::default().fg(theme.primary.to_color()).add_modifier(Modifier::BOLD))
+                (
+                    "› ",
+                    Style::default()
+                        .fg(theme.primary.to_color())
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 ("  ", Style::default().fg(theme.text.to_color()))
             };
@@ -244,7 +261,11 @@ fn draw_harness_picker(frame: &mut Frame, area: Rect, state: &PromptOverridesSta
     let Some(edit) = &state.edit else { return };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     frame.render_widget(
@@ -265,7 +286,12 @@ fn draw_harness_picker(frame: &mut Frame, area: Rect, state: &PromptOverridesSta
         .map(|(i, label)| {
             let sel = i == edit.harness_index;
             let (marker, style) = if sel {
-                ("› ", Style::default().fg(theme.primary.to_color()).add_modifier(Modifier::BOLD))
+                (
+                    "› ",
+                    Style::default()
+                        .fg(theme.primary.to_color())
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 ("  ", Style::default().fg(theme.text.to_color()))
             };
@@ -304,23 +330,44 @@ fn draw_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             theme,
             " them at feature, project, or global scope; the nearest scope wins, then the",
         )),
-        Line::from(muted(theme, " built-in default. Within a scope a per-harness template beats the shared one.")),
+        Line::from(muted(
+            theme,
+            " built-in default. Within a scope a per-harness template beats the shared one.",
+        )),
         Line::raw(""),
-        Line::from(vec![key(theme, " Enter / e"), muted(theme, "  edit the effective template")]),
-        Line::from(vec![key(theme, " d, d"), muted(theme, "       clear the effective override")]),
+        Line::from(vec![
+            key(theme, " Enter / e"),
+            muted(theme, "  edit the effective template"),
+        ]),
+        Line::from(vec![
+            key(theme, " d, d"),
+            muted(theme, "       clear the effective override"),
+        ]),
         Line::from(vec![
             key(theme, " Ctrl+S"),
-            muted(theme, "     in the editor: choose scope, then harness, then save"),
+            muted(
+                theme,
+                "     in the editor: choose scope, then harness, then save",
+            ),
         ]),
-        Line::from(vec![key(theme, " Ctrl+T"), muted(theme, "     toggle Vim keys in the editor")]),
+        Line::from(vec![
+            key(theme, " Ctrl+T"),
+            muted(theme, "     toggle Vim keys in the editor"),
+        ]),
         Line::raw(""),
         Line::from(muted(
             theme,
             " {{token}} placeholders are re-filled with live context at run time. There is no",
         )),
-        Line::from(muted(theme, " validation: a dropped or unknown token is saved and rendered verbatim.")),
+        Line::from(muted(
+            theme,
+            " validation: a dropped or unknown token is saved and rendered verbatim.",
+        )),
         Line::raw(""),
-        Line::from(vec![key(theme, " Esc"), muted(theme, "        close this help")]),
+        Line::from(vec![
+            key(theme, " Esc"),
+            muted(theme, "        close this help"),
+        ]),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }

@@ -35,7 +35,11 @@ pub fn draw_prompt_precall(frame: &mut Frame, pending: &PendingPrecall, theme: &
     if pending.viewing {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(3), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(1),
+            ])
             .split(inner);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
@@ -52,12 +56,14 @@ pub fn draw_prompt_precall(frame: &mut Frame, pending: &PendingPrecall, theme: &
             .preview
             .lines()
             .skip(pending.scroll)
-            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(theme.text.to_color()))))
+            .map(|l| {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default().fg(theme.text.to_color()),
+                ))
+            })
             .collect();
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }),
-            chunks[1],
-        );
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[1]);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 key(" j/k"),

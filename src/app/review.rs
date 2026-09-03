@@ -1726,7 +1726,11 @@ impl App {
                 self.message = Some("AI co-review: nothing to review in this file".to_string());
                 return;
             }
-            (state.workdir.clone(), file.path.clone(), co_review_context(file))
+            (
+                state.workdir.clone(),
+                file.path.clone(),
+                co_review_context(file),
+            )
         };
 
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
@@ -1897,6 +1901,11 @@ impl App {
         let model = self
             .config
             .review_model_for(ReviewAction::ChangesetOverview);
+        // The pre-call gate has been cleared, so the user has committed to this
+        // pass: open the modal either way. On success it shows "generating…";
+        // on a spawn failure it shows the error, rather than the viewer just
+        // swallowing the keypress. (A *cancelled* pre-call returns above,
+        // before this, so it still leaves no half-open modal.)
         match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
                 self.message = Some("Changeset overview running…".to_string());
@@ -1907,6 +1916,11 @@ impl App {
             }
             Err(err) => {
                 self.message = Some(format!("Changeset overview unavailable: {err}"));
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.changeset_overview =
+                        Some(format!("Changeset overview unavailable: {err}"));
+                    state.changeset_overview_open = true;
+                }
             }
         }
     }
@@ -5237,11 +5251,11 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 mod tests {
     use super::{
         CHECK_OUTPUT_MAX_CHARS, anchor_file_path, apply_suggestions_to_file, archive_review_notes,
-        build_pr_review, comment_anchor_label, compose_feedback_log, walkthrough_context,
-        compute_search_matches, editor_invocation, editor_target_line, load_review_notes,
-        parse_agent_responses, parse_co_review_output, parse_review_history_rounds,
-        parse_review_notes, pr_postable_lines, reanchor_file_comments, severity_review_event,
-        split_overflow_review_notes, split_overflow_rounds, truncate_check_output,
+        build_pr_review, comment_anchor_label, compose_feedback_log, compute_search_matches,
+        editor_invocation, editor_target_line, load_review_notes, parse_agent_responses,
+        parse_co_review_output, parse_review_history_rounds, parse_review_notes, pr_postable_lines,
+        reanchor_file_comments, severity_review_event, split_overflow_review_notes,
+        split_overflow_rounds, truncate_check_output, walkthrough_context,
     };
     use std::collections::{HashMap, HashSet};
 

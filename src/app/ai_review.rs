@@ -425,7 +425,9 @@ impl AiReviewCacheEntry {
 #[allow(dead_code)]
 pub fn ai_review_prompt(diff: &str, memory: &str, skill: Option<&str>) -> String {
     crate::prompts::render_template(
-        crate::prompts::PromptId::PrReviewAiReview.spec().default_template,
+        crate::prompts::PromptId::PrReviewAiReview
+            .spec()
+            .default_template,
         &ai_review_prompt_context(diff, memory, skill),
     )
 }
@@ -450,7 +452,10 @@ pub fn ai_review_prompt_context(
     } else {
         // Deliberately not "for this project": `memory` may merge the repo's
         // own doc with the user's cross-project one, each labeled inside.
-        format!("Known recurring findings to check for:\n{}\n\n", memory.trim())
+        format!(
+            "Known recurring findings to check for:\n{}\n\n",
+            memory.trim()
+        )
     };
     crate::prompts::PromptContext::new()
         .with("skill_directive", skill_directive)

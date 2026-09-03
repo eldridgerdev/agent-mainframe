@@ -88,7 +88,8 @@ pub fn effective<'a>(
     id: PromptId,
     harness: &AgentKind,
 ) -> Option<&'a str> {
-    map.get(id.as_str()).and_then(|entry| entry.for_harness(harness))
+    map.get(id.as_str())
+        .and_then(|entry| entry.for_harness(harness))
 }
 
 /// Read `{repo}/amf.json` (or the legacy `.amf/config.json`) and return just
@@ -172,8 +173,14 @@ mod tests {
         );
 
         let json = serde_json::to_string(&map).unwrap();
-        assert!(!json.contains("harnesses\":{}"), "empty maps are skipped: {json}");
-        assert!(!json.contains("\"template\":null"), "absent shared is skipped: {json}");
+        assert!(
+            !json.contains("harnesses\":{}"),
+            "empty maps are skipped: {json}"
+        );
+        assert!(
+            !json.contains("\"template\":null"),
+            "absent shared is skipped: {json}"
+        );
 
         let back: ProjectPromptOverrides = serde_json::from_str(&json).unwrap();
         assert_eq!(back, map);

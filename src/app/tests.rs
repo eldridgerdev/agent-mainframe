@@ -27162,10 +27162,7 @@ fn resolve_prompt_with_no_override_returns_the_builtin_default() {
     let rendered = resolve_prompt(PromptId::SessionSummary, &AgentKind::Claude, &ctx);
     assert_eq!(
         rendered,
-        crate::prompts::render_template(
-            PromptId::SessionSummary.spec().default_template,
-            &ctx
-        )
+        crate::prompts::render_template(PromptId::SessionSummary.spec().default_template, &ctx)
     );
     assert!(rendered.contains("Summarize this Claude session in one line (max 60 chars)"));
     assert!(rendered.contains("did some work"));
@@ -27179,7 +27176,10 @@ fn resolve_prompt_renders_a_missing_placeholder_literally() {
         .with("harness_name", "Codex")
         .with("max_chars", "60");
     let rendered = resolve_prompt(PromptId::SessionSummary, &AgentKind::Codex, &ctx);
-    assert!(rendered.contains("Session output:\n{{recent_lines}}"), "{rendered}");
+    assert!(
+        rendered.contains("Session output:\n{{recent_lines}}"),
+        "{rendered}"
+    );
 }
 
 #[test]
@@ -27270,9 +27270,24 @@ fn prompt_override_manager_saves_to_each_scope_and_survives_reopen() {
 
     // Save a distinct override at each of the three scopes.
     let cases = [
-        (PromptId::SessionSummary, "This project (amf.json)", "PROJECT one-liner {{recent_lines}}", PromptSource::Project),
-        (PromptId::ReviewWalkthrough, "Global (all projects)", "GLOBAL walkthrough {{patch}}", PromptSource::Global),
-        (PromptId::LearningAnswer, "This feature", "FEATURE answer {{question}}", PromptSource::Feature),
+        (
+            PromptId::SessionSummary,
+            "This project (amf.json)",
+            "PROJECT one-liner {{recent_lines}}",
+            PromptSource::Project,
+        ),
+        (
+            PromptId::ReviewWalkthrough,
+            "Global (all projects)",
+            "GLOBAL walkthrough {{patch}}",
+            PromptSource::Global,
+        ),
+        (
+            PromptId::LearningAnswer,
+            "This feature",
+            "FEATURE answer {{question}}",
+            PromptSource::Feature,
+        ),
     ];
 
     for (id, scope_label, template, _expected) in cases {
@@ -27317,12 +27332,8 @@ fn prompt_override_manager_saves_to_each_scope_and_survives_reopen() {
     for (id, _scope, template, expected) in cases {
         let row = rows.iter().find(|r| r.id == id).unwrap();
         assert_eq!(row.source, expected, "{} source after reopen", id.as_str());
-        let (effective, source) = app.resolve_headless_template(
-            id,
-            &AgentKind::default(),
-            &repo_path,
-            &repo_path,
-        );
+        let (effective, source) =
+            app.resolve_headless_template(id, &AgentKind::default(), &repo_path, &repo_path);
         assert_eq!(source, expected, "{} resolved source", id.as_str());
         assert_eq!(effective, template, "{} effective template", id.as_str());
     }

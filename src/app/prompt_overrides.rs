@@ -57,8 +57,14 @@ impl App {
 
     /// The DB override view (feature + global rows) and the project `amf.json`
     /// override map, loaded fresh.
-    fn prompt_override_sources(&self, repo: Option<&Path>) -> (Option<PromptOverrides>, ProjectPromptOverrides) {
-        let db = self.db.as_ref().and_then(|db| db.load_prompt_overrides().ok());
+    fn prompt_override_sources(
+        &self,
+        repo: Option<&Path>,
+    ) -> (Option<PromptOverrides>, ProjectPromptOverrides) {
+        let db = self
+            .db
+            .as_ref()
+            .and_then(|db| db.load_prompt_overrides().ok());
         let project = repo
             .map(crate::prompts::project::load_from_repo)
             .unwrap_or_default();
@@ -80,13 +86,13 @@ impl App {
     fn prompt_override_rows(&self, ctx: &OverrideContext) -> Vec<PromptOverrideRow> {
         let (db, project) = self.prompt_override_sources(ctx.repo.as_deref());
         let layers = Self::prompt_override_layers(&db, &project, ctx.workdir.as_deref());
-        let feature_scope = ctx
-            .workdir
-            .as_deref()
-            .and_then(Path::to_str)
-            .map(|w| OverrideScope::Feature {
-                workdir: w.to_string(),
-            });
+        let feature_scope =
+            ctx.workdir
+                .as_deref()
+                .and_then(Path::to_str)
+                .map(|w| OverrideScope::Feature {
+                    workdir: w.to_string(),
+                });
 
         PromptId::ALL
             .into_iter()
@@ -102,9 +108,10 @@ impl App {
                 });
                 let has_global = db.as_ref().is_some_and(|d| {
                     d.get(id.as_str(), &OverrideScope::Global, None).is_some()
-                        || AgentKind::ALL
-                            .iter()
-                            .any(|h| d.get(id.as_str(), &OverrideScope::Global, Some(h)).is_some())
+                        || AgentKind::ALL.iter().any(|h| {
+                            d.get(id.as_str(), &OverrideScope::Global, Some(h))
+                                .is_some()
+                        })
                 });
                 let has_project = project
                     .get(id.as_str())
@@ -380,10 +387,9 @@ impl App {
         template: &str,
         feature_scope: bool,
     ) -> Result<()> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("no database — feature and global overrides need one"))?;
+        let db = self.db.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("no database — feature and global overrides need one")
+        })?;
         let scope = if feature_scope {
             let workdir = workdir
                 .and_then(Path::to_str)
@@ -460,7 +466,11 @@ impl App {
 
         match result {
             Ok(()) => {
-                self.message = Some(format!("Cleared the {} override for {}", source.label(), id.as_str()));
+                self.message = Some(format!(
+                    "Cleared the {} override for {}",
+                    source.label(),
+                    id.as_str()
+                ));
             }
             Err(e) => self.message = Some(format!("Couldn't clear override: {e}")),
         }

@@ -83,7 +83,9 @@ mod tests {
             &content,
             Path::new("/tmp/feature"),
             &AgentKind::Codex,
-            crate::prompts::PromptId::SessionSummary.spec().default_template,
+            crate::prompts::PromptId::SessionSummary
+                .spec()
+                .default_template,
             |agent, workdir, prompt, model, restricted| {
                 assert_eq!(agent, &AgentKind::Codex);
                 assert_eq!(workdir, Path::new("/tmp/feature"));
@@ -126,7 +128,9 @@ mod tests {
             &content,
             Path::new("/tmp/feature"),
             &AgentKind::Pi,
-            crate::prompts::PromptId::SessionSummary.spec().default_template,
+            crate::prompts::PromptId::SessionSummary
+                .spec()
+                .default_template,
             |_, _, _, _, _| Ok(generated),
         )
         .unwrap();

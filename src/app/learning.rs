@@ -1916,7 +1916,9 @@ pub struct LearningPromptContext {
 /// to a string here (empty when it does not apply) so the registry template
 /// stays a flat scaffold; the ordering rationale lives on
 /// [`crate::prompts::defaults`]'s `LEARNING_ANSWER`.
-pub fn learning_prompt_context_tokens(ctx: &LearningPromptContext) -> crate::prompts::PromptContext {
+pub fn learning_prompt_context_tokens(
+    ctx: &LearningPromptContext,
+) -> crate::prompts::PromptContext {
     let file_line = match &ctx.file_path {
         Some(path) => format!("File: {path}\n"),
         None => String::new(),
@@ -1981,10 +1983,7 @@ pub fn learning_prompt_context_tokens(ctx: &LearningPromptContext) -> crate::pro
         .with("question", ctx.question.trim())
         .with("intent_instructions", intent_instructions(ctx.intent))
         .with("level_instructions", level_instructions(ctx.level))
-        .with(
-            "run_mode_instructions",
-            run_mode_instructions(ctx.run_mode),
-        )
+        .with("run_mode_instructions", run_mode_instructions(ctx.run_mode))
 }
 
 /// The full built-in Learning Mode prompt for one question. A thin wrapper
@@ -1992,7 +1991,9 @@ pub fn learning_prompt_context_tokens(ctx: &LearningPromptContext) -> crate::pro
 /// site ([`crate::app::App::learning_enqueue`]).
 pub fn build_prompt(ctx: &LearningPromptContext) -> String {
     crate::prompts::render_template(
-        crate::prompts::PromptId::LearningAnswer.spec().default_template,
+        crate::prompts::PromptId::LearningAnswer
+            .spec()
+            .default_template,
         &learning_prompt_context_tokens(ctx),
     )
 }
@@ -5363,11 +5364,23 @@ pub(crate) mod tests {
         assert_eq!(learning(&app).in_flight_count(), 0);
         let state = learning(&app);
         assert_eq!(
-            state.qa.iter().find(|r| r.id == a).unwrap().answer.as_deref(),
+            state
+                .qa
+                .iter()
+                .find(|r| r.id == a)
+                .unwrap()
+                .answer
+                .as_deref(),
             Some("Answer A")
         );
         assert_eq!(
-            state.qa.iter().find(|r| r.id == b).unwrap().answer.as_deref(),
+            state
+                .qa
+                .iter()
+                .find(|r| r.id == b)
+                .unwrap()
+                .answer
+                .as_deref(),
             Some("Answer B")
         );
     }

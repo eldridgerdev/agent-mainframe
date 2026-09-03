@@ -279,7 +279,8 @@ pub(crate) fn generate_diff_review_explanation(app: &mut App) {
         return;
     }
 
-    let repo = crate::worktree::WorktreeManager::repo_root(&workdir).unwrap_or_else(|_| workdir.clone());
+    let repo =
+        crate::worktree::WorktreeManager::repo_root(&workdir).unwrap_or_else(|_| workdir.clone());
     let ctx = crate::prompts::PromptContext::new()
         .with("file_path", relative_path)
         .with("old_snippet", old_snippet)

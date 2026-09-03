@@ -259,9 +259,7 @@ impl PromptOverrides {
         harness: Option<&AgentKind>,
     ) -> Option<usize> {
         self.rows.iter().position(|row| {
-            row.prompt_id == prompt_id
-                && &row.scope == scope
-                && row.harness.as_ref() == harness
+            row.prompt_id == prompt_id && &row.scope == scope && row.harness.as_ref() == harness
         })
     }
 
@@ -448,7 +446,14 @@ mod tests {
     #[test]
     fn shared_and_per_harness_rows_coexist_at_one_scope() {
         let conn = conn();
-        upsert(&conn, "review.walkthrough", &OverrideScope::Global, None, "shared").unwrap();
+        upsert(
+            &conn,
+            "review.walkthrough",
+            &OverrideScope::Global,
+            None,
+            "shared",
+        )
+        .unwrap();
         upsert(
             &conn,
             "review.walkthrough",
@@ -457,7 +462,10 @@ mod tests {
             "claude",
         )
         .unwrap();
-        assert_eq!(load_for_prompt(&conn, "review.walkthrough").unwrap().len(), 2);
+        assert_eq!(
+            load_for_prompt(&conn, "review.walkthrough").unwrap().len(),
+            2
+        );
     }
 
     #[test]
@@ -495,7 +503,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            set.effective_at("session.summary", &OverrideScope::Global, &AgentKind::Claude),
+            set.effective_at(
+                "session.summary",
+                &OverrideScope::Global,
+                &AgentKind::Claude
+            ),
             Some("session-only"),
             "the edit is visible in memory even with no database"
         );
@@ -516,7 +528,11 @@ mod tests {
 
         let reloaded = PromptOverrides::load(Some(&conn)).unwrap();
         assert_eq!(
-            reloaded.effective_at("review.co_review", &OverrideScope::Global, &AgentKind::Claude),
+            reloaded.effective_at(
+                "review.co_review",
+                &OverrideScope::Global,
+                &AgentKind::Claude
+            ),
             Some("wrote through")
         );
     }
@@ -525,8 +541,14 @@ mod tests {
     fn effective_at_prefers_the_per_harness_row_over_the_shared_one() {
         let conn = conn();
         let mut set = PromptOverrides::load(Some(&conn)).unwrap();
-        set.set(Some(&conn), "learning.answer", OverrideScope::Global, None, "shared")
-            .unwrap();
+        set.set(
+            Some(&conn),
+            "learning.answer",
+            OverrideScope::Global,
+            None,
+            "shared",
+        )
+        .unwrap();
         set.set(
             Some(&conn),
             "learning.answer",

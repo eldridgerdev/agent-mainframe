@@ -305,7 +305,10 @@ mod tests {
 
     #[test]
     fn per_harness_resolution_matches_the_shared_default_today() {
-        let ctx = PromptContext::new().with("recent_lines", "l").with("harness_name", "Codex").with("max_chars", "60");
+        let ctx = PromptContext::new()
+            .with("recent_lines", "l")
+            .with("harness_name", "Codex")
+            .with("max_chars", "60");
         let claude = resolve_prompt(PromptId::SessionSummary, &AgentKind::Claude, &ctx);
         let codex = resolve_prompt(PromptId::SessionSummary, &AgentKind::Codex, &ctx);
         assert_eq!(claude, codex);
@@ -314,7 +317,7 @@ mod tests {
 
     // ---- layered resolution: precedence and default drift ----
 
-    use crate::prompts::project::{PromptOverrideEntry, ProjectPromptOverrides};
+    use crate::prompts::project::{ProjectPromptOverrides, PromptOverrideEntry};
 
     const ID: PromptId = PromptId::SessionSummary;
 
@@ -430,7 +433,11 @@ mod tests {
         // Global has a Codex-specific override; project has only a shared one.
         // The plan's rule: the layer is chosen first, so project (nearer)
         // wins even for Codex.
-        let db = db_with(&[(OverrideScope::Global, Some(AgentKind::Codex), "global codex")]);
+        let db = db_with(&[(
+            OverrideScope::Global,
+            Some(AgentKind::Codex),
+            "global codex",
+        )]);
         let project = project_with(PromptOverrideEntry {
             template: Some("project shared".into()),
             ..Default::default()
@@ -442,7 +449,10 @@ mod tests {
         };
         assert_eq!(
             resolve_template_layered(ID, &AgentKind::Codex, &layers),
-            (Cow::Owned("project shared".to_string()), PromptSource::Project)
+            (
+                Cow::Owned("project shared".to_string()),
+                PromptSource::Project
+            )
         );
     }
 

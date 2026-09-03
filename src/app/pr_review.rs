@@ -1340,6 +1340,32 @@ pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
     out.trim_end().to_string()
 }
 
+/// The answer (plus any follow-up turns) of a **completed** read-only
+/// investigation, formatted for embedding in a fix prompt so the fixing agent
+/// starts from that analysis. `None` when there is no completed run or the
+/// answer is empty; callers add the surrounding header.
+pub(crate) fn investigation_findings_for_prompt(
+    inv: &crate::db::pr_investigations::PrInvestigation,
+) -> Option<String> {
+    if inv.status != PrInvestigationStatus::Complete {
+        return None;
+    }
+    let answer = inv
+        .answer
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())?;
+    let mut out = answer.to_string();
+    for turn in &inv.follow_ups {
+        out.push_str(&format!(
+            "\n\nFollow-up — Q: {}\nA: {}",
+            turn.question.trim(),
+            turn.answer.trim()
+        ));
+    }
+    Some(out)
+}
+
 /// Most changed-file rows to list in an investigation prompt before collapsing
 /// the rest to "…and N more" — a large PR must not bury the comment under its
 /// own file list.
@@ -3123,7 +3149,8 @@ impl App {
             return;
         }
         if !self.pr_review_investigation_actionable() {
-            self.message = Some("No finished investigation on this comment (v then f)".into());
+            self.message =
+                Some("No finished investigation on this comment — press v to run one".into());
             return;
         }
         let comment_id = match &self.mode {
@@ -3913,11 +3940,23 @@ impl App {
             return;
         }
         let request = ReplyDraftRequest::new(comment.id, &state.review.pr.head_sha);
-        let prompt = with_reply_draft_handoff(
-            comment.fix_prompt(),
-            state.review.pr.number,
-            std::slice::from_ref(&request),
-        );
+        let mut base = comment.fix_prompt();
+        // If a read-only investigation of this comment already finished, hand
+        // its findings to the fixing agent as a starting point.
+        if let Some(findings) = state
+            .investigations
+            .iter()
+            .find(|r| r.comment_id == comment.id)
+            .and_then(investigation_findings_for_prompt)
+        {
+            base.push_str(
+                "\n\n--- A read-only investigation of this comment already ran. Use its \
+                 findings as a starting point, but verify them: ---\n",
+            );
+            base.push_str(&findings);
+        }
+        let prompt =
+            with_reply_draft_handoff(base, state.review.pr.number, std::slice::from_ref(&request));
         let vim = state.fix_vim_enabled;
         state.fix_confirm = Some(new_fix_confirm(prompt, vim, None, vec![request]));
     }
@@ -3983,11 +4022,34 @@ impl App {
                         .copied()
                         .map(|id| ReplyDraftRequest::new(id, &state.review.pr.head_sha))
                         .collect();
-                    let prompt = with_reply_draft_handoff(
-                        combined_fix_prompt(&selected),
-                        state.review.pr.number,
-                        &requests,
-                    );
+                    let mut base = combined_fix_prompt(&selected);
+                    // Append the findings of any completed investigation, tagged
+                    // with the comment number they belong to.
+                    let appendix: String = selected
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, c)| {
+                            state
+                                .investigations
+                                .iter()
+                                .find(|r| r.comment_id == c.id)
+                                .and_then(investigation_findings_for_prompt)
+                                .map(|f| {
+                                    format!(
+                                        "\n\nInvestigation already run for comment {}:\n{f}",
+                                        i + 1
+                                    )
+                                })
+                        })
+                        .collect();
+                    if !appendix.is_empty() {
+                        base.push_str(
+                            "\n\n--- Read-only investigations already ran for some of these \
+                             comments. Use them as starting points, but verify: ---",
+                        );
+                        base.push_str(&appendix);
+                    }
+                    let prompt = with_reply_draft_handoff(base, state.review.pr.number, &requests);
                     (prompt, ids, requests)
                 })
             }
@@ -4491,8 +4553,22 @@ impl App {
                         None => match state.selected_comment() {
                             Some(c) => {
                                 let request = ReplyDraftRequest::new(c.id, &head_sha);
+                                let mut base = c.fix_prompt();
+                                if let Some(findings) = state
+                                    .investigations
+                                    .iter()
+                                    .find(|r| r.comment_id == c.id)
+                                    .and_then(investigation_findings_for_prompt)
+                                {
+                                    base.push_str(
+                                        "\n\n--- A read-only investigation of this comment already \
+                                         ran. Use its findings as a starting point, but verify \
+                                         them: ---\n",
+                                    );
+                                    base.push_str(&findings);
+                                }
                                 let prompt = with_reply_draft_handoff(
-                                    c.fix_prompt(),
+                                    base,
                                     pr_number,
                                     std::slice::from_ref(&request),
                                 );

@@ -40,7 +40,9 @@ are tagged.
   returns; it inspects the repository but cannot edit files, run commands, or
   write anything. The answer persists per pull request and reopens in the
   detail panel with its status, harness, and time. `f` and `B` still fix and
-  batch a comment normally whether or not it carries an investigation. Press
+  batch a comment normally whether or not it carries an investigation — and
+  when it does, the investigation's findings are appended to the fix prompt as
+  a starting point. Press
   `a` on a finished investigation to act on it: post an editable reply, ask a
   follow-up (re-runs read-only with the prior answer as context), dismiss it,
   or keep it as a TODO. Investigate is single-item and never joins a batch fix.

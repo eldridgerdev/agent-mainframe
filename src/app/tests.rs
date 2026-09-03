@@ -14321,6 +14321,76 @@ fn pr_review_inject_fix_also_stashes_return_state() {
 }
 
 #[test]
+fn fix_confirm_prompt_carries_a_completed_investigations_findings() {
+    use crate::app::pr_review::{PrInvestigationStatus, PrInvestigationTurn};
+    use crate::db::pr_investigations::PrInvestigation;
+
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 0; // comment id 1
+        state.fix_target_picked = true; // skip the target picker
+        let mut inv = PrInvestigation::new_running(
+            "proj-1",
+            7,
+            1,
+            "sha",
+            crate::project::AgentKind::Codex,
+            "ctx",
+        );
+        inv.status = PrInvestigationStatus::Complete;
+        inv.answer = Some("The guard already covers the empty case at line 906.".to_string());
+        inv.follow_ups.push(PrInvestigationTurn {
+            question: "would a debug_assert help?".to_string(),
+            answer: "marginally".to_string(),
+            harness: crate::project::AgentKind::Codex,
+            created_at: "t".to_string(),
+        });
+        state.investigations.push(inv);
+    }
+
+    app.pr_review_open_fix_confirm();
+    let text = match &app.mode {
+        AppMode::PrReview(state) => state
+            .fix_confirm
+            .as_ref()
+            .expect("fix confirm open")
+            .editor
+            .text()
+            .to_string(),
+        _ => panic!("still in PR Triage"),
+    };
+    assert!(text.starts_with("Address this PR review comment."));
+    assert!(text.contains("A read-only investigation of this comment already ran"));
+    assert!(text.contains("The guard already covers the empty case at line 906."));
+    assert!(text.contains("Follow-up — Q: would a debug_assert help?"));
+
+    // A dismissed / failed investigation contributes nothing.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.fix_confirm = None;
+        state.investigations[0].status = PrInvestigationStatus::Dismissed;
+    }
+    app.pr_review_open_fix_confirm();
+    let text = match &app.mode {
+        AppMode::PrReview(state) => state
+            .fix_confirm
+            .as_ref()
+            .unwrap()
+            .editor
+            .text()
+            .to_string(),
+        _ => panic!(),
+    };
+    assert!(!text.contains("A read-only investigation of this comment already ran"));
+}
+
+#[test]
 fn pr_review_inject_fix_rejects_a_named_session_with_the_wrong_harness() {
     let mut store = store_with_feature(ProjectStatus::Active);
     store.projects[0].features[0]

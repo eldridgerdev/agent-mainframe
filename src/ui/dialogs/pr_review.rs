@@ -920,26 +920,9 @@ pub fn draw_pr_review(
     {
         batch_hint.push_str(" · [/] siblings");
     }
-    // `v` runs a read-only investigation; `a` acts on one once it has finished.
-    let investigate_hint = {
-        use crate::app::pr_review::PrInvestigationStatus;
-        let finished = state.selected_comment().is_some_and(|c| {
-            state.investigations.iter().any(|r| {
-                r.comment_id == c.id
-                    && matches!(
-                        r.status,
-                        PrInvestigationStatus::Complete
-                            | PrInvestigationStatus::Failed
-                            | PrInvestigationStatus::Dismissed
-                    )
-            })
-        });
-        if finished {
-            "v investigate · a act"
-        } else {
-            "v investigate"
-        }
-    };
+    // `v` runs a read-only investigation; `a` acts on a finished one (it says
+    // so if there isn't one). Both are always shown so they're discoverable.
+    let investigate_hint = "v investigate · a act";
     let key_text = if state
         .selected_comment()
         .is_some_and(PrComment::is_amf_followup_reply)
@@ -3093,35 +3076,20 @@ mod tests {
     }
 
     #[test]
-    fn pane_footer_advertises_v_investigate_and_a_after_one_finishes() {
-        use crate::app::pr_review::PrInvestigationStatus;
-        use crate::db::pr_investigations::PrInvestigation;
-
+    fn pane_footer_advertises_v_investigate_a_and_scroll_keys() {
         let mut state = pr_review_state_with_comments(
             vec![pr_comment_of_kind(1, CommentKind::Inline)],
             crate::app::pr_review::PrSortMode::FetchOrder,
         );
         let rendered = render_pr_review(&mut state);
         assert!(
-            rendered.contains("v investigate"),
-            "footer names the `v` key"
+            rendered.contains("v investigate · a act"),
+            "footer names both the `v` and `a` keys"
         );
         assert!(
             rendered.contains("^d/^u scroll"),
             "footer names the detail-pane scroll keys"
         );
-        assert!(
-            !rendered.contains("a act"),
-            "`a` only appears once an investigation has finished"
-        );
-
-        let mut inv =
-            PrInvestigation::new_running("p", 1, 1, "sha", crate::project::AgentKind::Codex, "");
-        inv.status = PrInvestigationStatus::Complete;
-        inv.answer = Some("done".to_string());
-        state.investigations.push(inv);
-        let rendered = render_pr_review(&mut state);
-        assert!(rendered.contains("v investigate · a act"));
     }
 
     #[test]

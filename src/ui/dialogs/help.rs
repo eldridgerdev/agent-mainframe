@@ -343,6 +343,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ),
         ("f", "Inject scoped fix into agent session"),
         ("", "(e edit · Tab inject · Ctrl+T vim)"),
+        ("", "(a finished investigation's findings are appended)"),
         ("", "(first fix/batch picks the fix target: existing"),
         ("", "live session, a named dedicated session + harness, or"),
         ("", "New feature… — an isolated worktree with its own"),

@@ -319,7 +319,9 @@ investigated instead of fixed: press `v` to run a strictly read-only headless
 pass on the selected comment — it inspects the repo but changes nothing — and
 the overlay blocks until it returns. Its answer persists per PR and reopens in
 the detail panel. `f` and `B` still fix and batch a comment normally whether or
-not it has an investigation. Press `a` on a finished investigation to act on it:
+not it has an investigation — and when it does, the investigation's findings are
+appended to the fix prompt as a starting point. Press `a` on a finished
+investigation to act on it:
 post an editable reply, ask a follow-up (re-runs read-only with the prior answer
 as context), dismiss it, or keep it as a TODO.
 An unchanged AI-drafted reply discloses the harness, best-effort model,

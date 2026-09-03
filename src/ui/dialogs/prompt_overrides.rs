@@ -132,35 +132,73 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme:
 
 fn draw_editor(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme: &Theme) {
     let Some(edit) = &state.edit else { return };
-    let title = state
-        .rows
-        .get(edit.row)
-        .map(|r| r.id.spec().title)
-        .unwrap_or("prompt");
+    let spec = state.rows.get(edit.row).map(|r| r.id.spec());
+    let title = spec.map(|s| s.title).unwrap_or("prompt");
+    let placeholders: &[&str] = spec.map(|s| s.placeholders).unwrap_or(&[]);
+
+    // Rough char-count estimate of the wrapped "Available template items: …"
+    // line over the editor's inner width, plus a line of slack, clamped so a
+    // long list (learning.answer declares 11) never crowds out the editor.
+    let inner_width = area.width.saturating_sub(2).max(1);
+    let items_chars = placeholders.iter().map(|n| n.len() + 5).sum::<usize>() + 26;
+    let items_height: u16 = if placeholders.is_empty() {
+        1
+    } else {
+        ((items_chars as u16).div_ceil(inner_width) + 1).clamp(1, 4)
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(items_height),
+            Constraint::Length(1),
             Constraint::Min(3),
             Constraint::Length(2),
         ])
         .split(area);
 
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                format!(" Editing: {title}"),
-                Style::default()
-                    .fg(theme.primary.to_color())
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(muted(
-                theme,
-                " {{tokens}} are re-filled at run time — no validation; a dropped token renders literally.",
-            )),
-        ]),
+        Paragraph::new(Line::from(Span::styled(
+            format!(" Editing: {title}"),
+            Style::default()
+                .fg(theme.primary.to_color())
+                .add_modifier(Modifier::BOLD),
+        ))),
         chunks[0],
+    );
+
+    let items_line = if placeholders.is_empty() {
+        Line::from(muted(
+            theme,
+            "Available template items: none — this prompt takes no runtime context.",
+        ))
+    } else {
+        let mut spans = vec![muted(theme, "Available template items: ")];
+        for (i, name) in placeholders.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(
+                format!("{{{{{name}}}}}"),
+                Style::default().fg(theme.info.to_color()),
+            ));
+        }
+        Line::from(spans)
+    };
+    frame.render_widget(
+        Paragraph::new(items_line)
+            .block(Block::default().padding(Padding::horizontal(1)))
+            .wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(muted(
+            theme,
+            " Re-filled at run time — no validation; a dropped or unknown token renders literally.",
+        ))),
+        chunks[2],
     );
 
     let body_title = match edit.editor.vim_mode() {
@@ -180,7 +218,7 @@ fn draw_editor(frame: &mut Frame, area: Rect, state: &PromptOverridesState, them
         Paragraph::new(editor_lines(&edit.editor, theme, ""))
             .block(body_block)
             .wrap(Wrap { trim: false }),
-        chunks[1],
+        chunks[3],
     );
 
     let footer = Line::from(vec![
@@ -191,7 +229,7 @@ fn draw_editor(frame: &mut Frame, area: Rect, state: &PromptOverridesState, them
         key(theme, "Ctrl+Q"),
         muted(theme, " cancel"),
     ]);
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+    frame.render_widget(Paragraph::new(footer), chunks[4]);
 }
 
 fn draw_scope_picker(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme: &Theme) {
@@ -357,11 +395,15 @@ fn draw_help(frame: &mut Frame, area: Rect, theme: &Theme) {
         Line::raw(""),
         Line::from(muted(
             theme,
-            " {{token}} placeholders are re-filled with live context at run time. There is no",
+            " {{token}} placeholders are re-filled with live context at run time; the editor",
         )),
         Line::from(muted(
             theme,
-            " validation: a dropped or unknown token is saved and rendered verbatim.",
+            " lists the template items each prompt accepts. There is no validation: a dropped",
+        )),
+        Line::from(muted(
+            theme,
+            " or unknown token is saved and rendered verbatim.",
         )),
         Line::raw(""),
         Line::from(vec![

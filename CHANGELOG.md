@@ -47,7 +47,9 @@ are tagged.
   per-harness template beating the shared one within the winning scope. `d`,
   `d` clears an override. Templates use visible `{{token}}` placeholders that
   AMF re-fills with live context at run time; there is **no validation** —
-  a dropped or unknown token is saved and rendered verbatim.
+  a dropped or unknown token is saved and rendered verbatim. The editor
+  lists the template items (placeholders) each prompt accepts above the
+  edit box.
 
 - **A pre-call notice now appears before each user-initiated headless AI
   call.** It names the prompt and target harness and offers `v` (view the

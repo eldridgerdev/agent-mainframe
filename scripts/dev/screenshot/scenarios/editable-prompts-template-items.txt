@@ -1,0 +1,91 @@
+# editable-prompts-template-items: visual proof of the "Show available
+# template items" change to the prompt-override manager's editor.
+#
+# The template editor now lists the {{token}} placeholders the selected
+# prompt declares (PromptSpec::placeholders) on an "Available template
+# items:" line above the edit box, so a user knows which tokens they can
+# use before editing. This walks: manager list -> editor for a
+# many-placeholder prompt (learning.answer, 11 tokens, wrapped list) ->
+# editor for a single-placeholder prompt (plan_interview.round) -> the
+# updated help panel.
+#
+#   scripts/dev/screenshot/amf-capture.sh \
+#     --scenario     scripts/dev/screenshot/scenarios/editable-prompts-template-items.txt \
+#     --seed         scripts/dev/screenshot/scenarios/editable-prompts-seed-project.json \
+#     --seed-feature scripts/dev/screenshot/scenarios/editable-prompts-seed-feature.json \
+#     --geometry 150x44
+
+# Let the seed's harness-config toast clear first.
+wait:1600
+note:The dashboard with a seeded project and feature; the feature must be selected so the editor and its save flow have all three scopes available.
+key:j
+wait:300
+shot:feature-selected
+
+# `E` opens the prompt-override manager.
+key:E
+wait:500
+note:The prompt-override manager lists every headless prompt AMF sends; all 15 start on the built-in default.
+shot:manager-list
+
+# Down to "Learning Mode: answer" (row 7 of the list: six `j` from the top).
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:120
+key:j
+wait:150
+note:The "Learning Mode: answer" row is selected -- the prompt with the most runtime context of any in the registry.
+shot:learning-answer-row
+
+# `Enter` opens the editor pre-filled with the effective template.
+key:Enter
+wait:500
+note:The editor now shows an "Available template items:" line listing all eleven {{token}} placeholders learning.answer accepts -- project_name, feature_name, file_line, anchor_description, code_block, surrounding_context, earlier_turns, question, intent_instructions, level_instructions, run_mode_instructions -- wrapped above the edit box. The line below restates that tokens are re-filled at run time with no validation.
+shot:editor-many-items
+
+# Back to the list, then up to a single-placeholder prompt.
+key:Escape
+wait:200
+key:k
+wait:120
+key:k
+wait:120
+key:k
+wait:120
+key:k
+wait:120
+key:k
+wait:120
+key:k
+wait:150
+note:"Plan interview: adaptive round" is selected -- a prompt that takes a single template item.
+shot:plan-round-row
+
+# `Enter` opens its editor.
+key:Enter
+wait:500
+note:For plan_interview.round the "Available template items:" line shows the one token it accepts, {{interview_input}}. A prompt that took no runtime context would read "none" here instead of being silent about it.
+shot:editor-one-item
+
+# `Ctrl+Q` cancels the edit back to the list, then `?` opens help.
+key:C-q
+wait:200
+key:?
+wait:300
+note:The manager's help panel now points at the editor's list: it says the editor lists the template items each prompt accepts, alongside the scope-precedence and no-validation rules.
+shot:help-panel
+
+# Esc closes help, Esc closes the manager.
+key:Escape
+wait:200
+key:Escape
+wait:400
+note:Esc returns cleanly to the dashboard.
+shot:dashboard-after

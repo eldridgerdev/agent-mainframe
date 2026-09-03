@@ -2768,9 +2768,10 @@ non-goal for v1 (GitHub `gh` only), not an open question.
 - [x] **Investigate a review comment instead of fixing it (read-only headless
       pass).** Some review comments ask a question — "does this handle the empty
       case?", "why is the lock held here?" — rather than requesting a change.
-      Answering them by injecting a fix prompt is the wrong tool. A per-comment
-      toggle (`v`, Fix ⇄ Investigate; default Fix) routes the next `f` to a
-      **strictly read-only** headless pass instead: minimal context (comment
+      Answering them by injecting a fix prompt is the wrong tool. `v` in the
+      triage list runs a **strictly read-only** headless pass on the selected
+      comment directly (it does not change what `f`/`B` do — those still fix and
+      batch a comment normally, investigation or not): minimal context (comment
       body + PR title/description + changed-file list, no file contents), the
       harness picked per run, blocking (the overlay waits, contrasting with
       Learning Mode's non-blocking queue), and `HeadlessRunner::run_investigation`
@@ -2781,14 +2782,12 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       overlay, rendered in the right panel (status · harness · time, then the
       answer markdown, then any follow-up turns); a run left `running` by a
       killed process reconciles to `failed` on load. `a` on a finished
-      investigation opens an action menu — convert to fix / add to batch (both
-      just re-route to `Fix`; existing dispatch and `batch_id` untouched), post
-      an editable reply (`ReplyKind::Investigation` → marks the comment
-      `Replied`, reuses the `gh` reply path), ask a follow-up (re-runs read-only
-      with the prior answer as context, appends a thread turn), dismiss, or keep
-      as a TODO (Learning Mode `a`'s route). Investigate is single-item and
-      never participates in batch dispatch. Design + task breakdown in the
-      feature's `AMF_PLAN.md`. →
+      investigation opens an action menu — post an editable reply
+      (`ReplyKind::Investigation` → marks the comment `Replied`, reuses the `gh`
+      reply path), ask a follow-up (re-runs read-only with the prior answer as
+      context, appends a thread turn), dismiss, or keep as a TODO (Learning Mode
+      `a`'s route). Investigate is single-item and never participates in batch
+      dispatch. →
       `src/db/migrations.rs`, `src/db/pr_investigations.rs`, `src/db/mod.rs`,
       `src/github.rs`, `src/headless.rs`, `src/app/pr_review.rs`,
       `src/app/state.rs`, `src/app/mod.rs`, `src/handlers/pr_review.rs`,
@@ -2797,11 +2796,11 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       `README.md`, `CHANGELOG.md`, and an offline screenshot fixture
       (`scripts/dev/screenshot/scenarios/pr-triage-investigate.txt`,
       `scripts/dev/screenshot/seed-investigation-fixture.py`). Unit-tested
-      (accessor round-trip; `TriageAction` toggle; prompt shape incl. follow-up
-      trimming; stuck-`running` reconcile on load; the six `a` actions; the
-      read-only guard predicate per harness + that the investigate path never
-      enters the writable fix machinery). `cargo test -j 2 --bin amf` 2428
-      passed, `fmt` + `clippy --all-targets` clean.
+      (accessor round-trip; prompt shape incl. follow-up trimming;
+      stuck-`running` reconcile on load; the four `a` actions; the read-only
+      guard predicate per harness + that the investigate path never enters the
+      writable fix machinery). `cargo test -j 2 --bin amf` 2427 passed, `fmt` +
+      `clippy --all-targets` clean.
 
       **Shipped, 2026-09-02.**
 

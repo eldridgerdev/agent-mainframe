@@ -2491,11 +2491,6 @@ pub struct PrReviewState {
     /// Keyed by id (not index) so marks survive the hide-resolved filter
     /// shifting the visible rows. Cleared once the batch is injected.
     pub marked: std::collections::HashSet<u64>,
-    /// Per-comment Fix ⇄ Investigate routing, toggled with `v`. Keyed by
-    /// comment id (like `marked`); an absent entry means the default
-    /// [`crate::app::pr_review::TriageAction::Fix`]. Transient UI state — the
-    /// durable record of an investigation is its own `pr_investigations` row.
-    pub triage_actions: std::collections::HashMap<u64, crate::app::pr_review::TriageAction>,
     /// Set while the combined-batch flow (`B`) is waiting on the harness picker:
     /// after the user picks the review harness, the continuation opens the
     /// combined-batch confirm dialog instead of the single-comment one. Cleared
@@ -2538,14 +2533,11 @@ pub struct PrReviewState {
     pub pending_follow_up: Option<PendingFollowUp>,
 }
 
-/// One row of the completed-investigation action menu.
+/// One row of the completed-investigation action menu (`a`). Fix and batch
+/// are deliberately absent — `f` and `B` act on a comment normally whether or
+/// not it has an investigation; the findings just stay visible in the panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvestigationAction {
-    /// Route the comment back to `Fix` so `f` injects a fix; the findings stay
-    /// visible in the right panel. No dispatch change, `batch_id` untouched.
-    ConvertToFix,
-    /// Route back to `Fix` *and* mark the comment for the next `B` batch.
-    AddToBatch,
     /// Open an editable reply draft prefilled from the answer; on approve it
     /// posts via the existing `gh` reply path and marks the comment `Replied`.
     PostReply,
@@ -2558,9 +2550,7 @@ pub enum InvestigationAction {
 }
 
 impl InvestigationAction {
-    pub const ALL: [InvestigationAction; 6] = [
-        InvestigationAction::ConvertToFix,
-        InvestigationAction::AddToBatch,
+    pub const ALL: [InvestigationAction; 4] = [
         InvestigationAction::PostReply,
         InvestigationAction::AskFollowUp,
         InvestigationAction::Dismiss,
@@ -2569,8 +2559,6 @@ impl InvestigationAction {
 
     pub fn label(self) -> &'static str {
         match self {
-            InvestigationAction::ConvertToFix => "Convert to fix (findings stay in the panel)",
-            InvestigationAction::AddToBatch => "Add to batch (mark for the next B)",
             InvestigationAction::PostReply => "Post a reply (editable draft)",
             InvestigationAction::AskFollowUp => "Ask a follow-up",
             InvestigationAction::Dismiss => "Dismiss the finding",
@@ -3083,15 +3071,6 @@ pub struct FixConfirmState {
 impl PrReviewState {
     pub fn selected_comment(&self) -> Option<&crate::app::pr_review::PrComment> {
         self.review.comments.get(self.selected)
-    }
-
-    /// The Fix ⇄ Investigate routing for a comment; the default `Fix` for any
-    /// id with no explicit entry.
-    pub fn triage_action(&self, comment_id: u64) -> crate::app::pr_review::TriageAction {
-        self.triage_actions
-            .get(&comment_id)
-            .copied()
-            .unwrap_or_default()
     }
 
     /// The checked-out branch when it's known and doesn't match the PR being

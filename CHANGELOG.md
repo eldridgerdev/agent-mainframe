@@ -32,20 +32,20 @@ are tagged.
 ### Added
 
 - **PR Triage can investigate a review comment instead of fixing it.** A
-  comment that asks a question rather than requesting a change can be routed to
-  a strictly read-only headless investigation: press `v` to toggle the selected
-  comment between *fix* and *investigate* (default stays *fix*), then `f` to run
-  it. The investigation gets minimal context — the comment, the PR title and
-  description, and the list of changed files, with no file contents — picks its
-  harness per run, and blocks the overlay until it returns; it inspects the
-  repository but cannot edit files, run commands, or write anything. The answer
-  persists per pull request and reopens with the triage overlay, shown in the
-  detail panel with its status, harness, and time. Press `a` on a finished
-  investigation to act on it: convert it back to a fix, add it to the batch,
-  post an editable reply, ask a follow-up (re-runs read-only with the prior
-  answer as context), dismiss it, or keep it as a TODO. Investigate is
-  single-item and never joins a batch fix. This adds a `pr_investigations`
-  table; existing databases upgrade automatically with no change to other data.
+  comment that asks a question rather than requesting a change can be
+  investigated: press `v` to run a strictly read-only headless pass on the
+  selected comment. The investigation gets minimal context — the comment, the
+  PR title and description, and the list of changed files, with no file
+  contents — picks its harness per run, and blocks the overlay until it
+  returns; it inspects the repository but cannot edit files, run commands, or
+  write anything. The answer persists per pull request and reopens in the
+  detail panel with its status, harness, and time. `f` and `B` still fix and
+  batch a comment normally whether or not it carries an investigation. Press
+  `a` on a finished investigation to act on it: post an editable reply, ask a
+  follow-up (re-runs read-only with the prior answer as context), dismiss it,
+  or keep it as a TODO. Investigate is single-item and never joins a batch fix.
+  This adds a `pr_investigations` table; existing databases upgrade
+  automatically with no change to other data.
 
 - **The native TODO editor can now use Vim keybindings.** Every inline edit
   in the scoped-TODOs overlay — add, edit title, edit notes, and the

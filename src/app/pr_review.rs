@@ -735,43 +735,9 @@ impl TriageState {
     }
 }
 
-/// Per-comment routing chosen manually in the triage list: does `f` inject a
-/// fix into an agent session, or does a strictly read-only headless
-/// investigation run on the comment instead? Default is [`TriageAction::Fix`]
-/// — the existing behaviour. This is transient UI state held on
-/// [`crate::app::state::PrReviewState`] (a map keyed by comment id, like
-/// `marked`), **not** persisted in the `pr_review_cache` blob: the durable
-/// record of an investigation is its own `pr_investigations` row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum TriageAction {
-    #[default]
-    Fix,
-    Investigate,
-}
-
-impl TriageAction {
-    /// Flip Fix ⇄ Investigate.
-    pub fn toggled(self) -> Self {
-        match self {
-            TriageAction::Fix => TriageAction::Investigate,
-            TriageAction::Investigate => TriageAction::Fix,
-        }
-    }
-
-    /// Short list/detail indicator; `None` for the default `Fix` (nothing to
-    /// show — an unmarked row reads as "fix" by convention, like an untriaged
-    /// `TriageState`).
-    pub fn indicator(self) -> Option<&'static str> {
-        match self {
-            TriageAction::Fix => None,
-            TriageAction::Investigate => Some("investigate"),
-        }
-    }
-}
-
-/// Lifecycle of a per-comment read-only investigation (a comment routed to
-/// [`TriageAction::Investigate`]). Persisted in `pr_investigations`, one row
-/// per `(project, PR, comment)`.
+/// Lifecycle of a per-comment read-only investigation (started with `v` in the
+/// triage list). Persisted in `pr_investigations`, one row per
+/// `(project, PR, comment)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrInvestigationStatus {
@@ -2162,7 +2128,6 @@ impl App {
                 reply: None,
                 memory_add: None,
                 marked: std::collections::HashSet::new(),
-                triage_actions: std::collections::HashMap::new(),
                 pending_batch: false,
                 checked_out_branch,
                 pending_ai_review_findings: ai_review.pending_findings,
@@ -2689,64 +2654,6 @@ impl App {
         } else {
             format!("Unmarked ({count} still marked)")
         });
-    }
-
-    /// Toggle the selected comment's Fix ⇄ Investigate routing (`v`). Default
-    /// is `Fix`; flipping to `Investigate` routes the next action on this
-    /// comment through a strictly read-only headless investigation instead of
-    /// a fix injection. Purely local UI state — nothing is dispatched here.
-    /// No-op with no selection, or on an AMF follow-up reply (nothing to
-    /// investigate or fix).
-    pub fn pr_review_toggle_triage_action(&mut self) {
-        let selected = match &self.mode {
-            AppMode::PrReview(state) => state
-                .selected_comment()
-                .map(|comment| (comment.id, comment.is_actionable())),
-            _ => return,
-        };
-        let Some((id, actionable)) = selected else {
-            self.message = Some("No comment selected".into());
-            return;
-        };
-        if !actionable {
-            self.message =
-                Some("AMF follow-up replies cannot be fixed or investigated".to_string());
-            return;
-        }
-        let AppMode::PrReview(state) = &mut self.mode else {
-            return;
-        };
-        let next = state.triage_action(id).toggled();
-        match next {
-            TriageAction::Fix => {
-                state.triage_actions.remove(&id);
-            }
-            TriageAction::Investigate => {
-                state.triage_actions.insert(id, next);
-            }
-        }
-        self.message = Some(match next {
-            TriageAction::Fix => "Routing: fix".to_string(),
-            TriageAction::Investigate => "Routing: investigate (read-only)".to_string(),
-        });
-    }
-
-    /// The `f` action in PR Triage: inject a fix for the selected comment, or —
-    /// when it has been routed to Investigate (`v`) — start a read-only
-    /// investigation of it instead.
-    pub fn pr_review_primary_action(&mut self) {
-        let investigate = matches!(
-            &self.mode,
-            AppMode::PrReview(state)
-                if state
-                    .selected_comment()
-                    .is_some_and(|c| state.triage_action(c.id) == TriageAction::Investigate)
-        );
-        if investigate {
-            self.pr_review_start_investigation();
-        } else {
-            self.pr_review_open_fix_confirm();
-        }
     }
 
     /// Begin the read-only investigation flow for the selected comment: validate
@@ -3278,8 +3185,6 @@ impl App {
             _ => return Ok(()),
         };
         match action {
-            InvestigationAction::ConvertToFix => self.pr_investigation_convert_to_fix(false),
-            InvestigationAction::AddToBatch => self.pr_investigation_convert_to_fix(true),
             InvestigationAction::PostReply => self.pr_investigation_post_reply(),
             InvestigationAction::AskFollowUp => self.pr_investigation_start_follow_up(),
             InvestigationAction::Dismiss => self.pr_investigation_dismiss(),
@@ -3319,26 +3224,6 @@ impl App {
                 answer.trim()
             ),
         );
-    }
-
-    /// Route the comment back to `Fix` so `f` injects a fix; the findings stay
-    /// in the right panel. `also_mark` additionally adds it to the `B` batch
-    /// set. Neither touches dispatch or `batch_id`.
-    fn pr_investigation_convert_to_fix(&mut self, also_mark: bool) {
-        let AppMode::PrReview(state) = &mut self.mode else {
-            return;
-        };
-        let Some(id) = state.selected_comment().map(|c| c.id) else {
-            return;
-        };
-        state.triage_actions.remove(&id);
-        if also_mark {
-            state.marked.insert(id);
-            self.message =
-                Some("Marked for the next batch — the findings stay in the panel".into());
-        } else {
-            self.message = Some("Back to fix — press f; the findings stay in the panel".into());
-        }
     }
 
     /// Mark the selected comment's investigation `Dismissed` (in memory and,
@@ -3816,7 +3701,6 @@ impl App {
                             reply: None,
                             memory_add: None,
                             marked: std::collections::HashSet::new(),
-                            triage_actions: std::collections::HashMap::new(),
                             pending_batch: false,
                             checked_out_branch,
                             pending_ai_review_findings: ai_review.pending_findings,
@@ -7320,16 +7204,6 @@ mod tests {
         assert_eq!(TriageState::Done.marker(), 'x');
         assert_eq!(TriageState::Skipped.marker(), '-');
         assert_eq!(TriageState::Fixing.marker(), '~');
-    }
-
-    #[test]
-    fn triage_action_defaults_to_fix_and_toggles() {
-        assert_eq!(TriageAction::default(), TriageAction::Fix);
-        assert_eq!(TriageAction::Fix.toggled(), TriageAction::Investigate);
-        assert_eq!(TriageAction::Investigate.toggled(), TriageAction::Fix);
-        // The default reads as "no indicator" — an unmarked row means fix.
-        assert_eq!(TriageAction::Fix.indicator(), None);
-        assert_eq!(TriageAction::Investigate.indicator(), Some("investigate"));
     }
 
     #[test]

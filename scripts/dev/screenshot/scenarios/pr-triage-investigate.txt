@@ -38,21 +38,16 @@ key:C-d|wait:250
 note:Scrolling the detail pane reveals the follow-up thread beneath the answer — "Follow-up 1: <question>" and its answer, from a second read-only run that re-used the prior answer as context (the Learning Mode `F` behaviour).
 shot:investigation-followup-thread
 
-# `v` routes this comment to investigate rather than fix.
-key:v|wait:600
-note:Pressing `v` toggled this comment from fix to investigate — the list row now carries the `⌕` marker (spelled out in the footer legend). Default stays fix; `v` again returns to it, and the next `f` on this comment runs a read-only investigation instead of injecting a fix.
-shot:routed-to-investigate
-
-# `a` opens the completed-investigation action menu.
+# `a` opens the completed-investigation action menu. (`v` itself launches a
+# fresh read-only run, so the scenario doesn't press it — it would spawn a real
+# headless pass in CI; the seeded investigation stands in for a finished one.)
 key:a|wait:800
-note:The `a` action menu for a finished investigation — the operator picks what happens to the answer each time, with no fixed default: convert to fix, add to batch, post an editable reply (prefilled from the answer), ask a follow-up, dismiss, or keep as a TODO.
+note:The `a` action menu for a finished investigation — the operator picks what happens to the answer each time, with no fixed default: post an editable reply (prefilled from the answer), ask a follow-up, dismiss, or keep as a TODO. Fix and batch are not here: `f` and `B` act on the comment normally whether or not it carries an investigation.
 shot:investigation-action-menu
 
-# Choose "Ask a follow-up" and type a question (do not submit — Tab would spawn
-# a real read-only run; Esc cancels).
-key:j|wait:150
-key:j|wait:150
-key:j|wait:150
+# Choose "Ask a follow-up" (row 1) and type a question (do not submit — Tab
+# would spawn a real read-only run; Esc cancels).
+key:j|wait:200
 key:Enter|wait:500
 text:Is there a test that would catch it if that early return were dropped?|wait:500
 note:"Ask a follow-up" opens an inline question editor. Submitting (Tab) re-runs the investigation read-only with the prior answer as context and appends the reply as a new turn in the thread.

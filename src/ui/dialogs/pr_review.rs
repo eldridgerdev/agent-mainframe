@@ -15,8 +15,7 @@ use std::path::Path;
 use crate::{
     app::ai_review::AiReviewTriageStatus,
     app::pr_review::{
-        BootstrapDepth, BootstrapStage, CommentKind, CompactStage, MarkAction, PrComment,
-        ReplyKind, TriageAction,
+        BootstrapDepth, BootstrapStage, CommentKind, CompactStage, MarkAction, PrComment, ReplyKind,
     },
     app::{
         BootstrapPickState, BootstrapRunState, CompactConfirmState, CompactReviewState,
@@ -2071,7 +2070,6 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
             comment,
             is_marked,
             batch_rel(comment, selected_batch_id.as_deref(), i == state.selected),
-            state.triage_action(comment.id),
             theme,
             inner_width,
         )));
@@ -2134,7 +2132,6 @@ fn comment_list_line<'a>(
     c: &'a PrComment,
     is_marked: bool,
     batch_rel: BatchRel,
-    action: TriageAction,
     theme: &Theme,
     width: usize,
 ) -> Line<'a> {
@@ -2143,12 +2140,6 @@ fn comment_list_line<'a>(
     let marker = if c.is_resolved { "✓" } else { " " };
     // A leading `●` flags comments marked (space) for the `F` batch fix.
     let mark = if is_marked { "●" } else { " " };
-    // `⌕` flags a comment routed to a read-only investigation (`v`) instead of
-    // the default fix.
-    let investigate_span = match action {
-        TriageAction::Fix => String::new(),
-        TriageAction::Investigate => "⌕ ".to_string(),
-    };
     // `⧉` flags a comment that was fixed as part of a combined batch (`B`);
     // rendered brightly on the selected comment's own siblings so `[`/`]` has
     // a visible target.
@@ -2179,7 +2170,6 @@ fn comment_list_line<'a>(
     let prefix_width = mark_span.chars().count()
         + triage_span.chars().count()
         + batch_span.chars().count()
-        + investigate_span.chars().count()
         + marker_span.chars().count()
         + author_span.chars().count()
         + attribution_span.chars().count();
@@ -2210,12 +2200,6 @@ fn comment_list_line<'a>(
                     .add_modifier(Modifier::BOLD),
                 _ => Style::default().fg(theme.text_muted.to_color()),
             },
-        ),
-        Span::styled(
-            investigate_span,
-            Style::default()
-                .fg(theme.secondary.to_color())
-                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             marker_span,
@@ -2715,10 +2699,6 @@ fn marker_legend(theme: &Theme) -> Line<'static> {
         Span::styled("[~] fixing ", Style::default().fg(theme.warning.to_color())),
         Span::styled("[x] done ", Style::default().fg(theme.success.to_color())),
         Span::styled("[-] skip", muted),
-        Span::styled(
-            "   ⌕ investigate",
-            Style::default().fg(theme.secondary.to_color()),
-        ),
     ])
 }
 
@@ -3482,7 +3462,6 @@ mod tests {
             reply: None,
             memory_add: None,
             marked: std::collections::HashSet::new(),
-            triage_actions: std::collections::HashMap::new(),
             pending_batch: false,
             checked_out_branch: Some("main".to_string()),
             pending_ai_review_findings: 0,

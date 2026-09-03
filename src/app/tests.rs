@@ -13700,7 +13700,6 @@ fn enter_pr_review(app: &mut App, n: u64) {
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
-        triage_actions: std::collections::HashMap::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
@@ -14032,8 +14031,8 @@ fn pr_investigation_run_never_enters_the_writable_fix_path() {
 }
 
 #[test]
-fn pr_investigation_actions_convert_to_fix_add_to_batch_and_dismiss() {
-    use crate::app::pr_review::{PrInvestigationStatus, TriageAction};
+fn pr_investigation_dismiss_action_flips_status_in_memory_and_on_disk() {
+    use crate::app::pr_review::PrInvestigationStatus;
     use crate::db::pr_investigations::PrInvestigation;
 
     let store = store_with_feature(ProjectStatus::Active);
@@ -14046,71 +14045,31 @@ fn pr_investigation_actions_convert_to_fix_add_to_batch_and_dismiss() {
     app.db = Some(crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap());
     enter_pr_review_for_feature(&mut app, 3);
 
+    let mut inv = PrInvestigation::new_running(
+        "proj-1",
+        7,
+        2,
+        "sha",
+        crate::project::AgentKind::Codex,
+        "ctx",
+    );
+    inv.status = PrInvestigationStatus::Complete;
+    inv.answer = Some("Fix the guard.".to_string());
     if let AppMode::PrReview(state) = &mut app.mode {
         state.selected = 1; // comment id 2
-        state.triage_actions.insert(2, TriageAction::Investigate);
-        let mut inv = PrInvestigation::new_running(
-            "proj-1",
-            7,
-            2,
-            "sha",
-            crate::project::AgentKind::Codex,
-            "ctx",
-        );
-        inv.status = PrInvestigationStatus::Complete;
-        inv.answer = Some("Fix the guard.".to_string());
-        state.investigations.push(inv);
+        state.investigations.push(inv.clone());
     }
     // The completed row is normally already on disk (written by the poll loop).
     app.db
         .as_ref()
         .unwrap()
-        .upsert_pr_investigation(&{
-            let mut inv = PrInvestigation::new_running(
-                "proj-1",
-                7,
-                2,
-                "sha",
-                crate::project::AgentKind::Codex,
-                "ctx",
-            );
-            inv.status = PrInvestigationStatus::Complete;
-            inv.answer = Some("Fix the guard.".to_string());
-            inv
-        })
+        .upsert_pr_investigation(&inv)
         .unwrap();
 
-    // Convert to fix (menu row 0): routing back to Fix, findings kept, no mark.
+    // Menu rows: [PostReply, AskFollowUp, Dismiss, KeepAsTodo] — Dismiss is row 2.
     app.pr_review_open_investigation_actions();
     assert!(app.pr_review_investigation_action_picking());
-    app.pr_review_investigation_action_confirm().unwrap();
-    match &app.mode {
-        AppMode::PrReview(state) => {
-            assert_eq!(state.triage_action(2), TriageAction::Fix);
-            assert!(!state.marked.contains(&2));
-            assert_eq!(state.investigations.len(), 1);
-        }
-        _ => panic!("still in PR Triage"),
-    }
-
-    // Add to batch (menu row 1): back to Fix *and* marked for `B`.
-    if let AppMode::PrReview(state) = &mut app.mode {
-        state.triage_actions.insert(2, TriageAction::Investigate);
-    }
-    app.pr_review_open_investigation_actions();
-    app.pr_review_investigation_action_move(1);
-    app.pr_review_investigation_action_confirm().unwrap();
-    match &app.mode {
-        AppMode::PrReview(state) => {
-            assert_eq!(state.triage_action(2), TriageAction::Fix);
-            assert!(state.marked.contains(&2));
-        }
-        _ => panic!(),
-    }
-
-    // Dismiss (menu row 4): status flips in memory and on disk, answer kept.
-    app.pr_review_open_investigation_actions();
-    app.pr_review_investigation_action_move(4);
+    app.pr_review_investigation_action_move(2);
     app.pr_review_investigation_action_confirm().unwrap();
     match &app.mode {
         AppMode::PrReview(state) => {
@@ -14123,7 +14082,7 @@ fn pr_investigation_actions_convert_to_fix_add_to_batch_and_dismiss() {
                 Some("Fix the guard.")
             );
         }
-        _ => panic!(),
+        _ => panic!("still in PR Triage"),
     }
     let persisted = app
         .db
@@ -14205,7 +14164,7 @@ fn pr_investigation_post_reply_opens_an_editable_draft_seeded_from_the_answer() 
     }
 
     app.pr_review_open_investigation_actions();
-    app.pr_review_investigation_action_move(2); // Post a reply
+    // Menu rows: [PostReply, AskFollowUp, Dismiss, KeepAsTodo] — PostReply is row 0.
     app.pr_review_investigation_action_confirm().unwrap();
 
     match &app.mode {
@@ -14255,7 +14214,7 @@ fn pr_investigation_follow_up_editor_opens_and_refuses_an_empty_question() {
     }
 
     app.pr_review_open_investigation_actions();
-    app.pr_review_investigation_action_move(3); // Ask a follow-up
+    app.pr_review_investigation_action_move(1); // [PostReply, AskFollowUp, Dismiss, KeepAsTodo]
     app.pr_review_investigation_action_confirm().unwrap();
     assert!(app.pr_review_investigation_follow_up_open());
 
@@ -14573,7 +14532,6 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
-        triage_actions: std::collections::HashMap::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
@@ -17020,7 +16978,6 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
-        triage_actions: std::collections::HashMap::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
@@ -17102,7 +17059,6 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
-        triage_actions: std::collections::HashMap::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,
@@ -17654,7 +17610,6 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         reply: None,
         memory_add: None,
         marked: std::collections::HashSet::new(),
-        triage_actions: std::collections::HashMap::new(),
         pending_batch: false,
         checked_out_branch: Some("main".to_string()),
         pending_ai_review_findings: 0,

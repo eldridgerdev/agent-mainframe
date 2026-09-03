@@ -2797,7 +2797,6 @@ mod tests {
             reply: None,
             memory_add: None,
             marked: std::collections::HashSet::new(),
-            triage_actions: std::collections::HashMap::new(),
             pending_batch: false,
             checked_out_branch: Some(checked_out.to_string()),
             pending_ai_review_findings: 0,

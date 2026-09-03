@@ -945,7 +945,7 @@ pub fn draw_pr_review(
         .is_some_and(PrComment::is_amf_followup_reply)
     {
         format!(
-            " AMF follow-up · context only   j/k move   {toggle_hint}   o sort→{}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
+            " AMF follow-up · context only   j/k move   ^d/^u scroll   {toggle_hint}   o sort→{}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
             state.sort_mode.label()
         )
     } else {
@@ -957,7 +957,7 @@ pub fn draw_pr_review(
             ""
         };
         format!(
-            " j/k move   f fix→{}   {investigate_hint}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session{integrate_hint}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
+            " j/k move   ^d/^u scroll   f fix→{}   {investigate_hint}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session{integrate_hint}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
         )
@@ -3105,6 +3105,10 @@ mod tests {
         assert!(
             rendered.contains("v investigate"),
             "footer names the `v` key"
+        );
+        assert!(
+            rendered.contains("^d/^u scroll"),
+            "footer names the detail-pane scroll keys"
         );
         assert!(
             !rendered.contains("a act"),

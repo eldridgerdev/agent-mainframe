@@ -735,7 +735,7 @@ pub fn draw_pr_review(
             Constraint::Length(1),                                      // header
             Constraint::Length(if mismatch.is_some() { 1 } else { 0 }), // branch-mismatch banner
             Constraint::Min(1),                                         // body
-            Constraint::Length(2), // footer (keys + marker legend)
+            Constraint::Length(3), // footer: 2 wrapped key-hint rows + 1 marker legend
         ])
         .split(area);
 
@@ -927,10 +927,9 @@ pub fn draw_pr_review(
         .selected_comment()
         .is_some_and(PrComment::is_amf_followup_reply)
     {
-        format!(
-            " AMF follow-up · context only   j/k move   ^d/^u scroll   {toggle_hint}   o sort→{}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
-            state.sort_mode.label()
-        )
+        " AMF follow-up · context only   j/k move   ^d/^u scroll   ".to_string()
+            + toggle_hint
+            + "   o sort   i syntax   r refresh   g other-PR   A ai-review   esc/q close"
     } else {
         // `I` only means something for the companion-feature target — the
         // other two commit straight onto the PR branch.
@@ -940,18 +939,20 @@ pub fn draw_pr_review(
             ""
         };
         format!(
-            " j/k move   ^d/^u scroll   f fix→{}   {investigate_hint}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session{integrate_hint}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
+            " j/k move   ^d/^u scroll   f fix→{}   {investigate_hint}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort   P session{integrate_hint}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
             state.fix_target.tag(),
-            state.sort_mode.label()
         )
     };
+    // Wrapped so the full hint list stays visible — the footer reserves two
+    // rows for it (see `outer`'s `Length(3)`), then one for the marker legend.
     let keys = Paragraph::new(Line::from(Span::styled(
         key_text,
         Style::default().fg(theme.text_muted.to_color()),
-    )));
+    )))
+    .wrap(Wrap { trim: false });
     let footer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints([Constraint::Length(2), Constraint::Length(1)])
         .split(outer[3]);
     frame.render_widget(keys, footer[0]);
     frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);

@@ -14010,20 +14010,17 @@ fn pr_investigation_run_never_enters_the_writable_fix_path() {
         "no triage session spun up for a read-only investigation"
     );
 
-    // Drain the (failing — bogus workdir) background run and confirm the pane
-    // comes back with the same invariants.
-    for _ in 0..200 {
-        if app.pr_investigation_bg.is_none() {
-            break;
-        }
-        app.poll_pr_investigation_bg();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    // Cancelling the wait (the `esc` path) returns to the pane synchronously —
+    // no dependency on the real `gh`/harness subprocess the worker shells out
+    // to, which makes CI timing irrelevant. Same invariants after.
+    app.pr_investigation_cancel();
     assert!(
         matches!(app.mode, AppMode::PrReview(_)),
         "returned to PR Triage"
     );
+    assert!(app.pr_investigation_bg.is_none());
     assert!(app.pr_review_return.is_none());
+    assert!(!matches!(app.selection, Selection::Session(..)));
     assert_eq!(
         app.store.projects[0].features[0].sessions.len(),
         sessions_before

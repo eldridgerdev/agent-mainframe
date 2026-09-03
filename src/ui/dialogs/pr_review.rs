@@ -766,11 +766,16 @@ pub fn draw_pr_review(
         {
             batch_hint.push_str(" · [/] siblings");
         }
+        let investigate_hint = if state.investigation_context.note.is_empty() {
+            "v investigate · a act · e context".to_string()
+        } else {
+            "v investigate · a act · e context✔".to_string()
+        };
         let mut hints = vec![
             "j/k move".to_string(),
             "^d/^u scroll".to_string(),
             format!("f fix→{}", state.fix_target.tag()),
-            "v investigate · a act".to_string(),
+            investigate_hint,
             batch_hint,
             "R reply".to_string(),
             "m mark".to_string(),
@@ -801,9 +806,15 @@ pub fn draw_pr_review(
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                                      // header
-            Constraint::Length(if mismatch.is_some() { 1 } else { 0 }), // branch-mismatch banner
-            Constraint::Min(1),                                         // body
+            Constraint::Length(1), // header
+            Constraint::Length(
+                if mismatch.is_some() || !state.investigation_context.note.is_empty() {
+                    1
+                } else {
+                    0
+                },
+            ), // branch-mismatch banner, else the attached-investigation-note banner
+            Constraint::Min(1),    // body
             Constraint::Length(footer_h), // key-hint rows + 1 marker legend
         ])
         .split(area);
@@ -942,6 +953,25 @@ pub fn draw_pr_review(
             ))),
             outer[1],
         );
+    } else if !state.investigation_context.note.is_empty() {
+        // One-line preview of the note that the next `v` will carry, so it can
+        // be confirmed or cleared (press `e`) before dispatch.
+        let preview: String = state
+            .investigation_context
+            .note
+            .split('\n')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(96)
+            .collect();
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" ✎ investigation note (press e to edit, v to run): {preview}"),
+                Style::default().fg(theme.text_muted.to_color()),
+            ))),
+            outer[1],
+        );
     }
 
     // Body: list | detail.
@@ -1003,6 +1033,10 @@ pub fn draw_pr_review(
     // Follow-up question editor.
     if let Some(draft) = &state.investigation_follow_up {
         draw_investigation_follow_up(frame, draft, theme);
+    }
+    // Optional investigation-context edit box (`e`).
+    if let Some(editor) = &state.investigation_context.editor {
+        draw_investigation_context(frame, editor, theme);
     }
     // Triage-feature setup (`New feature…`) overlays the pane before the fix
     // confirm dialog it continues into.
@@ -1655,6 +1689,62 @@ fn draw_investigation_follow_up(
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "[Tab] ask (pick a harness)   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[2],
+    );
+}
+
+/// Optional free-text box for the note attached to the next Investigate run
+/// (`e`). The note is a hypothesis the read-only pass verifies; leaving it
+/// empty runs the investigation exactly as before.
+fn draw_investigation_context(
+    frame: &mut Frame,
+    editor: &crate::editor::TextEditor,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(66, 40, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Investigation context (optional) ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // hint
+            Constraint::Min(1),    // editor
+            Constraint::Length(1), // keys
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  A hypothesis for the next investigation (v) to verify against the \
+             PR and repo — not a fact it assumes. Leave empty for unchanged \
+             behaviour.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    let body_lines = super::editor_view::editor_lines(
+        editor,
+        theme,
+        "(e.g. I think this is already handled in src/foo.rs — double-check)",
+    );
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[enter] save   [alt+enter] newline   [esc] discard",
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[2],
@@ -3574,6 +3664,7 @@ mod tests {
             investigation_action_pick: None,
             investigation_follow_up: None,
             pending_follow_up: None,
+            investigation_context: Default::default(),
         }
     }
 

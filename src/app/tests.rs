@@ -13748,6 +13748,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         investigation_action_pick: None,
         investigation_follow_up: None,
         pending_follow_up: None,
+        investigation_context: Default::default(),
     });
 }
 
@@ -14647,6 +14648,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         investigation_action_pick: None,
         investigation_follow_up: None,
         pending_follow_up: None,
+        investigation_context: Default::default(),
     });
 }
 
@@ -17097,6 +17099,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         investigation_action_pick: None,
         investigation_follow_up: None,
         pending_follow_up: None,
+        investigation_context: Default::default(),
     });
 }
 
@@ -17178,6 +17181,7 @@ fn enter_pr_review_with_conversation(app: &mut App, inline_ids: &[u64], conversa
         investigation_action_pick: None,
         investigation_follow_up: None,
         pending_follow_up: None,
+        investigation_context: Default::default(),
     });
 }
 
@@ -17729,6 +17733,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         investigation_action_pick: None,
         investigation_follow_up: None,
         pending_follow_up: None,
+        investigation_context: Default::default(),
     });
 }
 

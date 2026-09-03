@@ -67,6 +67,18 @@ now advertises `^d/^u scroll`. Remaining niceties:
 - [ ] Mouse-wheel / `j`-`k` scrolling for the detail pane.
 - [ ] Follow-up-thread count/affordance on the section header.
 
+## Shipped since
+
+- **Optional user-provided context for Investigate.** `e` in the PR
+  Triage pane opens an "Investigation context (optional)" box; the note
+  is folded into the next `v` run's prompt as a hypothesis to verify
+  against the PR and repo (not a fact to assume), shown in a banner so
+  it can be reviewed or cleared, and consumed by the run it applies to.
+  Empty box keeps the prior behaviour byte-for-byte. Built from a local
+  `AMF_PLAN.md`; the Investigate prompt is an inline builder
+  (`build_investigation_prompt`), not a registry template, so the note
+  is threaded as a `user_context` field on `InvestigationPromptContext`.
+
 ## Open questions
 
 - Should posting an investigation reply (from `R` or `a`) offer to also

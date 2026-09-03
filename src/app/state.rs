@@ -2623,6 +2623,22 @@ pub struct PrReviewState {
     /// [`crate::app::App::pr_review_investigation_harness_confirm`] knows the
     /// run is a follow-up (not a fresh investigation) and for which comment.
     pub pending_follow_up: Option<PendingFollowUp>,
+    /// Optional free-form context the operator attaches to the *next* fresh
+    /// Investigate run (`e`): a hypothesis for the read-only agent to verify
+    /// against the PR and repo, not a fact to assume. Persists across the pane
+    /// visit until an investigation consumes it; empty = today's behaviour.
+    pub investigation_context: InvestigationContextField,
+}
+
+/// The optional investigation-context note plus its inline edit box. Bundled
+/// into one field so the many `PrReviewState` literals only grow by a line.
+#[derive(Debug, Clone, Default)]
+pub struct InvestigationContextField {
+    /// The committed note. Empty means no note was attached.
+    pub note: String,
+    /// The inline editor, `Some` only while focused (`e`). Seeded from `note`
+    /// on open; `Enter` commits its text back to `note`, `Esc` discards.
+    pub editor: Option<crate::editor::TextEditor>,
 }
 
 /// One row of the completed-investigation action menu (`a`). Fix and batch

@@ -185,6 +185,7 @@ submits.
 | `W` | Run AMF's AI review of a PR diff |
 | `K` | Open Learning Mode: read the code and ask about it |
 | `L` | Open the prompt library |
+| `E` | Edit headless AI prompt templates (overrides) |
 | `T` | Choose a theme |
 | `A` | Manage installed agent harnesses |
 | `?` | Show all keybindings |
@@ -202,6 +203,7 @@ Most keys go directly to the active session. These controls belong to AMF:
 | `Ctrl+Space`, then `i` | Jump to an agent needing attention |
 | `Ctrl+Space`, then `f` | Start final diff review |
 | `Ctrl+Space`, then `p` | Open the prompt library |
+| `Ctrl+Space`, then `E` | Edit headless AI prompt templates (overrides) |
 | `Ctrl+Space`, then `N` | Add a TODO to this worktree's list |
 | `Ctrl+Space`, then `?` | Show all leader commands |
 
@@ -414,6 +416,60 @@ Deleting a feature deletes its worktree list along with the checkout, so if
 that list still has unfinished items AMF asks first: move them to the project
 list, move them to the global list, delete them with the worktree, or cancel
 the deletion. Nothing is killed or removed until you answer.
+
+### Override the AI prompts AMF sends
+
+Behind the plan interview, Learning Mode, the final-review diff helpers, the AI
+PR review, and the review-memory bootstrap/compaction, AMF makes one-shot
+("headless") AI calls with prompts it builds for you. Press `E` on the
+dashboard — or `Ctrl+Space`, then `E` from a session — to open the
+**prompt-override manager**. It lists every template with its effective source
+(`built-in`, `feature`, `project`, or `global`) and `[F][P][G]` flags for which
+scopes already carry an override.
+
+`Enter` or `e` opens an editor on the effective template. `Ctrl+S` moves to a
+scope picker, then a harness picker, then saves:
+
+| Scope | Where it lives | Applies to |
+| --- | --- | --- |
+| **This feature** | `amf.db` | just this checkout |
+| **This project** | `amf.json` `prompt_overrides` key | the repo — committed, shared with everyone |
+| **Global** | `amf.db` | every project on this machine |
+
+The nearest scope wins — feature → project → global → built-in — and within the
+winning scope a per-harness template beats the shared one. `d`, `d` clears the
+effective override. Templates carry visible `{{token}}` placeholders that AMF
+re-fills with live context (the diff, the question, the interview answers) each
+time the prompt runs. **There is no validation**: if you delete a required
+token or add one AMF does not supply, it is saved and rendered exactly as
+written.
+
+Project-scope overrides sit in `amf.json` under `prompt_overrides`, keyed by
+the stable prompt id (shown in the manager):
+
+```json
+{
+  "prompt_overrides": {
+    "pr_review.ai_review": {
+      "template": "You are reviewing a diff... {{annotated_diff}} ..."
+    },
+    "learning.answer": {
+      "template": "shared text with {{question}}",
+      "harnesses": { "codex": "codex-specific text with {{question}}" }
+    }
+  }
+}
+```
+
+`.amf/` is generated and gitignored, so these overrides live in `amf.json`
+(the tracked repo config) rather than a file under `.amf/`.
+
+Before each user-initiated headless call, a **pre-call notice** names the
+prompt and target harness: `v` shows the exact rendered prompt, `e` jumps to
+the manager for that prompt (continue afterwards and the override applies to
+this run), `Enter` makes the call, `Esc` cancels it. There is no "don't ask
+again". Calls that run without you watching — the Learning Mode answer queue
+and session summaries — announce with a toast instead of the modal.
 
 ### See which agents need you
 

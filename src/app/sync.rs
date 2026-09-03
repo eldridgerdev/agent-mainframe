@@ -1601,26 +1601,20 @@ impl App {
 
     pub fn trigger_summary_for_selected(&mut self) -> Result<()> {
         let selected = match &self.selection {
-            Selection::Feature(pi, fi) => {
-                let feature = &self.store.projects[*pi].features[*fi];
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => {
+                let project = &self.store.projects[*pi];
+                let feature = &project.features[*fi];
                 Some((
                     feature.tmux_session.clone(),
                     feature.workdir.clone(),
                     feature.agent.clone(),
-                ))
-            }
-            Selection::Session(pi, fi, _si) => {
-                let feature = &self.store.projects[*pi].features[*fi];
-                Some((
-                    feature.tmux_session.clone(),
-                    feature.workdir.clone(),
-                    feature.agent.clone(),
+                    project.repo.clone(),
                 ))
             }
             _ => None,
         };
 
-        if let Some((tmux_session, workdir, agent)) = selected {
+        if let Some((tmux_session, workdir, agent, repo)) = selected {
             if self.summary_state.generating.contains(&tmux_session) {
                 self.message = Some("Summary already generating...".into());
                 return Ok(());
@@ -1634,10 +1628,24 @@ impl App {
                 let (tx, rx) = std::sync::mpsc::channel();
                 self.summary_rx = Some(rx);
 
+                let (template, _) = self.resolve_headless_template(
+                    crate::prompts::PromptId::SessionSummary,
+                    &agent,
+                    &repo,
+                    &workdir,
+                );
+                // A one-line summary is a quick call and may be triggered in a
+                // batch, so it announces with a toast rather than a modal.
+                self.announce_headless_run(crate::prompts::PromptId::SessionSummary, &agent);
                 let tmux_session_clone = tmux_session.clone();
                 std::thread::spawn(move || {
-                    let result =
-                        SummaryManager::generate_summary(&tmux_session_clone, &w, &workdir, agent);
+                    let result = SummaryManager::generate_summary(
+                        &tmux_session_clone,
+                        &w,
+                        &workdir,
+                        agent,
+                        &template,
+                    );
                     let _ = tx.send((tmux_session_clone, result));
                 });
             } else {

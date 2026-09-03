@@ -242,6 +242,19 @@ pub struct ExtensionConfig {
     /// [`crate::app::review_memory::DEFAULT_REVIEW_MEMORY_PATH`], when unset
     /// at every scope.
     pub review_memory_path: Option<String>,
+    /// Project-scope overrides of AMF's built-in headless prompt templates
+    /// (the "Editable Headless Prompts" feature), keyed by stable prompt id
+    /// (e.g. `"pr_review.ai_review"`). Lives here — the tracked repo config —
+    /// rather than in a `.amf/prompts/` directory because `.amf/` is
+    /// gitignored dir-wide, so a file there would never be committed.
+    /// Feature- and global-scope overrides are per-user and live in `amf.db`.
+    /// See `crate::prompts::project`.
+    ///
+    /// Unlike the other fields here, this one is **not** merged from the
+    /// global `extension` block: project scope is defined by what the repo's
+    /// `amf.json` carries, and nothing else.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub prompt_overrides: crate::prompts::project::ProjectPromptOverrides,
 }
 
 impl ExtensionConfig {
@@ -587,6 +600,9 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
             .or(base.skip_builtin_questions),
         final_review_check_command,
         review_memory_path,
+        // Project scope only — never inherited from the global `extension`
+        // block (see the field's doc comment).
+        prompt_overrides: project.prompt_overrides,
     };
     merged.normalize_legacy_review_modes();
     merged

@@ -1911,74 +1911,90 @@ pub struct LearningPromptContext {
     pub ancestors: Vec<ParentTurn>,
 }
 
-/// Build the prompt for one question.
-///
-/// Structure is fixed: who and where, then what they're looking at, then any
-/// earlier turns, then the question, then the instructions selected by intent,
-/// level, and run mode. Instructions come last so they're the freshest thing
-/// the model reads, and the run mode last of all — what may be checked, and
-/// what must be, outranks how the answer is worded.
-pub fn build_prompt(ctx: &LearningPromptContext) -> String {
-    let mut out = String::new();
+/// The `{{token}}` context for
+/// [`crate::prompts::PromptId::LearningAnswer`]. Each section is pre-rendered
+/// to a string here (empty when it does not apply) so the registry template
+/// stays a flat scaffold; the ordering rationale lives on
+/// [`crate::prompts::defaults`]'s `LEARNING_ANSWER`.
+pub fn learning_prompt_context_tokens(ctx: &LearningPromptContext) -> crate::prompts::PromptContext {
+    let file_line = match &ctx.file_path {
+        Some(path) => format!("File: {path}\n"),
+        None => String::new(),
+    };
 
-    out.push_str("You are helping someone read a codebase they did not write.\n\n");
-    out.push_str(&format!("Project: {}\n", ctx.project_name));
-    out.push_str(&format!("Branch / feature: {}\n", ctx.feature_name));
-    if let Some(path) = &ctx.file_path {
-        out.push_str(&format!("File: {path}\n"));
-    }
-    out.push_str(&format!(
-        "They are looking at: {}\n\n",
-        ctx.anchor.describe(ctx.file_path.as_deref())
-    ));
-
-    if matches!(ctx.anchor, LearningAnchor::Project) {
-        out.push_str("Their question is about the project as a whole, not about one file.\n\n");
+    let code_block = if matches!(ctx.anchor, LearningAnchor::Project) {
+        "Their question is about the project as a whole, not about one file.\n\n".to_string()
     } else if !ctx.selection_text.trim().is_empty() {
-        if ctx.selection_is_diff {
+        let mut block = if ctx.selection_is_diff {
             // Unnumbered on purpose: these rows come from a unified diff, where
             // a removed line has no number on the current side and the numbers
             // that do exist are not consecutive.
-            out.push_str(
+            let mut b = String::from(
                 "--- The change they are asking about (unified diff — lines starting \
                  with '+' were added, '-' were removed, ' ' are unchanged context) ---\n",
             );
-            out.push_str(&plain_block(&ctx.selection_text, MAX_SELECTION_LINES));
+            b.push_str(&plain_block(&ctx.selection_text, MAX_SELECTION_LINES));
+            b
         } else {
-            out.push_str("--- The code they are asking about ---\n");
-            out.push_str(&numbered_block(
+            let mut b = String::from("--- The code they are asking about ---\n");
+            b.push_str(&numbered_block(
                 &ctx.selection_text,
                 ctx.selection_start_line.unwrap_or(1),
                 MAX_SELECTION_LINES,
             ));
-        }
-        out.push_str("\n\n");
-    }
+            b
+        };
+        block.push_str("\n\n");
+        block
+    } else {
+        String::new()
+    };
 
-    if let Some(context) = surrounding_context(ctx) {
-        out.push_str(&context);
-        out.push_str("\n\n");
-    }
+    let surrounding = match surrounding_context(ctx) {
+        Some(context) => format!("{context}\n\n"),
+        None => String::new(),
+    };
 
     let ancestors = trimmed_ancestors(&ctx.ancestors);
-    if !ancestors.is_empty() {
-        out.push_str("--- Earlier in this conversation ---\n");
+    let earlier_turns = if ancestors.is_empty() {
+        String::new()
+    } else {
+        let mut e = String::from("--- Earlier in this conversation ---\n");
         for turn in ancestors {
-            out.push_str(&format!("They asked: {}\n", turn.question.trim()));
-            out.push_str(&format!("You answered: {}\n\n", turn.answer.trim()));
+            e.push_str(&format!("They asked: {}\n", turn.question.trim()));
+            e.push_str(&format!("You answered: {}\n\n", turn.answer.trim()));
         }
-    }
+        e
+    };
 
-    out.push_str("--- Their question ---\n");
-    out.push_str(ctx.question.trim());
-    out.push_str("\n\n");
+    crate::prompts::PromptContext::new()
+        .with("project_name", ctx.project_name.clone())
+        .with("feature_name", ctx.feature_name.clone())
+        .with("file_line", file_line)
+        .with(
+            "anchor_description",
+            ctx.anchor.describe(ctx.file_path.as_deref()).to_string(),
+        )
+        .with("code_block", code_block)
+        .with("surrounding_context", surrounding)
+        .with("earlier_turns", earlier_turns)
+        .with("question", ctx.question.trim())
+        .with("intent_instructions", intent_instructions(ctx.intent))
+        .with("level_instructions", level_instructions(ctx.level))
+        .with(
+            "run_mode_instructions",
+            run_mode_instructions(ctx.run_mode),
+        )
+}
 
-    out.push_str(intent_instructions(ctx.intent));
-    out.push('\n');
-    out.push_str(level_instructions(ctx.level));
-    out.push('\n');
-    out.push_str(run_mode_instructions(ctx.run_mode));
-    out
+/// The full built-in Learning Mode prompt for one question. A thin wrapper
+/// over the registry template; overrides go through the resolver at the call
+/// site ([`crate::app::App::learning_enqueue`]).
+pub fn build_prompt(ctx: &LearningPromptContext) -> String {
+    crate::prompts::render_template(
+        crate::prompts::PromptId::LearningAnswer.spec().default_template,
+        &learning_prompt_context_tokens(ctx),
+    )
 }
 
 /// What the run may look at — and, for a deep dive, what it is obliged to do
@@ -2391,7 +2407,19 @@ impl App {
         // The question runs either way: an answer this session can show is
         // worth more than one refused because history couldn't be written.
         let _ = self.persist_learning_qa(&qa);
-        self.spawn_learning_run(&qa_id, harness, workdir, build_prompt(&ctx), run_mode);
+        let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
+            .unwrap_or_else(|_| workdir.clone());
+        let prompt = self.resolve_headless_prompt(
+            crate::prompts::PromptId::LearningAnswer,
+            &harness,
+            &repo,
+            &workdir,
+            &learning_prompt_context_tokens(&ctx),
+        );
+        // Learning answers run one-per-question and can queue up; a blocking
+        // pre-call modal here would stall the overlay, so this is a toast.
+        self.announce_headless_run(crate::prompts::PromptId::LearningAnswer, &harness);
+        self.spawn_learning_run(&qa_id, harness, workdir, prompt, run_mode);
         Some(qa_id)
     }
 
@@ -5300,6 +5328,48 @@ pub(crate) mod tests {
 
         deliver(&mut app, &first, Ok("First answer".to_string()));
         assert_eq!(learning(&app).in_flight_count(), 0);
+    }
+
+    /// The pre-call notice is a *blocking* modal for user-initiated calls, but
+    /// Learning Mode answers run through the non-blocking toast path so a batch
+    /// of queued questions can't deadlock behind an un-dismissed modal.
+    #[test]
+    fn a_queued_learning_batch_drains_with_only_a_toast_no_modal() {
+        let (_repo, mut app) = opened_app();
+
+        let a = app
+            .learning_ask("Question A", LearningQaIntent::Explain, None)
+            .unwrap();
+        let b = app
+            .learning_ask("Question B", LearningQaIntent::Explain, None)
+            .unwrap();
+
+        // No blocking modal was raised — the overlay is still the active mode.
+        assert!(
+            matches!(app.mode, AppMode::Learning(_)),
+            "asking must not open the pre-call modal"
+        );
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.message.contains("Headless AI call")),
+            "the run is announced with a toast instead"
+        );
+        assert_eq!(learning(&app).in_flight_count(), 2);
+
+        // The queue drains normally with the notice path in place.
+        deliver(&mut app, &b, Ok("Answer B".to_string()));
+        deliver(&mut app, &a, Ok("Answer A".to_string()));
+        assert_eq!(learning(&app).in_flight_count(), 0);
+        let state = learning(&app);
+        assert_eq!(
+            state.qa.iter().find(|r| r.id == a).unwrap().answer.as_deref(),
+            Some("Answer A")
+        );
+        assert_eq!(
+            state.qa.iter().find(|r| r.id == b).unwrap().answer.as_deref(),
+            Some("Answer B")
+        );
     }
 
     #[test]

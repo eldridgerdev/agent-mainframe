@@ -1622,26 +1622,26 @@ fn bootstrap_pr_text(comments: &[ReviewComment], reviews: &[Review]) -> String {
 /// [`review_memory::append_finding`] writes, so the response can be fed
 /// straight back through [`review_memory::parse_findings_markdown`] with no
 /// further parsing.
-fn bootstrap_prompt(pr_bodies: &[(u32, String, String)]) -> String {
-    let mut out = String::from(
-        "You are distilling recurring code-review findings from a project's PR \
-         history into a durable list of lessons for future reviews.\n\n\
-         Below are review comments and review summaries from several recent, \
-         already-merged/closed pull requests. Identify findings that recur across \
-         multiple PRs, or that state a general rule the team clearly cares about — \
-         not a one-off nitpick specific to a single PR's code. Ignore praise, \
-         procedural comments (\"LGTM\", \"done\"), and anything that reads as already \
-         resolved.\n\n\
-         Output ONLY a Markdown list grouped under `## Category` headings (categories \
-         like General, Concurrency, Error handling, Naming, Tests, Performance, API \
-         design, Style), one finding per `- ` bullet, phrased as a general rule (not \
-         tied to a specific file, PR, or person). No prose outside the headings and \
-         bullets.\n\n---\n\n",
-    );
+/// The `{{pr_history}}` value: one `### PR #n: title` block per gathered PR,
+/// trimmed at the end (the built-in template already ends with `---`).
+fn bootstrap_pr_history(pr_bodies: &[(u32, String, String)]) -> String {
+    let mut out = String::new();
     for (number, title, body) in pr_bodies {
         out.push_str(&format!("### PR #{number}: {title}\n{body}\n\n"));
     }
     out.trim_end().to_string()
+}
+
+/// The full built-in review-memory bootstrap prompt. Production renders the
+/// resolved template ([`run_review_memory_bootstrap`]); kept whole for tests.
+#[allow(dead_code)]
+fn bootstrap_prompt(pr_bodies: &[(u32, String, String)]) -> String {
+    crate::prompts::render_template(
+        crate::prompts::PromptId::ReviewMemoryBootstrap
+            .spec()
+            .default_template,
+        &crate::prompts::PromptContext::new().with("pr_history", bootstrap_pr_history(pr_bodies)),
+    )
 }
 
 /// Background body of the lookback bootstrap (Epic E): fetch comments/reviews
@@ -1650,12 +1650,16 @@ fn bootstrap_prompt(pr_bodies: &[(u32, String, String)]) -> String {
 /// doc. Runs off the UI thread; progress and the final result are reported
 /// over `tx`. A single PR's fetch failure is skipped rather than aborting the
 /// whole run — one stale/deleted PR shouldn't sink the batch.
+#[allow(clippy::too_many_arguments)]
 fn run_review_memory_bootstrap(
     workdir: PathBuf,
     memory_path: PathBuf,
     memory_scope: MemoryScope,
     entries: Vec<PrListEntry>,
     model: Option<String>,
+    // The resolved `review_memory.bootstrap` template (built-in or override),
+    // rendered here once the PR history is gathered on this worker thread.
+    template: String,
     tx: std::sync::mpsc::Sender<BootstrapProgress>,
 ) {
     let mut pr_bodies = Vec::new();
@@ -1676,7 +1680,10 @@ fn run_review_memory_bootstrap(
         return;
     }
 
-    let prompt = bootstrap_prompt(&pr_bodies);
+    let prompt = crate::prompts::render_template(
+        &template,
+        &crate::prompts::PromptContext::new().with("pr_history", bootstrap_pr_history(&pr_bodies)),
+    );
     let _ = tx.send(BootstrapProgress::Distilling {
         pr_count: pr_bodies.len(),
         token_estimate: estimate_tokens(&prompt),
@@ -1723,6 +1730,9 @@ fn run_review_memory_compact(
     workdir: PathBuf,
     memory_path: PathBuf,
     model: Option<String>,
+    // The resolved `review_memory.compact` template (built-in or override),
+    // rendered here once the doc is read on this worker thread.
+    template: String,
     tx: std::sync::mpsc::Sender<CompactProgress>,
 ) {
     let contents = match std::fs::read_to_string(&memory_path) {
@@ -1743,7 +1753,10 @@ fn run_review_memory_compact(
         return;
     }
 
-    let prompt = review_memory::compact_prompt(&contents);
+    let prompt = crate::prompts::render_template(
+        &template,
+        &crate::prompts::PromptContext::new().with("doc_contents", contents.clone()),
+    );
     let _ = tx.send(CompactProgress::Compacting {
         token_estimate: estimate_tokens(&prompt),
     });
@@ -4709,11 +4722,35 @@ impl App {
         );
 
         let model = self.config.review_model_for(ReviewAction::ReviewMemory);
+        let (template, _) = self.resolve_headless_template(
+            crate::prompts::PromptId::ReviewMemoryBootstrap,
+            &AgentKind::Claude,
+            &repo,
+            &workdir,
+        );
+        let preview = format!(
+            "{template}\n\n[the gathered PR comments/reviews are spliced into {{{{pr_history}}}} when the call runs]"
+        );
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::ReviewMemoryBootstrap,
+            &AgentKind::Claude,
+            &preview,
+        ) {
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         self.review_memory_bootstrap_bg = Some(rx);
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || {
-            run_review_memory_bootstrap(thread_workdir, memory_path, scope, entries, model, tx);
+            run_review_memory_bootstrap(
+                thread_workdir,
+                memory_path,
+                scope,
+                entries,
+                model,
+                template,
+                tx,
+            );
         });
 
         self.mode = AppMode::ReviewMemoryBootstrapRunning(BootstrapRunState {
@@ -4920,12 +4957,28 @@ impl App {
         );
 
         let model = self.config.review_model_for(ReviewAction::ReviewMemory);
+        let (template, _) = self.resolve_headless_template(
+            crate::prompts::PromptId::ReviewMemoryCompact,
+            &AgentKind::Claude,
+            &repo,
+            &workdir,
+        );
+        let preview = format!(
+            "{template}\n\n[the current review-memory doc is spliced into {{{{doc_contents}}}} when the call runs]"
+        );
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::ReviewMemoryCompact,
+            &AgentKind::Claude,
+            &preview,
+        ) {
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         self.review_memory_compact_bg = Some(rx);
         let thread_workdir = workdir.clone();
         let thread_memory_path = memory_path.clone();
         std::thread::spawn(move || {
-            run_review_memory_compact(thread_workdir, thread_memory_path, model, tx);
+            run_review_memory_compact(thread_workdir, thread_memory_path, model, template, tx);
         });
 
         let run_state = CompactRunState {

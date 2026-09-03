@@ -605,6 +605,44 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::PromptOverrides(state) => {
+            if state.help_open {
+                Line::from(vec![
+                    Span::styled(" Esc", key_style()),
+                    Span::raw(" close help"),
+                ])
+            } else if state.edit.is_some() {
+                Line::from(vec![
+                    Span::styled(" Ctrl+S", key_style()),
+                    Span::raw(" continue  "),
+                    Span::styled("Ctrl+T", key_style()),
+                    Span::raw(" vim  "),
+                    Span::styled("Ctrl+Q", key_style()),
+                    Span::raw(" cancel"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled(" Enter/e", key_style()),
+                    Span::raw(" edit  "),
+                    Span::styled("d", key_style()),
+                    Span::raw(" clear override  "),
+                    Span::styled("?", key_style()),
+                    Span::raw(" help  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" close"),
+                ])
+            }
+        }
+        AppMode::PromptPrecall(_) => Line::from(vec![
+            Span::styled(" v", key_style()),
+            Span::raw(" view prompt  "),
+            Span::styled("e", key_style()),
+            Span::raw(" edit  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" continue  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::PromptEditor(_) => Line::from(vec![
             Span::styled(" Tab", key_style()),
             Span::raw(" switch field  "),

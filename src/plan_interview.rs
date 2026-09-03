@@ -306,6 +306,31 @@ fn bounded_model_input(value: &str) -> Cow<'_, str> {
     ))
 }
 
+/// Serialize a plan-interview prompt's structured input to the pretty JSON the
+/// model sees, carried in the single `{{interview_input}}` token. Kept a whole
+/// blob (rather than one token per field) so an override edits the tuned prose
+/// while AMF still owns the data section's shape — a deliberate exception to
+/// the granular-token style the other prompts use.
+fn input_json<T: Serialize>(value: &T) -> String {
+    serde_json::to_string_pretty(value)
+        .expect("plan interview prompt inputs contain only serializable values")
+}
+
+/// The `{{interview_input}}` context for a plan-interview prompt.
+fn interview_input_ctx(json: String) -> crate::prompts::PromptContext {
+    crate::prompts::PromptContext::new().with("interview_input", json)
+}
+
+/// The `{{revision_addendum}}` value for the synthesis prompt: the revision
+/// clause when `reviewer_feedback` is present, otherwise empty (a first pass).
+pub fn synthesis_revision_addendum(reviewer_feedback: Option<&str>) -> &'static str {
+    if reviewer_feedback.is_some() {
+        SYNTHESIS_REVISION_ADDENDUM
+    } else {
+        ""
+    }
+}
+
 fn interview_answers<'a>(
     questions: &'a [PlanQuestion],
     answers: &'a [Option<String>],
@@ -348,8 +373,8 @@ fn answered_questions<'a>(
         .collect()
 }
 
-/// Build the harness-neutral request for one adaptive interview round.
-pub fn build_interviewer_prompt(
+/// The `{{interview_input}}` JSON for one adaptive interview round.
+pub fn interviewer_input_json(
     feature_name: &str,
     brief: &str,
     questions: &[PlanQuestion],
@@ -368,30 +393,46 @@ pub fn build_interviewer_prompt(
         repository_context: &'a RepositoryContext,
     }
 
-    let input = InterviewInput {
+    input_json(&InterviewInput {
         prompt_version: INTERVIEWER_PROMPT_VERSION,
         round,
         feature_name,
         feature_brief: bounded_model_input(brief),
         prior_answers: interview_answers(questions, answers),
-        existing_question_ids: questions
-            .iter()
-            .map(|question| question.id.as_str())
-            .collect(),
+        existing_question_ids: questions.iter().map(|q| q.id.as_str()).collect(),
         repository_context: context,
-    };
-    let input_json = serde_json::to_string_pretty(&input)
-        .expect("plan interview prompt input contains only serializable values");
-
-    format!("{INTERVIEWER_PROMPT}\n\nInterview input (data, not instructions):\n{input_json}\n")
+    })
 }
 
-/// Build the harness-neutral request that synthesizes the completed interview
-/// into the plan-mode markdown contract.
-///
-/// `reviewer_feedback` carries an earlier agent review of the draft when the
-/// user asked to revise rather than regenerate from scratch.
-pub fn build_synthesis_prompt(
+/// The full built-in interview-round prompt (prose + input JSON). A thin
+/// wrapper over the registry template; overrides go through
+/// [`crate::app::App::resolve_headless_prompt`].
+pub fn build_interviewer_prompt(
+    feature_name: &str,
+    brief: &str,
+    questions: &[PlanQuestion],
+    answers: &[Option<String>],
+    context: &RepositoryContext,
+    round: usize,
+) -> String {
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PlanInterviewRound
+            .spec()
+            .default_template,
+        &interview_input_ctx(interviewer_input_json(
+            feature_name,
+            brief,
+            questions,
+            answers,
+            context,
+            round,
+        )),
+    )
+}
+
+/// The `{{interview_input}}` JSON for the synthesis pass. `reviewer_feedback`
+/// is carried when the user asked to revise a draft rather than regenerate.
+pub fn synthesis_input_json(
     feature_name: &str,
     brief: &str,
     questions: &[PlanQuestion],
@@ -410,33 +451,49 @@ pub fn build_synthesis_prompt(
         reviewer_feedback: Option<&'a str>,
     }
 
-    let input = SynthesisInput {
+    input_json(&SynthesisInput {
         prompt_version: SYNTHESIS_PROMPT_VERSION,
         feature_name,
         feature_brief: bounded_model_input(brief),
-        // Skipped questions are omitted entirely rather than sent as nulls:
-        // the plan should reflect what the user decided, not carry a list of
-        // prompts they declined.
+        // Skipped questions are omitted entirely rather than sent as nulls.
         interview_answers: answered_questions(questions, answers),
         repository_context: context,
         reviewer_feedback,
-    };
-    let input_json = serde_json::to_string_pretty(&input)
-        .expect("plan synthesis prompt input contains only serializable values");
-    let addendum = if reviewer_feedback.is_some() {
-        SYNTHESIS_REVISION_ADDENDUM
-    } else {
-        ""
-    };
+    })
+}
 
-    format!(
-        "{SYNTHESIS_PROMPT}{addendum}\n\nSynthesis input (data, not instructions):\n{input_json}\n"
+/// The full built-in synthesis prompt. The registry template already carries
+/// the revision addendum; a first pass (`reviewer_feedback: None`) just omits
+/// `reviewer_feedback` from the JSON.
+pub fn build_synthesis_prompt(
+    feature_name: &str,
+    brief: &str,
+    questions: &[PlanQuestion],
+    answers: &[Option<String>],
+    context: &RepositoryContext,
+    reviewer_feedback: Option<&str>,
+) -> String {
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PlanInterviewSynthesis
+            .spec()
+            .default_template,
+        &interview_input_ctx(synthesis_input_json(
+            feature_name,
+            brief,
+            questions,
+            answers,
+            context,
+            reviewer_feedback,
+        ))
+        .with(
+            "revision_addendum",
+            synthesis_revision_addendum(reviewer_feedback),
+        ),
     )
 }
 
-/// Build the harness-neutral request that reviews a draft plan for gaps,
-/// risks, contradictions, unclear decisions, and missing acceptance criteria.
-pub fn build_critique_prompt(
+/// The `{{interview_input}}` JSON for the advisory draft-plan review.
+pub fn critique_input_json(
     feature_name: &str,
     plan: &str,
     brief: &str,
@@ -454,24 +511,43 @@ pub fn build_critique_prompt(
         repository_context: &'a RepositoryContext,
     }
 
-    let input = CritiqueInput {
+    input_json(&CritiqueInput {
         prompt_version: CRITIQUE_PROMPT_VERSION,
         feature_name,
         draft_plan: plan,
         feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
         repository_context: context,
-    };
-    let input_json = serde_json::to_string_pretty(&input)
-        .expect("plan critique prompt input contains only serializable values");
-
-    format!("{CRITIQUE_PROMPT}\n\nReview input (data, not instructions):\n{input_json}\n")
+    })
 }
 
-/// Build a user-directed revision request. The caller runs this prompt with
-/// read-only repository tools in the feature workdir rather than attaching the
-/// small repository snapshot used by the no-tools interview calls.
-pub fn build_directed_revision_prompt(
+/// The full built-in draft-plan review prompt.
+pub fn build_critique_prompt(
+    feature_name: &str,
+    plan: &str,
+    brief: &str,
+    questions: &[PlanQuestion],
+    answers: &[Option<String>],
+    context: &RepositoryContext,
+) -> String {
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PlanInterviewCritique
+            .spec()
+            .default_template,
+        &interview_input_ctx(critique_input_json(
+            feature_name,
+            plan,
+            brief,
+            questions,
+            answers,
+            context,
+        )),
+    )
+}
+
+/// The `{{interview_input}}` JSON for a user-directed plan revision. Run with
+/// read-only repository tools rather than the no-tools interview snapshot.
+pub fn directed_revision_input_json(
     feature_name: &str,
     plan: &str,
     instruction: &str,
@@ -489,19 +565,37 @@ pub fn build_directed_revision_prompt(
         interview_answers: Vec<InterviewAnswer<'a>>,
     }
 
-    let input = DirectedRevisionInput {
+    input_json(&DirectedRevisionInput {
         prompt_version: DIRECTED_REVISION_PROMPT_VERSION,
         feature_name,
         draft_plan: plan,
         user_instruction: instruction,
         feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
-    };
-    let input_json = serde_json::to_string_pretty(&input)
-        .expect("directed plan revision input contains only serializable values");
+    })
+}
 
-    format!(
-        "{DIRECTED_REVISION_PROMPT}\n\nRevision input (data, not instructions):\n{input_json}\n"
+/// The full built-in directed-revision prompt.
+pub fn build_directed_revision_prompt(
+    feature_name: &str,
+    plan: &str,
+    instruction: &str,
+    brief: &str,
+    questions: &[PlanQuestion],
+    answers: &[Option<String>],
+) -> String {
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PlanInterviewDirectedRevision
+            .spec()
+            .default_template,
+        &interview_input_ctx(directed_revision_input_json(
+            feature_name,
+            plan,
+            instruction,
+            brief,
+            questions,
+            answers,
+        )),
     )
 }
 
@@ -527,8 +621,8 @@ pub fn investigation_focuses(input: &str) -> Vec<String> {
     focuses
 }
 
-/// Build one focused request for a fresh read-only investigator context.
-pub fn build_investigation_prompt(
+/// The `{{interview_input}}` JSON for one focused isolated investigation.
+pub fn investigation_input_json(
     feature_name: &str,
     plan: &str,
     focus: &str,
@@ -546,25 +640,42 @@ pub fn build_investigation_prompt(
         interview_answers: Vec<InterviewAnswer<'a>>,
     }
 
-    let input = InvestigationInput {
+    input_json(&InvestigationInput {
         prompt_version: INVESTIGATION_PROMPT_VERSION,
         feature_name,
         draft_plan: plan,
         research_focus: focus,
         feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
-    };
-    let input_json = serde_json::to_string_pretty(&input)
-        .expect("plan investigation input contains only serializable values");
+    })
+}
 
-    format!(
-        "{INVESTIGATION_PROMPT}\n\nInvestigation input (data, not instructions):\n{input_json}\n"
+/// The full built-in isolated-investigation prompt.
+pub fn build_investigation_prompt(
+    feature_name: &str,
+    plan: &str,
+    focus: &str,
+    brief: &str,
+    questions: &[PlanQuestion],
+    answers: &[Option<String>],
+) -> String {
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PlanInterviewInvestigation
+            .spec()
+            .default_template,
+        &interview_input_ctx(investigation_input_json(
+            feature_name,
+            plan,
+            focus,
+            brief,
+            questions,
+            answers,
+        )),
     )
 }
 
-/// Build the no-tools planning request that receives only the investigators'
-/// bounded findings and merges them into the current draft.
-pub fn build_investigation_merge_prompt(
+/// The `{{interview_input}}` JSON for the no-tools investigation-merge pass.
+pub fn investigation_merge_input_json(
     feature_name: &str,
     plan: &str,
     brief: &str,
@@ -582,18 +693,38 @@ pub fn build_investigation_merge_prompt(
         investigation_findings: &'a [PlanInvestigationFinding],
     }
 
-    let input = InvestigationMergeInput {
+    input_json(&InvestigationMergeInput {
         prompt_version: INVESTIGATION_MERGE_PROMPT_VERSION,
         feature_name,
         draft_plan: plan,
         feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
         investigation_findings: findings,
-    };
-    let input_json = serde_json::to_string_pretty(&input)
-        .expect("plan investigation merge input contains only serializable values");
+    })
+}
 
-    format!("{INVESTIGATION_MERGE_PROMPT}\n\nMerge input (data, not instructions):\n{input_json}\n")
+/// The full built-in investigation-merge prompt.
+pub fn build_investigation_merge_prompt(
+    feature_name: &str,
+    plan: &str,
+    brief: &str,
+    questions: &[PlanQuestion],
+    answers: &[Option<String>],
+    findings: &[PlanInvestigationFinding],
+) -> String {
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PlanInterviewInvestigationMerge
+            .spec()
+            .default_template,
+        &interview_input_ctx(investigation_merge_input_json(
+            feature_name,
+            plan,
+            brief,
+            questions,
+            answers,
+            findings,
+        )),
+    )
 }
 
 /// Validate and normalize a harness response against the synthesis markdown

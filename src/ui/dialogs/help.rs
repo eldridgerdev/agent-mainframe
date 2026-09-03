@@ -33,6 +33,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("D", "View debug log"),
         ("p", "Open syntax parser picker"),
         ("L", "Open prompt library"),
+        ("E", "Edit headless AI prompt templates (overrides)"),
         ("G", "Open PR Triage (experimental)"),
         ("W", "Open AI Review for this feature (experimental)"),
         (
@@ -261,6 +262,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("/", "Command picker (slash + AMF actions)"),
         ("a", "AMF local actions picker"),
         ("p", "Prompt library (inject saved prompt)"),
+        ("E", "Edit headless AI prompt templates (overrides)"),
         ("R", "Refresh pane sizing"),
         ("D", "Debug log"),
         ("A", "Manage agent harnesses"),

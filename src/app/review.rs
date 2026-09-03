@@ -1595,7 +1595,7 @@ impl App {
     /// is collected by `poll_review_walkthrough` and cached in `generated_notes`
     /// so the developer-notes panel is never empty.
     pub fn generate_review_walkthrough(&mut self) {
-        let (workdir, path, prompt) = {
+        let (workdir, path, ctx) = {
             let AppMode::DiffViewer(state) = &self.mode else {
                 return;
             };
@@ -1621,9 +1621,25 @@ impl App {
                 let _ = path;
                 return;
             }
-            (state.workdir.clone(), path, build_walkthrough_prompt(file))
+            (state.workdir.clone(), path, walkthrough_context(file))
         };
 
+        let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
+            .unwrap_or_else(|_| workdir.clone());
+        let prompt = self.resolve_headless_prompt(
+            crate::prompts::PromptId::ReviewWalkthrough,
+            &crate::project::AgentKind::Claude,
+            &repo,
+            &workdir,
+            &ctx,
+        );
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::ReviewWalkthrough,
+            &crate::project::AgentKind::Claude,
+            &prompt,
+        ) {
+            return;
+        }
         let model = self.config.review_model_for(ReviewAction::Walkthrough);
         match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
@@ -1692,7 +1708,7 @@ impl App {
     /// `<line>|<comment>`; `poll_co_review` parses them into *draft* line
     /// comments the reviewer then accepts / edits / dismisses.
     pub fn generate_co_review(&mut self) {
-        let (workdir, path, prompt) = {
+        let (workdir, path, ctx) = {
             let AppMode::DiffViewer(state) = &self.mode else {
                 return;
             };
@@ -1710,13 +1726,25 @@ impl App {
                 self.message = Some("AI co-review: nothing to review in this file".to_string());
                 return;
             }
-            (
-                state.workdir.clone(),
-                file.path.clone(),
-                build_co_review_prompt(file),
-            )
+            (state.workdir.clone(), file.path.clone(), co_review_context(file))
         };
 
+        let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
+            .unwrap_or_else(|_| workdir.clone());
+        let prompt = self.resolve_headless_prompt(
+            crate::prompts::PromptId::ReviewCoReview,
+            &crate::project::AgentKind::Claude,
+            &repo,
+            &workdir,
+            &ctx,
+        );
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::ReviewCoReview,
+            &crate::project::AgentKind::Claude,
+            &prompt,
+        ) {
+            return;
+        }
         let model = self.config.review_model_for(ReviewAction::CoReview);
         match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
@@ -1818,10 +1846,15 @@ impl App {
         if !state.review {
             return;
         }
-        state.changeset_overview_open = true;
-        if state.changeset_overview.is_none() && state.changeset_overview_child.is_none() {
-            self.generate_changeset_overview();
+        if state.changeset_overview.is_some() || state.changeset_overview_child.is_some() {
+            // Cached or already running: just show it.
+            state.changeset_overview_open = true;
+            return;
         }
+        // A fresh pass: `generate_changeset_overview` opens the modal only once
+        // the run actually starts, so a cancelled pre-call notice leaves the
+        // viewer with no half-open "generating…" modal.
+        self.generate_changeset_overview();
     }
 
     /// Spawn (or re-spawn) a headless whole-changeset overview pass. Unlike
@@ -1829,7 +1862,7 @@ impl App {
     /// none is already in flight — the explicit "regenerate" action once the
     /// modal is open.
     pub fn generate_changeset_overview(&mut self) {
-        let (workdir, prompt) = {
+        let (workdir, ctx) = {
             let AppMode::DiffViewer(state) = &self.mode else {
                 return;
             };
@@ -1841,10 +1874,26 @@ impl App {
             }
             (
                 state.workdir.clone(),
-                build_changeset_overview_prompt(&state.files),
+                changeset_overview_context(&state.files),
             )
         };
 
+        let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
+            .unwrap_or_else(|_| workdir.clone());
+        let prompt = self.resolve_headless_prompt(
+            crate::prompts::PromptId::ReviewChangesetOverview,
+            &crate::project::AgentKind::Claude,
+            &repo,
+            &workdir,
+            &ctx,
+        );
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::ReviewChangesetOverview,
+            &crate::project::AgentKind::Claude,
+            &prompt,
+        ) {
+            return;
+        }
         let model = self
             .config
             .review_model_for(ReviewAction::ChangesetOverview);
@@ -1853,6 +1902,7 @@ impl App {
                 self.message = Some("Changeset overview running…".to_string());
                 if let AppMode::DiffViewer(state) = &mut self.mode {
                     state.changeset_overview_child = Some(child);
+                    state.changeset_overview_open = true;
                 }
             }
             Err(err) => {
@@ -4826,9 +4876,9 @@ fn parse_agent_responses(
     out
 }
 
-/// Build the prompt for an on-demand walkthrough of a file's diff. Large
-/// patches are truncated to keep the headless request bounded.
-fn build_walkthrough_prompt(file: &crate::diff::DiffFile) -> String {
+/// The `{{file_path}}` / `{{patch}}` context for `PromptId::ReviewWalkthrough`.
+/// Large patches are truncated here to keep the headless request bounded.
+fn walkthrough_context(file: &crate::diff::DiffFile) -> crate::prompts::PromptContext {
     const MAX_PATCH: usize = 8000;
     let mut patch = if file.patch.trim().is_empty() {
         file.new_content.clone().unwrap_or_default()
@@ -4839,21 +4889,17 @@ fn build_walkthrough_prompt(file: &crate::diff::DiffFile) -> String {
         patch.truncate(MAX_PATCH);
         patch.push_str("\n… (diff truncated)");
     }
-    format!(
-        "You are helping a reviewer understand a code change during final \
-         review. Concisely explain what this diff does and why it likely \
-         matters. Answer in short markdown: a sentence or two of summary, then \
-         a few bullet points for the notable changes. Do not restate the diff \
-         line by line.\n\nFile: {}\n\n```diff\n{}\n```",
-        file.path, patch
-    )
+    crate::prompts::PromptContext::new()
+        .with("file_path", file.path.clone())
+        .with("patch", patch)
 }
 
-/// Build the headless prompt for an AI co-review pass over a single file. The
-/// diff is rendered with each current-side line tagged by its **new** line
-/// number so the model can anchor findings precisely, and bounded like the
-/// walkthrough so a large file can't blow up token cost.
-fn build_co_review_prompt(file: &crate::diff::DiffFile) -> String {
+/// The `{{file_path}}` / `{{annotated_body}}` context for
+/// `PromptId::ReviewCoReview`. The diff is rendered with each current-side
+/// line tagged by its **new** line number so the model can anchor findings
+/// precisely, and bounded like the walkthrough so a large file can't blow up
+/// token cost.
+fn co_review_context(file: &crate::diff::DiffFile) -> crate::prompts::PromptContext {
     use crate::diff::DiffLineKind;
     const MAX_BODY: usize = 8000;
 
@@ -4882,31 +4928,17 @@ fn build_co_review_prompt(file: &crate::diff::DiffFile) -> String {
         body.push_str("\n… (diff truncated)");
     }
 
-    format!(
-        "You are an AI co-reviewer doing a first pass on a code change so a human \
-         reviewer can adjudicate your findings. Review the diff below for bugs, \
-         correctness issues, missing edge cases, and clear quality problems. Be \
-         selective — only flag things worth a human's attention; skip nits and \
-         style unless they matter.\n\n\
-         Each line is prefixed with its line number in the new file; `+` marks an \
-         added line, `-` a removed line (removed lines have no number).\n\n\
-         Output ONLY your findings, one per line, each formatted EXACTLY as \
-         `<line>|<comment>` where `<line>` is the new-file line number the comment \
-         is about (pick an added or context line, never a removed `-` line). Keep \
-         each comment to one or two sentences. If you find nothing worth raising, \
-         output nothing at all.\n\n\
-         File: {}\n\n```\n{}\n```",
-        file.path, body
-    )
+    crate::prompts::PromptContext::new()
+        .with("file_path", file.path.clone())
+        .with("annotated_body", body)
 }
 
-/// Build the prompt for an on-demand overview / risk summary of the **whole**
-/// changeset (reviewer-triggered via `O`, never automatic). Bounded on two
-/// axes so a large changeset can't produce an unbounded headless request: the
-/// file list is capped at `MAX_FILES`, and each included file's patch gets a
-/// much smaller budget than the single-file walkthrough's, since this prompt
-/// aggregates many files at once.
-fn build_changeset_overview_prompt(files: &[crate::diff::DiffFile]) -> String {
+/// The `{{files_block}}` context for `PromptId::ReviewChangesetOverview`.
+/// Bounded on two axes so a large changeset can't produce an unbounded
+/// headless request: the file list is capped at `MAX_FILES`, and each
+/// included file's patch gets a much smaller budget than the single-file
+/// walkthrough's, since this prompt aggregates many files at once.
+fn changeset_overview_context(files: &[crate::diff::DiffFile]) -> crate::prompts::PromptContext {
     const MAX_FILES: usize = 30;
     const MAX_PATCH_PER_FILE: usize = 400;
     const MAX_TOTAL: usize = 16000;
@@ -4939,16 +4971,7 @@ fn build_changeset_overview_prompt(files: &[crate::diff::DiffFile]) -> String {
         body.push_str(&format!("… and {remaining} more file(s) not shown.\n"));
     }
 
-    format!(
-        "You are helping a reviewer triage a full changeset before a final review. \
-         Given the per-file diffs below, write a short markdown overview: a couple \
-         of sentences on what the change does overall, then a bulleted list of the \
-         areas it touches, then a short \"Risk factors\" list flagging anything that \
-         deserves extra attention (large surface area, files with no obvious test \
-         coverage, cross-cutting or structural changes, anything that looks \
-         unusually risky). Be concise — this is a triage aid, not a full review.\n\n\
-         {body}"
-    )
+    crate::prompts::PromptContext::new().with("files_block", body)
 }
 
 /// Parse the `<line>|<comment>` findings emitted by `build_co_review_prompt`'s
@@ -5214,7 +5237,7 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 mod tests {
     use super::{
         CHECK_OUTPUT_MAX_CHARS, anchor_file_path, apply_suggestions_to_file, archive_review_notes,
-        build_pr_review, build_walkthrough_prompt, comment_anchor_label, compose_feedback_log,
+        build_pr_review, comment_anchor_label, compose_feedback_log, walkthrough_context,
         compute_search_matches, editor_invocation, editor_target_line, load_review_notes,
         parse_agent_responses, parse_co_review_output, parse_review_history_rounds,
         parse_review_notes, pr_postable_lines, reanchor_file_comments, severity_review_event,
@@ -5985,7 +6008,12 @@ second line of reply.
             patch: "@@ -1 +1 @@\n-old line\n+new line".into(),
             hunks: vec![],
         };
-        let prompt = build_walkthrough_prompt(&file);
+        let prompt = crate::prompts::render_template(
+            crate::prompts::PromptId::ReviewWalkthrough
+                .spec()
+                .default_template,
+            &walkthrough_context(&file),
+        );
         assert!(prompt.contains("File: a.rs"));
         assert!(prompt.contains("+new line"));
         assert!(prompt.contains("```diff"));
@@ -6005,7 +6033,12 @@ second line of reply.
             patch: "+x\n".repeat(10_000),
             hunks: vec![],
         };
-        let prompt = build_walkthrough_prompt(&file);
+        let prompt = crate::prompts::render_template(
+            crate::prompts::PromptId::ReviewWalkthrough
+                .spec()
+                .default_template,
+            &walkthrough_context(&file),
+        );
         assert!(prompt.contains("(diff truncated)"));
     }
 

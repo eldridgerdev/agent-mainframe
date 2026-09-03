@@ -5293,6 +5293,45 @@ fn done_after_synthesis_reopens_the_existing_plan_without_spending_tokens() {
     ));
 }
 
+/// Task 11: the plan-interview AI round is a *user-initiated* headless call,
+/// so it gates behind the blocking pre-call notice. Rounds fire one at a time
+/// (the user answers questions between them, and a poll-triggered round opens
+/// the notice and returns), so there is no queue of un-dismissed modals to
+/// deadlock on. Declining leaves the interview in a clean, resumable state.
+#[test]
+fn plan_interview_ai_round_gates_behind_the_pre_call_notice_and_declines_cleanly() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        // A resolved interview harness so the round reaches its gate rather
+        // than probing for an installed CLI.
+        state.ai_harness = Some(Some(AgentKind::Claude));
+        state.ai_followups_opted_in = true;
+    } else {
+        panic!("expected plan interview mode");
+    }
+
+    app.start_next_plan_interview_ai_round().unwrap();
+
+    assert!(
+        matches!(&app.mode, AppMode::PromptPrecall(p)
+            if p.prompt_id == crate::prompts::PromptId::PlanInterviewRound),
+        "the round opens the pre-call notice"
+    );
+    assert!(
+        app.plan_interview_ai_bg.is_none(),
+        "nothing dispatched while the notice is up"
+    );
+
+    app.precall_cancel();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(s)
+        if s.phase != PlanInterviewPhase::AiLoading));
+    assert!(app.plan_interview_ai_bg.is_none());
+    assert!(
+        app.precall_cleared.is_none(),
+        "no stale clearance left behind"
+    );
+}
+
 #[test]
 fn poll_plan_interview_ai_bg_appends_follow_ups_and_resumes_questions() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
@@ -15152,6 +15191,10 @@ fn review_memory_compact_confirm_run_targets_the_selected_global_doc() {
     });
 
     app.review_memory_compact_confirm_run();
+    // The pre-call notice interposes; continuing dispatches the run.
+    assert!(matches!(&app.mode, AppMode::PromptPrecall(p)
+        if p.prompt_id == crate::prompts::PromptId::ReviewMemoryCompact));
+    app.precall_confirm().unwrap();
 
     match &app.mode {
         AppMode::ReviewMemoryCompactRunning(state) => {
@@ -26679,4 +26722,279 @@ fn a_waiting_session_still_counts_toward_dormancy_and_the_agent_gate() {
         &|_| false,
     );
     assert_eq!(dormant.len(), 1, "a waiting feature can still be dormant");
+}
+
+// ---------------------------------------------------------------------------
+// Editable headless prompts: registry resolution + interpolation
+// (`crate::prompts`). Kept here per AMF_PLAN.md; deeper cases live in
+// `src/prompts/resolve.rs`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_prompt_with_no_override_returns_the_builtin_default() {
+    use crate::prompts::{PromptContext, PromptId, resolve_prompt};
+    let ctx = PromptContext::new()
+        .with("harness_name", "Claude")
+        .with("max_chars", "60")
+        .with("recent_lines", "did some work");
+    let rendered = resolve_prompt(PromptId::SessionSummary, &AgentKind::Claude, &ctx);
+    assert_eq!(
+        rendered,
+        crate::prompts::render_template(
+            PromptId::SessionSummary.spec().default_template,
+            &ctx
+        )
+    );
+    assert!(rendered.contains("Summarize this Claude session in one line (max 60 chars)"));
+    assert!(rendered.contains("did some work"));
+}
+
+#[test]
+fn resolve_prompt_renders_a_missing_placeholder_literally() {
+    use crate::prompts::{PromptContext, PromptId, resolve_prompt};
+    // `recent_lines` deliberately omitted.
+    let ctx = PromptContext::new()
+        .with("harness_name", "Codex")
+        .with("max_chars", "60");
+    let rendered = resolve_prompt(PromptId::SessionSummary, &AgentKind::Codex, &ctx);
+    assert!(rendered.contains("Session output:\n{{recent_lines}}"), "{rendered}");
+}
+
+#[test]
+fn resolve_prompt_renders_an_unknown_token_literally() {
+    use crate::prompts::{PromptContext, render_template};
+    let ctx = PromptContext::new().with("a", "1");
+    assert_eq!(
+        render_template("{{a}} {{not_a_real_token}}", &ctx),
+        "1 {{not_a_real_token}}"
+    );
+}
+
+#[test]
+fn resolve_headless_template_applies_a_global_db_override_and_falls_back_otherwise() {
+    use crate::db::AmfDb;
+    use crate::db::prompt_overrides::OverrideScope;
+    use crate::prompts::PromptId;
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = NamedTempFile::new().unwrap();
+    app.db = Some(AmfDb::open(db_file.path()).unwrap());
+
+    let repo = app.store.projects[0].repo.clone();
+    let workdir = app.store.projects[0].features[0].workdir.clone();
+
+    // No override yet → built-in default.
+    let (before, source) = app.resolve_headless_template(
+        PromptId::SessionSummary,
+        &AgentKind::Claude,
+        &repo,
+        &workdir,
+    );
+    assert_eq!(source, crate::prompts::PromptSource::BuiltIn);
+    assert_eq!(before, PromptId::SessionSummary.spec().default_template);
+
+    // Write a global-scope shared override.
+    app.db
+        .as_ref()
+        .unwrap()
+        .upsert_prompt_override(
+            PromptId::SessionSummary.as_str(),
+            &OverrideScope::Global,
+            None,
+            "OVERRIDDEN {{recent_lines}}",
+        )
+        .unwrap();
+
+    let (after, source) = app.resolve_headless_template(
+        PromptId::SessionSummary,
+        &AgentKind::Claude,
+        &repo,
+        &workdir,
+    );
+    assert_eq!(source, crate::prompts::PromptSource::Global);
+    assert_eq!(after, "OVERRIDDEN {{recent_lines}}");
+
+    // And it interpolates through the render helper.
+    let rendered = app.resolve_headless_prompt(
+        PromptId::SessionSummary,
+        &AgentKind::Claude,
+        &repo,
+        &workdir,
+        &crate::prompts::PromptContext::new().with("recent_lines", "did work"),
+    );
+    assert_eq!(rendered, "OVERRIDDEN did work");
+}
+
+#[test]
+fn prompt_override_manager_saves_to_each_scope_and_survives_reopen() {
+    use crate::db::AmfDb;
+    use crate::prompts::{PromptId, PromptSource};
+
+    let repo = tempfile::TempDir::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = NamedTempFile::new().unwrap();
+    app.db = Some(AmfDb::open(db_file.path()).unwrap());
+    app.selection = Selection::Feature(0, 0);
+
+    // Save a distinct override at each of the three scopes.
+    let cases = [
+        (PromptId::SessionSummary, "This project (amf.json)", "PROJECT one-liner {{recent_lines}}", PromptSource::Project),
+        (PromptId::ReviewWalkthrough, "Global (all projects)", "GLOBAL walkthrough {{patch}}", PromptSource::Global),
+        (PromptId::LearningAnswer, "This feature", "FEATURE answer {{question}}", PromptSource::Feature),
+    ];
+
+    for (id, scope_label, template, _expected) in cases {
+        app.open_prompt_overrides(None);
+        // Select the target row.
+        let idx = crate::prompts::PromptId::ALL
+            .iter()
+            .position(|p| *p == id)
+            .unwrap();
+        if let AppMode::PromptOverrides(state) = &mut app.mode {
+            state.selected = idx;
+        }
+        app.prompt_overrides_start_edit();
+        if let AppMode::PromptOverrides(state) = &mut app.mode {
+            let edit = state.edit.as_mut().unwrap();
+            edit.editor.clear();
+            edit.editor.insert_str(template);
+            // Pick the scope.
+            edit.scope_index = edit
+                .scopes
+                .iter()
+                .position(|s| s.label() == scope_label)
+                .unwrap();
+            // harness_index 0 = shared.
+        }
+        app.prompt_overrides_confirm_save().unwrap();
+        assert!(
+            matches!(&app.mode, AppMode::PromptOverrides(s) if s.edit.is_none()),
+            "editor closes after save"
+        );
+        app.prompt_overrides_close();
+    }
+
+    // Reopen: each row now reports its override source, and the effective
+    // template (resolved the same way the call sites do) is the saved text.
+    app.open_prompt_overrides(None);
+    let rows = match &app.mode {
+        AppMode::PromptOverrides(state) => state.rows.clone(),
+        _ => panic!("manager not open"),
+    };
+    let repo_path = repo.path().to_path_buf();
+    for (id, _scope, template, expected) in cases {
+        let row = rows.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row.source, expected, "{} source after reopen", id.as_str());
+        let (effective, source) = app.resolve_headless_template(
+            id,
+            &AgentKind::default(),
+            &repo_path,
+            &repo_path,
+        );
+        assert_eq!(source, expected, "{} resolved source", id.as_str());
+        assert_eq!(effective, template, "{} effective template", id.as_str());
+    }
+}
+
+#[test]
+fn dashboard_shift_e_opens_the_prompt_override_manager() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    crate::handlers::handle_normal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE),
+    )
+    .unwrap();
+
+    assert!(
+        matches!(&app.mode, AppMode::PromptOverrides(state)
+            if state.rows.len() == crate::prompts::PromptId::ALL.len() && state.from_view.is_none()),
+        "E on the dashboard opens the manager"
+    );
+
+    // Esc closes back to the dashboard.
+    crate::handlers::handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        20,
+    )
+    .unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn precall_edit_opens_the_manager_focused_and_returns_to_the_notice() {
+    use crate::app::precall::{PendingPrecall, PrecallAction};
+    use crate::prompts::PromptId;
+
+    let repo = tempfile::TempDir::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(crate::db::AmfDb::open(NamedTempFile::new().unwrap().path()).unwrap());
+    app.selection = Selection::Feature(0, 0);
+
+    app.mode = AppMode::PromptPrecall(Box::new(PendingPrecall {
+        action: PrecallAction::ReviewChangesetOverview,
+        prompt_id: PromptId::ReviewChangesetOverview,
+        harness: AgentKind::Claude,
+        preview: "some rendered prompt".to_string(),
+        viewing: false,
+        scroll: 0,
+        prior_mode: Box::new(AppMode::Normal),
+    }));
+
+    // `e` opens the override manager, pre-selected on that prompt.
+    app.precall_edit();
+    let selected_id = match &app.mode {
+        AppMode::PromptOverrides(state) => state.rows[state.selected].id,
+        other => panic!("expected manager, got {:?}", std::mem::discriminant(other)),
+    };
+    assert_eq!(selected_id, PromptId::ReviewChangesetOverview);
+
+    // Closing the manager returns to the pre-call notice (not the dashboard).
+    app.prompt_overrides_close();
+    assert!(matches!(&app.mode, AppMode::PromptPrecall(p)
+        if p.prompt_id == PromptId::ReviewChangesetOverview));
+
+    // Cancel restores the mode the run was initiated from.
+    app.precall_cancel();
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn automated_headless_runs_announce_with_a_toast_not_a_modal() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.announce_headless_run(crate::prompts::PromptId::LearningAnswer, &AgentKind::Codex);
+    assert!(!matches!(app.mode, AppMode::PromptPrecall(_)));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.message.contains("Headless AI call") && t.message.contains("Codex")),
+        "expected an announcing toast"
+    );
 }

@@ -1,0 +1,85 @@
+# editable-prompts: visual proof of the "Editable Headless Prompts" feature.
+# Shows the new prompt-override manager (dashboard `E`, or Ctrl+Space then E
+# from a session) and its edit flow: the list with per-prompt effective-source
+# badges -> the template editor with visible {{tokens}} -> the scope picker
+# (feature / project / global) -> the harness picker -> the help panel.
+#
+# Needs a seeded project + one feature so the manager offers all three scopes.
+# Copy scenarios/seed-project.json and scenarios/seed-feature.json, fill in an
+# absolute repo `path` in the project seed, and run:
+#
+#   scripts/dev/screenshot/amf-capture.sh \
+#     --scenario   scripts/dev/screenshot/scenarios/editable-prompts.txt \
+#     --seed        <filled>/seed-project.json \
+#     --seed-feature <filled>/seed-feature.json \
+#     --geometry 150x44
+
+# Let the seed's harness-config toast clear first.
+wait:1600
+note:The dashboard with a seeded project and feature.
+shot:dashboard
+
+# One `j` from the default (project) selection lands on the feature, so the
+# manager has feature + project + global all in scope.
+key:j
+wait:300
+note:The feature is selected, so an override can be scoped to this checkout.
+shot:feature-selected
+
+# `E` opens the prompt-override manager (also Ctrl+Space then E from a session).
+key:E
+wait:500
+note:The manager lists every headless prompt AMF sends, each with its effective source (built-in / feature / project / global) and [F][P][G] flags for which scopes already carry an override. All 15 start as built-in.
+shot:manager-list
+
+# Move down to a prompt worth editing.
+key:j
+wait:150
+key:j
+wait:150
+key:j
+wait:150
+note:Navigating the list; the selected row shows the prompt title, its stable id, and the [F][P][G] override-presence flags.
+shot:manager-list-navigated
+
+# `Enter` opens the editor pre-filled with the effective template.
+key:Enter
+wait:500
+note:The editor opens on the effective template. Placeholders like {{interview_input}} stay visible and are re-filled with live context at run time; edits are never validated.
+shot:editor
+
+# `Ctrl+S` advances to the scope picker.
+key:C-s
+wait:500
+note:On save, the scope picker chooses where the override is stored -- this feature (amf.db), this project (amf.json, committed with the repo), or global (amf.db). Nearest scope wins at resolution time.
+shot:scope-picker
+
+# `Enter` on a scope advances to the harness picker.
+key:Enter
+wait:500
+note:The harness picker makes the override shared across every harness or pinned to one; a per-harness template beats the shared one within the winning scope.
+shot:harness-picker
+
+# Back out to the list without saving: harness -> scope -> editor -> list.
+key:Escape
+wait:150
+key:Escape
+wait:150
+key:Escape
+wait:300
+note:Esc backs out of each step; from the list Esc closes the manager.
+shot:back-to-list
+
+# `?` shows the manager's help panel.
+key:?
+wait:300
+note:The manager's built-in help explains scope precedence, the per-harness rule, and that placeholder edits are never validated.
+shot:help-panel
+
+# Esc closes help, Esc closes the manager back to the dashboard.
+key:Escape
+wait:200
+key:Escape
+wait:400
+note:Esc returns cleanly to the dashboard.
+shot:dashboard-after

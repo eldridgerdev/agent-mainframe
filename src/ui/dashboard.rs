@@ -1105,6 +1105,8 @@ fn mode_view_context(mode: &AppMode) -> Option<&crate::app::ViewState> {
         AppMode::DiffReviewPrompt(state) => state.return_to_view.as_ref(),
         AppMode::LatestPrompt(state) => Some(&state.view),
         AppMode::PromptLibrary(state) => state.from_view.as_ref(),
+        AppMode::PromptOverrides(state) => state.from_view.as_ref(),
+        AppMode::PromptPrecall(pending) => mode_view_context(pending.prior_mode.as_ref()),
         AppMode::PromptEditor(state) => mode_view_context(state.return_to.as_ref()),
         AppMode::PlaceholderFill(state) => state.from_view.as_ref(),
         AppMode::SkillPicker(state) => mode_view_context(state.return_to.as_ref()),
@@ -1881,6 +1883,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::PromptEditor(state) = &app.mode {
         super::dialogs::draw_prompt_editor(frame, state, &app.theme);
+    }
+
+    if let AppMode::PromptOverrides(state) = &app.mode {
+        super::dialogs::draw_prompt_overrides(frame, state, &app.theme);
+    }
+
+    if let AppMode::PromptPrecall(pending) = &app.mode {
+        super::dialogs::draw_prompt_precall(frame, pending, &app.theme);
     }
 
     if let AppMode::PlaceholderFill(state) = &app.mode {

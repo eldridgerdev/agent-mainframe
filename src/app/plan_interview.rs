@@ -576,7 +576,7 @@ impl App {
     /// Resolve the interview engine (lazily, once) and spawn one AI-adaptive
     /// round off the UI thread. Falls straight through to completion when no
     /// headless-capable harness is available — AI rounds are best-effort.
-    fn start_next_plan_interview_ai_round(&mut self) -> Result<()> {
+    pub(crate) fn start_next_plan_interview_ai_round(&mut self) -> Result<()> {
         let (
             preferred_harness,
             resolved_harness,
@@ -618,15 +618,34 @@ impl App {
         };
 
         let context = plan_interview::gather_repository_context(&workdir);
-        let prompt = plan_interview::build_interviewer_prompt(
-            &feature_name,
-            &brief,
-            &questions,
-            &answers,
-            &context,
-            round,
+        let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
+            .unwrap_or_else(|_| workdir.clone());
+        let prompt = self.resolve_headless_prompt(
+            crate::prompts::PromptId::PlanInterviewRound,
+            &harness,
+            &repo,
+            &workdir,
+            &crate::prompts::PromptContext::new().with(
+                "interview_input",
+                plan_interview::interviewer_input_json(
+                    &feature_name,
+                    &brief,
+                    &questions,
+                    &answers,
+                    &context,
+                    round,
+                ),
+            ),
         );
         let token_estimate = estimate_tokens(&prompt);
+
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::PlanRound,
+            &harness,
+            &prompt,
+        ) {
+            return Ok(());
+        }
 
         self.log_info(
             "plan_interview",
@@ -723,21 +742,45 @@ impl App {
             return Ok(());
         };
 
+        let context = plan_interview::gather_repository_context(&workdir);
+        let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
+            .unwrap_or_else(|_| workdir.clone());
+        let prompt = self.resolve_headless_prompt(
+            crate::prompts::PromptId::PlanInterviewSynthesis,
+            &harness,
+            &repo,
+            &workdir,
+            &crate::prompts::PromptContext::new()
+                .with(
+                    "interview_input",
+                    plan_interview::synthesis_input_json(
+                        &feature_name,
+                        &brief,
+                        &questions,
+                        &answers,
+                        &context,
+                        revision_critique.as_deref(),
+                    ),
+                )
+                .with(
+                    "revision_addendum",
+                    plan_interview::synthesis_revision_addendum(revision_critique.as_deref()),
+                ),
+        );
+        let token_estimate = estimate_tokens(&prompt);
+
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::PlanSynthesis,
+            &harness,
+            &prompt,
+        ) {
+            return Ok(());
+        }
+
         // Committed to the pass now, so the staged feedback is spent.
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.take_revision_critique();
         }
-
-        let context = plan_interview::gather_repository_context(&workdir);
-        let prompt = plan_interview::build_synthesis_prompt(
-            &feature_name,
-            &brief,
-            &questions,
-            &answers,
-            &context,
-            revision_critique.as_deref(),
-        );
-        let token_estimate = estimate_tokens(&prompt);
 
         self.log_info(
             "plan_interview",
@@ -837,15 +880,34 @@ impl App {
         };
 
         let context = plan_interview::gather_repository_context(&workdir);
-        let prompt = plan_interview::build_critique_prompt(
-            &feature_name,
-            &plan,
-            &brief,
-            &questions,
-            &answers,
-            &context,
+        let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
+            .unwrap_or_else(|_| workdir.clone());
+        let prompt = self.resolve_headless_prompt(
+            crate::prompts::PromptId::PlanInterviewCritique,
+            &harness,
+            &repo,
+            &workdir,
+            &crate::prompts::PromptContext::new().with(
+                "interview_input",
+                plan_interview::critique_input_json(
+                    &feature_name,
+                    &plan,
+                    &brief,
+                    &questions,
+                    &answers,
+                    &context,
+                ),
+            ),
         );
         let token_estimate = estimate_tokens(&prompt);
+
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::PlanCritique,
+            &harness,
+            &prompt,
+        ) {
+            return Ok(());
+        }
 
         // Claim the loading phase before spawning so a keypress in the same
         // tick cannot start a second paid review.
@@ -934,15 +996,35 @@ impl App {
             return Ok(());
         };
 
-        let prompt = plan_interview::build_directed_revision_prompt(
-            &feature_name,
-            &plan,
-            &instruction,
-            &brief,
-            &questions,
-            &answers,
+        let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
+            .unwrap_or_else(|_| workdir.clone());
+        let prompt = self.resolve_headless_prompt(
+            crate::prompts::PromptId::PlanInterviewDirectedRevision,
+            &harness,
+            &repo,
+            &workdir,
+            &crate::prompts::PromptContext::new().with(
+                "interview_input",
+                plan_interview::directed_revision_input_json(
+                    &feature_name,
+                    &plan,
+                    &instruction,
+                    &brief,
+                    &questions,
+                    &answers,
+                ),
+            ),
         );
         let token_estimate = estimate_tokens(&prompt);
+
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::PlanDirectedRevision,
+            &harness,
+            &prompt,
+        ) {
+            return Ok(());
+        }
+
         let started = match &mut self.mode {
             AppMode::PlanInterview(state) => state.begin_directed_feedback_loading(token_estimate),
             _ => false,
@@ -1110,12 +1192,28 @@ impl App {
             return Ok(());
         };
 
-        let investigation_prompts: Vec<(String, String)> = focuses
-            .iter()
-            .map(|focus| {
-                (
-                    focus.clone(),
-                    plan_interview::build_investigation_prompt(
+        // Resolve both templates once, on the UI thread where overrides can be
+        // read; the worker thread only renders them per focus / per findings set.
+        let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
+            .unwrap_or_else(|_| workdir.clone());
+        let (investigation_template, _) = self.resolve_headless_template(
+            crate::prompts::PromptId::PlanInterviewInvestigation,
+            &harness,
+            &repo,
+            &workdir,
+        );
+        let (merge_template, _) = self.resolve_headless_template(
+            crate::prompts::PromptId::PlanInterviewInvestigationMerge,
+            &harness,
+            &repo,
+            &workdir,
+        );
+        let render_investigation = |focus: &str| {
+            crate::prompts::render_template(
+                &investigation_template,
+                &crate::prompts::PromptContext::new().with(
+                    "interview_input",
+                    plan_interview::investigation_input_json(
                         &feature_name,
                         &plan,
                         focus,
@@ -1123,8 +1221,29 @@ impl App {
                         &questions,
                         &answers,
                     ),
-                )
-            })
+                ),
+            )
+        };
+        let render_merge = |findings: &[plan_interview::PlanInvestigationFinding]| {
+            crate::prompts::render_template(
+                &merge_template,
+                &crate::prompts::PromptContext::new().with(
+                    "interview_input",
+                    plan_interview::investigation_merge_input_json(
+                        &feature_name,
+                        &plan,
+                        &brief,
+                        &questions,
+                        &answers,
+                        findings,
+                    ),
+                ),
+            )
+        };
+
+        let investigation_prompts: Vec<(String, String)> = focuses
+            .iter()
+            .map(|focus| (focus.clone(), render_investigation(focus)))
             .collect();
         // The merge prompt carries the investigators' real reports, each bounded
         // at `INVESTIGATION_FINDINGS_MAX_CHARS`. Sizing it with a short
@@ -1138,19 +1257,36 @@ impl App {
                 findings: plan_interview::investigation_findings_size_placeholder(),
             })
             .collect();
-        let merge_estimate = estimate_tokens(&plan_interview::build_investigation_merge_prompt(
-            &feature_name,
-            &plan,
-            &brief,
-            &questions,
-            &answers,
-            &placeholder_findings,
-        ));
+        let merge_estimate = estimate_tokens(&render_merge(&placeholder_findings));
         let token_estimate = investigation_prompts
             .iter()
             .fold(merge_estimate, |total, (_, prompt)| {
                 total.saturating_add(estimate_tokens(prompt))
             });
+
+        // One notice covers the whole batch (N read-only investigators + the
+        // no-tools merge). The preview shows the first investigator's prompt
+        // and the merge template as representatives.
+        let precall_preview = format!(
+            "{} read-only investigator call(s) + 1 no-tools merge call.\n\n\
+             ----- investigator (focus 1 of {}) -----\n{}\n\n\
+             ----- merge (with placeholder findings) -----\n{}",
+            investigation_prompts.len(),
+            investigation_prompts.len(),
+            investigation_prompts
+                .first()
+                .map(|(_, p)| p.as_str())
+                .unwrap_or(""),
+            render_merge(&placeholder_findings),
+        );
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::PlanInvestigation,
+            &harness,
+            &precall_preview,
+        ) {
+            return Ok(());
+        }
+
         let started = match &mut self.mode {
             AppMode::PlanInterview(state) => state.begin_investigation_loading(token_estimate),
             _ => false,
@@ -1215,13 +1351,19 @@ impl App {
                 // A new headless invocation is the context boundary: the
                 // planner sees only these findings, never tool traces or the
                 // investigators' repository-exploration context.
-                let merge_prompt = plan_interview::build_investigation_merge_prompt(
-                    &feature_name,
-                    &plan,
-                    &brief,
-                    &questions,
-                    &answers,
-                    &findings,
+                let merge_prompt = crate::prompts::render_template(
+                    &merge_template,
+                    &crate::prompts::PromptContext::new().with(
+                        "interview_input",
+                        plan_interview::investigation_merge_input_json(
+                            &feature_name,
+                            &plan,
+                            &brief,
+                            &questions,
+                            &answers,
+                            &findings,
+                        ),
+                    ),
                 );
                 let merge_response =
                     HeadlessRunner::run(&harness, &workdir, &merge_prompt, None, true)

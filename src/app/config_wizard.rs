@@ -491,7 +491,13 @@ fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
         final_review_check_command: loaded
             .as_ref()
             .and_then(|config| config.final_review_check_command.clone()),
-        review_memory_path: loaded.and_then(|config| config.review_memory_path),
+        review_memory_path: loaded
+            .as_ref()
+            .and_then(|config| config.review_memory_path.clone()),
+        // The wizard doesn't edit prompt overrides; carry them through.
+        prompt_overrides: loaded
+            .map(|config| config.prompt_overrides)
+            .unwrap_or_default(),
     }
 }
 

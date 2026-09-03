@@ -6,7 +6,7 @@ mod config_wizard;
 mod context_settings;
 mod dialog;
 mod diff;
-mod diff_review;
+pub(crate) mod diff_review;
 mod dormant;
 mod feature_creation;
 mod fork;
@@ -20,7 +20,9 @@ mod normal;
 mod picker;
 mod plan_interview;
 mod pr_review;
+mod precall;
 mod prompt_library;
+mod prompt_overrides;
 mod review_destination;
 mod search;
 mod skill_picker;
@@ -77,6 +79,8 @@ pub use pr_review::{
 pub use prompt_library::{
     handle_placeholder_fill_key, handle_prompt_editor_key, handle_prompt_library_key,
 };
+pub use precall::handle_prompt_precall_key;
+pub use prompt_overrides::handle_prompt_overrides_key;
 pub use review_destination::{
     handle_review_destination_pick_key, handle_review_feature_setup_key,
     handle_review_integrate_key,
@@ -162,6 +166,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::HookPrompt(_) => handle_hook_prompt_key(app, key.code),
         AppMode::LatestPrompt(_) => handle_latest_prompt_key(app, key.code),
         AppMode::PromptLibrary(_) => handle_prompt_library_key(app, key.code),
+        AppMode::PromptOverrides(_) => handle_prompt_overrides_key(app, key, visible_rows),
+        AppMode::PromptPrecall(_) => handle_prompt_precall_key(app, key),
         AppMode::PromptEditor(_) => handle_prompt_editor_key(app, key),
         AppMode::PlaceholderFill(_) => handle_placeholder_fill_key(app, key),
         AppMode::SkillPicker(_) => handle_skill_picker_key(app, key),

@@ -7,6 +7,7 @@ pub mod plan_interviews;
 pub mod pr_comment_triage;
 mod pr_review_cache;
 mod pr_terminal_state;
+pub mod prompt_overrides;
 mod session_status;
 pub mod store;
 pub mod todos;
@@ -703,6 +704,48 @@ impl AmfDb {
             rusqlite::params![feature_id],
             |row| row.get(0),
         )?)
+    }
+}
+
+/// Feature- and global-scope headless prompt overrides (see
+/// `db/prompt_overrides.rs`). Project scope is a `.amf/prompts/` file store,
+/// resolved in `src/prompts/`, not here. Written ahead of the manager UI.
+#[allow(dead_code)]
+impl AmfDb {
+    /// Every persisted feature/global prompt override.
+    pub fn prompt_overrides(&self) -> Result<Vec<prompt_overrides::PromptOverride>> {
+        prompt_overrides::load_all(&self.conn)
+    }
+
+    /// Load the persisted overrides into an editable in-memory view.
+    pub fn load_prompt_overrides(&self) -> Result<prompt_overrides::PromptOverrides> {
+        prompt_overrides::PromptOverrides::load(Some(&self.conn))
+    }
+
+    /// Insert or replace one override; the template is stored verbatim.
+    pub fn upsert_prompt_override(
+        &self,
+        prompt_id: &str,
+        scope: &prompt_overrides::OverrideScope,
+        harness: Option<&crate::project::AgentKind>,
+        template: &str,
+    ) -> Result<()> {
+        prompt_overrides::upsert(&self.conn, prompt_id, scope, harness, template)
+    }
+
+    /// Delete one override; `true` if a row was removed.
+    pub fn delete_prompt_override(
+        &self,
+        prompt_id: &str,
+        scope: &prompt_overrides::OverrideScope,
+        harness: Option<&crate::project::AgentKind>,
+    ) -> Result<bool> {
+        prompt_overrides::delete(&self.conn, prompt_id, scope, harness)
+    }
+
+    /// Drop every feature-scope override for a checkout being deleted.
+    pub fn delete_prompt_overrides_for_workdir(&self, workdir: &str) -> Result<()> {
+        prompt_overrides::delete_for_workdir(&self.conn, workdir)
     }
 }
 

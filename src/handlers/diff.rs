@@ -2988,7 +2988,12 @@ index 1111111..2222222 100644
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs"]);
 
+        // `O` first raises the pre-call notice; continuing runs the pass and
+        // opens the overview modal.
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('O'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::PromptPrecall(p)
+            if p.prompt_id == crate::prompts::PromptId::ReviewChangesetOverview));
+        app.precall_confirm().unwrap();
         match &app.mode {
             AppMode::DiffViewer(state) => assert!(state.changeset_overview_open),
             _ => panic!("expected diff viewer"),
@@ -3000,6 +3005,23 @@ index 1111111..2222222 100644
         match &app.mode {
             AppMode::DiffViewer(state) => assert!(!state.changeset_overview_open),
             _ => panic!("expected diff viewer, not finished"),
+        }
+    }
+
+    #[test]
+    fn cancelling_the_changeset_overview_pre_call_leaves_the_viewer_clean() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('O'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::PromptPrecall(_)));
+        app.precall_cancel();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.changeset_overview_open, "no half-open modal");
+                assert!(state.changeset_overview_child.is_none());
+            }
+            _ => panic!("expected diff viewer"),
         }
     }
 

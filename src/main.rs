@@ -26,6 +26,7 @@ mod pi;
 mod plan_interview;
 mod project;
 mod prompt_library;
+mod prompts;
 mod resources;
 mod summary;
 mod theme;

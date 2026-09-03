@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::headless::HeadlessRunner;
 use crate::project::AgentKind;
+use crate::prompts::{PromptContext, render_template};
 use crate::tmux::TmuxManager;
 
 const SUMMARY_MAX_CHARS: usize = 60;
@@ -11,15 +12,20 @@ const MIN_CONTENT_LINES: usize = 5;
 pub struct SummaryManager;
 
 impl SummaryManager {
+    /// `template` is the resolved `session.summary` prompt template (built-in
+    /// default or a feature/project/global override), obtained on the UI
+    /// thread via [`crate::app::App::resolve_headless_template`]; this runs on
+    /// a worker thread and only interpolates it.
     pub fn generate_summary(
         tmux_session: &str,
         window: &str,
         workdir: &Path,
         agent: AgentKind,
+        template: &str,
     ) -> Result<String> {
         let content = TmuxManager::capture_pane(tmux_session, window)?;
 
-        summarize_content_with(&content, workdir, &agent, HeadlessRunner::run)
+        summarize_content_with(&content, workdir, &agent, template, HeadlessRunner::run)
     }
 }
 
@@ -27,6 +33,7 @@ fn summarize_content_with(
     content: &str,
     workdir: &Path,
     agent: &AgentKind,
+    template: &str,
     run_headless: impl FnOnce(&AgentKind, &Path, &str, Option<&str>, bool) -> Result<String>,
 ) -> Result<String> {
     let lines: Vec<&str> = content.lines().collect();
@@ -36,15 +43,12 @@ fn summarize_content_with(
 
     let recent_lines: String = lines[lines.len().saturating_sub(50)..].join("\n");
 
-    let prompt = format!(
-        "Summarize this {} session in one line (max {} chars). \
-             Focus on what was done or what's blocking. \
-             Be concise and specific. \
-             Example: 'Refactored auth module, waiting on test fix'\n\n\
-             Session output:\n{}",
-        agent.display_name(),
-        SUMMARY_MAX_CHARS,
-        recent_lines
+    let prompt = render_template(
+        template,
+        &PromptContext::new()
+            .with("harness_name", agent.display_name())
+            .with("max_chars", SUMMARY_MAX_CHARS.to_string())
+            .with("recent_lines", recent_lines),
     );
 
     let summary = run_headless(agent, workdir, &prompt, None, true)?;
@@ -79,6 +83,7 @@ mod tests {
             &content,
             Path::new("/tmp/feature"),
             &AgentKind::Codex,
+            crate::prompts::PromptId::SessionSummary.spec().default_template,
             |agent, workdir, prompt, model, restricted| {
                 assert_eq!(agent, &AgentKind::Codex);
                 assert_eq!(workdir, Path::new("/tmp/feature"));
@@ -95,6 +100,24 @@ mod tests {
     }
 
     #[test]
+    fn summary_renders_an_override_template_with_the_same_context_tokens() {
+        let content = ["session line"; MIN_CONTENT_LINES].join("\n");
+        let summary = summarize_content_with(
+            &content,
+            Path::new("/tmp/feature"),
+            &AgentKind::Claude,
+            "ONE LINE ONLY for {{harness_name}} <= {{max_chars}}:\n{{recent_lines}}",
+            |_, _, prompt, _, _| {
+                assert!(prompt.starts_with("ONE LINE ONLY for Claude <= 60:"));
+                assert!(prompt.contains("session line"));
+                Ok("ok".into())
+            },
+        )
+        .unwrap();
+        assert_eq!(summary, "ok");
+    }
+
+    #[test]
     fn summary_truncation_preserves_utf8_boundaries() {
         let content = ["line"; MIN_CONTENT_LINES].join("\n");
         let generated = format!("{}é", "a".repeat(SUMMARY_MAX_CHARS - 1));
@@ -103,6 +126,7 @@ mod tests {
             &content,
             Path::new("/tmp/feature"),
             &AgentKind::Pi,
+            crate::prompts::PromptId::SessionSummary.spec().default_template,
             |_, _, _, _, _| Ok(generated),
         )
         .unwrap();

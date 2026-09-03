@@ -1287,6 +1287,10 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
+        if app.pr_investigation_bg.is_some() && app.poll_pr_investigation_bg() {
+            force_redraw = true;
+        }
+
         if app.plan_interview_ai_bg.is_some() && app.poll_plan_interview_ai_bg() {
             force_redraw = true;
         }

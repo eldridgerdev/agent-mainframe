@@ -598,7 +598,7 @@ and `AMF_PLAN.md` for the design decisions.
   literally, and substituted values are never re-scanned. An override may drop
   or add tokens freely.
 - **Three override scopes.** Feature (keyed by workdir path) and global
-  overrides live in `amf.db`'s `prompt_overrides` table (`MIGRATION_033`,
+  overrides live in `amf.db`'s `prompt_overrides` table (`MIGRATION_034`,
   `src/db/prompt_overrides.rs`: `OverrideScope::{Feature,Global}`, CRUD +
   `PromptOverrides` in-memory view with a no-DB fallback). Project overrides
   live in `amf.json` under `ExtensionConfig::prompt_overrides`

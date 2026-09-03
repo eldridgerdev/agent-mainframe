@@ -220,7 +220,16 @@ doc always says exactly what remains.
   (`~/.config/amf/review-memory.md`) that AI review merges on top of each
   repo's own doc, with `g` picking which doc `M` and the bootstrap write to.
   One small backlog item remains: teaching the compact pass (`c`) to prune
-  the global doc as well as the project one.
+  the global doc as well as the project one. A later addition — investigating
+  a review comment read-only (`v`) instead of fixing it — shipped in PR #602;
+  its deferred polish is tracked in
+  [PR Triage — Investigate: follow-ups](pr-triage-investigate-followups-plan.md).
+- [PR Triage — Investigate: follow-ups](pr-triage-investigate-followups-plan.md)
+  — _Backlog._ Ergonomic gaps on the shipped read-only investigation flow:
+  offer "Investigation findings" from the `R` reply-kind picker (today it's
+  only reachable via the `a` menu); auto-scroll the detail pane to the answer
+  when a run finishes; mouse-wheel / `j`-`k` scrolling for the right-side box;
+  and a follow-up-thread count on the section header.
 - [Screenshot & video review harness](screenshot-review-plan.md) —
   _All epics shipped._ Lets an agent run AMF in an isolated scratch
   instance (private `XDG_CONFIG_HOME`/`XDG_STATE_HOME` + tmux session, no

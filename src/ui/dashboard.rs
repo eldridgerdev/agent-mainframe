@@ -1195,6 +1195,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
+    if let AppMode::PrInvestigationLoading(state) = &app.mode {
+        super::dialogs::draw_pr_investigation_loading(
+            frame,
+            state,
+            &app.throbber_state,
+            &app.theme,
+        );
+        super::draw_toasts(frame, &app.toasts, &app.theme);
+        return;
+    }
     if matches!(app.mode, AppMode::PrReview(_)) {
         let fix_session_usage = app.pr_review_fix_session_usage();
         let triage_session_usage = app.pr_review_triage_session_usage();
@@ -2801,6 +2811,11 @@ mod tests {
             checked_out_branch: Some(checked_out.to_string()),
             pending_ai_review_findings: 0,
             ai_review_last_run: None,
+            investigations: Vec::new(),
+            investigation_harness_pick: None,
+            investigation_action_pick: None,
+            investigation_follow_up: None,
+            pending_follow_up: None,
         }
     }
 

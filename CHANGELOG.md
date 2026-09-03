@@ -42,7 +42,7 @@ are tagged.
   scopes: **feature** (this checkout, in `amf.db`), **global** (all projects,
   in `amf.db`), or **project** (`amf.json`'s new `prompt_overrides` key,
   committed with the repo). An override can be shared across harnesses or
-  pinned to one (`--model` picker in the save flow). Precedence is
+  pinned to one (harness picker in the save flow). Precedence is
   nearest-scope-wins — feature → project → global → built-in — with a
   per-harness template beating the shared one within the winning scope. `d`,
   `d` clears an override. Templates use visible `{{token}}` placeholders that
@@ -58,8 +58,26 @@ are tagged.
   answer queue and session summaries — announce with a non-blocking toast
   instead of the modal, so a batch of queued questions never stalls.
   Migration: `amf.db` gains a `prompt_overrides` table
-  (`MIGRATION_033`), applied automatically on first launch; existing
+  (`MIGRATION_034`), applied automatically on first launch; existing
   databases are unaffected until an override is saved.
+
+- **PR Triage can investigate a review comment instead of fixing it.** A
+  comment that asks a question rather than requesting a change can be
+  investigated: press `v` to run a strictly read-only headless pass on the
+  selected comment. The investigation gets minimal context — the comment, the
+  PR title and description, and the list of changed files, with no file
+  contents — picks its harness per run, and blocks the overlay until it
+  returns; it inspects the repository but cannot edit files, run commands, or
+  write anything. The answer persists per pull request and reopens in the
+  detail panel with its status, harness, and time. `f` and `B` still fix and
+  batch a comment normally whether or not it carries an investigation — and
+  when it does, the investigation's findings are appended to the fix prompt as
+  a starting point. Press
+  `a` on a finished investigation to act on it: post an editable reply, ask a
+  follow-up (re-runs read-only with the prior answer as context), dismiss it,
+  or keep it as a TODO. Investigate is single-item and never joins a batch fix.
+  This adds a `pr_investigations` table; existing databases upgrade
+  automatically with no change to other data.
 
 - **The native TODO editor can now use Vim keybindings.** Every inline edit
   in the scoped-TODOs overlay — add, edit title, edit notes, and the
@@ -149,6 +167,15 @@ are tagged.
   unavailable or reset-pending readings do not invent a percentage. No
   migration is required.
 
+- **Publishing screenshot proof to a PR no longer waits for a manual
+  approval.** The publish flow used to dispatch a two-job workflow whose
+  deploy half sat behind a protected GitHub environment, so every run paused
+  until someone clicked approve. The workflow is now capture-only and the
+  private Cloudflare Pages gallery is deployed from your own machine instead —
+  nothing waits for a reviewer, and the Cloudflare credentials never enter CI.
+  This is contributor tooling for the AMF repository itself and does not affect
+  managed projects.
+
 ### Migration
 
 - The AI review attribution adds an optional field to the existing
@@ -160,6 +187,12 @@ are tagged.
   startup; existing triage rows keep both as `NULL` (not part of any batch)
   and are unaffected. No downgrade step is needed — an older AMF simply
   ignores the columns.
+
+- Publishing screenshot proof to a PR now deploys from your machine, so it
+  needs a one-time local setup: authenticate wrangler (`wrangler login`, or a
+  `CLOUDFLARE_API_TOKEN` scoped to Cloudflare Pages · Edit) and set
+  `CLOUDFLARE_ACCOUNT_ID`. The `screenshot-pages` GitHub environment is no
+  longer used and can be deleted along with its `CLOUDFLARE_*` secrets.
 
 ## [v0.41.0] - 2026-08-27
 

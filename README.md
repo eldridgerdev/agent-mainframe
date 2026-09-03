@@ -315,6 +315,17 @@ actions are presented for confirmation before AMF writes to the pull request.
 When `f` or `B` targets a dedicated session, AMF lets you name it so multiple
 PR Triage agents can run simultaneously; leave the name blank to reuse the
 default `PR Triage` session.
+
+A comment that asks a question rather than requesting a change can be
+investigated instead of fixed: press `v` to run a strictly read-only headless
+pass on the selected comment — it inspects the repo but changes nothing — and
+the overlay blocks until it returns. Its answer persists per PR and reopens in
+the detail panel. `f` and `B` still fix and batch a comment normally whether or
+not it has an investigation — and when it does, the investigation's findings are
+appended to the fix prompt as a starting point. Press `a` on a finished
+investigation to act on it:
+post an editable reply, ask a follow-up (re-runs read-only with the prior answer
+as context), dismiss it, or keep it as a TODO.
 An unchanged AI-drafted reply discloses the harness, best-effort model,
 estimated tokens, and estimated cost of the session that wrote it. AMF's own
 AI review (`W`) carries the same attribution: once a run finishes, the pane

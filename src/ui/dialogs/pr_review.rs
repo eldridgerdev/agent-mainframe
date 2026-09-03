@@ -19,8 +19,9 @@ use crate::{
     },
     app::{
         BootstrapPickState, BootstrapRunState, CompactConfirmState, CompactReviewState,
-        CompactRunState, MarkPickState, PrNumberPromptState, PrPickerState, PrReviewLoadState,
-        PrReviewState, ReplyKindPickState,
+        CompactRunState, InvestigationAction, InvestigationActionPick, InvestigationFollowUpDraft,
+        InvestigationHarnessPick, MarkPickState, PrInvestigationLoadState, PrNumberPromptState,
+        PrPickerState, PrReviewLoadState, PrReviewState, ReplyKindPickState,
     },
     editor::VimMode,
     theme::Theme,
@@ -637,6 +638,61 @@ pub fn draw_pr_review_loading(
     frame.render_widget(body, inner);
 }
 
+/// Modal loading frame shown while a strictly read-only investigation of one
+/// review comment runs off the UI thread. Deliberately blocking: the triage
+/// overlay is stashed and comes back only when the run returns (or is
+/// cancelled).
+pub fn draw_pr_investigation_loading(
+    frame: &mut Frame,
+    state: &PrInvestigationLoadState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let area = frame.area();
+    let block = pane_block(theme).title(format!(
+        " PR Triage · #{} · Investigate (read-only) ",
+        state.pr_number
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+
+    let elapsed = state.started_at.elapsed().as_secs();
+    let body = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            spinner,
+            Span::styled(
+                format!(
+                    " Investigating this review comment with {}… ({elapsed}s)",
+                    state.harness.display_name()
+                ),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Read-only: the agent inspects the repo but changes nothing.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+        Line::from(Span::styled(
+            format!("PR #{}  ·  {}", state.pr_number, state.pr_url),
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+        Line::from(Span::styled(
+            "esc to stop waiting (the run finishes in the background)",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+    frame.render_widget(body, inner);
+}
+
 /// Full-screen PR-triage pane: comment list on the left, detail on the
 /// right.
 pub struct PrReviewUsage<'a> {
@@ -673,13 +729,82 @@ pub fn draw_pr_review(
     // confirm dialog repeats it as the explicit-acknowledge half.
     let mismatch = state.branch_mismatch().map(|s| s.to_string());
 
+    // Footer key hints, packed into rows so a hint is never split across the
+    // wrap (`A ai-review` stays whole). Sized so the footer grows to fit.
+    let resolved_hint = if state.hide_resolved {
+        "h show-resolved"
+    } else {
+        "h hide-resolved"
+    };
+    let key_hints: Vec<String> = if state
+        .selected_comment()
+        .is_some_and(PrComment::is_amf_followup_reply)
+    {
+        [
+            "AMF follow-up · context only",
+            "j/k move",
+            "^d/^u scroll",
+            resolved_hint,
+            "o sort",
+            "i syntax",
+            "r refresh",
+            "g other-PR",
+            "A ai-review",
+            "esc/q close",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    } else {
+        let mut batch_hint = match state.marked.len() {
+            0 => "space mark".to_string(),
+            n => format!("space mark · B combine({n})"),
+        };
+        if state
+            .selected_comment()
+            .is_some_and(|c| c.batch_id.is_some())
+        {
+            batch_hint.push_str(" · [/] siblings");
+        }
+        let mut hints = vec![
+            "j/k move".to_string(),
+            "^d/^u scroll".to_string(),
+            format!("f fix→{}", state.fix_target.tag()),
+            "v investigate · a act".to_string(),
+            batch_hint,
+            "R reply".to_string(),
+            "m mark".to_string(),
+            "M memory".to_string(),
+            resolved_hint.to_string(),
+            "o sort".to_string(),
+            "P session".to_string(),
+        ];
+        if state.fix_target.is_companion_feature() {
+            hints.push("I integrate".to_string());
+        }
+        hints.extend(
+            [
+                "i syntax",
+                "r refresh",
+                "g other-PR",
+                "A ai-review",
+                "esc/q close",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
+        hints
+    };
+    let key_rows = pack_hints(&key_hints, area.width as usize);
+    let footer_h = (key_rows.len().min(3) + 1) as u16;
+
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                                      // header
             Constraint::Length(if mismatch.is_some() { 1 } else { 0 }), // branch-mismatch banner
             Constraint::Min(1),                                         // body
-            Constraint::Length(2), // footer (keys + marker legend)
+            Constraint::Length(footer_h), // key-hint rows + 1 marker legend
         ])
         .split(area);
 
@@ -826,11 +951,18 @@ pub fn draw_pr_review(
         .split(outer[2]);
 
     draw_comment_list(frame, body[0], state, theme);
+    let selected_investigation = state.selected_comment().and_then(|c| {
+        state
+            .investigations
+            .iter()
+            .find(|inv| inv.comment_id == c.id)
+    });
     let detail_lines = draw_comment_detail(
         frame,
         body[1],
         state.selected_comment(),
         &state.review.comments,
+        selected_investigation,
         state.detail_scroll,
         theme,
     );
@@ -838,60 +970,39 @@ pub fn draw_pr_review(
     // the real content height (the layout is no longer a 1:1 source-line map).
     state.detail_content_lines = detail_lines;
 
-    // Footer: key hints, then a legend spelling out the list markers.
-    let toggle_hint = if state.hide_resolved {
-        "h show-resolved"
-    } else {
-        "h hide-resolved"
-    };
-    // The batch hint shows the marked count so the user knows what `B` combines.
-    let mut batch_hint = match state.marked.len() {
-        0 => "space mark".to_string(),
-        n => format!("space mark · B combine({n})"),
-    };
-    // Only offer the sibling-jump keys when the selected comment was actually
-    // fixed as part of a combined batch — otherwise they are a no-op.
-    if state
-        .selected_comment()
-        .is_some_and(|c| c.batch_id.is_some())
-    {
-        batch_hint.push_str(" · [/] siblings");
-    }
-    let key_text = if state
-        .selected_comment()
-        .is_some_and(PrComment::is_amf_followup_reply)
-    {
-        format!(
-            " AMF follow-up · context only   j/k move   {toggle_hint}   o sort→{}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
-            state.sort_mode.label()
-        )
-    } else {
-        // `I` only means something for the companion-feature target — the
-        // other two commit straight onto the PR branch.
-        let integrate_hint = if state.fix_target.is_companion_feature() {
-            "   I integrate"
-        } else {
-            ""
-        };
-        format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort→{}   P session{integrate_hint}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
-            state.fix_target.tag(),
-            state.sort_mode.label()
-        )
-    };
-    let keys = Paragraph::new(Line::from(Span::styled(
-        key_text,
-        Style::default().fg(theme.text_muted.to_color()),
-    )));
+    // Footer: the pre-packed key-hint rows (built above), then a legend
+    // spelling out the list markers.
+    let key_lines: Vec<Line> = key_rows
+        .iter()
+        .map(|row| {
+            Line::from(Span::styled(
+                format!(" {row}"),
+                Style::default().fg(theme.text_muted.to_color()),
+            ))
+        })
+        .collect();
     let footer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints([Constraint::Length(footer_h - 1), Constraint::Length(1)])
         .split(outer[3]);
-    frame.render_widget(keys, footer[0]);
+    frame.render_widget(Paragraph::new(key_lines), footer[0]);
     frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);
 
     if let Some(pick) = &state.harness_pick {
         draw_harness_pick(frame, pick, theme);
+    }
+    // Per-run investigation harness picker (`v` then `f`), overlays the pane
+    // before the blocking investigation starts.
+    if let Some(pick) = &state.investigation_harness_pick {
+        draw_investigation_harness_pick(frame, pick, theme);
+    }
+    // Completed-investigation action menu (`a`).
+    if let Some(pick) = &state.investigation_action_pick {
+        draw_investigation_action_pick(frame, pick, theme);
+    }
+    // Follow-up question editor.
+    if let Some(draft) = &state.investigation_follow_up {
+        draw_investigation_follow_up(frame, draft, theme);
     }
     // Triage-feature setup (`New feature…`) overlays the pane before the fix
     // confirm dialog it continues into.
@@ -1376,6 +1487,174 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "[⏎] choose   [j/k] move   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[2],
+    );
+}
+
+/// Flat per-run harness picker for a pending read-only investigation.
+fn draw_investigation_harness_pick(
+    frame: &mut Frame,
+    pick: &InvestigationHarnessPick,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(56, 40, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Investigate with ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // header
+            Constraint::Min(1),    // harness list
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  Run this read-only investigation on:",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, harness) in pick.harnesses.iter().enumerate() {
+        let is_selected = i == pick.selected;
+        let marker = if is_selected { ">" } else { " " };
+        let name_style = if is_selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {marker} "),
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(harness.display_name().to_string(), name_style),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), chunks[1]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] start   [j/k] move   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[2],
+    );
+}
+
+/// The completed-investigation action menu (`a`): a small modal list.
+fn draw_investigation_action_pick(
+    frame: &mut Frame,
+    pick: &InvestigationActionPick,
+    theme: &Theme,
+) {
+    // Sized for the full six rows plus the key hint even on a short terminal.
+    let area = super::super::dashboard::centered_rect(56, 55, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Investigation → ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, action) in InvestigationAction::ALL.iter().enumerate() {
+        let is_selected = i == pick.selected;
+        let marker = if is_selected { ">" } else { " " };
+        let style = if is_selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {marker} "),
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(action.label(), style),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] choose   [j/k] move   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[1],
+    );
+}
+
+/// Inline editor for a follow-up question on an investigation.
+fn draw_investigation_follow_up(
+    frame: &mut Frame,
+    draft: &InvestigationFollowUpDraft,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(66, 40, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Ask a follow-up ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // hint
+            Constraint::Min(1),    // editor
+            Constraint::Length(1), // keys
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  Re-runs read-only with the prior answer as context.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    let body_lines =
+        super::editor_view::editor_lines(&draft.editor, theme, "(type a follow-up question)");
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[Tab] ask (pick a harness)   [esc] cancel",
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[2],
@@ -2012,6 +2291,7 @@ fn draw_comment_detail(
     area: Rect,
     comment: Option<&PrComment>,
     all_comments: &[PrComment],
+    investigation: Option<&crate::db::pr_investigations::PrInvestigation>,
     scroll: usize,
     theme: &Theme,
 ) -> usize {
@@ -2119,6 +2399,11 @@ fn draw_comment_detail(
         lines.extend(crate::markdown::render_markdown(&c.body, theme, width, None).lines);
     }
 
+    // Read-only investigation of this comment (`v` → `f`), when one exists.
+    if let Some(inv) = investigation {
+        lines.extend(investigation_detail_lines(inv, width, theme));
+    }
+
     // Local triage note (skip reason / "not needed" explanation), if any.
     if let Some(note) = c.local_note.as_ref().filter(|n| !n.trim().is_empty()) {
         lines.push(divider(width, theme));
@@ -2172,6 +2457,79 @@ fn draw_comment_detail(
     let count = body.line_count(inner.width);
     frame.render_widget(body.scroll((scroll as u16, 0)), inner);
     count
+}
+
+/// The detail-pane "Investigation" section for a comment that has one: a status
+/// header (state · harness · time), then the answer markdown (or the running /
+/// failure state), then any follow-up turns.
+fn investigation_detail_lines(
+    inv: &crate::db::pr_investigations::PrInvestigation,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    use crate::app::pr_review::PrInvestigationStatus;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(divider(width, theme));
+    lines.push(section_label("Investigation (read-only)", theme));
+
+    let (status_label, status_color) = match inv.status {
+        PrInvestigationStatus::Running => ("running", theme.warning.to_color()),
+        PrInvestigationStatus::Complete => ("complete", theme.success.to_color()),
+        PrInvestigationStatus::Failed => ("failed", theme.danger.to_color()),
+        PrInvestigationStatus::Dismissed => ("dismissed", theme.text_muted.to_color()),
+    };
+    // Trim the sub-second precision from the stored `YYYY-MM-DD HH:MM:SS.mmm`.
+    let when: String = inv.updated_at.chars().take(19).collect();
+    lines.push(Line::from(vec![
+        chip(status_label, status_color),
+        chip(inv.harness.display_name(), theme.secondary.to_color()),
+        chip(&when, theme.text_muted.to_color()),
+    ]));
+
+    match inv.status {
+        PrInvestigationStatus::Running => {
+            lines.push(Line::from(Span::styled(
+                "thinking… (blocking run in progress)",
+                Style::default().fg(theme.text_muted.to_color()),
+            )));
+        }
+        PrInvestigationStatus::Failed => {
+            lines.push(Line::from(Span::styled(
+                inv.error
+                    .clone()
+                    .unwrap_or_else(|| "the investigation failed".to_string()),
+                Style::default().fg(theme.danger.to_color()),
+            )));
+        }
+        PrInvestigationStatus::Complete | PrInvestigationStatus::Dismissed => {
+            match inv.answer.as_deref().filter(|a| !a.trim().is_empty()) {
+                Some(answer) => {
+                    lines
+                        .extend(crate::markdown::render_markdown(answer, theme, width, None).lines);
+                }
+                None => lines.push(Line::from(Span::styled(
+                    "(no answer recorded)",
+                    Style::default().fg(theme.text_muted.to_color()),
+                ))),
+            }
+        }
+    }
+
+    for (i, turn) in inv.follow_ups.iter().enumerate() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("Follow-up {}: {}", i + 1, turn.question.trim()),
+            Style::default()
+                .fg(theme.secondary.to_color())
+                .add_modifier(Modifier::BOLD),
+        )));
+        if !turn.answer.trim().is_empty() {
+            lines.extend(crate::markdown::render_markdown(&turn.answer, theme, width, None).lines);
+        }
+    }
+
+    lines
 }
 
 /// A compact `[label]` chip in the given accent color, with a leading space so
@@ -2355,6 +2713,28 @@ fn shared_prefix_len(content: &str, other: &str) -> usize {
         end += a.len_utf8();
     }
     end
+}
+
+/// Greedily pack `hints` into rows no wider than `width`, joined on a row by
+/// three spaces, **never splitting a hint across rows** (so `A ai-review` and
+/// `h hide-resolved` stay whole). A leading space is prepended when the rows
+/// are rendered, so the fit check reserves one column for it.
+fn pack_hints(hints: &[String], width: usize) -> Vec<String> {
+    const SEP: &str = "   ";
+    let mut rows: Vec<String> = Vec::new();
+    for hint in hints {
+        let fits = rows
+            .last()
+            .is_some_and(|row| row.chars().count() + SEP.len() + hint.chars().count() < width);
+        if fits {
+            let row = rows.last_mut().unwrap();
+            row.push_str(SEP);
+            row.push_str(hint);
+        } else {
+            rows.push(hint.clone());
+        }
+    }
+    rows
 }
 
 /// Footer legend spelling out the list/detail markers.
@@ -2750,6 +3130,52 @@ mod tests {
     }
 
     #[test]
+    fn pane_footer_advertises_v_investigate_a_and_scroll_keys() {
+        let mut state = pr_review_state_with_comments(
+            vec![pr_comment_of_kind(1, CommentKind::Inline)],
+            crate::app::pr_review::PrSortMode::FetchOrder,
+        );
+        let rendered = render_pr_review(&mut state);
+        assert!(
+            rendered.contains("v investigate · a act"),
+            "footer names both the `v` and `a` keys"
+        );
+        assert!(
+            rendered.contains("^d/^u scroll"),
+            "footer names the detail-pane scroll keys"
+        );
+        // The last hint survives — the packed footer never truncates it.
+        assert!(rendered.contains("esc/q close"));
+    }
+
+    #[test]
+    fn pack_hints_never_splits_a_hint_and_respects_width() {
+        let hints: Vec<String> = ["j/k move", "h hide-resolved", "A ai-review", "esc/q close"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Wide: one row.
+        let rows = pack_hints(&hints, 120);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0],
+            "j/k move   h hide-resolved   A ai-review   esc/q close"
+        );
+
+        // Narrow: wraps, and every hint lands whole on some row.
+        let rows = pack_hints(&hints, 24);
+        assert!(rows.len() > 1);
+        for row in &rows {
+            assert!(row.chars().count() < 24, "row within width: {row:?}");
+        }
+        let joined = rows.join(" ");
+        for h in &hints {
+            assert!(joined.contains(h.as_str()), "hint kept whole: {h:?}");
+        }
+    }
+
+    #[test]
     fn fix_target_picker_is_not_occluded_by_a_retained_fix_confirm() {
         let mut state = pr_review_state_with_comments(
             vec![pr_comment_of_kind(1, CommentKind::Inline)],
@@ -3039,6 +3465,36 @@ mod tests {
     }
 
     #[test]
+    fn investigation_action_menu_lists_every_choice() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let pick = crate::app::InvestigationActionPick {
+            comment_id: 1,
+            selected: 0,
+        };
+        let theme = Theme::default();
+        // A deliberately short terminal — the menu must still show all six rows.
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_investigation_action_pick(frame, &pick, &theme))
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        for action in crate::app::InvestigationAction::ALL {
+            assert!(
+                rendered.contains(action.label()),
+                "menu is missing {:?}",
+                action
+            );
+        }
+    }
+
+    #[test]
     fn harness_pick_falls_back_to_generic_label_when_unresolved() {
         let rendered = render_harness_pick(None);
         assert!(rendered.contains("Existing live session"));
@@ -3113,6 +3569,11 @@ mod tests {
             checked_out_branch: Some("main".to_string()),
             pending_ai_review_findings: 0,
             ai_review_last_run: None,
+            investigations: Vec::new(),
+            investigation_harness_pick: None,
+            investigation_action_pick: None,
+            investigation_follow_up: None,
+            pending_follow_up: None,
         }
     }
 
@@ -3193,14 +3654,30 @@ mod tests {
     }
 
     fn render_comment_detail(comment: &PrComment, all_comments: &[PrComment]) -> String {
+        render_comment_detail_with_investigation(comment, all_comments, None)
+    }
+
+    fn render_comment_detail_with_investigation(
+        comment: &PrComment,
+        all_comments: &[PrComment],
+        investigation: Option<&crate::db::pr_investigations::PrInvestigation>,
+    ) -> String {
         use ratatui::{Terminal, backend::TestBackend};
 
         let theme = Theme::default();
-        let backend = TestBackend::new(80, 30);
+        let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                draw_comment_detail(frame, frame.area(), Some(comment), all_comments, 0, &theme);
+                draw_comment_detail(
+                    frame,
+                    frame.area(),
+                    Some(comment),
+                    all_comments,
+                    investigation,
+                    0,
+                    &theme,
+                );
             })
             .unwrap();
         terminal
@@ -3210,6 +3687,65 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    fn sample_investigation(comment_id: u64) -> crate::db::pr_investigations::PrInvestigation {
+        use crate::app::pr_review::PrInvestigationStatus;
+        let mut inv = crate::db::pr_investigations::PrInvestigation::new_running(
+            "proj",
+            7,
+            comment_id,
+            "sha",
+            crate::project::AgentKind::Codex,
+            "context",
+        );
+        inv.status = PrInvestigationStatus::Complete;
+        inv.answer = Some("The concern is valid: the guard misses x < 0.".to_string());
+        inv.created_at = "2026-09-02 11:22:33.456".to_string();
+        inv.updated_at = "2026-09-02 11:22:33.456".to_string();
+        inv
+    }
+
+    #[test]
+    fn detail_pane_shows_a_completed_investigation_with_harness_and_time() {
+        let comment = pr_comment_of_kind(1, CommentKind::Inline);
+        let inv = sample_investigation(1);
+        let rendered = render_comment_detail_with_investigation(
+            &comment,
+            std::slice::from_ref(&comment),
+            Some(&inv),
+        );
+        assert!(rendered.contains("Investigation (read-only)"));
+        assert!(rendered.contains("complete"));
+        assert!(rendered.contains("Codex"));
+        assert!(rendered.contains("2026-09-02 11:22:33"));
+        assert!(!rendered.contains(".456"));
+        assert!(rendered.contains("The concern is valid"));
+    }
+
+    #[test]
+    fn detail_pane_shows_a_failed_investigation_error_not_a_frozen_spinner() {
+        use crate::app::pr_review::PrInvestigationStatus;
+        let comment = pr_comment_of_kind(2, CommentKind::Inline);
+        let mut inv = sample_investigation(2);
+        inv.status = PrInvestigationStatus::Failed;
+        inv.answer = None;
+        inv.error = Some("Codex couldn't finish: timed out".to_string());
+        let rendered = render_comment_detail_with_investigation(
+            &comment,
+            std::slice::from_ref(&comment),
+            Some(&inv),
+        );
+        assert!(rendered.contains("failed"));
+        assert!(rendered.contains("timed out"));
+        assert!(!rendered.contains("thinking"));
+    }
+
+    #[test]
+    fn detail_pane_has_no_investigation_section_without_one() {
+        let comment = pr_comment_of_kind(3, CommentKind::Inline);
+        let rendered = render_comment_detail(&comment, std::slice::from_ref(&comment));
+        assert!(!rendered.contains("Investigation (read-only)"));
     }
 
     #[test]
@@ -3244,6 +3780,7 @@ mod tests {
                     frame.area(),
                     Some(&summary),
                     std::slice::from_ref(&summary),
+                    None,
                     0,
                     &theme,
                 );
@@ -3285,6 +3822,7 @@ mod tests {
                     frame.area(),
                     Some(comment),
                     std::slice::from_ref(comment),
+                    None,
                     0,
                     &theme,
                 );

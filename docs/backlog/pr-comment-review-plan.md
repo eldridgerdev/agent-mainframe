@@ -2765,6 +2765,45 @@ non-goal for v1 (GitHub `gh` only), not an open question.
 
       **Shipped, 2026-09-02.**
 
+- [x] **Investigate a review comment instead of fixing it (read-only headless
+      pass).** Some review comments ask a question — "does this handle the empty
+      case?", "why is the lock held here?" — rather than requesting a change.
+      Answering them by injecting a fix prompt is the wrong tool. `v` in the
+      triage list runs a **strictly read-only** headless pass on the selected
+      comment directly (it does not change what `f`/`B` do — those still fix and
+      batch a comment normally, investigation or not): minimal context (comment
+      body + PR title/description + changed-file list, no file contents), the
+      harness picked per run, blocking (the overlay waits, contrasting with
+      Learning Mode's non-blocking queue), and `HeadlessRunner::run_investigation`
+      — a named seam over the read-only command whose contract repo config
+      cannot loosen, so no worktree write and no Vibeless edit-review hook is
+      reachable. The answer persists per `(project, PR#, comment id)` in a new
+      `pr_investigations` table (`MIGRATION_033`) and reopens with the triage
+      overlay, rendered in the right panel (status · harness · time, then the
+      answer markdown, then any follow-up turns); a run left `running` by a
+      killed process reconciles to `failed` on load. `a` on a finished
+      investigation opens an action menu — post an editable reply
+      (`ReplyKind::Investigation` → marks the comment `Replied`, reuses the `gh`
+      reply path), ask a follow-up (re-runs read-only with the prior answer as
+      context, appends a thread turn), dismiss, or keep as a TODO (Learning Mode
+      `a`'s route). Investigate is single-item and never participates in batch
+      dispatch. →
+      `src/db/migrations.rs`, `src/db/pr_investigations.rs`, `src/db/mod.rs`,
+      `src/github.rs`, `src/headless.rs`, `src/app/pr_review.rs`,
+      `src/app/state.rs`, `src/app/mod.rs`, `src/handlers/pr_review.rs`,
+      `src/handlers/mod.rs`, `src/main.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dashboard.rs`, `src/ui/status.rs`, `src/ui/dialogs/help.rs`,
+      `README.md`, `CHANGELOG.md`, and an offline screenshot fixture
+      (`scripts/dev/screenshot/scenarios/pr-triage-investigate.txt`,
+      `scripts/dev/screenshot/seed-investigation-fixture.py`). Unit-tested
+      (accessor round-trip; prompt shape incl. follow-up trimming;
+      stuck-`running` reconcile on load; the four `a` actions; the read-only
+      guard predicate per harness + that the investigate path never enters the
+      writable fix machinery). `cargo test -j 2 --bin amf` 2427 passed, `fmt` +
+      `clippy --all-targets` clean.
+
+      **Shipped, 2026-09-02.**
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

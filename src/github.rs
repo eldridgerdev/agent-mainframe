@@ -162,6 +162,31 @@ pub struct ReviewComment {
     pub pull_request_review_id: Option<u64>,
 }
 
+/// One file a pull request touches (`gh pr view --json files`). `changes` is
+/// omitted — the additions/deletions are enough to signal a file's weight in
+/// the investigation prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PrChangedFile {
+    pub path: String,
+    #[serde(default)]
+    pub additions: u32,
+    #[serde(default)]
+    pub deletions: u32,
+}
+
+/// The PR's title, description body, and changed-file list
+/// (`gh pr view --json title,body,files`), for the PR-triage "Investigate"
+/// prompt.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PrMeta {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub files: Vec<PrChangedFile>,
+}
+
 /// A raw PR review summary (`gh api .../pulls/{n}/reviews`): the top-level body
 /// attached to an Approve / Request-changes / Comment action.
 #[derive(Debug, Clone, Deserialize)]
@@ -371,6 +396,28 @@ impl GhCli {
     /// untouched.
     pub fn pr_diff(workdir: &Path, number: u32) -> Result<String> {
         Self::gh_stdout(workdir, &["pr", "diff", &number.to_string()])
+    }
+
+    /// The PR's title, description body, and changed-file list — the minimal
+    /// context the PR-triage "Investigate" prompt needs, in one `gh pr view`
+    /// call. Zero agent tokens.
+    pub fn pr_meta(workdir: &Path, number: u32) -> Result<PrMeta> {
+        let output = Command::new("gh")
+            .args([
+                "pr",
+                "view",
+                &number.to_string(),
+                "--json",
+                "title,body,files",
+            ])
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh pr view`.")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Could not load PR #{number} metadata: {}", stderr.trim());
+        }
+        serde_json::from_slice(&output.stdout).context("Failed to parse `gh pr view` JSON output.")
     }
 
     /// List the repository's pull requests for the PR picker. `include_closed`

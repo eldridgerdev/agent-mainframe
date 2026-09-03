@@ -5,6 +5,7 @@ pub mod learning;
 mod migrations;
 pub mod plan_interviews;
 pub mod pr_comment_triage;
+pub mod pr_investigations;
 mod pr_review_cache;
 mod pr_terminal_state;
 pub mod prompt_overrides;
@@ -707,9 +708,73 @@ impl AmfDb {
     }
 }
 
+/// PR Triage "Investigate" findings: a read-only headless investigation of one
+/// review comment, persisted per `(project id, PR#, comment id)` and reloaded
+/// with the triage overlay. The persistence layer lands ahead of its UI
+/// consumers (later `AMF_PLAN.md` tasks), so this is allowed to be unused for
+/// now — mirroring the todo / learning blocks above.
+#[allow(dead_code)]
+impl AmfDb {
+    /// Every persisted investigation for one PR in one project, oldest first.
+    pub fn load_pr_investigations(
+        &self,
+        project_id: &str,
+        pr_number: u32,
+    ) -> Result<Vec<pr_investigations::PrInvestigation>> {
+        pr_investigations::load_by_pr(&self.conn, project_id, pr_number)
+    }
+
+    /// Insert or update one investigation, keyed by `(project_id, PR#, comment id)`.
+    pub fn upsert_pr_investigation(&self, inv: &pr_investigations::PrInvestigation) -> Result<()> {
+        pr_investigations::upsert(&self.conn, inv)
+    }
+
+    /// Record a finished run against one investigation by key (for a run that
+    /// outlived the overlay). Returns whether a row matched.
+    pub fn finish_pr_investigation(
+        &self,
+        project_id: &str,
+        pr_number: u32,
+        comment_id: u64,
+        answer: Option<&str>,
+        status: pr_investigations::PrInvestigationStatus,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        pr_investigations::finish(
+            &self.conn, project_id, pr_number, comment_id, answer, status, error,
+        )
+    }
+
+    /// Set just the status of one investigation (the `dismiss` action).
+    pub fn set_pr_investigation_status(
+        &self,
+        project_id: &str,
+        pr_number: u32,
+        comment_id: u64,
+        status: pr_investigations::PrInvestigationStatus,
+    ) -> Result<bool> {
+        pr_investigations::set_status(&self.conn, project_id, pr_number, comment_id, status)
+    }
+
+    pub fn delete_pr_investigation(
+        &self,
+        project_id: &str,
+        pr_number: u32,
+        comment_id: u64,
+    ) -> Result<()> {
+        pr_investigations::delete(&self.conn, project_id, pr_number, comment_id)
+    }
+
+    /// Drop every investigation for a project (called on project deletion —
+    /// there is no FK cascade).
+    pub fn delete_pr_investigations_for_project(&self, project_id: &str) -> Result<()> {
+        pr_investigations::delete_for_project(&self.conn, project_id)
+    }
+}
+
 /// Feature- and global-scope headless prompt overrides (see
-/// `db/prompt_overrides.rs`). Project scope is a `.amf/prompts/` file store,
-/// resolved in `src/prompts/`, not here. Written ahead of the manager UI.
+/// `db/prompt_overrides.rs`). Project scope is an `amf.json` `prompt_overrides`
+/// map, resolved in `src/prompts/`, not here.
 #[allow(dead_code)]
 impl AmfDb {
     /// Every persisted feature/global prompt override.

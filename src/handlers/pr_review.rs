@@ -13,7 +13,8 @@ const FIX_PAGE_STEP: isize = 10;
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
 /// refresh from GitHub, and exit. `[` / `]` jump between comments that were
-/// fixed together in one combined batch. Action keys: `f` fix, `space` mark /
+/// fixed together in one combined batch. Action keys: `f` fix, `v` run a
+/// strictly read-only investigation of the selected comment, `space` mark /
 /// `B` inject one combined prompt for all marked comments, `R` opens the
 /// reply-kind picker (Done / not-needed), `M` add to memory, `m` opens the
 /// "Mark" picker (Done (local) / Skip (local) / Resolve on GitHub), `i`
@@ -21,6 +22,18 @@ const FIX_PAGE_STEP: isize = 10;
 /// dedicated AI Review pane for this PR (its own workflow — see
 /// `crate::app::ai_review`).
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // The per-run investigation harness picker, when open, captures all keys.
+    if app.pr_review_investigation_harness_picking() {
+        return handle_investigation_harness_pick_key(app, key);
+    }
+    // The completed-investigation action menu (`a`), when open, captures all keys.
+    if app.pr_review_investigation_action_picking() {
+        return handle_investigation_action_pick_key(app, key);
+    }
+    // The follow-up question editor, when open, captures all keys.
+    if app.pr_review_investigation_follow_up_open() {
+        return handle_investigation_follow_up_key(app, key);
+    }
     // The fix-target picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
         return handle_harness_pick_key(app, key);
@@ -71,6 +84,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('f') => app.pr_review_open_fix_confirm(),
         KeyCode::Char('P') => app.pr_review_toggle_to_session()?,
         KeyCode::Char(' ') => app.pr_review_toggle_mark(),
+        KeyCode::Char('v') => app.pr_review_start_investigation(),
         KeyCode::Char('B') => app.pr_review_open_batch_confirm(),
         KeyCode::Char('R') => app.pr_review_open_reply_pick(),
         KeyCode::Char('M') => app.pr_review_open_memory_add(),
@@ -80,7 +94,36 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('g') => app.open_pr_picker_from_pane(),
         KeyCode::Char('A') => app.open_ai_review_from_triage(),
         KeyCode::Char('I') => app.pr_review_open_integrate(),
+        KeyCode::Char('a') => app.pr_review_open_investigation_actions(),
         _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the completed-investigation action menu (`a`) is open:
+/// `j/k` (or arrows) move, `⏎` applies the highlighted action, `esc`/`q`
+/// closes.
+fn handle_investigation_action_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_investigation_action_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_investigation_action_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_investigation_action_move(-1),
+        KeyCode::Enter => app.pr_review_investigation_action_confirm()?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the follow-up question editor is open: keystrokes flow to
+/// the editor, `Tab` submits (opens the harness picker), `esc`/`Ctrl+Q`
+/// cancels.
+fn handle_investigation_follow_up_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Esc => app.pr_review_investigation_follow_up_cancel(),
+        KeyCode::Char('q') if ctrl => app.pr_review_investigation_follow_up_cancel(),
+        KeyCode::Tab => app.pr_review_investigation_follow_up_submit(),
+        _ => app.pr_review_investigation_follow_up_editor_key(key),
     }
     Ok(())
 }
@@ -432,6 +475,30 @@ fn handle_fix_confirm_key(app: &mut App, key: KeyEvent, editing: bool) -> Result
 pub fn handle_pr_review_loading_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
         app.close_pr_review();
+    }
+    Ok(())
+}
+
+/// Key handling while a blocking read-only investigation runs: only `esc`/`q`,
+/// which abandons the wait and returns to triage (the run finishes in the
+/// background; its result is discarded).
+pub fn handle_pr_investigation_loading_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        app.pr_investigation_cancel();
+    }
+    Ok(())
+}
+
+/// Key handling while the per-run investigation harness picker is open: `j/k`
+/// (or arrows) move, `⏎` starts the investigation on the highlighted harness,
+/// `esc`/`q` cancels back to the comment list.
+fn handle_investigation_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_investigation_harness_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_investigation_harness_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_investigation_harness_move(-1),
+        KeyCode::Enter => app.pr_review_investigation_harness_confirm(),
+        _ => {}
     }
     Ok(())
 }

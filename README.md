@@ -320,7 +320,11 @@ A comment that asks a question rather than requesting a change can be
 investigated instead of fixed: press `v` to run a strictly read-only headless
 pass on the selected comment — it inspects the repo but changes nothing — and
 the overlay blocks until it returns. Its answer persists per PR and reopens in
-the detail panel. `f` and `B` still fix and batch a comment normally whether or
+the detail panel. Before pressing `v`, press `e` to attach an optional note —
+a hypothesis the investigation verifies against the PR and repo (for example,
+"I think this is already handled in `foo.rs` — double-check"), not a fact it
+assumes. The note shows in a banner so you can confirm or clear it; leaving it
+empty runs the investigation exactly as before. `f` and `B` still fix and batch a comment normally whether or
 not it has an investigation — and when it does, the investigation's findings are
 appended to the fix prompt as a starting point. Press `a` on a finished
 investigation to act on it:

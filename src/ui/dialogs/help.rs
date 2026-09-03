@@ -353,6 +353,8 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("v", "Investigate this comment — read-only headless pass"),
         ("", "(pick a harness; the answer persists and shows in"),
         ("", "the detail panel)"),
+        ("e", "Attach optional context for the next Investigate —"),
+        ("", "a hypothesis the run verifies, not a fact to assume"),
         ("a", "Act on a finished investigation: post reply,"),
         ("", "ask follow-up, dismiss, keep as TODO"),
         ("Space", "Mark comment for batch fix"),

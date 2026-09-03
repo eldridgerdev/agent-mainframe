@@ -1375,6 +1375,11 @@ const INVESTIGATION_CHANGED_FILES_LIMIT: usize = 40;
 /// (the initial finding is always included on top of this).
 const INVESTIGATION_FOLLOW_UP_DEPTH: usize = 3;
 
+/// Character cap on the optional operator-supplied investigation note (`e`).
+/// A hypothesis, not a spec — roomier than the plan-interview custom answer
+/// (500) but still bounded so it can't crowd out the prompt.
+const INVESTIGATION_CONTEXT_MAX_LEN: usize = 1000;
+
 /// One file a PR touches — path plus GitHub's per-file line deltas
 /// (`gh pr view --json files`). Handed to the investigation prompt so the
 /// read-only agent knows the PR's blast radius and can open any of them.
@@ -1424,6 +1429,10 @@ pub struct InvestigationPromptContext<'a> {
     pub changed_files: &'a [InvestigationChangedFile],
     /// `None` for the initial investigation; `Some` for a follow-up.
     pub follow_up: Option<InvestigationFollowUp<'a>>,
+    /// Optional free-form note the operator attached at triage time (`e`): a
+    /// hypothesis to check, not a fact to assume. `None` or all-whitespace
+    /// renders nothing at all — the prompt is byte-identical to today.
+    pub user_context: Option<&'a str>,
 }
 
 /// Assemble the minimal read-only investigation prompt for one review comment.
@@ -1482,6 +1491,21 @@ pub fn build_investigation_prompt(ctx: &InvestigationPromptContext<'_>) -> Strin
     out.push_str("--- The review comment ---\n");
     out.push_str(&ctx.comment.fix_prompt_body());
     out.push_str("\n\n");
+
+    if let Some(hypothesis) = ctx
+        .user_context
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+    {
+        out.push_str("--- What the person triaging suspects ---\n");
+        out.push_str(
+            "Treat the following as a hypothesis to verify, not an established \
+             fact. Check it against the PR and the repository and say plainly \
+             whether the code confirms or contradicts it:\n",
+        );
+        out.push_str(hypothesis);
+        out.push_str("\n\n");
+    }
 
     if let Some(follow_up) = &ctx.follow_up {
         out.push_str("--- The investigation so far ---\n");
@@ -2176,6 +2200,7 @@ impl App {
                 investigation_action_pick: None,
                 investigation_follow_up: None,
                 pending_follow_up: None,
+                investigation_context: Default::default(),
             });
             // A companion triage feature created on an earlier visit is reused
             // for every fix in this PR — adopt it now so `f` doesn't re-ask.
@@ -2848,6 +2873,21 @@ impl App {
         let comment_id = comment.id;
         let follow_up_question = follow_up.as_ref().map(|f| f.question.clone());
 
+        // The optional operator-supplied hypothesis, for a fresh investigation
+        // only. Taken (and cleared) here whether or not the run ultimately
+        // succeeds — the note described *this* attempt; a retry re-attaches it.
+        let user_context: Option<String> = if follow_up.is_none() {
+            match &mut self.mode {
+                AppMode::PrReview(state) => {
+                    let note = std::mem::take(&mut state.investigation_context.note);
+                    (!note.trim().is_empty()).then_some(note)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         // Prior turns for a follow-up prompt: the initial answer plus any
         // earlier follow-up turns already on the row.
         let prior_context: Option<(String, Vec<PrInvestigationTurn>)> =
@@ -2953,6 +2993,7 @@ impl App {
                     pr_description: &meta.body,
                     changed_files: &changed,
                     follow_up: follow_up_ctx,
+                    user_context: user_context.as_deref(),
                 };
                 Ok(build_investigation_prompt(&ctx))
             })();
@@ -3453,6 +3494,58 @@ impl App {
         }
     }
 
+    /// Open the optional investigation-context edit box (`e`), seeded from the
+    /// note already attached (empty on first open). A no-op if it's already
+    /// open or the pane isn't in PR Triage.
+    pub fn pr_review_investigation_context_open(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && state.investigation_context.editor.is_none()
+        {
+            let seed = state.investigation_context.note.clone();
+            state.investigation_context.editor = Some(crate::editor::TextEditor::new(seed));
+        }
+    }
+
+    pub fn pr_review_investigation_context_editing(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::PrReview(state) if state.investigation_context.editor.is_some()
+        )
+    }
+
+    /// Feed a keystroke to the context editor, re-checking the length cap after
+    /// each change (a paste that overflows is rejected whole, matching the
+    /// plan-interview custom-answer box).
+    pub fn pr_review_investigation_context_editor_key(&mut self, key: crossterm::event::KeyEvent) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(editor) = &mut state.investigation_context.editor
+        {
+            let before = editor.text().to_string();
+            editor.handle_key(key);
+            if editor.text().chars().count() > INVESTIGATION_CONTEXT_MAX_LEN {
+                *editor = crate::editor::TextEditor::new(before);
+            }
+        }
+    }
+
+    /// Commit the editor's text to the persistent note and close the box
+    /// (`Enter`). Trimmed; an all-whitespace note clears back to "none".
+    pub fn pr_review_investigation_context_commit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(editor) = state.investigation_context.editor.take()
+        {
+            state.investigation_context.note = editor.text().trim().to_string();
+        }
+    }
+
+    /// Discard the in-progress edit and close the box (`Esc`); the previously
+    /// committed note is untouched.
+    pub fn pr_review_investigation_context_cancel(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.investigation_context.editor = None;
+        }
+    }
+
     /// Open the PR picker: a selectable list of the repo's PRs. `seed_number`
     /// pre-highlights that PR when present (e.g. the branch's auto-detected one,
     /// or the PR already open in the pane). Lists open PRs by default. If `gh pr
@@ -3750,6 +3843,7 @@ impl App {
                             investigation_action_pick: None,
                             investigation_follow_up: None,
                             pending_follow_up: None,
+                            investigation_context: Default::default(),
                         });
                         self.adopt_existing_triage_feature();
                     }
@@ -7004,6 +7098,7 @@ mod tests {
             pr_description: "Speeds up status reconciliation.",
             changed_files: &files,
             follow_up: None,
+            user_context: None,
         };
         let prompt = build_investigation_prompt(&ctx);
 
@@ -7029,6 +7124,57 @@ mod tests {
     }
 
     #[test]
+    fn investigation_prompt_is_byte_identical_when_user_context_is_absent_or_blank() {
+        let comment = inline_comment("This guard is wrong when x is negative.", false);
+        let files = changed_files();
+        let base = InvestigationPromptContext {
+            comment: &comment,
+            pr_number: 321,
+            pr_title: "Rework the sync poll loop",
+            pr_description: "Speeds up status reconciliation.",
+            changed_files: &files,
+            follow_up: None,
+            user_context: None,
+        };
+        let without = build_investigation_prompt(&base);
+
+        // An explicit note that is only whitespace renders exactly nothing —
+        // the empty-input path is unchanged from before the feature.
+        let blank = InvestigationPromptContext {
+            user_context: Some("   \n  "),
+            ..base.clone()
+        };
+        assert_eq!(build_investigation_prompt(&blank), without);
+        assert!(!without.contains("What the person triaging suspects"));
+    }
+
+    #[test]
+    fn investigation_prompt_frames_user_context_as_a_hypothesis_to_verify() {
+        let comment = inline_comment("This guard is wrong when x is negative.", false);
+        let files = changed_files();
+        let ctx = InvestigationPromptContext {
+            comment: &comment,
+            pr_number: 321,
+            pr_title: "Rework the sync poll loop",
+            pr_description: "Speeds up status reconciliation.",
+            changed_files: &files,
+            follow_up: None,
+            user_context: Some("  I think src/app/sync.rs already clamps x — double-check.  "),
+        };
+        let prompt = build_investigation_prompt(&ctx);
+
+        assert!(prompt.contains("--- What the person triaging suspects ---"));
+        assert!(prompt.contains("hypothesis to verify, not an established fact"));
+        // Trimmed, and placed after the review comment but before the
+        // read-only instruction block.
+        assert!(prompt.contains("I think src/app/sync.rs already clamps x — double-check."));
+        assert!(!prompt.contains("  I think src/app/sync.rs"));
+        let note_at = prompt.find("What the person triaging suspects").unwrap();
+        assert!(note_at > prompt.find("--- The review comment ---").unwrap());
+        assert!(note_at < prompt.find("read-only access").unwrap());
+    }
+
+    #[test]
     fn investigation_prompt_handles_missing_title_description_and_files() {
         let comment = inline_comment("nit", false);
         let ctx = InvestigationPromptContext {
@@ -7038,6 +7184,7 @@ mod tests {
             pr_description: "",
             changed_files: &[],
             follow_up: None,
+            user_context: None,
         };
         let prompt = build_investigation_prompt(&ctx);
         assert!(prompt.contains("PR #7\n"));
@@ -7063,6 +7210,7 @@ mod tests {
             pr_description: "x",
             changed_files: &files,
             follow_up: None,
+            user_context: None,
         };
         let prompt = build_investigation_prompt(&ctx);
         assert!(prompt.contains("src/f0.rs"));
@@ -7112,6 +7260,7 @@ mod tests {
                 prior_turns: &prior,
                 question: "Would a guard clause be enough?",
             }),
+            user_context: None,
         };
         let prompt = build_investigation_prompt(&ctx);
 

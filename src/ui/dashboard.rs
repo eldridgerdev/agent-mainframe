@@ -2816,6 +2816,7 @@ mod tests {
             investigation_action_pick: None,
             investigation_follow_up: None,
             pending_follow_up: None,
+            investigation_context: Default::default(),
         }
     }
 

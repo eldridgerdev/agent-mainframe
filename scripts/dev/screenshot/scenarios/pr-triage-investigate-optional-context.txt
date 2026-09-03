@@ -1,0 +1,63 @@
+# PR Triage — optional user-provided context for Investigate.
+#
+# Proves the new `e` affordance in the PR Triage pane: attach a free-form
+# hypothesis to the NEXT read-only Investigate run (`v`), reviewable in a
+# banner and cleared once the run consumes it. Empty box == unchanged
+# behaviour.
+#
+# Offline for the comment content: seeds a demo project + feature and a
+# pr_review_cache row keyed to PR #434's real head SHA. The current branch has
+# no PR of its own, so `G` falls to the PR picker; choosing #434 resolves it by
+# number (one read-only `gh pr view`) and hits the seeded cache row — no live
+# comment fetch, no model call. The scenario never presses `v`, so no headless
+# investigation is spawned.
+#
+# Run with:
+#   scripts/dev/screenshot/amf-capture.sh \
+#     --scenario scripts/dev/screenshot/scenarios/pr-triage-investigate-optional-context.txt \
+#     --out-dir <dir>
+
+run:printf '{"path":"%s","project_name":"investigate-context-demo","dry_run":false}\n' "$REPO_ROOT" > "$XDG_STATE_HOME/ctx-project.json"
+run:$AMF_BIN automation create-project --file "$XDG_STATE_HOME/ctx-project.json"
+wait:900
+# `gh` in a `run:` step needs the real config dir pointed at explicitly — the
+# driver only pins GH_CONFIG_DIR for the tmux instance, not this shell.
+run:GH_CONFIG_DIR="${GH_CONFIG_DIR:-$HOME/.config/gh}" python3 scripts/dev/screenshot/seed-investigate-context-fixture.py "$XDG_CONFIG_HOME/amf/amf.db" "$REPO_ROOT" 434
+wait:400
+
+# Automation ran against the already-loaded TUI; restart it so the seeded
+# project, feature, and cache row are read from the scratch DB.
+run:tmux respawn-pane -k -t "$SESSION" "$AMF_BIN"
+run:for i in {1..60}; do tmux capture-pane -p -t "$SESSION" > "$XDG_STATE_HOME/ctx-pane.txt"; grep -q "investigate-context-demo" "$XDG_STATE_HOME/ctx-pane.txt" && break; sleep 0.2; done
+wait:6000
+
+# Expand the demo project and land on its feature.
+key:l|wait:400
+key:j|wait:400
+
+# `G` -> the current branch has no PR, so the PR picker opens listing the
+# repo's open PRs.
+key:G|wait:4000
+note:The current branch has no pull request of its own, so `G` opens the PR picker listing the repository's open PRs. Selecting one resolves it by number with a single read-only `gh pr view`.
+shot:pr-picker
+
+# Enter chooses the highlighted PR; it resolves against the seeded cache row
+# and PR Triage opens on the stored comments (no live fetch, no tokens).
+key:Enter|wait:4000
+note:PR Triage open on the selected PR. The comment list is on the left, the highlighted comment's detail on the right. The footer key hints now include `e context` next to `v investigate` — the new optional-context affordance for the Investigate action.
+shot:triage-footer-e-hint
+
+# `e` opens the new optional-context editor.
+key:e|wait:600
+note:Pressing `e` opens the "Investigation context (optional)" box. The hint explains it takes a hypothesis for the next investigation (`v`) to verify against the PR and repo — not a fact it assumes — and that leaving it empty keeps today's behaviour. The keybar shows `[enter] save`, `[alt+enter] newline`, `[esc] discard`.
+shot:context-box-empty
+
+# Type a hypothesis. `Enter` here commits and returns to the list; it does NOT
+# start a run (that is `v`).
+text:I think window_github_hunk already guards the empty-changeset case here.|wait:500
+note:A typed hypothesis in the optional-context box. The character count is capped at 1000; `Enter` commits the note and returns to the comment list without starting anything.
+shot:context-box-typed
+
+key:Enter|wait:600
+note:Back in the PR Triage pane, the committed note shows in a one-line banner ("investigation note (press e to edit, v to run): …") so it can be confirmed or cleared before dispatch, and the footer hint has flipped from "e context" to "e context" with a check mark. The next `v` on this comment folds the note into the read-only investigation prompt as a hypothesis to verify, then clears it.
+shot:triage-note-banner

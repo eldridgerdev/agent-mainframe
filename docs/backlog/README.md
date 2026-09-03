@@ -224,6 +224,10 @@ doc always says exactly what remains.
   a review comment read-only (`v`) instead of fixing it — shipped in PR #602;
   its deferred polish is tracked in
   [PR Triage — Investigate: follow-ups](pr-triage-investigate-followups-plan.md).
+  A follow-on lets the operator attach optional free-form context to the next
+  `v` run (`e`): a hypothesis the read-only pass verifies against the PR and
+  repo, reviewable in a banner and cleared once consumed (empty box = prior
+  behaviour).
 - [PR Triage — Investigate: follow-ups](pr-triage-investigate-followups-plan.md)
   — _Backlog._ Ergonomic gaps on the shipped read-only investigation flow:
   offer "Investigation findings" from the `R` reply-kind picker (today it's

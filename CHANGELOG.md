@@ -31,6 +31,16 @@ are tagged.
 
 ### Added
 
+- **PR Triage Investigate now accepts optional context.** Press `e` in the PR
+  Triage pane to attach a free-form note to the next `v` (Investigate) run — a
+  hypothesis the read-only pass verifies against the PR and repository (for
+  example, "I think this is already handled in `foo.rs` — double-check"),
+  framed in the prompt as something to confirm or refute, not to assume. The
+  attached note shows in a banner so it can be reviewed or cleared before
+  dispatch, is consumed by the run it applies to, and is saved into the
+  investigation's recorded prompt. Leaving the box empty runs the
+  investigation exactly as before. No migration is required.
+
 - **Every headless AI prompt AMF sends can now be viewed and overridden.**
   AMF makes one-shot ("headless") AI calls behind the plan interview, Learning
   Mode, the final-review diff helpers (walkthrough, AI co-review, changeset

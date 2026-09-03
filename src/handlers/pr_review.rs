@@ -34,6 +34,11 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if app.pr_review_investigation_follow_up_open() {
         return handle_investigation_follow_up_key(app, key);
     }
+    // The optional investigation-context edit box (`e`), when open, captures
+    // all keys.
+    if app.pr_review_investigation_context_editing() {
+        return handle_investigation_context_key(app, key);
+    }
     // The fix-target picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
         return handle_harness_pick_key(app, key);
@@ -85,6 +90,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('P') => app.pr_review_toggle_to_session()?,
         KeyCode::Char(' ') => app.pr_review_toggle_mark(),
         KeyCode::Char('v') => app.pr_review_start_investigation(),
+        KeyCode::Char('e') => app.pr_review_investigation_context_open(),
         KeyCode::Char('B') => app.pr_review_open_batch_confirm(),
         KeyCode::Char('R') => app.pr_review_open_reply_pick(),
         KeyCode::Char('M') => app.pr_review_open_memory_add(),
@@ -124,6 +130,31 @@ fn handle_investigation_follow_up_key(app: &mut App, key: KeyEvent) -> Result<()
         KeyCode::Char('q') if ctrl => app.pr_review_investigation_follow_up_cancel(),
         KeyCode::Tab => app.pr_review_investigation_follow_up_submit(),
         _ => app.pr_review_investigation_follow_up_editor_key(key),
+    }
+    Ok(())
+}
+
+/// Key handling while the optional investigation-context edit box is open.
+/// Mirrors the plan-interview custom-answer box: `Enter` commits back to the
+/// list (it does **not** start a run — press `v` for that), `Alt+Enter`
+/// inserts a newline, `Esc` / `Ctrl+Q` discards the edit, anything else flows
+/// to the editor.
+fn handle_investigation_context_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Esc => app.pr_review_investigation_context_cancel(),
+        KeyCode::Char('q') if ctrl => app.pr_review_investigation_context_cancel(),
+        KeyCode::Enter if !alt => app.pr_review_investigation_context_commit(),
+        _ => {
+            // Normalize Alt+Enter to a plain newline for the editor.
+            let event = if key.code == KeyCode::Enter {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                key
+            };
+            app.pr_review_investigation_context_editor_key(event);
+        }
     }
     Ok(())
 }

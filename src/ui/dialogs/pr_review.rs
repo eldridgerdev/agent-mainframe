@@ -729,13 +729,82 @@ pub fn draw_pr_review(
     // confirm dialog repeats it as the explicit-acknowledge half.
     let mismatch = state.branch_mismatch().map(|s| s.to_string());
 
+    // Footer key hints, packed into rows so a hint is never split across the
+    // wrap (`A ai-review` stays whole). Sized so the footer grows to fit.
+    let resolved_hint = if state.hide_resolved {
+        "h show-resolved"
+    } else {
+        "h hide-resolved"
+    };
+    let key_hints: Vec<String> = if state
+        .selected_comment()
+        .is_some_and(PrComment::is_amf_followup_reply)
+    {
+        [
+            "AMF follow-up · context only",
+            "j/k move",
+            "^d/^u scroll",
+            resolved_hint,
+            "o sort",
+            "i syntax",
+            "r refresh",
+            "g other-PR",
+            "A ai-review",
+            "esc/q close",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    } else {
+        let mut batch_hint = match state.marked.len() {
+            0 => "space mark".to_string(),
+            n => format!("space mark · B combine({n})"),
+        };
+        if state
+            .selected_comment()
+            .is_some_and(|c| c.batch_id.is_some())
+        {
+            batch_hint.push_str(" · [/] siblings");
+        }
+        let mut hints = vec![
+            "j/k move".to_string(),
+            "^d/^u scroll".to_string(),
+            format!("f fix→{}", state.fix_target.tag()),
+            "v investigate · a act".to_string(),
+            batch_hint,
+            "R reply".to_string(),
+            "m mark".to_string(),
+            "M memory".to_string(),
+            resolved_hint.to_string(),
+            "o sort".to_string(),
+            "P session".to_string(),
+        ];
+        if state.fix_target.is_companion_feature() {
+            hints.push("I integrate".to_string());
+        }
+        hints.extend(
+            [
+                "i syntax",
+                "r refresh",
+                "g other-PR",
+                "A ai-review",
+                "esc/q close",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
+        hints
+    };
+    let key_rows = pack_hints(&key_hints, area.width as usize);
+    let footer_h = (key_rows.len().min(3) + 1) as u16;
+
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                                      // header
             Constraint::Length(if mismatch.is_some() { 1 } else { 0 }), // branch-mismatch banner
             Constraint::Min(1),                                         // body
-            Constraint::Length(3), // footer: 2 wrapped key-hint rows + 1 marker legend
+            Constraint::Length(footer_h), // key-hint rows + 1 marker legend
         ])
         .split(area);
 
@@ -901,60 +970,22 @@ pub fn draw_pr_review(
     // the real content height (the layout is no longer a 1:1 source-line map).
     state.detail_content_lines = detail_lines;
 
-    // Footer: key hints, then a legend spelling out the list markers.
-    let toggle_hint = if state.hide_resolved {
-        "h show-resolved"
-    } else {
-        "h hide-resolved"
-    };
-    // The batch hint shows the marked count so the user knows what `B` combines.
-    let mut batch_hint = match state.marked.len() {
-        0 => "space mark".to_string(),
-        n => format!("space mark · B combine({n})"),
-    };
-    // Only offer the sibling-jump keys when the selected comment was actually
-    // fixed as part of a combined batch — otherwise they are a no-op.
-    if state
-        .selected_comment()
-        .is_some_and(|c| c.batch_id.is_some())
-    {
-        batch_hint.push_str(" · [/] siblings");
-    }
-    // `v` runs a read-only investigation; `a` acts on a finished one (it says
-    // so if there isn't one). Both are always shown so they're discoverable.
-    let investigate_hint = "v investigate · a act";
-    let key_text = if state
-        .selected_comment()
-        .is_some_and(PrComment::is_amf_followup_reply)
-    {
-        " AMF follow-up · context only   j/k move   ^d/^u scroll   ".to_string()
-            + toggle_hint
-            + "   o sort   i syntax   r refresh   g other-PR   A ai-review   esc/q close"
-    } else {
-        // `I` only means something for the companion-feature target — the
-        // other two commit straight onto the PR branch.
-        let integrate_hint = if state.fix_target.is_companion_feature() {
-            "   I integrate"
-        } else {
-            ""
-        };
-        format!(
-            " j/k move   ^d/^u scroll   f fix→{}   {investigate_hint}   {batch_hint}   R reply   m mark   M memory   {toggle_hint}   o sort   P session{integrate_hint}   i syntax   r refresh   g other-PR   A ai-review   esc/q close",
-            state.fix_target.tag(),
-        )
-    };
-    // Wrapped so the full hint list stays visible — the footer reserves two
-    // rows for it (see `outer`'s `Length(3)`), then one for the marker legend.
-    let keys = Paragraph::new(Line::from(Span::styled(
-        key_text,
-        Style::default().fg(theme.text_muted.to_color()),
-    )))
-    .wrap(Wrap { trim: false });
+    // Footer: the pre-packed key-hint rows (built above), then a legend
+    // spelling out the list markers.
+    let key_lines: Vec<Line> = key_rows
+        .iter()
+        .map(|row| {
+            Line::from(Span::styled(
+                format!(" {row}"),
+                Style::default().fg(theme.text_muted.to_color()),
+            ))
+        })
+        .collect();
     let footer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Length(1)])
+        .constraints([Constraint::Length(footer_h - 1), Constraint::Length(1)])
         .split(outer[3]);
-    frame.render_widget(keys, footer[0]);
+    frame.render_widget(Paragraph::new(key_lines), footer[0]);
     frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);
 
     if let Some(pick) = &state.harness_pick {
@@ -2684,6 +2715,28 @@ fn shared_prefix_len(content: &str, other: &str) -> usize {
     end
 }
 
+/// Greedily pack `hints` into rows no wider than `width`, joined on a row by
+/// three spaces, **never splitting a hint across rows** (so `A ai-review` and
+/// `h hide-resolved` stay whole). A leading space is prepended when the rows
+/// are rendered, so the fit check reserves one column for it.
+fn pack_hints(hints: &[String], width: usize) -> Vec<String> {
+    const SEP: &str = "   ";
+    let mut rows: Vec<String> = Vec::new();
+    for hint in hints {
+        let fits = rows
+            .last()
+            .is_some_and(|row| row.chars().count() + SEP.len() + hint.chars().count() < width);
+        if fits {
+            let row = rows.last_mut().unwrap();
+            row.push_str(SEP);
+            row.push_str(hint);
+        } else {
+            rows.push(hint.clone());
+        }
+    }
+    rows
+}
+
 /// Footer legend spelling out the list/detail markers.
 fn marker_legend(theme: &Theme) -> Line<'static> {
     let muted = Style::default().fg(theme.text_muted.to_color());
@@ -3091,6 +3144,35 @@ mod tests {
             rendered.contains("^d/^u scroll"),
             "footer names the detail-pane scroll keys"
         );
+        // The last hint survives — the packed footer never truncates it.
+        assert!(rendered.contains("esc/q close"));
+    }
+
+    #[test]
+    fn pack_hints_never_splits_a_hint_and_respects_width() {
+        let hints: Vec<String> = ["j/k move", "h hide-resolved", "A ai-review", "esc/q close"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Wide: one row.
+        let rows = pack_hints(&hints, 120);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0],
+            "j/k move   h hide-resolved   A ai-review   esc/q close"
+        );
+
+        // Narrow: wraps, and every hint lands whole on some row.
+        let rows = pack_hints(&hints, 24);
+        assert!(rows.len() > 1);
+        for row in &rows {
+            assert!(row.chars().count() < 24, "row within width: {row:?}");
+        }
+        let joined = rows.join(" ");
+        for h in &hints {
+            assert!(joined.contains(h.as_str()), "hint kept whole: {h:?}");
+        }
     }
 
     #[test]

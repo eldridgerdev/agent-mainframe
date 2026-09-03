@@ -422,6 +422,16 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             };
             app.open_prompt_library(Some(view_state));
         }
+        KeyCode::Char('E') => {
+            let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.open_prompt_overrides(Some(view_state));
+        }
         KeyCode::Char('b') => {
             app.toggle_sidebar_in_view();
         }
@@ -1332,6 +1342,24 @@ mod tests {
                 "composer did not re-enable for {kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn leader_shift_e_opens_the_prompt_override_manager_from_a_session() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('E')), 20).unwrap();
+
+        assert!(
+            matches!(&app.mode, AppMode::PromptOverrides(state) if state.from_view.is_some()),
+            "leader E opens the manager and remembers the session view"
+        );
+
+        // Esc returns to the session view it was opened from.
+        crate::handlers::handle_key(&mut app, key(KeyCode::Esc), 20).unwrap();
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
     }
 
     #[test]

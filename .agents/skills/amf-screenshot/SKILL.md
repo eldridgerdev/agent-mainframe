@@ -71,20 +71,33 @@ Search the escape-free `.txt` twins for the expected dialog titles, labels, ente
 
 When the branch and scenario are pushed and the user wants the proof attached to
 an **open** PR, run the repository's agent-driven publisher. The deploy step
-runs locally, so wrangler must be authenticated (`wrangler login` or
-`CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` must be set, and `wrangler`
-(or `npx`) must be available. That Cloudflare setup is a one-time job for the
-repository owner: if `publish-pages.sh` reports missing auth, surface the
-warning and stop — do not run `wrangler login` or mint a token yourself.
+runs locally and needs `CLOUDFLARE_ACCOUNT_ID` set (it is, in the owner's
+shell), `wrangler` (or `npx`) available, and a `CLOUDFLARE_API_TOKEN` in the
+environment.
+
+**Do not run `wrangler login` — it is unreliable here, and you must not mint a
+token yourself.** The token is a Pages-scoped API token the repository owner
+keeps in `~/.secrets/cf-amf-pages.env`; the `amf-publish-screenshots` shell
+function sources that file and `exec`s `publish-pages.sh`. Invoke it through the
+wrapper, or source the file first, so the run is non-interactive:
 
 ```bash
-scripts/dev/screenshot/publish-pages.sh \
+amf-publish-screenshots \
   --pr <number> \
   --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
   --summary "One sentence explaining the complete flow under review" \
   --ref <pushed-branch> \
   --strict
+
+# equivalently, from a non-login shell:
+( set -a; . ~/.secrets/cf-amf-pages.env; set +a
+  scripts/dev/screenshot/publish-pages.sh --pr <number> \
+    --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+    --summary "..." --ref <pushed-branch> --strict )
 ```
+
+If `publish-pages.sh` still reports missing Cloudflare auth after that (the
+secrets file is absent or the token is unset), surface the warning and stop.
 
 Add `--gif` only when the user asks for animation. The command dispatches the
 isolated **capture-only** workflow, then locally downloads the rendered frames,

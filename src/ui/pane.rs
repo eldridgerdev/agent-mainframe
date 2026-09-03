@@ -28,6 +28,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("g", "Generate summary"),
     ("l", "Latest prompt"),
     ("p", "Prompt library"),
+    ("E", "Headless prompt overrides"),
     ("d", "Diff viewer (all changes / commit)"),
     ("m", "Markdown viewer"),
     ("n", "Open current plan"),

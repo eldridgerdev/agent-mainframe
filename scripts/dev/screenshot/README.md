@@ -164,10 +164,14 @@ scripts/dev/screenshot/publish-pages.sh \
 Add `--gif` when an animation is wanted and `--geometry 160x44` when the
 scenario needs another fixed size. The invoking agent needs an authenticated
 `gh` CLI session with permission to dispatch Actions and edit the PR, and — for
-the deploy step, which now runs locally — Cloudflare auth (a completed
-`wrangler login`, or `CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` set, and
-`wrangler` on `PATH` (or `npx`). The scenario must exist on the pushed ref;
-screenshots never need to be committed.
+the deploy step, which now runs locally — `CLOUDFLARE_API_TOKEN` in the
+environment, `CLOUDFLARE_ACCOUNT_ID` set, and `wrangler` on `PATH` (or `npx`).
+The owner keeps the token in `~/.secrets/cf-amf-pages.env`; the
+`amf-publish-screenshots` shell wrapper sources that file and calls
+`publish-pages.sh`, so prefer the wrapper (or `source` the file yourself).
+`wrangler login` also satisfies the check but is unreliable here — use the
+token. The scenario must exist on the pushed ref; screenshots never need to be
+committed.
 
 The workflow must already be present on the repository's default branch before
 the command can dispatch it; the capture itself may target any pushed ref.
@@ -219,14 +223,17 @@ one concurrency group so a burst just queues one Rust build at a time. Agents
 must use that account's authenticated `gh` session.
 
 The Cloudflare Pages deploy runs on the operator's machine, from
-`publish-pages.sh`. Authenticate wrangler locally — `wrangler login` (OAuth,
-nothing stored by us) or an `CLOUDFLARE_API_TOKEN` export — and set
-`CLOUDFLARE_ACCOUNT_ID` (an identifier, not a secret). There is no
-`screenshot-pages` GitHub environment and no per-run approval: no Cloudflare
-credential is ever stored in GitHub, and the deploy step only ever sees rendered
-images downloaded from the capture artifact — it never checks out or executes
-the captured ref. If auth or `wrangler` is missing, the script warns and stops
-before dispatching a capture it could not publish.
+`publish-pages.sh`. Provide a Pages-scoped `CLOUDFLARE_API_TOKEN` — the owner
+keeps it in `~/.secrets/cf-amf-pages.env`, and the `amf-publish-screenshots`
+shell wrapper sources that file before invoking the script — and set
+`CLOUDFLARE_ACCOUNT_ID` (an identifier, not a secret). `wrangler login` (OAuth,
+nothing stored by us) also passes the check, but it is unreliable on this box;
+prefer the token. There is no `screenshot-pages` GitHub environment and no
+per-run approval: no Cloudflare credential is ever stored in GitHub, and the
+deploy step only ever sees rendered images downloaded from the capture
+artifact — it never checks out or executes the captured ref. If auth or
+`wrangler` is missing, the script warns and stops before dispatching a capture
+it could not publish.
 
 The runner installs the Codex CLI so a fresh scratch instance can pass AMF's
 harness setup for UI-only scenarios. Scenarios that launch an agent still need

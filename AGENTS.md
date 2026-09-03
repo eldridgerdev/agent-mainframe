@@ -283,8 +283,10 @@ ref and scenario are pushed. The publisher requires the `eldridgerdev` GitHub
 identity and writes only the marked PR-body region. It dispatches the isolated
 capture workflow (the only job that checks out the ref), then downloads that
 run's rendered frames and deploys the private Cloudflare Pages gallery from the
-local machine — so it needs local Cloudflare auth (`wrangler login` or
-`CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` set, plus `wrangler` (or
+local machine — so it needs `CLOUDFLARE_API_TOKEN` in the environment (the owner
+keeps it in `~/.secrets/cf-amf-pages.env`, sourced by the
+`amf-publish-screenshots` shell wrapper; don't run `wrangler login`, it is
+unreliable here), `CLOUDFLARE_ACCOUNT_ID` set, plus `wrangler` (or
 `npx`). There is no `screenshot-pages`
 environment or per-run approval: the Pages credentials never enter CI, and the
 capture-vs-deploy split keeps that safe. Do not claim publication succeeded

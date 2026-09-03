@@ -419,44 +419,49 @@ impl AiReviewCacheEntry {
 /// AMF still owns parsing the findings back out via the fixed-format
 /// instruction that follows. `None` (the default) skips straight to AMF's own
 /// review instructions.
+/// The full built-in AI PR-review prompt. Production goes through the
+/// resolver ([`run_ai_pr_review`] renders the resolved template); this keeps
+/// the whole-prompt assembly available to tests.
+#[allow(dead_code)]
 pub fn ai_review_prompt(diff: &str, memory: &str, skill: Option<&str>) -> String {
-    let mut out = String::new();
-    if let Some(skill) = skill {
-        out.push_str(&format!(
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PrReviewAiReview
+            .spec()
+            .default_template,
+        &ai_review_prompt_context(diff, memory, skill),
+    )
+}
+
+/// The `{{token}}` context for [`crate::prompts::PromptId::PrReviewAiReview`].
+/// `skill_directive` and `recurring_findings` are empty unless a review skill
+/// or a non-empty review-memory doc is configured.
+pub fn ai_review_prompt_context(
+    diff: &str,
+    memory: &str,
+    skill: Option<&str>,
+) -> crate::prompts::PromptContext {
+    let skill_directive = match skill {
+        Some(skill) => format!(
             "First, use the /{skill} skill/command to review the pull request diff below as \
              your primary review methodology.\n\n"
-        ));
-    }
-    out.push_str(
-        "You are reviewing a pull request's diff for correctness bugs and quality issues. \
-         Check especially for issues matching the team's known recurring findings listed below, \
-         if any. Skip praise and style nitpicks the diff already handles well.\n\n",
-    );
-    if !memory.trim().is_empty() {
+        ),
+        None => String::new(),
+    };
+    let recurring_findings = if memory.trim().is_empty() {
+        String::new()
+    } else {
         // Deliberately not "for this project": `memory` may merge the repo's
         // own doc with the user's cross-project one, each labeled inside.
-        out.push_str("Known recurring findings to check for:\n");
-        out.push_str(memory.trim());
-        out.push_str("\n\n");
-    }
-    out.push_str("Diff:\n\n");
-    out.push_str(&annotated_diff_for_ai_review(diff));
-    out.push_str(&format!(
-        "\n\n---\n\nOutput ONLY the summary and findings in this exact format (no prose outside \
-         it). Always include the summary, even when there are no findings. The summary must be \
-         one to three useful sentences covering the main themes or risk:\n\n\
-         ## Summary\n\
-         <overall review summary>\n\n\
-         {AI_FINDING_HEADING_PREFIX}<path>|<side>|<line>\n\
-         <finding text, 1-3 sentences>\n\n\
-         {AI_FINDING_HEADING_PREFIX}General\n\
-         <a finding with no single file:line anchor>\n\n\
-         `<side>` must be `RIGHT` for a current-file line or `LEFT` for a removed \
-         base-file line. Copy the path, side, and one-based line number exactly \
-         from that row's bracketed coordinate label; never count patch rows or \
-         infer a line number from a hunk offset.\n"
-    ));
-    out
+        format!(
+            "Known recurring findings to check for:\n{}\n\n",
+            memory.trim()
+        )
+    };
+    crate::prompts::PromptContext::new()
+        .with("skill_directive", skill_directive)
+        .with("recurring_findings", recurring_findings)
+        .with("annotated_diff", annotated_diff_for_ai_review(diff))
+        .with("finding_heading_prefix", AI_FINDING_HEADING_PREFIX)
 }
 
 /// Render a parsed unified diff with an explicit source coordinate on every
@@ -836,9 +841,16 @@ fn run_ai_pr_review(
     skill: Option<String>,
     model: Option<String>,
     pricing: crate::token_tracking::TokenPricingConfig,
+    // The `pr_review.ai_review` template, resolved on the UI thread (built-in
+    // default or a feature/project/global override). The diff is only fetched
+    // here on the worker thread, so the prompt is rendered here.
+    template: String,
     tx: std::sync::mpsc::Sender<AiReviewProgress>,
 ) {
-    let prompt = ai_review_prompt(&diff, &memory, skill.as_deref());
+    let prompt = crate::prompts::render_template(
+        &template,
+        &ai_review_prompt_context(&diff, &memory, skill.as_deref()),
+    );
     let _ = tx.send(AiReviewProgress::Reviewing {
         token_estimate: super::pr_review::estimate_tokens(&prompt),
     });
@@ -1455,7 +1467,7 @@ impl App {
     /// validated. Kept separate from [`Self::start_ai_pr_review`] so the
     /// picker can pause before the paid pass without duplicating lifecycle
     /// setup.
-    fn begin_ai_pr_review(&mut self) {
+    pub(crate) fn begin_ai_pr_review(&mut self) {
         let mut origin = match &self.mode {
             AppMode::AiReview(state) => state.clone(),
             _ => return,
@@ -1504,6 +1516,23 @@ impl App {
         );
         let skill = self.config.ai_review_skill.clone();
         let pricing = self.config.token_pricing.clone();
+        let (template, _) = self.resolve_headless_template(
+            crate::prompts::PromptId::PrReviewAiReview,
+            &harness,
+            &repo,
+            &workdir,
+        );
+
+        let preview = format!(
+            "{template}\n\n[the PR #{number} diff is fetched and spliced into {{{{annotated_diff}}}} when the call runs]"
+        );
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::PrReviewAiReview,
+            &harness,
+            &preview,
+        ) {
+            return;
+        }
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.ai_review_bg = Some(rx);
@@ -1518,6 +1547,7 @@ impl App {
                 skill,
                 model,
                 pricing,
+                template,
                 tx,
             ),
             Err(e) => {

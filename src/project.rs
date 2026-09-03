@@ -122,6 +122,30 @@ impl AgentKind {
         }
     }
 
+    /// The lowercase, machine-stable name — matches this enum's serde
+    /// representation. Used as a key/token wherever a harness has to be
+    /// written to storage (prompt-override rows and `amf.json` entries).
+    pub fn slug(&self) -> &'static str {
+        match self {
+            AgentKind::Claude => "claude",
+            AgentKind::Opencode => "opencode",
+            AgentKind::Codex => "codex",
+            AgentKind::Pi => "pi",
+        }
+    }
+
+    /// Parse a [`Self::slug`] back to an `AgentKind`. `None` for an
+    /// unrecognized token.
+    pub fn from_slug(token: &str) -> Option<AgentKind> {
+        match token {
+            "claude" => Some(AgentKind::Claude),
+            "opencode" => Some(AgentKind::Opencode),
+            "codex" => Some(AgentKind::Codex),
+            "pi" => Some(AgentKind::Pi),
+            _ => None,
+        }
+    }
+
     pub const ALL: [AgentKind; 4] = [
         AgentKind::Claude,
         AgentKind::Opencode,

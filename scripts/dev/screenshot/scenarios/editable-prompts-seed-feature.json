@@ -1,0 +1,1 @@
+{ "project_name": "screenshot-demo", "branch": "editable-prompts-demo", "agent": "__HARNESS__", "mode": "vibe", "review": false, "plan_mode": false, "create_terminal": false, "use_worktree": false, "enable_chrome": false, "hook_choice": null, "dry_run": false }

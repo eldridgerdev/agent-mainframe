@@ -172,7 +172,9 @@ A and B are the two independent P0 tracks; everything else layers on top.
       rendered frames as an internal artifact; `publish-pages.sh` waits for the
       run, `gh run download`s it, builds the CSP-locked gallery with the new
       `build_static_gallery.py`, and runs `wrangler pages deploy` locally with
-      wrangler authenticated by `wrangler login` (or `CLOUDFLARE_API_TOKEN`) and
+      a `CLOUDFLARE_API_TOKEN` in the environment (kept in
+      `~/.secrets/cf-amf-pages.env`, sourced by the `amf-publish-screenshots`
+      shell wrapper; `wrangler login` also works but is unreliable) and
       `CLOUDFLARE_ACCOUNT_ID` set. No GitHub environment, no per-run approval,
       and no Cloudflare credential ever enters CI. →
       `.github/workflows/amf-screenshot-artifact.yml`,

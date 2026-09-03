@@ -27,8 +27,10 @@ pub(crate) mod opencode_storage;
 pub(crate) mod plan;
 mod plan_interview;
 pub(crate) mod pr_review;
+pub(crate) mod precall;
 mod project_ops;
 mod prompt_library;
+pub(crate) mod prompt_overrides;
 pub mod remote_control;
 mod rename;
 pub(crate) mod resource_gate;
@@ -829,6 +831,12 @@ pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
     pub db: Option<crate::db::AmfDb>,
+    /// Set by `precall_confirm` when the user clears a pre-call notice; the
+    /// re-dispatched `start_*` method consumes it to skip the gate and spawn.
+    pub precall_cleared: Option<precall::PrecallAction>,
+    /// Stashed pre-call notice while the user is in the override manager it
+    /// opened (`e`); restored when the manager closes.
+    pub precall_return: Option<Box<precall::PendingPrecall>>,
     pub config: AppConfig,
     pub active_extension: ExtensionConfig,
     pub theme: crate::theme::Theme,
@@ -2381,6 +2389,8 @@ impl App {
             store,
             store_path,
             db: Some(db),
+            precall_cleared: None,
+            precall_return: None,
             config,
             active_extension,
             theme,
@@ -2626,6 +2636,8 @@ impl App {
             store,
             store_path: PathBuf::new(),
             db: None,
+            precall_cleared: None,
+            precall_return: None,
             config: AppConfig {
                 // Whether a test warns before starting an agent must not
                 // depend on how much memory the machine running it happens to
@@ -3234,6 +3246,59 @@ impl App {
     pub(crate) fn extension_for_repo(&self, repo: &Path) -> ExtensionConfig {
         let global_ext = load_global_extension_config();
         merge_project_extension_config(&global_ext, repo)
+    }
+
+    /// The effective template for a headless prompt on the feature at
+    /// `repo` / `workdir`, plus where it came from. Consults, nearest-first:
+    /// the feature-scope `prompt_overrides` row (keyed by `workdir`), the
+    /// repo's `amf.json` `prompt_overrides`, the global-scope row, then the
+    /// built-in default. Read fresh each call so a hand-edit to `amf.json` or
+    /// an override saved from the manager takes effect on the next run.
+    ///
+    /// Returned without interpolation so a caller that renders on a worker
+    /// thread can resolve here (on the UI thread, where `self` lives) and
+    /// [`crate::prompts::render_template`] there.
+    pub(crate) fn resolve_headless_template(
+        &self,
+        id: crate::prompts::PromptId,
+        harness: &AgentKind,
+        repo: &Path,
+        workdir: &Path,
+    ) -> (String, crate::prompts::PromptSource) {
+        let db_view = self
+            .db
+            .as_ref()
+            .and_then(|db| db.load_prompt_overrides().ok());
+        let project = crate::prompts::project::load_from_repo(repo);
+        let layers = crate::prompts::PromptLayers {
+            feature_workdir: workdir.to_str(),
+            db: db_view.as_ref(),
+            project: Some(&project),
+        };
+        let (text, source) = crate::prompts::resolve_template_layered(id, harness, &layers);
+        if source.is_override() {
+            crate::debug::log_to_file(
+                crate::debug::LogLevel::Debug,
+                "prompts",
+                &format!("{} resolved from {}", id.as_str(), source.label()),
+            );
+        }
+        (text.into_owned(), source)
+    }
+
+    /// [`Self::resolve_headless_template`] followed by interpolation of `ctx`.
+    /// The common path: a call site that builds its context and dispatches on
+    /// the UI thread.
+    pub(crate) fn resolve_headless_prompt(
+        &self,
+        id: crate::prompts::PromptId,
+        harness: &AgentKind,
+        repo: &Path,
+        workdir: &Path,
+        ctx: &crate::prompts::PromptContext,
+    ) -> String {
+        let (text, _source) = self.resolve_headless_template(id, harness, repo, workdir);
+        crate::prompts::render_template(&text, ctx)
     }
 
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {

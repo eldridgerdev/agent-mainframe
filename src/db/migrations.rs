@@ -148,6 +148,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add pr_investigations table for PR Triage's read-only Investigate action",
             MIGRATION_033,
         ),
+        (
+            "Add prompt_overrides table for editable feature/global headless prompts",
+            MIGRATION_034,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -858,6 +862,34 @@ CREATE INDEX IF NOT EXISTS idx_pr_investigations_pr
     ON pr_investigations(project_id, pr_number);
 ";
 
+/// Feature- and global-scope overrides of AMF's built-in headless prompt
+/// templates (see `src/db/prompt_overrides.rs` and `src/prompts/`). Project
+/// scope is an `amf.json` `prompt_overrides` map, not a row here.
+///
+/// One row per `(prompt_id, scope, scope_key, harness)`: `scope` is
+/// `feature` or `global`, `scope_key` is the feature's workdir path (`NULL`
+/// for global), and `harness` is `NULL` for a template shared across
+/// harnesses or the harness's lowercase name for a per-harness override. The
+/// uniqueness index folds the two nullable columns through `COALESCE(...,'')`
+/// so "no key" and "shared" each collapse to a single row rather than SQLite
+/// treating every `NULL` as distinct.
+///
+/// No foreign key to `features`: the workdir key outlives any feature row
+/// (cf. `todos`, `pr_terminal_state`), and cleanup is explicit.
+const MIGRATION_034: &str = "
+CREATE TABLE IF NOT EXISTS prompt_overrides (
+    prompt_id   TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    scope_key   TEXT,
+    harness     TEXT,
+    template    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_overrides_identity
+    ON prompt_overrides(prompt_id, scope, COALESCE(scope_key, ''), COALESCE(harness, ''));
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -898,7 +930,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 33);
+        assert_eq!(version, 34);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -993,7 +1025,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 33);
+        assert_eq!(version, 34);
     }
 
     #[test]
@@ -1335,7 +1367,61 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 33);
+        assert_eq!(rows, 34);
+    }
+
+    /// `prompt_overrides` stands up on a fresh database and on one seeded at an
+    /// older schema version, and its identity index treats a NULL `scope_key`
+    /// / `harness` as a single value rather than as distinct rows.
+    #[test]
+    fn migration_034_creates_prompt_overrides_on_fresh_and_existing_dbs() {
+        for seed_version in [None, Some(33)] {
+            let conn = Connection::open_in_memory().unwrap();
+            if let Some(version) = seed_version {
+                conn.execute_batch(
+                    "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                        applied_at TEXT NOT NULL, description TEXT NOT NULL);",
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO schema_version VALUES (?1, datetime('now'), 'seed')",
+                    params![version],
+                )
+                .unwrap();
+            }
+
+            super::run(&conn).unwrap();
+
+            conn.execute_batch(
+                "INSERT INTO prompt_overrides
+                    (prompt_id, scope, scope_key, harness, template, created_at, updated_at)
+                 VALUES ('session.summary', 'global', NULL, NULL, 't1',
+                         datetime('now'), datetime('now'));",
+            )
+            .unwrap();
+            // Same identity (NULL key, NULL harness) — the COALESCE index must reject it.
+            let dup = conn.execute_batch(
+                "INSERT INTO prompt_overrides
+                    (prompt_id, scope, scope_key, harness, template, created_at, updated_at)
+                 VALUES ('session.summary', 'global', NULL, NULL, 't2',
+                         datetime('now'), datetime('now'));",
+            );
+            assert!(dup.is_err(), "duplicate global-shared override was allowed");
+
+            // A per-harness row at the same scope is a distinct identity.
+            conn.execute_batch(
+                "INSERT INTO prompt_overrides
+                    (prompt_id, scope, scope_key, harness, template, created_at, updated_at)
+                 VALUES ('session.summary', 'global', NULL, 'codex', 't3',
+                         datetime('now'), datetime('now'));",
+            )
+            .unwrap();
+
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM prompt_overrides", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 2);
+        }
     }
 
     /// Features written before selected-plan persistence existed acquire a
@@ -1388,7 +1474,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 33);
+        assert_eq!(version, 34);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

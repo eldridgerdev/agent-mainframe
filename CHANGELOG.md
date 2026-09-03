@@ -31,6 +31,36 @@ are tagged.
 
 ### Added
 
+- **Every headless AI prompt AMF sends can now be viewed and overridden.**
+  AMF makes one-shot ("headless") AI calls behind the plan interview, Learning
+  Mode, the final-review diff helpers (walkthrough, AI co-review, changeset
+  overview, diff explanation), the AI PR review, and the review-memory
+  bootstrap/compaction. A new **prompt-override manager** — `E` on the
+  dashboard, or `Ctrl+Space` then `E` from a session — lists all 15 templates
+  with their effective source (built-in / feature / project / global), opens
+  an editor on the effective template, and saves an override at one of three
+  scopes: **feature** (this checkout, in `amf.db`), **global** (all projects,
+  in `amf.db`), or **project** (`amf.json`'s new `prompt_overrides` key,
+  committed with the repo). An override can be shared across harnesses or
+  pinned to one (harness picker in the save flow). Precedence is
+  nearest-scope-wins — feature → project → global → built-in — with a
+  per-harness template beating the shared one within the winning scope. `d`,
+  `d` clears an override. Templates use visible `{{token}}` placeholders that
+  AMF re-fills with live context at run time; there is **no validation** —
+  a dropped or unknown token is saved and rendered verbatim.
+
+- **A pre-call notice now appears before each user-initiated headless AI
+  call.** It names the prompt and target harness and offers `v` (view the
+  exact prompt), `e` (edit its template in the manager), `Enter` (continue),
+  and `Esc` (cancel) — there is no "don't ask again". Continuing after an
+  edit re-resolves the prompt, so a just-saved override applies to that run.
+  Automated calls that run without a person watching — the Learning Mode
+  answer queue and session summaries — announce with a non-blocking toast
+  instead of the modal, so a batch of queued questions never stalls.
+  Migration: `amf.db` gains a `prompt_overrides` table
+  (`MIGRATION_034`), applied automatically on first launch; existing
+  databases are unaffected until an override is saved.
+
 - **PR Triage can investigate a review comment instead of fixing it.** A
   comment that asks a question rather than requesting a change can be
   investigated: press `v` to run a strictly read-only headless pass on the
@@ -159,9 +189,11 @@ are tagged.
   ignores the columns.
 
 - Publishing screenshot proof to a PR now deploys from your machine, so it
-  needs a one-time local setup: authenticate wrangler (`wrangler login`, or a
-  `CLOUDFLARE_API_TOKEN` scoped to Cloudflare Pages · Edit) and set
-  `CLOUDFLARE_ACCOUNT_ID`. The `screenshot-pages` GitHub environment is no
+  needs a one-time local setup: put a `CLOUDFLARE_API_TOKEN` scoped to
+  Cloudflare Pages · Edit in the environment (the maintainer keeps it in
+  `~/.secrets/cf-amf-pages.env`, sourced by the `amf-publish-screenshots` shell
+  wrapper) and set `CLOUDFLARE_ACCOUNT_ID`. `wrangler login` also works but is
+  unreliable; prefer the token. The `screenshot-pages` GitHub environment is no
   longer used and can be deleted along with its `CLOUDFLARE_*` secrets.
 
 ## [v0.41.0] - 2026-08-27

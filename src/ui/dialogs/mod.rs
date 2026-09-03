@@ -17,8 +17,10 @@ mod learning;
 mod markdown;
 mod plan_interview;
 mod pr_review;
+mod precall;
 mod project;
 mod prompt_library;
+mod prompt_overrides;
 mod resource_gate;
 mod review_destination;
 mod review_harness;
@@ -55,10 +57,12 @@ pub use pr_review::{
     draw_pr_review, draw_pr_review_loading, draw_review_memory_bootstrap_running,
     draw_review_memory_compact_review, draw_review_memory_compact_running,
 };
+pub use precall::draw_prompt_precall;
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use prompt_library::{
     draw_placeholder_fill, draw_prompt_editor, draw_prompt_library, draw_skill_picker,
 };
+pub use prompt_overrides::draw_prompt_overrides;
 pub use resource_gate::draw_resource_confirm_dialog;
 pub use review_destination::{
     draw_review_destination_pick, draw_review_feature_setup, draw_review_integrate,

@@ -144,20 +144,33 @@ The repository's selected publication backend is a Cloudflare Pages preview.
 Publication is a real PR-body write: do it only when the user explicitly asks.
 The branch and scenario must be pushed, the target PR must be open, `gh` must be
 authenticated as `eldridgerdev`, and the deploy step (which runs locally, not in
-CI) needs Cloudflare auth (`wrangler login` or `CLOUDFLARE_API_TOKEN`),
-`CLOUDFLARE_ACCOUNT_ID` set, plus `wrangler` on `PATH` or `npx` available. That
-Cloudflare setup is a one-time job for the repository owner: if
-`publish-pages.sh` reports missing auth, surface the warning and stop — do not
-run `wrangler login` or mint a token yourself. Run:
+CI) needs `CLOUDFLARE_ACCOUNT_ID` set (it is, in the owner's shell) plus
+`wrangler` on `PATH` or `npx` available, and a `CLOUDFLARE_API_TOKEN`
+in the environment.
+
+**Do not run `wrangler login` — it does not work well here, and you must not
+mint a token yourself.** The token is a Pages-scoped API token the repository
+owner keeps in `~/.secrets/cf-amf-pages.env`; the `amf-publish-screenshots`
+shell function sources that file and `exec`s `publish-pages.sh`. Use the
+wrapper, or source the file yourself, so the run is non-interactive:
 
 ```bash
-scripts/dev/screenshot/publish-pages.sh \
+amf-publish-screenshots \
   --pr <number> \
   --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
   --summary "One sentence explaining the complete flow under review" \
   --ref <pushed-branch> \
   --strict
+
+# equivalently, from a non-login shell:
+( set -a; . ~/.secrets/cf-amf-pages.env; set +a
+  scripts/dev/screenshot/publish-pages.sh --pr <number> \
+    --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+    --summary "..." --ref <pushed-branch> --strict )
 ```
+
+If `publish-pages.sh` still reports missing Cloudflare auth after that — the
+secrets file is absent or the token is unset — surface the warning and stop.
 
 Add `--gif` only when the user asks for animation. The command dispatches the
 isolated **capture-only** workflow on GitHub, then — on this machine —

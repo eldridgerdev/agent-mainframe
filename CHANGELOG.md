@@ -22,6 +22,19 @@ are tagged.
   at `~/.codex/config.toml` so you know how to make presets show up. No
   migration is required.
 
+- **Multi-line editors now use Shift+Enter for a newline.** TODO notes,
+  Compose, plan interviews, configuration fields, and PR investigation context
+  no longer rely on Alt+Enter, which Windows can intercept. Plain Enter keeps
+  its existing save or send behavior. No migration is required.
+
+- **Prompt library entries no longer disappear when running multiple AMF
+  instances.** Saving in one AMF instance (e.g. another checkout open in a
+  different terminal) could silently erase templates recently added or
+  edited in another — often the most recent one, or several from the same
+  session. Templates are now saved independently of other AMF state, and the
+  prompt library always shows the latest saved templates when opened. No
+  migration is required.
+
 ## [v0.42.0] - 2026-09-04
 
 ### Fixed
@@ -126,18 +139,14 @@ are tagged.
   that feature's agent with the TODO, unsent. It declines with a reason on
   a project that is not a git repository. Requires no migration.
 
-- **AMF's own AI review (`W`) now carries model, token, and cost
-  attribution.** After a run completes, the AI Review pane shows a line
-  naming the harness and model that produced the findings plus the run's
-  input/output tokens and estimated cost. The same disclosure is inserted
-  above the `— AI review via AMF` marker on the posted GitHub summary and on
-  every inline comment, so a reader on the PR can tell which model reviewed
-  their code and roughly what it cost. It uses the same configured pricing
-  and rounding as AMF's other usage meters, and matches the disclosure
-  already shown on AI-drafted PR Triage replies. A harness that reports no
-  token usage degrades to model-only attribution rather than showing a
-  fabricated `$0.00`; a review generated before this change keeps the bare
-  marker.
+- **AMF's own AI review (`W`) now adds a compact usage summary to its
+  GitHub review.** The overall PR review records the harness, model, elapsed
+  time, input, output, cached, and total tokens when each is reported, plus an
+  estimated cost using AMF's configured rates. Line comments stay focused on
+  their finding and do not repeat this metadata. Missing metrics and costs are
+  labeled unavailable rather than shown as zero, so partial reports remain
+  trustworthy. Existing cached reviews remain compatible; no migration is
+  required.
 
 ### Changed
 
@@ -214,9 +223,7 @@ are tagged.
 
 ### Migration
 
-- The AI review attribution adds an optional field to the existing
-  `ai_review_cache` JSON rows; older cache entries load unchanged and simply
-  show no attribution until the next run.
+- No migration is required.
 
 - Schema migration 032 adds two nullable columns (`batch_id`,
   `batch_fix_cost`) to `pr_comment_triage`. It applies automatically on

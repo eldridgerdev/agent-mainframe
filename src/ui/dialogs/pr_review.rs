@@ -1744,7 +1744,7 @@ fn draw_investigation_context(
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "[enter] save   [alt+enter] newline   [esc] discard",
+            "[enter] save   [shift+enter] newline   [esc] discard",
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[2],

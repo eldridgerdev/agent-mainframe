@@ -1885,6 +1885,18 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       follow-up work. → `src/headless.rs`, `src/app/ai_review.rs`,
       `CHANGELOG.md`.
 
+      **Follow-up, 2026-09-04 — include review usage in the GitHub summary.**
+      A completed AI review now retains its effective harness and model,
+      elapsed time, and independently optional input, output, cached, and
+      provider-total token counts. `W` appends those values, plus the estimate
+      calculated from AMF's configured rates when input and output are both
+      known, to the one overall GitHub review body. Inline findings never carry
+      the usage block. Each unavailable metric and cost is labelled explicitly,
+      and failed or non-postable reviews create no separate status comment.
+      Structured Claude, Codex, OpenCode, and Pi output preserves omitted
+      fields rather than converting them to zero. → `src/headless.rs`,
+      `src/app/ai_review.rs`, `CHANGELOG.md`.
+
 - [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit
   each). `B` opens a confirm dialog before combining them into one prompt and

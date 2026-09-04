@@ -136,18 +136,18 @@ fn handle_investigation_follow_up_key(app: &mut App, key: KeyEvent) -> Result<()
 
 /// Key handling while the optional investigation-context edit box is open.
 /// Mirrors the plan-interview custom-answer box: `Enter` commits back to the
-/// list (it does **not** start a run — press `v` for that), `Alt+Enter`
+/// list (it does **not** start a run — press `v` for that), `Shift+Enter`
 /// inserts a newline, `Esc` / `Ctrl+Q` discards the edit, anything else flows
 /// to the editor.
 fn handle_investigation_context_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::Esc => app.pr_review_investigation_context_cancel(),
         KeyCode::Char('q') if ctrl => app.pr_review_investigation_context_cancel(),
-        KeyCode::Enter if !alt => app.pr_review_investigation_context_commit(),
+        KeyCode::Enter if !shift => app.pr_review_investigation_context_commit(),
         _ => {
-            // Normalize Alt+Enter to a plain newline for the editor.
+            // Normalize Shift+Enter to a plain newline for the editor.
             let event = if key.code == KeyCode::Enter {
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
             } else {

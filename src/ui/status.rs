@@ -186,7 +186,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::Compose(state) => Line::from(vec![
             Span::styled("Enter", key_style()),
             Span::raw(" send  "),
-            Span::styled("Alt+Enter", key_style()),
+            Span::styled("Shift+Enter", key_style()),
             Span::raw(" newline  "),
             Span::styled("Tab", key_style()),
             Span::raw(" complete  "),

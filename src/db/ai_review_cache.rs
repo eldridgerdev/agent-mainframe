@@ -149,6 +149,7 @@ mod tests {
             input_tokens: Some(1_000),
             output_tokens: Some(200),
             estimated_cost: Some("$0.01".into()),
+            ..Default::default()
         });
         db.save_ai_review_cache(9, "sha", &e).unwrap();
 

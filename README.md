@@ -75,6 +75,14 @@ sudo mv amf-x86_64-unknown-linux-musl /opt/amf
 sudo ln -s /opt/amf/amf /usr/local/bin/amf
 ```
 
+On macOS with Apple Silicon:
+
+```bash
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-apple-darwin.tar.gz -o amf.tar.gz
+tar -xzf amf.tar.gz
+sudo install -m 755 amf-aarch64-apple-darwin/amf /usr/local/bin/amf
+```
+
 ### Build from source
 
 Building requires Rust 1.85 or newer and `tmux`:

@@ -936,6 +936,7 @@ mod tests {
                 input_tokens: Some(12_300),
                 output_tokens: Some(4_500),
                 estimated_cost: Some("$0.10".to_string()),
+                ..Default::default()
             }));
         let rendered = render_pane(&mut state);
         assert!(
@@ -953,6 +954,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 estimated_cost: None,
+                ..Default::default()
             }));
         let rendered = render_pane(&mut state);
         assert!(rendered.contains("harness codex · model harness default · usage not reported"));

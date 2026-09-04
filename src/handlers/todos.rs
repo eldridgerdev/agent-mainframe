@@ -175,9 +175,9 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> Result<()> {
         if state.editor.as_ref().is_some_and(|ed| ed.editor.vim_mode().is_some()));
 
     match key.code {
-        // Alt+Enter inserts a newline (notes are multi-line); plain Enter
+        // Shift+Enter inserts a newline (notes are multi-line); plain Enter
         // commits. Mirrors the compose editor.
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
             if let AppMode::Todos(state) = &mut app.mode
                 && let Some(ed) = &mut state.editor
             {

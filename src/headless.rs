@@ -104,10 +104,17 @@ pub struct HeadlessRunner;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeadlessProgress {
     Activity(String),
-    Usage {
-        input_tokens: u64,
-        output_tokens: u64,
-    },
+    Usage(HeadlessUsage),
+}
+
+/// Usage reported by a single headless harness run. Each counter is optional:
+/// an omitted provider field means "unavailable", not zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeadlessUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -578,8 +585,7 @@ fn run_command(
 struct JsonlOutput {
     final_message: Option<String>,
     event_error: Option<String>,
-    input_tokens: u64,
-    output_tokens: u64,
+    usage: HeadlessUsage,
 }
 
 /// Drain a harness's structured event stream while the child is alive so the
@@ -782,18 +788,7 @@ fn apply_codex_json_event(
         }
         Some("turn.completed") => {
             let usage = event.get("usage").unwrap_or(&serde_json::Value::Null);
-            let input_tokens = usage
-                .get("input_tokens")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let output_tokens = usage
-                .get("output_tokens")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            on_progress(HeadlessProgress::Usage {
-                input_tokens,
-                output_tokens,
-            });
+            emit_usage_from(Some(usage), false, output, on_progress);
         }
         Some("turn.failed") | Some("error") => {
             output.event_error = event
@@ -1026,24 +1021,44 @@ fn emit_usage_from(
     let input = usage
         .get("input_tokens")
         .or_else(|| usage.get("input"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .and_then(serde_json::Value::as_u64);
     let output_tokens = usage
         .get("output_tokens")
         .or_else(|| usage.get("output"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .and_then(serde_json::Value::as_u64);
+    let cached = usage
+        .get("cache_read_input_tokens")
+        .or_else(|| usage.get("cached_input_tokens"))
+        .or_else(|| usage.get("cache_read"))
+        .or_else(|| usage.get("cached"))
+        .and_then(serde_json::Value::as_u64);
+    let total = usage
+        .get("total_tokens")
+        .or_else(|| usage.get("total"))
+        .and_then(serde_json::Value::as_u64);
     if accumulate {
-        output.input_tokens = output.input_tokens.saturating_add(input);
-        output.output_tokens = output.output_tokens.saturating_add(output_tokens);
+        output.usage.input_tokens = add_optional(output.usage.input_tokens, input);
+        output.usage.output_tokens = add_optional(output.usage.output_tokens, output_tokens);
+        output.usage.cached_tokens = add_optional(output.usage.cached_tokens, cached);
+        output.usage.total_tokens = add_optional(output.usage.total_tokens, total);
     } else {
-        output.input_tokens = input;
-        output.output_tokens = output_tokens;
+        output.usage = HeadlessUsage {
+            input_tokens: input,
+            output_tokens,
+            cached_tokens: cached,
+            total_tokens: total,
+        };
     }
-    on_progress(HeadlessProgress::Usage {
-        input_tokens: output.input_tokens,
-        output_tokens: output.output_tokens,
-    });
+    on_progress(HeadlessProgress::Usage(output.usage.clone()));
+}
+
+fn add_optional(current: Option<u64>, incoming: Option<u64>) -> Option<u64> {
+    match (current, incoming) {
+        (Some(current), Some(incoming)) => Some(current.saturating_add(incoming)),
+        (Some(current), None) => Some(current),
+        (None, Some(incoming)) => Some(incoming),
+        (None, None) => None,
+    }
 }
 
 fn json_error_message(error: Option<&serde_json::Value>) -> Option<String> {
@@ -1790,7 +1805,7 @@ mod tests {
             }),
             serde_json::json!({
                 "type": "turn.completed",
-                "usage": {"input_tokens": 1200, "output_tokens": 34}
+                "usage": {"input_tokens": 1200, "output_tokens": 34, "cached_input_tokens": 800, "total_tokens": 2034}
             }),
         ] {
             apply_codex_json_event(&event, &mut output, &|event| {
@@ -1805,10 +1820,16 @@ mod tests {
         assert!(progress.borrow().contains(&HeadlessProgress::Activity(
             "Inspecting the repository".to_string()
         )));
-        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
-            input_tokens: 1200,
-            output_tokens: 34,
-        }));
+        assert!(
+            progress
+                .borrow()
+                .contains(&HeadlessProgress::Usage(HeadlessUsage {
+                    input_tokens: Some(1200),
+                    output_tokens: Some(34),
+                    cached_tokens: Some(800),
+                    total_tokens: Some(2034),
+                }))
+        );
         let rendered = format!("{:?}", progress.borrow());
         assert!(!rendered.contains("super-secret-review-input"));
         assert!(!rendered.contains("Finding body"));
@@ -1864,10 +1885,15 @@ mod tests {
             output.final_message.as_deref(),
             Some("### src/lib.rs:7\nFinding body")
         );
-        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
-            input_tokens: 450,
-            output_tokens: 21,
-        }));
+        assert!(
+            progress
+                .borrow()
+                .contains(&HeadlessProgress::Usage(HeadlessUsage {
+                    input_tokens: Some(450),
+                    output_tokens: Some(21),
+                    ..Default::default()
+                }))
+        );
         let rendered = format!("{:?}", progress.borrow());
         assert!(!rendered.contains("private-diff"));
         assert!(!rendered.contains("Finding body"));
@@ -1908,10 +1934,15 @@ mod tests {
             output.final_message.as_deref(),
             Some("### src/main.rs:9\nFinding")
         );
-        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
-            input_tokens: 150,
-            output_tokens: 15,
-        }));
+        assert!(
+            progress
+                .borrow()
+                .contains(&HeadlessProgress::Usage(HeadlessUsage {
+                    input_tokens: Some(150),
+                    output_tokens: Some(15),
+                    ..Default::default()
+                }))
+        );
         assert!(!format!("{:?}", progress.borrow()).contains("private output"));
     }
 
@@ -1947,10 +1978,15 @@ mod tests {
             output.final_message.as_deref(),
             Some("### src/app.rs:4\nFinding")
         );
-        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
-            input_tokens: 88,
-            output_tokens: 12,
-        }));
+        assert!(
+            progress
+                .borrow()
+                .contains(&HeadlessProgress::Usage(HeadlessUsage {
+                    input_tokens: Some(88),
+                    output_tokens: Some(12),
+                    ..Default::default()
+                }))
+        );
         let rendered = format!("{:?}", progress.borrow());
         assert!(!rendered.contains("private-diff"));
         assert!(!rendered.contains("private reasoning"));

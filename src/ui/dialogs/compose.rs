@@ -40,7 +40,7 @@ pub fn draw_compose_dialog(frame: &mut Frame, state: &mut ComposeState, theme: &
     let lines = editor_lines(
         &state.editor,
         theme,
-        "Type your prompt — Enter sends, Alt+Enter for a newline, / for commands.",
+        "Type your prompt — Enter sends, Shift+Enter for a newline, / for commands.",
     );
 
     let mut wrap_width = width.saturating_sub(2) as usize;
@@ -93,7 +93,7 @@ pub fn draw_compose_dialog(frame: &mut Frame, state: &mut ComposeState, theme: &
     let hints = Line::from(vec![
         Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" send  "),
-        Span::styled("Alt+Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled("Shift+Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" newline  "),
         Span::styled("Ctrl+V", Style::default().fg(theme.warning.to_color())),
         Span::raw(" paste  "),

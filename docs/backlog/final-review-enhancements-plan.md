@@ -32,7 +32,11 @@
   (`src/app/review.rs`, `src/handlers/diff.rs`,
   `src/ui/dialogs/diff.rs`, `DiffViewerState` in `src/app/state.rs`);
   the per-file diff review (`src/handlers/diff_review.rs`); review
-  mode (`CLAUDE.local.md` → `.claude/review-notes.md`).
+  mode (`CLAUDE.local.md` → `.claude/review-notes.md`);
+  [`docs/final-review-subagent-notes-investigation.md`](../final-review-subagent-notes-investigation.md)
+  (investigation: offloading `review-notes.md` writing off the primary agent's
+  context — covers the "attribution of review-note generation cost" Cost
+  follow-up).
 
 ## Why / problem
 

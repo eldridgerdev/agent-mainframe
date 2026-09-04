@@ -71,11 +71,24 @@ pub struct AiReviewAttribution {
     pub input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
+    /// Tokens served from a provider cache. This stays distinct from ordinary
+    /// input: some harnesses report it while others do not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
+    /// Provider-reported total for the run. It is deliberately not derived
+    /// from component counts, because providers disagree about which token
+    /// categories a total includes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
     /// Preformatted USD cost (`token_tracking::format_token_cost`, so the same
     /// configured rates and rounding as AMF's usage meters), or `None` when
     /// the harness reported no usage to price.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_cost: Option<String>,
+    /// Wall-clock duration of the completed review, retained in milliseconds
+    /// so the persisted representation is harness-neutral and serde-friendly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 impl AiReviewAttribution {
@@ -84,27 +97,47 @@ impl AiReviewAttribution {
     pub fn from_run(
         harness: &AgentKind,
         model: Option<&str>,
-        usage: Option<(u64, u64)>,
+        usage: Option<&crate::headless::HeadlessUsage>,
         pricing: &crate::token_tracking::TokenPricingConfig,
+        elapsed: std::time::Duration,
     ) -> Self {
-        let estimated_cost = usage.map(|(input_tokens, output_tokens)| {
-            crate::token_tracking::format_token_cost(
-                &session_usage_from_counts(input_tokens, output_tokens),
+        // The configured rates price input/output/cache categories, but a
+        // partial provider report would turn unknown categories into a fake
+        // zero. Price only a report with both ordinary input and output.
+        let estimated_cost = usage.and_then(|usage| {
+            let (Some(input_tokens), Some(output_tokens)) =
+                (usage.input_tokens, usage.output_tokens)
+            else {
+                return None;
+            };
+            Some(crate::token_tracking::format_token_cost(
+                &session_usage_from_counts(
+                    input_tokens,
+                    output_tokens,
+                    usage.cached_tokens.unwrap_or(0),
+                ),
                 pricing,
-            )
+            ))
         });
         Self {
             harness: Some(harness.display_name().to_string()),
             model: model.map(str::to_string),
-            input_tokens: usage.map(|(input, _)| input),
-            output_tokens: usage.map(|(_, output)| output),
+            input_tokens: usage.and_then(|usage| usage.input_tokens),
+            output_tokens: usage.and_then(|usage| usage.output_tokens),
+            cached_tokens: usage.and_then(|usage| usage.cached_tokens),
+            total_tokens: usage.and_then(|usage| usage.total_tokens),
             estimated_cost,
+            elapsed_ms: Some(elapsed.as_millis().min(u128::from(u64::MAX)) as u64),
+            ..Self::default()
         }
     }
 
     /// Whether any token usage was reported for this run.
     pub fn has_usage(&self) -> bool {
-        self.input_tokens.is_some() || self.output_tokens.is_some()
+        self.input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.cached_tokens.is_some()
+            || self.total_tokens.is_some()
     }
 
     fn model_label(&self) -> &str {
@@ -136,17 +169,49 @@ impl AiReviewAttribution {
         parts.join(" · ")
     }
 
-    /// GitHub-flavored Markdown disclosure line inserted just above the stable
-    /// [`AI_REVIEW_ATTRIBUTION_FOOTER`] in a posted review, mirroring the
-    /// reply-flow disclosure ([`super::pr_review::ReplyGenerationMetadata::disclosure`]).
-    pub fn disclosure_line(&self) -> String {
-        format!("_AI review · {}_", self.plain_label())
+    /// Deterministic Markdown appended only to the overall GitHub review
+    /// body. Each metric is independently reported or called unavailable, so
+    /// a partial harness event can never masquerade as a zero-token run.
+    pub fn usage_summary(&self) -> String {
+        let token = |value: Option<u64>| {
+            value
+                .map(crate::token_tracking::format_token_count)
+                .unwrap_or_else(|| "unavailable".to_string())
+        };
+        let elapsed = self
+            .elapsed_ms
+            .map(format_elapsed)
+            .unwrap_or_else(|| "unavailable".to_string());
+        format!(
+            "### AI review usage\n\
+             - Harness: {}\n\
+             - Model: {}\n\
+             - Elapsed: {elapsed}\n\
+             - Input tokens: {}\n\
+             - Output tokens: {}\n\
+             - Cached tokens: {}\n\
+             - Total tokens: {}\n\
+             - Estimated cost: {}",
+            self.harness.as_deref().unwrap_or("unavailable"),
+            self.model_label(),
+            token(self.input_tokens),
+            token(self.output_tokens),
+            token(self.cached_tokens),
+            token(self.total_tokens),
+            self.estimated_cost.as_deref().unwrap_or("unavailable"),
+        )
     }
+}
+
+fn format_elapsed(elapsed_ms: u64) -> String {
+    let seconds = elapsed_ms / 1_000;
+    format!("{}m {:02}s", seconds / 60, seconds % 60)
 }
 
 fn session_usage_from_counts(
     input_tokens: u64,
     output_tokens: u64,
+    cached_tokens: u64,
 ) -> crate::token_tracking::SessionTokenUsage {
     crate::token_tracking::SessionTokenUsage {
         // Only the token counts feed `format_token_cost`; the source label is
@@ -157,24 +222,26 @@ fn session_usage_from_counts(
         },
         input_tokens,
         output_tokens,
-        cache_read_tokens: 0,
+        cache_read_tokens: cached_tokens,
         cache_write_tokens: 0,
         reasoning_tokens: 0,
-        total_tokens: input_tokens.saturating_add(output_tokens),
+        total_tokens: input_tokens
+            .saturating_add(output_tokens)
+            .saturating_add(cached_tokens),
     }
 }
 
 /// Attribution for an AI review finding or summary posted to GitHub: the
 /// stable `— AI review via AMF` marker, preceded by a
-/// [`AiReviewAttribution::disclosure_line`] (model, tokens, estimated cost)
-/// when a run's provenance is available. Legacy callers with no attribution
-/// still get the bare marker.
+/// [`AiReviewAttribution::usage_summary`] (model, elapsed time, tokens, and
+/// estimated cost) when a run's provenance is available. Legacy callers with
+/// no attribution still get the bare marker.
 fn append_ai_review_attribution(body: &str, attribution: Option<&AiReviewAttribution>) -> String {
     match attribution {
         Some(attribution) => format!(
             "{}\n\n{}\n\n{}",
             body.trim_end(),
-            attribution.disclosure_line(),
+            attribution.usage_summary(),
             super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
         ),
         None => format!(
@@ -204,15 +271,11 @@ fn strip_ai_review_attribution(body: &str) -> &str {
     let footer = super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
     let trimmed = body.trim_end();
     let core = trimmed.strip_suffix(footer).map_or(trimmed, str::trim_end);
-    // Drop a trailing italic `_AI review · …_` disclosure line, whatever its
-    // (model/token/cost) contents, so a re-priced run doesn't stack lines.
-    match core.rsplit_once('\n') {
-        Some((head, last)) if last.trim_start().starts_with("_AI review · ") => head.trim_end(),
-        _ if core.trim_start().starts_with("_AI review · ") && core.trim_end().ends_with('_') => {
-            ""
-        }
-        _ => core,
-    }
+    // Drop the complete deterministic metadata block so an edited summary
+    // receives exactly the fresh run's figures.
+    core.rfind("### AI review usage")
+        .map(|offset| core[..offset].trim_end())
+        .unwrap_or(core)
 }
 
 /// Soft ceiling on the AI review's assembled prompt (diff + memory doc +
@@ -693,7 +756,9 @@ fn build_ai_review(
                     },
                     start_line: None,
                     start_side: None,
-                    body: append_ai_review_attribution(&f.body, attribution),
+                    // Usage belongs to the one overall review body, never an
+                    // inline finding. Keep the generic AMF marker only.
+                    body: append_ai_review_attribution(&f.body, None),
                 })
             }
             (Some(path), _, _) => general.push(format!("- **{path}**: {}", f.body)),
@@ -819,7 +884,8 @@ fn run_ai_pr_review(
     // the last one is the run total. Recorded here as well as forwarded so the
     // completed `AiReviewOutcome` carries the model/token/cost attribution,
     // not just the transient running screen.
-    let last_usage: std::sync::Arc<std::sync::Mutex<Option<(u64, u64)>>> =
+    let started_at = std::time::Instant::now();
+    let last_usage: std::sync::Arc<std::sync::Mutex<Option<crate::headless::HeadlessUsage>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let usage_sink = std::sync::Arc::clone(&last_usage);
     let progress_tx = tx.clone();
@@ -833,16 +899,13 @@ fn run_ai_pr_review(
                 crate::headless::HeadlessProgress::Activity(message) => {
                     AiReviewProgress::Activity(message)
                 }
-                crate::headless::HeadlessProgress::Usage {
-                    input_tokens,
-                    output_tokens,
-                } => {
+                crate::headless::HeadlessProgress::Usage(usage) => {
                     if let Ok(mut slot) = usage_sink.lock() {
-                        *slot = Some((input_tokens, output_tokens));
+                        *slot = Some(usage.clone());
                     }
                     AiReviewProgress::Usage {
-                        input_tokens,
-                        output_tokens,
+                        input_tokens: usage.input_tokens.unwrap_or(0),
+                        output_tokens: usage.output_tokens.unwrap_or(0),
                     }
                 }
             };
@@ -851,9 +914,14 @@ fn run_ai_pr_review(
     )
     .and_then(|output| process_ai_review_output(output, &diff))
     .map(|mut outcome| {
-        let usage = last_usage.lock().ok().and_then(|slot| *slot);
-        outcome.attribution =
-            AiReviewAttribution::from_run(&harness, model.as_deref(), usage, &pricing);
+        let usage = last_usage.lock().ok().and_then(|slot| slot.clone());
+        outcome.attribution = AiReviewAttribution::from_run(
+            &harness,
+            model.as_deref(),
+            usage.as_ref(),
+            &pricing,
+            started_at.elapsed(),
+        );
         outcome
     });
     let _ = tx.send(AiReviewProgress::Done(result));
@@ -2704,16 +2772,22 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             input_tokens: Some(12_300),
             output_tokens: Some(4_500),
             estimated_cost: Some("$0.10".to_string()),
+            ..Default::default()
         }
     }
 
     #[test]
-    fn append_ai_review_attribution_inserts_disclosure_line_above_the_marker() {
-        let attribution = sample_attribution();
+    fn usage_summary_formats_complete_usage_deterministically() {
+        let attribution = AiReviewAttribution {
+            cached_tokens: Some(3_200),
+            total_tokens: Some(20_000),
+            elapsed_ms: Some(125_000),
+            ..sample_attribution()
+        };
         let body = append_ai_review_attribution("finding text", Some(&attribution));
         assert_eq!(
             body,
-            "finding text\n\n_AI review · harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.10_\n\n— AI review via AMF"
+            "finding text\n\n### AI review usage\n- Harness: claude\n- Model: sonnet\n- Elapsed: 2m 05s\n- Input tokens: 12.3k\n- Output tokens: 4.5k\n- Cached tokens: 3.2k\n- Total tokens: 20.0k\n- Estimated cost: $0.10\n\n— AI review via AMF"
         );
     }
 
@@ -2725,12 +2799,92 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             input_tokens: None,
             output_tokens: None,
             estimated_cost: None,
+            ..Default::default()
         };
         assert_eq!(
-            attribution.disclosure_line(),
-            "_AI review · harness codex · model harness default_"
+            attribution.plain_label(),
+            "harness codex · model harness default"
         );
         assert!(!attribution.has_usage());
+        assert!(
+            attribution
+                .usage_summary()
+                .contains("Input tokens: unavailable")
+        );
+        assert!(
+            attribution
+                .usage_summary()
+                .contains("Estimated cost: unavailable")
+        );
+    }
+
+    #[test]
+    fn usage_summary_preserves_partial_usage_without_pricing_it() {
+        let attribution = AiReviewAttribution {
+            harness: Some("pi".to_string()),
+            model: None,
+            input_tokens: Some(700),
+            elapsed_ms: Some(500),
+            ..Default::default()
+        };
+        let summary = attribution.usage_summary();
+        assert!(summary.contains("Input tokens: 700"));
+        assert!(summary.contains("Output tokens: unavailable"));
+        assert!(summary.contains("Estimated cost: unavailable"));
+    }
+
+    #[test]
+    fn run_attribution_retains_complete_usage_elapsed_time_and_configured_cost() {
+        let usage = crate::headless::HeadlessUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: Some(50),
+            total_tokens: Some(1_250),
+        };
+        let attribution = AiReviewAttribution::from_run(
+            &AgentKind::Claude,
+            Some("sonnet"),
+            Some(&usage),
+            &crate::token_tracking::TokenPricingConfig::default(),
+            std::time::Duration::from_secs(3),
+        );
+        assert_eq!(attribution.total_tokens, Some(1_250));
+        assert_eq!(attribution.elapsed_ms, Some(3_000));
+        assert!(attribution.estimated_cost.is_some());
+    }
+
+    #[test]
+    fn partial_run_usage_leaves_cost_unavailable() {
+        let usage = crate::headless::HeadlessUsage {
+            input_tokens: Some(1_000),
+            ..Default::default()
+        };
+        let attribution = AiReviewAttribution::from_run(
+            &AgentKind::Opencode,
+            None,
+            Some(&usage),
+            &crate::token_tracking::TokenPricingConfig::default(),
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(attribution.estimated_cost, None);
+        assert!(
+            attribution
+                .usage_summary()
+                .contains("Estimated cost: unavailable")
+        );
+    }
+
+    #[test]
+    fn failed_run_has_no_publishable_findings_or_usage_post() {
+        let entry = AiReviewCacheEntry {
+            findings: vec![finding(None, None, "stale draft", None)],
+            last_run: Some(AiReviewRun {
+                ran_at: Local::now(),
+                outcome: AiReviewRunOutcome::Error("provider failed".to_string()),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(entry.publishable_finding_count(), 0);
     }
 
     #[test]
@@ -2748,7 +2902,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
     }
 
     #[test]
-    fn ensure_ai_review_attribution_replaces_a_stale_disclosure_line() {
+    fn ensure_ai_review_attribution_replaces_a_stale_usage_summary() {
         // A re-priced run must not stack a second `_AI review · …_` line on
         // top of the one the dialog was seeded with.
         let attribution = sample_attribution();
@@ -2758,8 +2912,22 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             ..sample_attribution()
         };
         let body = ensure_ai_review_attribution(&seeded, Some(&repriced));
-        assert_eq!(body.matches("_AI review · ").count(), 1);
-        assert!(body.ends_with("est. $0.20_\n\n— AI review via AMF"));
+        assert_eq!(body.matches("### AI review usage").count(), 1);
+        assert!(body.ends_with("Estimated cost: $0.20\n\n— AI review via AMF"));
+    }
+
+    #[test]
+    fn usage_is_never_appended_to_inline_findings() {
+        let anchored = finding(
+            Some("src/lib.rs"),
+            Some(10),
+            "fix this",
+            Some("@@ -1 +1 @@"),
+        );
+        let attribution = sample_attribution();
+        let (_, inline) = build_ai_review(&[&anchored], Some("One issue."), Some(&attribution));
+        assert_eq!(inline.len(), 1);
+        assert!(!inline[0].body.contains("AI review usage"));
     }
 
     #[test]

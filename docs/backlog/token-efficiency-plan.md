@@ -290,6 +290,17 @@ cap accumulated Q&A by token size rather than characters alone.
 
 ### 7. Remove the Review Mode per-edit token tax
 
+> **See also:** [`docs/final-review-subagent-notes-investigation.md`](../final-review-subagent-notes-investigation.md)
+> — a standalone investigation of how to take the `.claude/review-notes.md`
+> read/rewrite cost off the primary agent. Its recommendation is to **start
+> with a one-line instruction change** (tell the agent to blind-append and never
+> read the file — the read is redundant with dedup AMF already runs every turn),
+> and only build a model-free AMF notes writer + opt-in headless enrichment pass
+> if that proves insufficient. Two side findings: the "before every Edit or
+> Write" framing below is stale (the shipped `CLAUDE.local.md` block batches per
+> logical group), and Review Mode only reaches Claude today
+> (`ensure_review_claude_md` writes only `CLAUDE.local.md`).
+
 Stop requiring a note before every Edit or Write in
 `ensure_review_claude_md`. Replace it with:
 

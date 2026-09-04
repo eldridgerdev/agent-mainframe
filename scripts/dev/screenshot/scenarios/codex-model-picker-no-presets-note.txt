@@ -1,0 +1,43 @@
+# codex-model-picker-no-presets-note: visual proof of the explanatory note
+# shown when Codex has no verified models recorded yet (a fresh install, or
+# one whose ~/.codex/config.toml has never gained a
+# [tui.model_availability_nux] table). Meant to be run with --amf-bin
+# pointed at a wrapper that forces HOME to an empty scratch directory, so
+# codex_config::known_models() finds nothing without touching any real file.
+#
+# Run with:
+#   ./amf-capture.sh --scenario scenarios/codex-model-picker-no-presets-note.txt \
+#     --amf-bin <fake-home-wrapper> --keep
+
+shot:dashboard
+
+key:A
+wait:400
+key:j
+key:j
+key:Enter
+wait:900
+shot:codex-harness-enabled
+
+key:c
+wait:500
+
+run:AMF_BIN="$AMF_BIN" "$SCRIPT_DIR/seed-ai-review-fixture.sh" >/dev/null
+wait:300
+shot:completed-ai-review
+
+key:A
+wait:300
+key:j
+key:Enter
+wait:3500
+note:With no [tui.model_availability_nux] table in ~/.codex/config.toml (a fresh install, or one that has never opened Codex's own model picker), the picker explains why it only offers Default/Custom instead of silently looking identical to "no presets exist for this harness at all".
+shot:codex-model-picker-empty-with-note
+
+key:Escape
+wait:200
+key:Escape
+wait:200
+key:Escape
+wait:200
+shot:dashboard-final

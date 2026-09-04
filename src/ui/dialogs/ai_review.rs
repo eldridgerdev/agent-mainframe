@@ -17,6 +17,7 @@ use crate::{
         AiHarnessPickState, AiModelPickState, AiReviewPostConfirmState, AiReviewRunState,
         AiReviewState, ModelPickRow,
     },
+    project::AgentKind,
     theme::Theme,
 };
 
@@ -465,7 +466,7 @@ pub fn draw_ai_review(
         draw_ai_harness_pick(frame, pick, theme);
     }
     if let Some(pick) = &state.model_pick {
-        draw_ai_model_pick(frame, pick, theme);
+        draw_ai_model_pick(frame, pick, state.harness.as_ref(), theme);
     }
     if let Some(editor) = &state.finding_editor {
         draw_finding_editor(frame, editor, theme);
@@ -571,7 +572,23 @@ fn model_pick_row_label(row: &ModelPickRow) -> String {
     }
 }
 
-fn draw_ai_model_pick(frame: &mut Frame, pick: &AiModelPickState, theme: &Theme) {
+/// Codex has no fixed alias list to fall back on the way Claude does — its
+/// presets come from `codex_config::known_models`, which is only populated
+/// once `~/.codex/config.toml` records a `[tui.model_availability_nux]`
+/// table (written by Codex itself the first time its own model picker is
+/// opened). A Codex picker with no `Preset` rows is otherwise silent about
+/// *why* it's bare, so surface the fix inline rather than leaving the user
+/// to guess.
+const NO_CODEX_MODELS_NOTE: &str = "No Codex models recorded yet. Open Codex's own model picker \
+    once, or add a [tui.model_availability_nux] table to ~/.codex/config.toml, and presets will \
+    show up here. Custom still accepts any model name in the meantime.";
+
+fn draw_ai_model_pick(
+    frame: &mut Frame,
+    pick: &AiModelPickState,
+    harness: Option<&AgentKind>,
+    theme: &Theme,
+) {
     let area = super::super::dashboard::centered_rect(54, 46, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
@@ -583,11 +600,14 @@ fn draw_ai_model_pick(frame: &mut Frame, pick: &AiModelPickState, theme: &Theme)
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let custom_selected = matches!(pick.rows.get(pick.selected), Some(ModelPickRow::Custom));
+    let show_no_codex_models_note = matches!(harness, Some(AgentKind::Codex))
+        && !pick.rows.iter().any(|row| matches!(row, ModelPickRow::Preset(_)));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Min(1),
+            Constraint::Length(if show_no_codex_models_note { 4 } else { 0 }),
             Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
             Constraint::Length(1),
         ])
@@ -621,11 +641,19 @@ fn draw_ai_model_pick(frame: &mut Frame, pick: &AiModelPickState, theme: &Theme)
         ])
     });
     frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()), chunks[1]);
+    if show_no_codex_models_note {
+        frame.render_widget(
+            Paragraph::new(format!("  {NO_CODEX_MODELS_NOTE}"))
+                .style(Style::default().fg(theme.text_muted.to_color()))
+                .wrap(Wrap { trim: false }),
+            chunks[2],
+        );
+    }
     if pick.editing_custom {
         frame.render_widget(
             Paragraph::new(format!("  model: {}▏", pick.custom_input))
                 .style(Style::default().fg(theme.text.to_color())),
-            chunks[2],
+            chunks[3],
         );
     }
     let hints = if pick.editing_custom {
@@ -637,7 +665,7 @@ fn draw_ai_model_pick(frame: &mut Frame, pick: &AiModelPickState, theme: &Theme)
     };
     frame.render_widget(
         Paragraph::new(hints).style(Style::default().fg(theme.primary.to_color())),
-        chunks[3],
+        chunks[4],
     );
 }
 
@@ -731,7 +759,7 @@ mod tests {
 
     use super::{draw_ai_review, draw_ai_review_running, finding_location, format_elapsed};
     use crate::{
-        app::{AiReviewRunState, AiReviewState},
+        app::{AiModelPickState, AiReviewRunState, AiReviewState, ModelPickRow},
         project::AgentKind,
         theme::Theme,
     };
@@ -936,5 +964,58 @@ mod tests {
         let mut state = pane_state_with_attribution(None);
         let rendered = render_pane(&mut state);
         assert!(!rendered.contains("harness "));
+    }
+
+    #[test]
+    fn model_pick_explains_why_codex_has_no_presets_yet() {
+        let mut state = pane_state_with_attribution(None);
+        state.harness = Some(AgentKind::Codex);
+        state.model_pick = Some(AiModelPickState {
+            rows: vec![ModelPickRow::Default, ModelPickRow::Custom],
+            selected: 0,
+            custom_input: String::new(),
+            editing_custom: false,
+        });
+        let rendered = render_pane(&mut state);
+        assert!(
+            rendered.contains("No Codex models recorded yet"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("~/.codex/config.toml"),
+            "the note should point at the file to edit: {rendered}"
+        );
+    }
+
+    #[test]
+    fn model_pick_omits_the_no_presets_note_once_codex_has_presets() {
+        let mut state = pane_state_with_attribution(None);
+        state.harness = Some(AgentKind::Codex);
+        state.model_pick = Some(AiModelPickState {
+            rows: vec![
+                ModelPickRow::Default,
+                ModelPickRow::Preset("gpt-5.5".to_string()),
+                ModelPickRow::Custom,
+            ],
+            selected: 0,
+            custom_input: String::new(),
+            editing_custom: false,
+        });
+        let rendered = render_pane(&mut state);
+        assert!(!rendered.contains("No Codex models recorded yet"), "{rendered}");
+    }
+
+    #[test]
+    fn model_pick_never_shows_the_codex_note_for_claude() {
+        let mut state = pane_state_with_attribution(None);
+        state.harness = Some(AgentKind::Claude);
+        state.model_pick = Some(AiModelPickState {
+            rows: vec![ModelPickRow::Default, ModelPickRow::Custom],
+            selected: 0,
+            custom_input: String::new(),
+            editing_custom: false,
+        });
+        let rendered = render_pane(&mut state);
+        assert!(!rendered.contains("No Codex models recorded yet"), "{rendered}");
     }
 }

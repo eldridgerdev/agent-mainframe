@@ -864,7 +864,12 @@ Cost:
       `Custom` only when that table is absent (a fresh install that has
       never opened the Codex TUI's model picker). No-ops under
       `cfg!(test)` so unit tests stay independent of the machine's real
-      Codex config.
+      Codex config. When that fallback triggers, `draw_ai_model_pick`
+      (`src/ui/dialogs/ai_review.rs`) now says why inline — a picker with
+      just `Default`/`Custom` otherwise looks identical to "this harness
+      has no enumerable presets at all" (Opencode/Pi), leaving no clue
+      that opening Codex's own model picker once (or hand-editing
+      `~/.codex/config.toml`) would populate it.
 - [x] Capped `.claude/final-review-feedback.md` growth — rounds were
       prepended and kept forever, but `REVIEW_FEEDBACK_PROMPT` and
       `parse_agent_responses` only ever consume the newest round, so a

@@ -18,7 +18,9 @@ are tagged.
   now also lists preset model choices, drawn from the models your local
   Codex CLI already knows about, matching the preset list Claude has always
   had. If Codex hasn't recorded any models yet, the picker falls back to
-  "Default"/"Custom" as before. No migration is required.
+  "Default"/"Custom" as before — and now explains why, with a note pointing
+  at `~/.codex/config.toml` so you know how to make presets show up. No
+  migration is required.
 
 ## [v0.42.0] - 2026-09-04
 

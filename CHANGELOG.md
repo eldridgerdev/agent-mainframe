@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.42.0] - 2026-09-04
+
 ### Fixed
 
 - **PR Triage fix prompts can now be reviewed and redirected without editing.**

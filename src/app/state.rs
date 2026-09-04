@@ -3043,19 +3043,24 @@ pub enum ModelPickRow {
     /// No explicit model — the harness's own default (or `AppConfig::review_model`
     /// as an underlying override) applies.
     Default,
-    /// A verified alias/name for the chosen harness (e.g. Claude's `"sonnet"`).
-    Preset(&'static str),
+    /// A verified alias/name for the chosen harness (e.g. Claude's `"sonnet"`,
+    /// or one of the account's own model ids reported by
+    /// `codex_config::known_models`). Owned rather than `&'static str` since
+    /// Codex's come from a file read at runtime, not a fixed literal list.
+    Preset(String),
     /// Free-text entry for anything not in the preset list.
     Custom,
 }
 
 /// Single-select model picker for the `A` AI review, shown once per pane
 /// right after the harness is chosen. Presets are a best-effort, *verified*
-/// set of model aliases for the chosen harness — currently only Claude's
-/// (`sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude --help`).
-/// Other harnesses offer just `Default` and `Custom`, since their valid
-/// model strings aren't reliably enumerable here; guessing wrong presets
-/// would be worse than not offering any.
+/// set of model names for the chosen harness: Claude's four well-known tier
+/// aliases (`sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude
+/// --help`), or Codex's account-specific model ids read from
+/// `~/.codex/config.toml` (`codex_config::known_models`). Other harnesses
+/// offer just `Default` and `Custom`, since their valid model strings aren't
+/// reliably enumerable here; guessing wrong presets would be worse than not
+/// offering any.
 #[derive(Debug, Clone)]
 pub struct AiModelPickState {
     pub rows: Vec<ModelPickRow>,

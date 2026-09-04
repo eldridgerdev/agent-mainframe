@@ -12,6 +12,16 @@ are tagged.
 
 ### Fixed
 
+- **The AI review model picker now offers Codex presets, not just Claude's.**
+  When choosing a model for the `A`/`w`/`O` AI review passes, Codex
+  previously only offered "Default" or a free-typed custom model name. It
+  now also lists preset model choices, drawn from the models your local
+  Codex CLI already knows about, matching the preset list Claude has always
+  had. If Codex hasn't recorded any models yet, the picker falls back to
+  "Default"/"Custom" as before — and now explains why, with a note pointing
+  at `~/.codex/config.toml` so you know how to make presets show up. No
+  migration is required.
+
 - **Multi-line editors now use Shift+Enter for a newline.** TODO notes,
   Compose, plan interviews, configuration fields, and PR investigation context
   no longer rely on Alt+Enter, which Windows can intercept. Plain Enter keeps

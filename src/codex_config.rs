@@ -36,6 +36,48 @@ fn configured_model_for(config_path: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Model names verified as available to this Codex account, read from
+/// `~/.codex/config.toml`'s `[tui.model_availability_nux]` table (the same
+/// table the Codex TUI itself populates once it has shown a model in its
+/// picker). Unlike Claude's small set of well-known tier aliases
+/// (`sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude --help`),
+/// Codex's `--model`/`-c model=` values are arbitrary, account-specific
+/// model ids with no CLI-enumerable alias list — so guessing a fixed preset
+/// list here would risk offering models the account can't actually use.
+/// Reading the account's own recorded list is the closest available
+/// equivalent to Claude's verified aliases. Returns an empty list (falling
+/// back to `Default`/`Custom` only) when the table is absent, e.g. a fresh
+/// install that has never opened the Codex TUI's model picker.
+///
+/// No-ops under `cfg!(test)`, like [`ensure_user_config_notify_hook`], so
+/// unit tests never depend on the machine's real `~/.codex/config.toml`.
+pub fn known_models() -> Vec<String> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    let Some(config_path) = dirs::home_dir().map(|home| home.join(".codex").join("config.toml"))
+    else {
+        return Vec::new();
+    };
+    known_models_for(&config_path)
+}
+
+fn known_models_for(config_path: &Path) -> Vec<String> {
+    let Some(models) = read_launch_config(config_path).and_then(|table| {
+        table
+            .get("tui")?
+            .as_table()?
+            .get("model_availability_nux")?
+            .as_table()
+            .cloned()
+    }) else {
+        return Vec::new();
+    };
+    let mut models: Vec<String> = models.into_iter().map(|(key, _)| key).collect();
+    models.sort();
+    models
+}
+
 fn launch_override_args_for(
     config_path: &Path,
     hook_path: &Path,
@@ -206,6 +248,39 @@ mod tests {
             super::configured_model_for(&config_path).as_deref(),
             Some("gpt-5.5")
         );
+    }
+
+    #[test]
+    fn known_models_for_reads_tui_model_availability_nux_table() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "model = \"gpt-5.6-terra\"\n\n[tui.model_availability_nux]\n\"gpt-5.6-sol\" = 4\n\"gpt-5.5\" = 4\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            super::known_models_for(&config_path),
+            vec!["gpt-5.5".to_string(), "gpt-5.6-sol".to_string()]
+        );
+    }
+
+    #[test]
+    fn known_models_for_is_empty_without_the_nux_table() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(&config_path, "model = \"gpt-5.6-terra\"\n").unwrap();
+
+        assert!(super::known_models_for(&config_path).is_empty());
+    }
+
+    #[test]
+    fn known_models_for_is_empty_when_config_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("missing.toml");
+
+        assert!(super::known_models_for(&config_path).is_empty());
     }
 
     #[test]

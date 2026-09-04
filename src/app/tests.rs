@@ -14849,7 +14849,7 @@ fn ai_review_model_picker_backs_through_custom_editor_and_rebuilds_for_new_harne
         state.model_pick = Some(AiModelPickState {
             rows: vec![
                 ModelPickRow::Default,
-                ModelPickRow::Preset("sonnet"),
+                ModelPickRow::Preset("sonnet".to_string()),
                 ModelPickRow::Custom,
             ],
             selected: 2,
@@ -14930,7 +14930,7 @@ fn ai_review_harness_pick_reconfirm_after_backing_out_does_not_reseed_stale_mode
         state.model_pick = Some(AiModelPickState {
             rows: vec![
                 ModelPickRow::Default,
-                ModelPickRow::Preset("sonnet"),
+                ModelPickRow::Preset("sonnet".to_string()),
                 ModelPickRow::Custom,
             ],
             selected: 0,
@@ -15012,7 +15012,7 @@ fn ai_review_harness_pick_survives_multi_hop_navigation() {
         state.model_pick = Some(AiModelPickState {
             rows: vec![
                 ModelPickRow::Default,
-                ModelPickRow::Preset("sonnet"),
+                ModelPickRow::Preset("sonnet".to_string()),
                 ModelPickRow::Custom,
             ],
             selected: 1,
@@ -15071,7 +15071,7 @@ fn ai_review_harness_pick_survives_multi_hop_navigation() {
             let pick = state.model_pick.as_ref().expect("rebuilt model picker");
             assert_eq!(
                 pick.rows.get(pick.selected),
-                Some(&ModelPickRow::Preset("sonnet")),
+                Some(&ModelPickRow::Preset("sonnet".to_string())),
                 "returning to the original harness should still honor the configured default"
             );
         }

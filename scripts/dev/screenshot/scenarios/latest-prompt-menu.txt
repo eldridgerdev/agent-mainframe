@@ -1,0 +1,48 @@
+# latest-prompt-menu: visual proof that the "latest prompt" menu (leader,
+# Ctrl+Space then `l`, from an agent session view) now surfaces every prompt
+# sent across the session -- including ones from before a Claude session
+# resume/compaction -- instead of only the tail of the single most-recently
+# modified .jsonl file. Fix: src/app/util.rs read_all_prompts_for_session /
+# read_prompts_from_claude_sessions.
+#
+# The feature's real `claude` process is allowed to start (same as other
+# scenarios), but nothing is ever typed into it: two fabricated Claude
+# session .jsonl files (an older "pre-resume" one and a newer "post-resume"
+# one) are the only session history the menu will find, so the frame is
+# fully deterministic.
+
+wait:1600
+note:Dashboard with the seeded project and its one feature, before opening it.
+shot:dashboard
+
+# Down onto the feature row, Enter expands it to its sessions, then down
+# again onto "Claude 1" and Enter opens that session's view.
+key:j
+wait:300
+key:Enter
+wait:500
+key:j
+wait:300
+key:Enter
+wait:3000
+note:The feature's live agent view. Nothing will be typed here -- the fabricated session history below is what the menu will show.
+shot:feature-view
+
+# Fabricate two Claude session .jsonl files under this feature's real
+# ~/.claude/projects/<encoded-workdir> directory: an older one (as if left
+# behind before a resume/compaction) and a newer one (as a resume would
+# produce).
+run:WORKDIR=$(printf '%s' "$REPO_ROOT"/.worktrees/*); ENCODED=$(python3 -c "import sys; print(''.join(c if c.isalnum() and ord(c) < 128 else '-' for c in sys.argv[1]))" "$WORKDIR"); PDIR="$HOME/.claude/projects/$ENCODED"; mkdir -p "$PDIR"; python3 "$REPO_ROOT/scripts/dev/screenshot/seed_claude_prompts.py" "$PDIR"; echo "seeded fake claude session history under: $PDIR" >&2
+wait:300
+
+# Ctrl+Space is the leader; `l` opens the latest-prompt menu.
+key:C-Space
+wait:400
+key:l
+wait:500
+note:The "latest prompt" menu after the fix. It lists prompts from BOTH fabricated .jsonl files, including "Add a CLI flag..." from the OLDER, pre-resume session file. Before the fix, only the tail of the single newest .jsonl was read, so that older entry would be missing entirely from this list.
+shot:latest-prompt-menu
+
+key:Escape
+wait:300
+shot:back-in-view

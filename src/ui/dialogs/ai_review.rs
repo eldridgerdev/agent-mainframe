@@ -601,7 +601,10 @@ fn draw_ai_model_pick(
     frame.render_widget(block, area);
     let custom_selected = matches!(pick.rows.get(pick.selected), Some(ModelPickRow::Custom));
     let show_no_codex_models_note = matches!(harness, Some(AgentKind::Codex))
-        && !pick.rows.iter().any(|row| matches!(row, ModelPickRow::Preset(_)));
+        && !pick
+            .rows
+            .iter()
+            .any(|row| matches!(row, ModelPickRow::Preset(_)));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1004,7 +1007,10 @@ mod tests {
             editing_custom: false,
         });
         let rendered = render_pane(&mut state);
-        assert!(!rendered.contains("No Codex models recorded yet"), "{rendered}");
+        assert!(
+            !rendered.contains("No Codex models recorded yet"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -1018,6 +1024,9 @@ mod tests {
             editing_custom: false,
         });
         let rendered = render_pane(&mut state);
-        assert!(!rendered.contains("No Codex models recorded yet"), "{rendered}");
+        assert!(
+            !rendered.contains("No Codex models recorded yet"),
+            "{rendered}"
+        );
     }
 }

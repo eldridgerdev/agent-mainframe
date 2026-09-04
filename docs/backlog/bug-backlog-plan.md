@@ -672,3 +672,49 @@ image placeholder.
 
 Nothing happens; pasting only works if the composer is bypassed and the
 paste goes directly to Claude Code's own input handling.
+
+## ~~Prompt library entries vanish or don't show recently added prompts~~ (Fixed)
+
+- **Status:** Fixed (2026-09-04)
+- **Reported:** 2026-09-04
+- **Relates to:** prompt library persistence (`src/db/store.rs`,
+  `src/app/prompt_library.rs`)
+- **Root cause:** User templates were persisted as part of `App::save()`'s
+  full-store rewrite (`db::store::do_save`), which does a
+  `DELETE FROM prompt_templates` + full re-`INSERT` from whatever's in that
+  process's in-memory `ProjectStore` on *every* save — status sync, feature
+  start/stop, session changes, etc., not just prompt-library edits.
+  `prompt_templates` is a global table, and it's normal to run several `amf`
+  processes concurrently (one per checkout) against the same
+  `~/.config/amf/amf.db`. Any instance's routine background save would blow
+  away the entire table with its own stale in-memory snapshot, silently
+  erasing templates a sibling instance had added since.
+- **Fix:** Give prompt templates targeted `insert`/`update`/`delete`
+  persistence in a new `src/db/prompt_templates.rs` module, mirroring the
+  pattern already used for TODOs and Learning Mode — both were pulled out of
+  the full-replace `ProjectStore` save path for the same reason. Removed
+  `prompt_templates` from `do_save`'s full-replace block entirely, so a
+  generic `App::save()` can no longer touch it. The prompt library picker now
+  also re-reads templates fresh from the DB on every open (mirroring the
+  existing fresh-read behavior for global config templates), so edits made by
+  a sibling AMF process become visible immediately instead of only after a
+  restart.
+
+### Repro
+
+1. Run two `amf` instances at once (e.g. two terminals, each in a different
+   project checkout) against the same global database.
+2. In instance A, open the prompt library and add or edit a template.
+3. In instance B, trigger any save (e.g. wait for the 5s status sync, or
+   start/stop a feature).
+
+### Expected
+
+Templates added or edited in instance A remain visible in the prompt library
+regardless of what instance B does.
+
+### Actual
+
+Instance B's next save silently overwrote the `prompt_templates` table with
+its own stale snapshot, erasing the most recently added prompt and, over a
+session, many others.

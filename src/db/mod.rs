@@ -9,6 +9,7 @@ pub mod pr_investigations;
 mod pr_review_cache;
 mod pr_terminal_state;
 pub mod prompt_overrides;
+pub mod prompt_templates;
 mod session_status;
 pub mod store;
 pub mod todos;
@@ -114,6 +115,30 @@ impl AmfDb {
 
     pub fn save_store(&self, store: &crate::project::ProjectStore) -> Result<()> {
         store::save(&self.conn, store)
+    }
+
+    /// Fresh from disk, not the in-memory `ProjectStore` snapshot — see
+    /// `db::prompt_templates` for why templates are read/written directly.
+    pub fn load_prompt_templates(&self) -> Result<Vec<crate::prompt_library::PromptTemplate>> {
+        prompt_templates::load(&self.conn)
+    }
+
+    pub fn insert_prompt_template(
+        &self,
+        template: &crate::prompt_library::PromptTemplate,
+    ) -> Result<()> {
+        prompt_templates::insert(&self.conn, template)
+    }
+
+    pub fn update_prompt_template(
+        &self,
+        template: &crate::prompt_library::PromptTemplate,
+    ) -> Result<()> {
+        prompt_templates::update(&self.conn, template)
+    }
+
+    pub fn delete_prompt_template(&self, id: &str) -> Result<()> {
+        prompt_templates::delete(&self.conn, id)
     }
 
     pub fn load_token_cache(&self) -> Result<Vec<crate::token_tracking::DbTokenCacheEntry>> {

@@ -870,6 +870,24 @@ Cost:
       a file that already has a note with nothing new to add), instead of
       one per individual edit. Output format (and `parse_review_notes`)
       unchanged.
+- [x] Blind-append REVIEW MODE notes (Option F, Step 1 of
+      [`docs/final-review-subagent-notes-investigation.md`](../final-review-subagent-notes-investigation.md))
+      — the Review-Mode block in `ensure_review_claude_md`
+      (`src/app/setup.rs`) now tells the agent to **append without reading
+      `.claude/review-notes.md` or its archive** and rely on session
+      memory to skip an already-covered file. The investigation's §2
+      baseline found the per-batch *read* of the growing file plus its
+      context carry — not the write — dominated the cost, and §3.6 showed
+      that read is redundant with the dedup `archive_review_notes` /
+      `split_overflow_review_notes` (`src/app/review.rs`) already run on
+      every agent-turn boundary. Blind-appended duplicates for one path
+      collapse to the newest section on the next turn (covered by
+      `blind_appended_duplicates_collapse_below_the_cap` and
+      `archive_review_notes_collapses_blind_appended_duplicates_on_disk`).
+      No code paths added; file spec, parser, and diff-viewer panel
+      unchanged. Options I (AMF-filtered changed-file list) and K (terser
+      section format), plus the AMF-driven mechanical writer, stay
+      deferred to Step 2 pending dogfood results.
 - [x] Per-action model overrides — a new `review_models` map
       (`BTreeMap<String, String>` on `AppConfig`) keyed by
       `ReviewAction::config_key()` (`walkthrough` / `co_review` /
@@ -890,10 +908,11 @@ Cost:
       gitignored `.claude/review-notes-archive.md`. `archive_review_notes`
       / `split_overflow_review_notes` (`src/app/review.rs`) run when Review
       Mode is configured (migrating an existing long-lived file) and when
-      an agent-turn boundary reaches `notifications.rs`, so the next batch
-      never pays to read unbounded history. The managed Review Mode
-      instruction is refreshed on upgrade and explicitly tells the agent
-      to inspect only the bounded live file. AMF's final-review viewer and
+      an agent-turn boundary reaches `notifications.rs`, so history never
+      accumulates unbounded. The managed Review Mode instruction is
+      refreshed on upgrade; it now tells the agent to blind-append and not
+      read the file at all (see the blind-append entry above). AMF's
+      final-review viewer and
       per-edit explanation lookup use `load_review_notes`, which merges the
       archive first and the live file second, preserving old reviewer
       context while allowing a current note to override its archived

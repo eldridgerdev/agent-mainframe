@@ -16,6 +16,14 @@ reference below was cross-checked against the tree at branch
 §8 are the decision points that need maintainer review before a follow-up
 feature is opened.
 
+**Implementation status:** Step 1 (Option F — blind-append, never read
+`.claude/review-notes.md`) has been implemented in `ensure_review_claude_md`
+(`src/app/setup.rs`), with P0 covered by
+`blind_appended_duplicates_collapse_below_the_cap` /
+`archive_review_notes_collapses_blind_appended_duplicates_on_disk`
+(`src/app/review.rs`). Options I and K, and Step 2 (the AMF-driven mechanical
+writer + opt-in headless enrichment), remain deferred pending dogfood results.
+
 ## Contents
 
 1. [Current final-review flow](#1-current-final-review-flow)

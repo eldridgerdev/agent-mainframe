@@ -1122,6 +1122,10 @@ fn review_mode_instructions_refresh_managed_block_and_ignore_archives() {
     assert!(instructions.starts_with("# Existing\n"));
     assert!(!instructions.contains("stale managed text"));
     assert!(instructions.contains("review-notes-archive.md"));
+    assert!(
+        instructions.contains("Do not read `.claude/review-notes.md`"),
+        "Review Mode must tell the agent to blind-append, not read the notes file back"
+    );
     assert_eq!(
         instructions
             .matches("<!-- AMF:review-instructions:begin -->")

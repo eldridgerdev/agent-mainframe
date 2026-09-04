@@ -37,10 +37,11 @@ the decisions that prevent avoidable usage:
   bound to the selected AMF session, has no size limit, does not work
   for other harnesses, and is written to `.claude/context.md` without
   an explicit handoff to the newly launched agent.
-- Review Mode instructs the agent to append a prose note before every
-  Edit or Write. This spends model output and tool calls throughout the
-  implementation even though AMF can derive changed files from the diff
-  and can already generate missing walkthroughs on demand.
+- Review Mode has the agent maintain `.claude/review-notes.md` batch by
+  batch. Historically the expensive part was the per-batch *read* of that
+  growing file and its context carry; that read is now removed (the agent
+  blind-appends — see §7), leaving only the writes, which AMF could still
+  derive from the diff plus on-demand walkthroughs.
 - Several small AMF helper jobs use a paid model. Session summaries
   always invoke headless Claude even for another harness. Review
   walkthroughs and changeset overviews are cached only in the open
@@ -301,6 +302,14 @@ cap accumulated Q&A by token size rather than characters alone.
 > logical group), and Review Mode only reaches Claude today
 > (`ensure_review_claude_md` writes only `CLAUDE.local.md`).
 
+> **Step 1 shipped.** `ensure_review_claude_md`'s Review-Mode block now tells
+> the agent to **blind-append and never read `.claude/review-notes.md`**
+> (Option F). The per-batch read and its context carry — the dominant cost
+> terms — are gone; `archive_review_notes` still collapses to the newest note
+> per file after every turn, so blind-appended duplicates are harmless. Options
+> I (AMF-filtered changed-file list) and K (terser section format) and the
+> AMF-driven writer below remain deferred to Step 2, pending dogfood results.
+
 Stop requiring a note before every Edit or Write in
 `ensure_review_claude_md`. Replace it with:
 
@@ -456,8 +465,11 @@ not prevent the session from launching.
       per-session usage backlog.
 - [ ] Replace model-generated session summaries with a local default;
       route the fallback through `HeadlessRunner`.
-- [ ] Remove the Review Mode instruction requiring a note before every
-      edit and retain on-demand walkthrough behavior.
+- [~] Remove the Review Mode instruction requiring a note before every
+      edit and retain on-demand walkthrough behavior. _Step 1 done: the
+      agent now blind-appends and never reads `.claude/review-notes.md`
+      (Option F). Removing the write requirement in favour of AMF-derived
+      metadata is deferred to Step 2._
 - [ ] Add tests proving mixed models do not use a single default price,
       a summary can be generated without a headless call, and Review
       Mode no longer requests per-edit notes.

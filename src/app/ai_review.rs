@@ -115,6 +115,16 @@ impl AiReviewAttribution {
                     input_tokens,
                     output_tokens,
                     usage.cached_tokens.unwrap_or(0),
+                    // Anthropic's `cache_read_input_tokens` is a separate,
+                    // additive billing category on top of `input_tokens`
+                    // (priced that way in `token_tracking.rs`). The generic
+                    // fallback keys `emit_usage_from` also populates
+                    // `cached_tokens` from (`cached_input_tokens`,
+                    // `cache_read`, `cached`) commonly report a figure
+                    // that's already a *subset* of `input_tokens` for other
+                    // providers, so folding it in again would double-count
+                    // both the total and the cost.
+                    matches!(harness, AgentKind::Claude),
                 ),
                 pricing,
             ))
@@ -208,11 +218,18 @@ fn format_elapsed(elapsed_ms: u64) -> String {
     format!("{}m {:02}s", seconds / 60, seconds % 60)
 }
 
+/// `cached_is_additive` distinguishes Anthropic's `cache_read_input_tokens`
+/// (a separate count on top of `input_tokens`) from other providers' cache
+/// figures, which are commonly already a subset of `input_tokens`; only in
+/// the former case does folding `cached_tokens` into `cache_read_tokens` and
+/// `total_tokens` avoid double-counting them.
 fn session_usage_from_counts(
     input_tokens: u64,
     output_tokens: u64,
     cached_tokens: u64,
+    cached_is_additive: bool,
 ) -> crate::token_tracking::SessionTokenUsage {
+    let additive_cached = if cached_is_additive { cached_tokens } else { 0 };
     crate::token_tracking::SessionTokenUsage {
         // Only the token counts feed `format_token_cost`; the source label is
         // never read for pricing.
@@ -222,12 +239,12 @@ fn session_usage_from_counts(
         },
         input_tokens,
         output_tokens,
-        cache_read_tokens: cached_tokens,
+        cache_read_tokens: additive_cached,
         cache_write_tokens: 0,
         reasoning_tokens: 0,
         total_tokens: input_tokens
             .saturating_add(output_tokens)
-            .saturating_add(cached_tokens),
+            .saturating_add(additive_cached),
     }
 }
 
@@ -271,11 +288,19 @@ fn strip_ai_review_attribution(body: &str) -> &str {
     let footer = super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
     let trimmed = body.trim_end();
     let core = trimmed.strip_suffix(footer).map_or(trimmed, str::trim_end);
-    // Drop the complete deterministic metadata block so an edited summary
-    // receives exactly the fresh run's figures.
-    core.rfind("### AI review usage")
-        .map(|offset| core[..offset].trim_end())
-        .unwrap_or(core)
+    // The usage block is always its own trailing paragraph, separated by a
+    // blank line (see `append_ai_review_attribution`), so only a heading that
+    // actually *starts* that last paragraph counts as the real block — not
+    // one a finding's own text merely mentions or quotes somewhere earlier.
+    // Mirrors the previous line-anchored disclosure check, one level up
+    // (paragraph instead of line).
+    match core.rsplit_once("\n\n") {
+        Some((head, last)) if last.trim_start().starts_with("### AI review usage") => {
+            head.trim_end()
+        }
+        _ if core.trim_start().starts_with("### AI review usage") => "",
+        _ => core,
+    }
 }
 
 /// Soft ceiling on the AI review's assembled prompt (diff + memory doc +
@@ -2914,6 +2939,53 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let body = ensure_ai_review_attribution(&seeded, Some(&repriced));
         assert_eq!(body.matches("### AI review usage").count(), 1);
         assert!(body.ends_with("Estimated cost: $0.20\n\n— AI review via AMF"));
+    }
+
+    #[test]
+    fn strip_ai_review_attribution_ignores_the_heading_mid_paragraph() {
+        // A finding that merely quotes or discusses the heading text (not as
+        // its own trailing paragraph) must not be truncated as if it were the
+        // real deterministic usage block.
+        let body = "Findings should avoid emitting a literal \"### AI review usage\" \
+                     heading inside generated text.\n\n— AI review via AMF";
+        assert_eq!(strip_ai_review_attribution(body), body.strip_suffix("\n\n— AI review via AMF").unwrap());
+    }
+
+    #[test]
+    fn non_claude_cached_tokens_are_not_double_counted_into_cost() {
+        // Codex/Opencode/Pi report `cached_tokens` via generic fallback keys
+        // that are typically already a subset of `input_tokens`, unlike
+        // Anthropic's separate, additive `cache_read_input_tokens`.
+        let with_cache = crate::headless::HeadlessUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: Some(500),
+            total_tokens: None,
+        };
+        let without_cache = crate::headless::HeadlessUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: None,
+            total_tokens: None,
+        };
+        let pricing = crate::token_tracking::TokenPricingConfig::default();
+        let cost_with_cache = AiReviewAttribution::from_run(
+            &AgentKind::Codex,
+            None,
+            Some(&with_cache),
+            &pricing,
+            std::time::Duration::ZERO,
+        )
+        .estimated_cost;
+        let cost_without_cache = AiReviewAttribution::from_run(
+            &AgentKind::Codex,
+            None,
+            Some(&without_cache),
+            &pricing,
+            std::time::Duration::ZERO,
+        )
+        .estimated_cost;
+        assert_eq!(cost_with_cache, cost_without_cache);
     }
 
     #[test]

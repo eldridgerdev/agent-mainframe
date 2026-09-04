@@ -157,6 +157,16 @@ are tagged.
   progress are unaffected; the default target is still this feature's live
   session.
 
+- **Review Mode agents now append developer notes without reading the notes
+  file back.** A feature with review mode on used to be told to read
+  `.claude/review-notes.md` each batch before appending, so the growing file
+  was pulled into the agent's context over and over. The instruction now says
+  to blind-append and *not* read the file (or its archive) — AMF already keeps
+  only the newest note per changed file after every turn, so the read was
+  redundant. The developer-notes panel in the final-review diff viewer is
+  unchanged, and the `g` on-demand walkthrough still fills in files with no
+  note. Review mode remains Claude-only. No migration is required.
+
 - **Planning a TODO into its own feature no longer proposes a sentence-long
   branch name.** TODO titles are written as sentences, and the create-feature
   wizard seeded the branch with the whole thing slugified — which then became

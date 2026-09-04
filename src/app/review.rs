@@ -63,9 +63,12 @@ struct FileSuggestionApplyReport {
 /// prompt built from it.
 const CHECK_OUTPUT_MAX_CHARS: usize = 4000;
 
-/// Review-note sections kept in `.claude/review-notes.md`. The file is read by
-/// the feature agent after each logical batch, so its cost must stay bounded.
-/// Older and superseded sections remain available to AMF in the archive.
+/// Cap on how many files' notes stay in `.claude/review-notes.md`. In Review
+/// Mode the feature agent blind-appends sections and never reads the file back
+/// (`ensure_review_claude_md`); AMF collapses it to the newest note per file
+/// after every agent turn, keeping only the `MAX_LIVE_REVIEW_NOTE_FILES` most
+/// recently documented. Older and superseded sections remain available to AMF
+/// in the archive.
 const MAX_LIVE_REVIEW_NOTE_FILES: usize = 50;
 const REVIEW_NOTES_ARCHIVE_TITLE: &str = "# Review Notes Archive\n\n";
 
@@ -5189,10 +5192,10 @@ pub(crate) fn archive_review_notes(workdir: &Path) -> Result<usize> {
     Ok(archived_count)
 }
 
-/// Load all developer notes for AMF's review surfaces. The feature agent only
-/// reads the bounded live file, while AMF also folds in archived sections so
-/// older files keep their walkthrough context. Live notes win over archived
-/// notes for the same path.
+/// Load all developer notes for AMF's review surfaces. The feature agent
+/// blind-appends to the live file and never reads it back; AMF folds in
+/// archived sections here so older files keep their walkthrough context. Live
+/// notes win over archived notes for the same path.
 pub(crate) fn load_review_notes(workdir: &Path) -> std::collections::HashMap<String, String> {
     let claude_dir = workdir.join(".claude");
     let mut notes = std::fs::read_to_string(claude_dir.join("review-notes-archive.md"))
@@ -6159,6 +6162,43 @@ Current note.
     }
 
     #[test]
+    fn blind_appended_duplicates_collapse_below_the_cap() {
+        // Option F: the agent appends notes without reading the file, so within
+        // one session it can append several sections for the same file. The
+        // per-turn archive pass must collapse them to the newest even when the
+        // unique-file count is nowhere near MAX_LIVE_REVIEW_NOTE_FILES — i.e.
+        // with no cap pressure at all, only supersession.
+        let content = "\
+## src/main.rs — first pass
+
+Sketched the entry point.
+
+---
+
+## src/lib.rs — helper
+
+Added a helper.
+
+---
+
+## src/main.rs — second pass
+
+Wired the entry point to the helper.
+
+---
+";
+        let (live, overflow) = split_overflow_review_notes(content, 50);
+
+        assert!(live.contains("## src/lib.rs — helper"));
+        assert!(live.contains("## src/main.rs — second pass"));
+        assert!(!live.contains("Sketched the entry point."));
+
+        let overflow = overflow.expect("the superseded src/main.rs note should archive");
+        assert!(overflow.contains("Sketched the entry point."));
+        assert!(!overflow.contains("second pass"));
+    }
+
+    #[test]
     fn archived_review_notes_remain_visible_but_live_note_wins() {
         let dir = tempfile::TempDir::new().unwrap();
         let claude = dir.path().join(".claude");
@@ -6212,6 +6252,36 @@ Current note.
         let archive = std::fs::read_to_string(claude.join("review-notes-archive.md")).unwrap();
         assert_eq!(archive.matches("# Review Notes Archive").count(), 1);
         assert!(archive.contains("## src/file-0.rs"));
+    }
+
+    #[test]
+    fn archive_review_notes_collapses_blind_appended_duplicates_on_disk() {
+        // End-to-end P0 for Option F: a blind-append turn that re-notes the same
+        // file must leave only the newest section live, with the stale copy in
+        // the archive and load_review_notes returning the current note. No cap
+        // is hit here — two sections, one path.
+        let dir = tempfile::TempDir::new().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("review-notes.md"),
+            "## src/a.rs — first\n\nEarly note.\n\n---\n\n\
+             ## src/a.rs — refined\n\nLater, fuller note.\n\n---\n",
+        )
+        .unwrap();
+
+        assert_eq!(archive_review_notes(dir.path()).unwrap(), 1);
+        assert_eq!(archive_review_notes(dir.path()).unwrap(), 0);
+
+        let live = std::fs::read_to_string(claude.join("review-notes.md")).unwrap();
+        assert!(live.contains("Later, fuller note."));
+        assert!(!live.contains("Early note."));
+
+        let notes = load_review_notes(dir.path());
+        assert_eq!(
+            notes.get("src/a.rs").map(String::as_str),
+            Some("Later, fuller note.")
+        );
     }
 
     const SEARCH_PATCH: &str = "\

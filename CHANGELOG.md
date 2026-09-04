@@ -17,6 +17,14 @@ are tagged.
   no longer rely on Alt+Enter, which Windows can intercept. Plain Enter keeps
   its existing save or send behavior. No migration is required.
 
+- **Prompt library entries no longer disappear when running multiple AMF
+  instances.** Saving in one AMF instance (e.g. another checkout open in a
+  different terminal) could silently erase templates recently added or
+  edited in another — often the most recent one, or several from the same
+  session. Templates are now saved independently of other AMF state, and the
+  prompt library always shows the latest saved templates when opened. No
+  migration is required.
+
 ## [v0.42.0] - 2026-09-04
 
 ### Fixed

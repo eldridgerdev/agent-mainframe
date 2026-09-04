@@ -2947,7 +2947,10 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         // real deterministic usage block.
         let body = "Findings should avoid emitting a literal \"### AI review usage\" \
                      heading inside generated text.\n\n— AI review via AMF";
-        assert_eq!(strip_ai_review_attribution(body), body.strip_suffix("\n\n— AI review via AMF").unwrap());
+        assert_eq!(
+            strip_ai_review_attribution(body),
+            body.strip_suffix("\n\n— AI review via AMF").unwrap()
+        );
     }
 
     #[test]

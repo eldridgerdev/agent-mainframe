@@ -115,7 +115,7 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.continue_plan_interview_after_done()?;
             }
         }
-        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
             let result = match &mut app.mode {
                 AppMode::PlanInterview(state) => state.advance(),
                 _ => return Ok(()),
@@ -131,7 +131,7 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.continue_plan_interview_after_done()?;
             }
         }
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) && accepts_text => {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) && accepts_text => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 state
                     .editor
@@ -244,7 +244,7 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
 /// The inline custom-answer editor for a choice question. `Enter` commits and
 /// returns focus to the option list *without* submitting the question; `Esc`
 /// restores the buffer captured when it opened; every other key edits, with the
-/// character cap enforced on each change. `Alt+Enter` inserts a newline —
+/// character cap enforced on each change. `Shift+Enter` inserts a newline —
 /// custom answers may be multi-line.
 fn handle_custom_answer_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
@@ -254,7 +254,7 @@ fn handle_custom_answer_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             app.message = None;
         }
-        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 state.commit_custom_answer();
             }

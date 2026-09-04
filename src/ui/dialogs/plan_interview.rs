@@ -239,7 +239,7 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
         Line::from(vec![
             hint("Enter", theme),
             Span::raw(" done (back to options, not submitted)  "),
-            hint("Alt+Enter", theme),
+            hint("Shift+Enter", theme),
             Span::raw(" newline  "),
             hint("Esc", theme),
             Span::raw(" cancel edit"),
@@ -287,7 +287,7 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
         let mut spans = vec![
             hint("Enter", theme),
             Span::raw(" next  "),
-            hint("Alt+Enter", theme),
+            hint("Shift+Enter", theme),
             Span::raw(" newline  "),
         ];
         if state.current_question_is_choice() {

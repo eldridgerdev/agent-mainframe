@@ -62,7 +62,7 @@ shot:blank-answer-blocked
 # switches to the editor's own keys.
 key:e
 wait:400
-note:`e` focuses the inline custom-answer editor. The footer now reads "Enter done (back to options, not submitted) / Alt+Enter newline / Esc cancel edit".
+note:`e` focuses the inline custom-answer editor. The footer now reads "Enter done (back to options, not submitted) / Shift+Enter newline / Esc cancel edit".
 shot:custom-editor-focused
 
 text:Fold it into the existing status-bar row, right-aligned.

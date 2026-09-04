@@ -1067,8 +1067,8 @@ fn editor_chrome(target: &TodoEditTarget) -> (&'static str, &'static str) {
     match target {
         TodoEditTarget::New => (" New TODO ", "Enter: add"),
         TodoEditTarget::Title => (" Edit title ", "Enter: save"),
-        TodoEditTarget::Notes => (" Edit notes ", "Enter: save   Alt+Enter: newline"),
-        TodoEditTarget::Scratchpad => (" Scratchpad ", "Enter: save   Alt+Enter: newline"),
+        TodoEditTarget::Notes => (" Edit notes ", "Enter: save   Shift+Enter: newline"),
+        TodoEditTarget::Scratchpad => (" Scratchpad ", "Enter: save   Shift+Enter: newline"),
     }
 }
 

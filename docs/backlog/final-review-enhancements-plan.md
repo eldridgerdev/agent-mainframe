@@ -852,6 +852,19 @@ Cost:
       (`O`), and the config-wizard diff explain — all four used to always
       run on the CLI's default model with no way to point them at a
       cheaper one.
+- [x] Codex presets in the AI-review model picker — `model_pick_rows`
+      (`src/app/ai_review.rs`) offered Claude's four verified tier aliases
+      (`sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude --help`)
+      but fell straight through to `Default`/`Custom` for Codex, since
+      Codex's `--model` values are arbitrary account-specific ids with no
+      CLI-enumerable alias list to hardcode. `codex_config::known_models`
+      (`src/codex_config.rs`) now reads the account's own recorded model
+      list from `~/.codex/config.toml`'s `[tui.model_availability_nux]`
+      table and offers those as presets, falling back to `Default`/
+      `Custom` only when that table is absent (a fresh install that has
+      never opened the Codex TUI's model picker). No-ops under
+      `cfg!(test)` so unit tests stay independent of the machine's real
+      Codex config.
 - [x] Capped `.claude/final-review-feedback.md` growth — rounds were
       prepended and kept forever, but `REVIEW_FEEDBACK_PROMPT` and
       `parse_agent_responses` only ever consume the newest round, so a

@@ -1,0 +1,68 @@
+# codex-model-picker: visual proof that the AI-review model picker
+# (`A` inside an open AiReview pane) now offers Codex presets sourced from
+# this account's own `~/.codex/config.toml` (`[tui.model_availability_nux]`),
+# the same way it already offers Claude's `sonnet`/`opus`/`haiku`/`fable`
+# tier aliases. Previously Codex only ever got `Default`/`Custom`.
+#
+# Never confirms a preset (which would kick off a real, paid headless
+# review run) — every navigation past the model picker backs out with Esc.
+#
+# Run with:
+#   ./amf-capture.sh --scenario scenarios/codex-model-picker.txt --keep
+
+shot:dashboard
+
+# The scratch onboarding enables only the first installed harness it finds
+# (Claude, locally). Enable Codex too so the AI-review harness picker offers
+# it as a choice.
+key:A
+wait:400
+note:The harness-setup overlay lists every AgentKind row; Claude is already checked from the scratch onboarding boot sequence.
+shot:harness-setup-opened
+
+key:j
+key:j
+key:Enter
+wait:900
+note:Codex now shows an "installed" check from the same background availability probe used at first-run onboarding, and is toggled on alongside Claude.
+shot:codex-harness-enabled
+
+key:c
+wait:500
+
+# Seed a completed AI Review pane deterministically (no live agent call, no
+# GitHub write) so `A` reopens the harness/model picker chain against real
+# state instead of an empty one.
+run:AMF_BIN="$AMF_BIN" "$SCRIPT_DIR/seed-ai-review-fixture.sh" >/dev/null
+wait:300
+note:A previously-completed AI Review pane, seeded without spending agent tokens, is the starting point for reopening the picker chain.
+shot:completed-ai-review
+
+key:A
+wait:300
+note:Pressing A again with no harness chosen yet opens the harness picker; Claude and Codex are both offered since both were just enabled.
+shot:harness-picker
+
+key:j
+key:Enter
+wait:400
+note:Selecting Codex rebuilds the model picker for Codex specifically, rather than jumping straight back into a review run.
+shot:codex-model-picker-default-selected
+
+key:j
+wait:200
+note:This is the fix: Codex now offers verified preset rows read from this account's own ~/.codex/config.toml model-availability record, matching what Claude already had. Previously Codex fell straight through to Default/Custom with no presets at all.
+shot:codex-model-picker-preset-highlighted
+
+# Back out without confirming a model (confirming here would start a real,
+# paid headless Codex review run).
+key:Escape
+wait:200
+key:Escape
+wait:200
+note:Escaping the harness/model picker chain returns cleanly to the completed review pane with nothing launched and no tokens spent.
+shot:back-to-completed-review
+
+key:Escape
+wait:200
+shot:dashboard-final

@@ -57,7 +57,27 @@ pub fn load(conn: &Connection) -> Result<Vec<PromptTemplate>> {
 /// Insert a new template, appending it after the current highest
 /// `sort_order` so it lands at the end of the list regardless of what any
 /// other process has added concurrently.
+///
+/// The max-then-insert pair runs inside `BEGIN IMMEDIATE`/`COMMIT` (mirroring
+/// `store::save`), which takes SQLite's write lock before the `SELECT MAX` so
+/// a second process can't read the same stale max while this one is still
+/// between the two statements — without it, two concurrent inserts could
+/// compute identical `sort_order` values.
 pub fn insert(conn: &Connection, template: &PromptTemplate) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    match do_insert(conn, template) {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(e)
+        }
+    }
+}
+
+fn do_insert(conn: &Connection, template: &PromptTemplate) -> Result<()> {
     let next_sort_order: i64 = conn.query_row(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM prompt_templates",
         [],

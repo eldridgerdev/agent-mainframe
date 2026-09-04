@@ -1,11 +1,24 @@
 # codex-model-picker-no-presets-note: visual proof of the explanatory note
 # shown when Codex has no verified models recorded yet (a fresh install, or
 # one whose ~/.codex/config.toml has never gained a
-# [tui.model_availability_nux] table). Meant to be run with --amf-bin
-# pointed at a wrapper that forces HOME to an empty scratch directory, so
-# codex_config::known_models() finds nothing without touching any real file.
+# [tui.model_availability_nux] table).
 #
-# Run with:
+# This is the deterministic, CI-safe scenario for this feature: the isolated
+# capture workflow (amf-screenshot-artifact.yml) installs a brand-new `codex`
+# CLI on a bare runner with no ~/.codex/config.toml at all, so it naturally
+# hits this exact empty-preset path — unlike a scenario that expects real
+# preset names, which only reproduces on a machine whose own Codex account
+# has already recorded models (not portable to CI or another contributor's
+# machine). This is the scenario `amf-publish-screenshots`/`publish-pages.sh`
+# should use for this feature.
+#
+# To reproduce this locally on a machine whose own ~/.codex/config.toml
+# already has recorded models (so the empty path wouldn't trigger
+# naturally), run with --amf-bin pointed at a wrapper script that forces
+# HOME to an empty scratch directory before exec'ing the real amf binary,
+# so codex_config::known_models() finds nothing without touching any real
+# file:
+#
 #   ./amf-capture.sh --scenario scenarios/codex-model-picker-no-presets-note.txt \
 #     --amf-bin <fake-home-wrapper> --keep
 

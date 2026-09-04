@@ -138,7 +138,6 @@ impl AiReviewAttribution {
             total_tokens: usage.and_then(|usage| usage.total_tokens),
             estimated_cost,
             elapsed_ms: Some(elapsed.as_millis().min(u128::from(u64::MAX)) as u64),
-            ..Self::default()
         }
     }
 

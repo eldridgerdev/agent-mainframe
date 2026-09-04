@@ -134,7 +134,7 @@ pub fn handle_compose_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     match key.code {
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
             if let AppMode::Compose(state) = &mut app.mode {
                 let outcome = state.editor.insert_str("\n");
                 if outcome.text_changed {

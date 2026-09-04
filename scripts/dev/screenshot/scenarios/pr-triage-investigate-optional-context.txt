@@ -49,7 +49,7 @@ shot:triage-footer-e-hint
 
 # `e` opens the new optional-context editor.
 key:e|wait:600
-note:Pressing `e` opens the "Investigation context (optional)" box. The hint explains it takes a hypothesis for the next investigation (`v`) to verify against the PR and repo — not a fact it assumes — and that leaving it empty keeps today's behaviour. The keybar shows `[enter] save`, `[alt+enter] newline`, `[esc] discard`.
+note:Pressing `e` opens the "Investigation context (optional)" box. The hint explains it takes a hypothesis for the next investigation (`v`) to verify against the PR and repo — not a fact it assumes — and that leaving it empty keeps today's behaviour. The keybar shows `[enter] save`, `[shift+enter] newline`, `[esc] discard`.
 shot:context-box-empty
 
 # Type a hypothesis. `Enter` here commits and returns to the list; it does NOT

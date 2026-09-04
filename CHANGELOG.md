@@ -10,7 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **Multi-line editors now use Shift+Enter for a newline.** TODO notes,
+  Compose, plan interviews, configuration fields, and PR investigation context
+  no longer rely on Alt+Enter, which Windows can intercept. Plain Enter keeps
+  its existing save or send behavior. No migration is required.
 
 ## [v0.42.0] - 2026-09-04
 

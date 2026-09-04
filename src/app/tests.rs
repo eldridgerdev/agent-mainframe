@@ -20538,6 +20538,40 @@ fn ke_ctrl(code: KeyCode) -> crossterm::event::KeyEvent {
     crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::CONTROL)
 }
 
+fn ke_shift(code: KeyCode) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::SHIFT)
+}
+
+#[test]
+fn todos_shift_enter_inserts_a_newline_without_committing() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "write docs");
+    app.todos_commit_edit().unwrap();
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('o'))).unwrap();
+    type_str(&mut app, "first line");
+    crate::handlers::handle_todos_key(&mut app, ke_shift(KeyCode::Enter)).unwrap();
+    type_str(&mut app, "second line");
+
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(
+            state.editor.as_ref().map(|editor| editor.editor.text()),
+            Some("first line\nsecond line")
+        ),
+        _ => panic!("expected Todos overlay"),
+    }
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(
+            state.panes[0].todos[0].body.as_deref(),
+            Some("first line\nsecond line")
+        ),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
 #[test]
 fn todos_ctrl_t_toggles_vim_and_is_remembered_for_later_edits() {
     let mut app = todos_app();

@@ -111,7 +111,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Enter",
             "Save answer and continue; at the AI prompt, review raw plan (no tokens)",
         ),
-        ("Alt+Enter", "Insert a newline (free-text answers)"),
+        ("Shift+Enter", "Insert a newline (free-text answers)"),
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
         (
             "Backspace",

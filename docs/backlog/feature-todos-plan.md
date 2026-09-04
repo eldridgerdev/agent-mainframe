@@ -227,7 +227,7 @@ project/feature is deleted (extend the existing delete paths).
 ### Epic 4 — TODO editing
 
 - [x] Add (`a`/`n`) with inline editor (reuses `TextEditor`); persist.
-- [x] Edit title (`e`) and notes body (`o`); `Alt+Enter` newline,
+- [x] Edit title (`e`) and notes body (`o`); `Shift+Enter` newline,
       `Enter` commit, `Esc` cancel (mirrors compose).
 - [x] Toggle done (`space`/`x`); completed items stay visible
       (strikethrough) and sink below open items, no bulk clear.

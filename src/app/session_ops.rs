@@ -66,7 +66,7 @@ fn harness_session_picker_kind(kind: &SessionKind) -> Option<AgentKind> {
     }
 }
 
-fn persisted_resume_id(session: &FeatureSession) -> Option<String> {
+pub(crate) fn persisted_resume_id(session: &FeatureSession) -> Option<String> {
     let id = match session.kind {
         SessionKind::Claude => session.claude_session_id.clone().or_else(|| {
             session

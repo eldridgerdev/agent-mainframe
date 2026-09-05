@@ -1377,6 +1377,12 @@ mod tests {
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('l')), 20).unwrap();
 
+        // The scan runs on a background thread; stay in the view until it
+        // reports back (this is local disk I/O, so it lands almost
+        // immediately in practice).
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        wait_for_latest_prompt_menu(&mut app);
+
         match &app.mode {
             AppMode::LatestPrompt(state) => {
                 assert_eq!(
@@ -1386,6 +1392,20 @@ mod tests {
                 assert_eq!(state.view.session, "amf-feature");
             }
             _ => panic!("expected LatestPrompt mode"),
+        }
+    }
+
+    /// Drive the background "all prompts" scan to completion. It's local
+    /// disk I/O with no external process, so this should resolve on the
+    /// first or second poll; the bound just guards against a hang.
+    fn wait_for_latest_prompt_menu(app: &mut App) {
+        let started_at = std::time::Instant::now();
+        while !app.poll_latest_prompt_menu_bg() {
+            assert!(
+                started_at.elapsed() < std::time::Duration::from_secs(2),
+                "latest-prompt scan never completed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 

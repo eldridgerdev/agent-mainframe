@@ -978,6 +978,11 @@ pub struct App {
     pub(crate) confirmed_no_terminal_pr: HashSet<String>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
+    /// Receiver for the background "all prompts" scan (leader-key latest-prompt
+    /// menu). Reading and parsing every Claude/Codex/opencode transcript file
+    /// for a session can be slow, so it runs off the UI thread; see
+    /// `app::view::open_latest_prompt_from_view`.
+    pub(crate) latest_prompt_menu_bg: Option<Receiver<view::LatestPromptScanResult>>,
     /// Receiver for the blocking read-only PR-comment investigation (`v` → `f`
     /// in PR Triage). One at a time; `Some` only while `AppMode::
     /// PrInvestigationLoading` is showing. See
@@ -2456,6 +2461,7 @@ impl App {
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
             pr_review_bg: None,
+            latest_prompt_menu_bg: None,
             pr_investigation_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
@@ -2710,6 +2716,7 @@ impl App {
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
             pr_review_bg: None,
+            latest_prompt_menu_bg: None,
             pr_investigation_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,

@@ -12,6 +12,19 @@ are tagged.
 
 ### Fixed
 
+- **The "latest prompt" menu (leader, then `l`) now shows every prompt sent
+  in a Claude session, not just the ones near the end of the most recent
+  resume.** It previously only read the tail of the single most-recently
+  modified session file, so prompts sent before a `/resume` or context
+  compaction — which starts a new session file — could be silently missing
+  from the list. It now scans every session file for the checkout, scoped to
+  the session that window is actually running so a second Claude window
+  sharing the same worktree can't leak its prompts into the list. The
+  cheaper, tail-only read is still used for the sidebar's single latest-
+  prompt preview, which polls far more often and only ever needs the very
+  last one; reading and parsing the full history for the menu now happens
+  off the UI thread. No migration is required.
+
 - **The AI review model picker now offers Codex presets, not just Claude's.**
   When choosing a model for the `A`/`w`/`O` AI review passes, Codex
   previously only offered "Default" or a free-typed custom model name. It

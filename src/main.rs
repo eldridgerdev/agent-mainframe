@@ -1338,6 +1338,10 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
+        if app.latest_prompt_menu_bg.is_some() && app.poll_latest_prompt_menu_bg() {
+            force_redraw = true;
+        }
+
         // Apply the one-shot VS Code availability check when it resolves.
         if let Ok(available) = vscode_check_rx.try_recv() {
             app.vscode_available = available;

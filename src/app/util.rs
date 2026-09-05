@@ -192,7 +192,10 @@ pub(crate) fn read_latest_prompt_for_session(
     session_kind: Option<&crate::project::SessionKind>,
     preferred_session_id: Option<&str>,
 ) -> Option<String> {
-    let entries = read_all_prompts_for_session(workdir, session_kind, preferred_session_id);
+    // `full: false` — this runs on every status-sync tick for every
+    // feature, so it keeps the cheap newest-file/tail-only scan rather
+    // than the thorough one the "all prompts" menu needs.
+    let entries = read_prompts_for_session(workdir, session_kind, preferred_session_id, false);
     entries
         .into_iter()
         .max_by(|a, b| match (a.timestamp, b.timestamp) {
@@ -204,17 +207,29 @@ pub(crate) fn read_latest_prompt_for_session(
         .map(|entry| entry.text)
 }
 
+/// Every prompt sent in the session, for the "all prompts" menu. Unlike
+/// [`read_latest_prompt_for_session`] this is only called on demand (the
+/// user opening the menu), so it can afford the thorough, all-files scan.
 pub(crate) fn read_all_prompts_for_session(
     workdir: &Path,
     session_kind: Option<&SessionKind>,
     preferred_session_id: Option<&str>,
+) -> Vec<PromptEntry> {
+    read_prompts_for_session(workdir, session_kind, preferred_session_id, true)
+}
+
+fn read_prompts_for_session(
+    workdir: &Path,
+    session_kind: Option<&SessionKind>,
+    preferred_session_id: Option<&str>,
+    full: bool,
 ) -> Vec<PromptEntry> {
     let mut entries = match session_kind {
         Some(SessionKind::Opencode) => {
             read_prompts_from_opencode_storage(workdir, preferred_session_id)
         }
         Some(SessionKind::Codex) => read_prompts_from_codex_history(workdir, preferred_session_id),
-        _ => read_prompts_from_claude_sessions(workdir),
+        _ => read_prompts_from_claude_sessions(workdir, preferred_session_id, full),
     };
 
     // Fall back to latest-prompt.txt if no session entries found
@@ -303,99 +318,178 @@ pub fn read_claude_task_state(workdir: &Path, session_id: Option<&str>) -> Optio
     parse_claude_task_state_from_jsonl(&content)
 }
 
-fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
-    // Inner function returning Option so we can use `?` for early exit.
-    fn inner(workdir: &Path) -> Option<Vec<PromptEntry>> {
-        use std::io::{Read, Seek, SeekFrom};
+// Read only the last 64 KB of a session file — avoids loading multi-MB
+// session histories just to find the most recent user prompt.
+const CLAUDE_SESSION_TAIL_BYTES: u64 = 65_536;
 
-        let home = std::env::var("HOME").ok()?;
-        let encoded = encode_claude_path(workdir);
-        let projects_dir = PathBuf::from(&home)
-            .join(".claude")
-            .join("projects")
-            .join(&encoded);
+fn read_file_tail(path: &Path, tail_len: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    let start = file_len.saturating_sub(tail_len);
+    if start > 0 {
+        file.seek(SeekFrom::Start(start)).ok()?;
+    }
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).ok()?;
+    // If we seeked into the middle, skip the first (partial) line.
+    if start > 0 {
+        let skip = buf
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(buf.len(), |p| p + 1);
+        buf.drain(..skip);
+    }
+    Some(buf)
+}
 
-        if !is_real_dir(&projects_dir) {
-            return None;
-        }
+fn file_mtime_secs(metadata: &std::fs::Metadata) -> Option<i64> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+}
 
-        // Only read the most-recently-modified session file — the latest
-        // prompt is overwhelmingly likely to be there, and we avoid reading
-        // all session bytes across potentially many files.
-        let (file_ts, newest_path) = std::fs::read_dir(&projects_dir)
-            .ok()?
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                if path.extension().is_none_or(|ext| ext != "jsonl") {
-                    return None;
-                }
-                let meta = entry.metadata().ok()?;
-                let mtime = meta.modified().ok()?;
-                let ts = mtime
+/// `full: false` mirrors the historical behavior: only the
+/// most-recently-modified session file, and only its last 64 KB — cheap
+/// enough to run on every status-sync tick for every feature, and the
+/// latest prompt is overwhelmingly likely to be there.
+///
+/// `full: true` is for the "all prompts sent in this session" menu.
+/// Resuming or compacting a Claude session starts a **new** `.jsonl` file
+/// under the same project directory, so restricting to the newest file
+/// (or its tail) silently drops every prompt sent before that point. The
+/// menu is opened on demand, not polled, so it can afford to read every
+/// session file for this workdir in full.
+///
+/// `preferred_session_id`, when known, scopes *both* modes to exactly that
+/// session's own file. A worktree's project directory holds one `.jsonl`
+/// per Claude window that has ever run there, and nothing in the file
+/// format links a resumed transcript back to its predecessor — so once the
+/// caller knows which session it wants, scanning every file in the
+/// directory would risk mixing in prompts from an unrelated, concurrent
+/// Claude window using the same workdir. Without a known session id, the
+/// scan falls back to the directory-wide heuristic.
+fn read_prompts_from_claude_sessions(
+    workdir: &Path,
+    preferred_session_id: Option<&str>,
+    full: bool,
+) -> Vec<PromptEntry> {
+    let Some(home) = std::env::var("HOME").ok() else {
+        return Vec::new();
+    };
+    let encoded = encode_claude_path(workdir);
+    let projects_dir = PathBuf::from(&home)
+        .join(".claude")
+        .join("projects")
+        .join(&encoded);
+
+    read_prompts_from_claude_projects_dir(&projects_dir, preferred_session_id, full)
+}
+
+fn read_prompts_from_claude_projects_dir(
+    projects_dir: &Path,
+    preferred_session_id: Option<&str>,
+    full: bool,
+) -> Vec<PromptEntry> {
+    if !is_real_dir(projects_dir) {
+        return Vec::new();
+    }
+
+    if let Some(session_id) = preferred_session_id {
+        let path = projects_dir.join(format!("{session_id}.jsonl"));
+        let Ok(metadata) = path.metadata() else {
+            return Vec::new();
+        };
+        let file_ts = file_mtime_secs(&metadata);
+        return if full {
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            parse_user_prompts_from_jsonl(&content, file_ts)
+        } else {
+            let Some(buf) = read_file_tail(&path, CLAUDE_SESSION_TAIL_BYTES) else {
+                return Vec::new();
+            };
+            let content = std::str::from_utf8(&buf).unwrap_or("");
+            parse_user_prompts_from_jsonl(content, file_ts)
+        };
+    }
+
+    let Ok(read_dir) = std::fs::read_dir(projects_dir) else {
+        return Vec::new();
+    };
+    let mut jsonl_files: Vec<(std::time::SystemTime, PathBuf)> = read_dir
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                return None;
+            }
+            let mtime = entry.metadata().ok()?.modified().ok()?;
+            Some((mtime, path))
+        })
+        .collect();
+    if jsonl_files.is_empty() {
+        return Vec::new();
+    }
+    jsonl_files.sort_by_key(|(mtime, _)| *mtime);
+
+    if full {
+        return jsonl_files
+            .into_iter()
+            .flat_map(|(mtime, path)| {
+                let file_ts = mtime
                     .duration_since(std::time::UNIX_EPOCH)
                     .ok()
                     .map(|d| d.as_secs() as i64);
-                Some((mtime, ts, path))
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                parse_user_prompts_from_jsonl(&content, file_ts)
             })
-            .max_by_key(|(mtime, _, _)| *mtime)
-            .map(|(_, ts, path)| (ts, path))?;
-
-        // Read only the last 64 KB of the file — avoids loading multi-MB
-        // session histories just to find the most recent user prompt.
-        const TAIL: u64 = 65_536;
-        let mut file = std::fs::File::open(&newest_path).ok()?;
-        let file_len = file.metadata().ok()?.len();
-        let start = file_len.saturating_sub(TAIL);
-        if start > 0 {
-            file.seek(SeekFrom::Start(start)).ok()?;
-        }
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf).ok()?;
-
-        // If we seeked into the middle, skip the first (partial) line.
-        let data = if start > 0 {
-            let skip = buf
-                .iter()
-                .position(|&b| b == b'\n')
-                .map_or(buf.len(), |p| p + 1);
-            &buf[skip..]
-        } else {
-            &buf[..]
-        };
-
-        let content = std::str::from_utf8(data).unwrap_or("");
-        let mut entries = Vec::new();
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let value: serde_json::Value = match serde_json::from_str(line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if value["type"] != "user" {
-                continue;
-            }
-            let text = match extract_user_prompt_text(&value) {
-                Some(t) if !t.trim().is_empty() => t,
-                _ => continue,
-            };
-            let ts = value
-                .get("timestamp")
-                .and_then(|v| v.as_str())
-                .and_then(parse_prompt_timestamp)
-                .or(file_ts);
-            entries.push(PromptEntry {
-                text,
-                timestamp: ts,
-            });
-        }
-        Some(entries)
+            .collect();
     }
 
-    inner(workdir).unwrap_or_default()
+    let (mtime, newest_path) = jsonl_files.pop().expect("checked non-empty above");
+    let file_ts = mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64);
+
+    let Some(buf) = read_file_tail(&newest_path, CLAUDE_SESSION_TAIL_BYTES) else {
+        return Vec::new();
+    };
+    let content = std::str::from_utf8(&buf).unwrap_or("");
+    parse_user_prompts_from_jsonl(content, file_ts)
+}
+
+fn parse_user_prompts_from_jsonl(content: &str, file_ts: Option<i64>) -> Vec<PromptEntry> {
+    let mut entries = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if value["type"] != "user" {
+            continue;
+        }
+        let text = match extract_user_prompt_text(&value) {
+            Some(t) if !t.trim().is_empty() => t,
+            _ => continue,
+        };
+        let ts = value
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(parse_prompt_timestamp)
+            .or(file_ts);
+        entries.push(PromptEntry {
+            text,
+            timestamp: ts,
+        });
+    }
+    entries
 }
 
 fn read_prompts_from_opencode_storage_root(
@@ -1519,6 +1613,106 @@ mod tests {
         let workdir = PathBuf::from("/tmp/unused");
         let latest = read_latest_prompt_for_session(&workdir, None, None);
         assert_eq!(latest, None);
+    }
+
+    fn write_claude_session_file(
+        projects_dir: &Path,
+        name: &str,
+        prompts: &[&str],
+        mtime_offset_secs: i64,
+    ) {
+        std::fs::create_dir_all(projects_dir).unwrap();
+        let lines: Vec<String> = prompts
+            .iter()
+            .map(|text| {
+                serde_json::json!({"type": "user", "message": {"content": text}}).to_string()
+            })
+            .collect();
+        let path = projects_dir.join(name);
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        // Give each file a distinct, controllable mtime so "newest file"
+        // and file-timestamp fallbacks are deterministic in the test.
+        let mtime = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs((1_700_000_000 + mtime_offset_secs) as u64);
+        let file = std::fs::File::open(&path).unwrap();
+        file.set_modified(mtime).unwrap();
+    }
+
+    #[test]
+    fn full_scan_collects_prompts_across_every_resumed_session_file() {
+        let temp = TempDir::new().unwrap();
+        let projects_dir = temp.path().join("claude-projects");
+
+        // Simulate a resume/compaction: an older session file with the
+        // first prompts, then a newer one Claude created on resume.
+        write_claude_session_file(&projects_dir, "older.jsonl", &["first prompt"], 0);
+        write_claude_session_file(&projects_dir, "newer.jsonl", &["second prompt"], 100);
+
+        // Ordering here is file-mtime ascending; the caller-facing
+        // `read_all_prompts_for_session` applies the final descending sort.
+        let entries = read_prompts_from_claude_projects_dir(&projects_dir, None, true);
+        let texts: Vec<&str> = entries.iter().map(|e| e.text.as_str()).collect();
+
+        assert_eq!(texts, vec!["first prompt", "second prompt"]);
+    }
+
+    #[test]
+    fn fast_scan_only_reads_the_newest_session_file() {
+        let temp = TempDir::new().unwrap();
+        let projects_dir = temp.path().join("claude-projects");
+
+        write_claude_session_file(&projects_dir, "older.jsonl", &["first prompt"], 0);
+        write_claude_session_file(&projects_dir, "newer.jsonl", &["second prompt"], 100);
+
+        let entries = read_prompts_from_claude_projects_dir(&projects_dir, None, false);
+        let texts: Vec<&str> = entries.iter().map(|e| e.text.as_str()).collect();
+
+        assert_eq!(texts, vec!["second prompt"]);
+    }
+
+    #[test]
+    fn known_session_id_scopes_full_scan_to_its_own_file_only() {
+        let temp = TempDir::new().unwrap();
+        let projects_dir = temp.path().join("claude-projects");
+
+        // Two unrelated Claude windows sharing this worktree, each with its
+        // own session file. Without scoping, a full scan would mix both.
+        write_claude_session_file(&projects_dir, "session-a.jsonl", &["window a prompt"], 0);
+        write_claude_session_file(&projects_dir, "session-b.jsonl", &["window b prompt"], 100);
+
+        let entries = read_prompts_from_claude_projects_dir(&projects_dir, Some("session-a"), true);
+        let texts: Vec<&str> = entries.iter().map(|e| e.text.as_str()).collect();
+
+        assert_eq!(texts, vec!["window a prompt"]);
+    }
+
+    #[test]
+    fn known_session_id_scopes_fast_scan_to_its_own_file_even_when_not_newest() {
+        let temp = TempDir::new().unwrap();
+        let projects_dir = temp.path().join("claude-projects");
+
+        write_claude_session_file(&projects_dir, "session-a.jsonl", &["window a prompt"], 0);
+        write_claude_session_file(&projects_dir, "session-b.jsonl", &["window b prompt"], 100);
+
+        let entries =
+            read_prompts_from_claude_projects_dir(&projects_dir, Some("session-a"), false);
+        let texts: Vec<&str> = entries.iter().map(|e| e.text.as_str()).collect();
+
+        assert_eq!(texts, vec!["window a prompt"]);
+    }
+
+    #[test]
+    fn unknown_session_id_yields_no_prompts_rather_than_falling_back() {
+        let temp = TempDir::new().unwrap();
+        let projects_dir = temp.path().join("claude-projects");
+
+        write_claude_session_file(&projects_dir, "session-a.jsonl", &["window a prompt"], 0);
+
+        let entries =
+            read_prompts_from_claude_projects_dir(&projects_dir, Some("missing-session"), true);
+
+        assert!(entries.is_empty());
     }
 
     #[test]

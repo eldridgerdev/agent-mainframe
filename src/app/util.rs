@@ -1681,8 +1681,7 @@ mod tests {
         write_claude_session_file(&projects_dir, "session-a.jsonl", &["window a prompt"], 0);
         write_claude_session_file(&projects_dir, "session-b.jsonl", &["window b prompt"], 100);
 
-        let entries =
-            read_prompts_from_claude_projects_dir(&projects_dir, Some("session-a"), true);
+        let entries = read_prompts_from_claude_projects_dir(&projects_dir, Some("session-a"), true);
         let texts: Vec<&str> = entries.iter().map(|e| e.text.as_str()).collect();
 
         assert_eq!(texts, vec!["window a prompt"]);

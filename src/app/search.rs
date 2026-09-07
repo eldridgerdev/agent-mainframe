@@ -9,6 +9,7 @@ impl App {
             selected_match: 0,
         });
         self.message = None;
+        self.perform_search();
     }
 
     pub fn perform_search(&mut self) {
@@ -29,10 +30,13 @@ impl App {
             }
 
             for (fi, feature) in project.features.iter().enumerate() {
-                if feature.name.to_lowercase().contains(&query) {
+                let display_name = feature.nickname.as_ref().unwrap_or(&feature.name);
+                if feature.name.to_lowercase().contains(&query)
+                    || display_name.to_lowercase().contains(&query)
+                {
                     matches.push(SearchMatch {
                         item: VisibleItem::Feature(pi, fi),
-                        label: feature.name.clone(),
+                        label: display_name.clone(),
                         context: format!("{} / {}", project.name, shorten_path(&feature.workdir)),
                     });
                 }
@@ -42,7 +46,7 @@ impl App {
                         matches.push(SearchMatch {
                             item: VisibleItem::Session(pi, fi, si),
                             label: session.label.clone(),
-                            context: format!("{} / {}", project.name, feature.name),
+                            context: format!("{} / {}", project.name, display_name),
                         });
                     }
                 }
@@ -66,8 +70,15 @@ impl App {
         if let Some(m) = match_item {
             self.selection = match m.item {
                 VisibleItem::Project(pi) => Selection::Project(pi),
-                VisibleItem::Feature(pi, fi) => Selection::Feature(pi, fi),
-                VisibleItem::Session(pi, fi, si) => Selection::Session(pi, fi, si),
+                VisibleItem::Feature(pi, fi) => {
+                    self.store.projects[pi].collapsed = false;
+                    Selection::Feature(pi, fi)
+                }
+                VisibleItem::Session(pi, fi, si) => {
+                    self.store.projects[pi].collapsed = false;
+                    self.store.projects[pi].features[fi].collapsed = false;
+                    Selection::Session(pi, fi, si)
+                }
             };
             self.mode = AppMode::Normal;
             self.message = None;

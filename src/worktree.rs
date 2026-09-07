@@ -402,6 +402,10 @@ pub struct WorktreeInfo {
 // ── WorktreeOps trait implementation ─────────────────────────────────────────
 
 impl WorktreeOps for WorktreeManager {
+    fn remove(&self, repo: &Path, worktree_path: &Path) -> Result<()> {
+        WorktreeManager::remove(repo, worktree_path)
+    }
+
     fn repo_root(&self, path: &Path) -> Result<PathBuf> {
         WorktreeManager::repo_root(path)
     }

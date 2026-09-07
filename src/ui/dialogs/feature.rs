@@ -1306,9 +1306,7 @@ pub fn draw_delete_feature_confirm(
     feature_name: &str,
     theme: &Theme,
 ) {
-    let area = centered_rect(50, 25, frame.area());
-    crate::ui::draw_modal_overlay(frame, area, theme);
-
+    let width = frame.area().width.min(76);
     let text = Paragraph::new(vec![
         Line::from(""),
         Line::from(vec![
@@ -1330,7 +1328,7 @@ pub fn draw_delete_feature_confirm(
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            " This will kill the tmux session and remove the worktree.",
+            " This will stop all sessions and remove the worktree, if any.",
             Style::default().fg(theme.text_muted.to_color()),
         )),
         Line::from(""),
@@ -1359,8 +1357,11 @@ pub fn draw_delete_feature_confirm(
             Span::raw(" to cancel"),
         ]),
     ])
-    .wrap(Wrap { trim: false })
-    .block(
+    .wrap(Wrap { trim: false });
+    let height = text.line_count(width.saturating_sub(2)).saturating_add(2);
+    let area = crate::ui::dialog_rect(frame.area(), width, height.min(u16::MAX as usize) as u16);
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let text = text.block(
         Block::default()
             .title(" Confirm Delete ")
             .borders(Borders::ALL)

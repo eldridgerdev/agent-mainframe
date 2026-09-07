@@ -8524,11 +8524,9 @@ fn delete_project_clears_terminal_pr_associations_for_all_features() {
         at: "2026-08-21T13:32:59Z".to_string(),
     };
 
-    let mut app = App::new_for_test(
-        store,
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_kill_session().returning(|_| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.store_path = store_file.path().to_path_buf();
     app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
     app.db
@@ -12751,6 +12749,7 @@ fn status_file_cleanup_during_remove() {
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_list_sessions().returning(|| Ok(vec![]));
+    tmux.expect_session_exists().returning(|_| false);
 
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.db = Some(db);
@@ -27471,5 +27470,210 @@ fn automated_headless_runs_announce_with_a_toast_not_a_modal() {
             .iter()
             .any(|t| t.message.contains("Headless AI call") && t.message.contains("Codex")),
         "expected an announcing toast"
+    );
+}
+
+#[test]
+fn usability_search_types_navigation_letters_and_reveals_collapsed_result() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].collapsed = true;
+    store.projects[0].features[0].collapsed = true;
+    store.projects[0].features[0]
+        .sessions
+        .push(make_session("jkl", None));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.start_search();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.matches.len() == 3));
+    for c in "jkl".chars() {
+        crate::handlers::handle_search_key(&mut app, KeyCode::Char(c)).unwrap();
+    }
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.query == "jkl" && s.matches.len() == 1));
+    crate::handlers::handle_search_key(&mut app, KeyCode::Enter).unwrap();
+    assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
+    assert!(
+        app.visible_items()
+            .iter()
+            .any(|item| matches!(item, VisibleItem::Session(0, 0, 0)))
+    );
+}
+
+#[test]
+fn usability_search_tab_navigation_and_empty_results_are_safe() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Stopped),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.start_search();
+    crate::handlers::handle_search_key(&mut app, KeyCode::BackTab).unwrap();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.selected_match == 1));
+    crate::handlers::handle_search_key(&mut app, KeyCode::Tab).unwrap();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.selected_match == 0));
+    crate::handlers::handle_search_key(&mut app, KeyCode::Char('!')).unwrap();
+    crate::handlers::handle_search_key(&mut app, KeyCode::Enter).unwrap();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.matches.is_empty()));
+    crate::handlers::handle_search_key(&mut app, KeyCode::Backspace).unwrap();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.matches.len() == 2));
+}
+
+#[test]
+fn usability_project_form_can_move_back_without_losing_input() {
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::CreatingProject(CreateProjectState {
+        step: CreateProjectStep::Agent,
+        name: "my-project".into(),
+        path: "/tmp/my-project".into(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+    });
+    crate::handlers::handle_create_project_key(
+        &mut app,
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+    )
+    .unwrap();
+    assert!(
+        matches!(&app.mode, AppMode::CreatingProject(s) if matches!(s.step, CreateProjectStep::Path) && s.name == "my-project" && s.path == "/tmp/my-project")
+    );
+}
+
+#[test]
+fn usability_help_end_then_up_moves_immediately() {
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Help(HelpState {
+        from_view: None,
+        scroll_offset: 0,
+    });
+    crate::handlers::handle_help_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE))
+        .unwrap();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+    let bottom = match &app.mode {
+        AppMode::Help(s) => s.scroll_offset,
+        _ => unreachable!(),
+    };
+    assert!(bottom > 0 && bottom < 1000);
+    crate::handlers::handle_help_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+    assert!(matches!(&app.mode, AppMode::Help(s) if s.scroll_offset == bottom - 1));
+}
+
+#[test]
+fn usability_project_rejects_file_path_and_focuses_preserved_input() {
+    let file = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::CreatingProject(CreateProjectState {
+        step: CreateProjectStep::Agent,
+        name: "example".into(),
+        path: file.path().to_string_lossy().into_owned(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+    });
+    app.create_project().unwrap();
+    assert!(app.store.projects.is_empty());
+    assert!(app.message.as_deref().unwrap().contains("not a directory"));
+    assert!(
+        matches!(&app.mode, AppMode::CreatingProject(s) if matches!(s.step, CreateProjectStep::Path) && s.name == "example")
+    );
+}
+
+#[test]
+fn usability_failed_session_removal_preserves_records() {
+    for session_count in [1, 2] {
+        let mut store = store_with_feature(ProjectStatus::Active);
+        store.projects[0].features[0].sessions = (0..session_count)
+            .map(|i| make_session(&format!("agent-{i}"), None))
+            .collect();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().returning(|_| true);
+        if session_count == 1 {
+            tmux.expect_kill_session()
+                .times(1)
+                .returning(|_| Err(anyhow::anyhow!("tmux unavailable")));
+        } else {
+            tmux.expect_window_exists().returning(|_, _| true);
+            tmux.expect_kill_window()
+                .times(1)
+                .returning(|_, _| Err(anyhow::anyhow!("tmux unavailable")));
+        }
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+        app.selection = Selection::Session(0, 0, 0);
+        let error = app.remove_session().unwrap_err();
+        assert!(error.to_string().contains("Session retained"));
+        assert_eq!(
+            app.store.projects[0].features[0].sessions.len(),
+            session_count
+        );
+        assert_eq!(
+            app.store.projects[0].features[0].status,
+            ProjectStatus::Active
+        );
+    }
+}
+
+#[test]
+fn usability_failed_project_cleanup_preserves_records_for_retry() {
+    for fail_tmux in [true, false] {
+        let workdir = TempDir::new().unwrap();
+        let mut store = store_with_feature(ProjectStatus::Active);
+        store.projects[0].features[0].is_worktree = true;
+        store.projects[0].features[0].workdir = workdir.path().to_path_buf();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_kill_session().times(1).returning(move |_| {
+            if fail_tmux {
+                Err(anyhow::anyhow!("tmux unavailable"))
+            } else {
+                Ok(())
+            }
+        });
+        let mut worktree = MockWorktreeOps::new();
+        if !fail_tmux {
+            worktree
+                .expect_remove()
+                .times(1)
+                .returning(|_, _| Err(anyhow::anyhow!("permission denied")));
+        }
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(worktree));
+        app.mode = AppMode::DeletingProject("my-project".into());
+        let error = app.delete_project().unwrap_err();
+        assert!(error.to_string().contains("Project retained"));
+        assert_eq!(app.store.projects.len(), 1);
+        assert_eq!(app.store.projects[0].features.len(), 1);
+    }
+}
+
+#[test]
+fn usability_search_finds_the_feature_name_shown_on_the_dashboard() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].nickname = Some("Release polish".into());
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.start_search();
+    crate::handlers::handle_paste(&mut app, "release").unwrap();
+    assert!(
+        matches!(&app.mode, AppMode::Searching(s) if s.matches.len() == 1 && s.matches[0].label == "Release polish")
     );
 }

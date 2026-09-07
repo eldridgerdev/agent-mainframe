@@ -5,8 +5,6 @@ use ratatui_explorer::FileExplorer;
 
 use super::*;
 use crate::automation::CreateProjectRequest;
-use crate::tmux::TmuxManager;
-use crate::worktree::WorktreeManager;
 
 impl App {
     pub fn toggle_collapse(&mut self) {
@@ -152,8 +150,9 @@ impl App {
     pub fn start_browse_path(&mut self, create_state: CreateProjectState) {
         let mut explorer = match FileExplorer::new() {
             Ok(e) => e,
-            Err(_) => {
-                self.message = Some("Failed to open file browser".into());
+            Err(err) => {
+                self.mode = AppMode::CreatingProject(create_state);
+                self.message = Some(format!("Error: Failed to open file browser: {err}"));
                 return;
             }
         };
@@ -250,6 +249,15 @@ impl App {
             Ok(response) => response,
             Err(err) => {
                 let text = err.to_string();
+                if let AppMode::CreatingProject(state) = &mut self.mode {
+                    if text.starts_with("Path ") {
+                        state.step = CreateProjectStep::Path;
+                    } else if text == "Project name cannot be empty"
+                        || (text.starts_with("Project '") && text.ends_with("already exists"))
+                    {
+                        state.step = CreateProjectStep::Name;
+                    }
+                }
                 if text.starts_with("Path does not exist:") {
                     self.message = Some(format!(
                         "Error: {} (press Ctrl+B to browse and create folder)",
@@ -303,9 +311,15 @@ impl App {
             let repo = project.repo.clone();
 
             for (session, workdir, is_worktree, feature_id, branch) in features {
-                let _ = TmuxManager::kill_session(&session);
-                if is_worktree {
-                    let _ = WorktreeManager::remove(&repo, &workdir);
+                self.tmux.kill_session(&session).map_err(|err| anyhow::anyhow!(
+                    "Could not finish deleting project '{project_name}': {err}. Project retained; earlier cleanup may already have completed."
+                ))?;
+                // A retry can encounter a worktree removed by the previous attempt.
+                if is_worktree && workdir.exists() {
+                    self.worktree.remove(&repo, &workdir).map_err(|err| anyhow::anyhow!(
+                        "Could not remove worktree '{}': {err}. Project retained; some sessions or worktrees may already have been removed. Retry deletion after fixing the error.",
+                        workdir.display()
+                    ))?;
                 }
                 self.clear_pr_association_for_deleted_feature(&feature_id, &repo, &branch);
             }

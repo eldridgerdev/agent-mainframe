@@ -11,10 +11,10 @@ pub fn handle_search_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Enter => {
             app.jump_to_search_match();
         }
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down | KeyCode::Tab => {
             app.select_next_search_match();
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyCode::Up | KeyCode::BackTab => {
             app.select_prev_search_match();
         }
         KeyCode::Backspace => {

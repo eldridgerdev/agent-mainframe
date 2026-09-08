@@ -53,3 +53,17 @@ by the test using them. The planned modules separate status/sidebar, hooks,
 automation, attention and editor lifecycle from the broader suggested categories.
 Learning tests already live with Learning and stay there for M2. No new abstraction,
 visibility allowance, dependency/schema change or global serialization was needed.
+
+## M2 verification — 2026-09-08
+
+The 742 central tests now use exactly the destination paths in `app-tests.tsv`.
+The full 2,511-name post-move inventory equals the baseline transformed through
+that map; no added/removed/ignored tests. Compared all 854 top-level function
+bodies with the original (normalizing qualified app paths, whitespace and
+rustfmt's optional trailing commas); assertions and fixture behavior are intact.
+
+Full parallel tests passed outside the sandbox (2,511 passed, 30.17s), as did
+formatting, strict locked all-target Clippy and diff whitespace checks. Helper
+placement was refined by actual dependency closure: shared helpers called by
+support also live in support, with test-only `pub(super)` visibility; the original
+helper TSV remains the M1 proposal. No production API was made public.

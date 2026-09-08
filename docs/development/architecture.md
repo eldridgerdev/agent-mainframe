@@ -3,7 +3,8 @@
 This describes revision `c4088b70cd22393dd055dd249816da6e0f6825f0`, before
 maintainability refactors. See [baseline evidence](baseline/README.md) for the
 complete test inventory, planned test paths, helper callers, and App fields.
-Paths below are current unless explicitly labelled as destinations.
+The M2 test layout below is now implemented; production paths still describe
+the baseline unless explicitly labelled as destinations.
 
 ## Runtime and dependencies
 
@@ -57,10 +58,10 @@ Injection is partial: feature modules still call concrete managers and filesyste
 APIs directly. Preserve those calls during mechanical moves; introduce narrow
 adapters only in the subsequent ownership change.
 
-## Test destinations (M2)
+## Test suites (M2 complete)
 
 [app-tests.tsv](baseline/app-tests.tsv) maps every current `app::tests` test to
-its planned full path. The original function name must remain unchanged.
+its implemented full path. The original function name must remain unchanged.
 [tests.txt](baseline/tests.txt) also records tests outside that file, which stay
 in place unless a later feature extraction warrants a move.
 

@@ -1359,19 +1359,26 @@ impl App {
             let session_id = session.id.clone();
             let is_custom = session.kind == SessionKind::Custom;
 
-            if TmuxManager::session_exists(&tmux_session) {
-                let _ = TmuxManager::kill_window(&tmux_session, &window);
+            let clear_sidebar = feature.sessions.len() == 1;
+            if self.tmux.session_exists(&tmux_session) {
+                let result = if clear_sidebar {
+                    self.tmux.kill_session(&tmux_session)
+                } else if self.tmux.window_exists(&tmux_session, &window) {
+                    self.tmux.kill_window(&tmux_session, &window)
+                } else {
+                    Ok(())
+                };
+                result.map_err(|err| {
+                    anyhow::anyhow!(
+                        "Could not remove session '{label}': {err}. Session retained; try again."
+                    )
+                })?;
             }
 
             feature.sessions.remove(si);
-
-            let clear_sidebar = if feature.sessions.is_empty() {
-                let _ = TmuxManager::kill_session(&tmux_session);
+            if clear_sidebar {
                 feature.status = ProjectStatus::Stopped;
-                true
-            } else {
-                false
-            };
+            }
 
             (
                 tmux_session,
@@ -1384,8 +1391,7 @@ impl App {
             )
         };
 
-        // Run on_stop command for custom sessions before
-        // killing the window.
+        // Run the custom session cleanup after a successful removal.
         if is_custom {
             if let Some(ref cmd) = on_stop {
                 let _ = std::process::Command::new("sh")

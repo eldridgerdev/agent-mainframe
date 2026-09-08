@@ -102,6 +102,10 @@ impl App {
             bail!("Path does not exist: {}", request.path.display());
         }
 
+        if !request.path.is_dir() {
+            bail!("Path is not a directory: {}", request.path.display());
+        }
+
         if self.store.find_project(&request.project_name).is_some() {
             bail!("Project '{}' already exists", request.project_name);
         }

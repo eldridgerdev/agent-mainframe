@@ -51,3 +51,18 @@ pub(crate) fn draw_modal_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
 
     frame.render_widget(Clear, area);
 }
+
+/// Center a content-sized dialog, clamping it to the current terminal.
+pub(crate) fn dialog_rect(viewport: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(viewport.width);
+    let height = height.min(viewport.height);
+    Rect::new(
+        viewport.x + (viewport.width - width) / 2,
+        viewport.y + (viewport.height - height) / 2,
+        width,
+        height,
+    )
+}
+
+#[cfg(test)]
+mod usability_tests;

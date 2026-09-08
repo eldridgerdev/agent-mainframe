@@ -183,8 +183,10 @@ submits.
 | `Enter` | Open the selected session or expand/collapse an item |
 | `N` / `n` | Create a project / feature |
 | `s` | Add a session to a feature |
-| `c` / `x` | Start / stop the selected feature or session |
-| `r` / `d` | Rename / delete the selected item |
+| `c` | Start the selected feature |
+| `x` | Stop a feature, or remove the selected session |
+| `r` | Rename a feature or session |
+| `d` | Delete a project, feature, or session |
 | `/` | Search and jump |
 | `i` | Show agents needing attention: questions first, then finished work |
 | `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
@@ -198,6 +200,9 @@ submits.
 | `A` | Manage installed agent harnesses |
 | `?` | Show all keybindings |
 | `q` / `Esc` | Quit |
+
+Search accepts every letter, including `j` and `k`. Use arrow keys or
+`Tab` / `Shift+Tab` to select a result, `Enter` to jump, and `Esc` to cancel.
 
 ### Embedded session
 

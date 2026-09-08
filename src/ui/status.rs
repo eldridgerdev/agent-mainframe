@@ -423,9 +423,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::Searching(_) => Line::from(vec![
+            Span::styled("↑/↓ or Tab/Shift+Tab", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" jump  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::NotificationPicker(_, _)
         | AppMode::SessionSwitcher(_)
-        | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
         | AppMode::ClaudeSessionPicker(_)
         | AppMode::CodexSessionPicker(_)
@@ -1051,6 +1058,11 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
     let status = Paragraph::new(vec![message_line, keybinds]).block(block);
     frame.render_widget(status, area);
+
+    // Feedback needs the full line; usage otherwise paints over its right edge.
+    if app.message.is_some() {
+        return;
+    }
 
     let usage = app.usage.get_data();
     let mut right_spans: Vec<Span> = Vec::new();

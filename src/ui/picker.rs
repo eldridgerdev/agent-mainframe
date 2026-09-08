@@ -136,7 +136,8 @@ pub fn draw_notification_picker(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -193,6 +194,7 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
 
     let mut items: Vec<ListItem> = Vec::new();
     let mut current_source = String::new();
+    let mut selected_row = None;
 
     for (i, cmd) in state.commands.iter().enumerate() {
         if cmd.source != current_source {
@@ -232,6 +234,7 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
         ]);
 
         if is_selected {
+            selected_row = Some(items.len());
             items.push(
                 ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg())),
             );
@@ -241,7 +244,8 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
     }
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(selected_row);
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -721,7 +725,7 @@ pub fn draw_markdown_file_picker(
     let hints = if state.search_active {
         Paragraph::new(Line::from(vec![
             Span::styled(
-                "  j/k or \u{2191}/\u{2193}",
+                "  \u{2191}/\u{2193} or Tab/Shift+Tab",
                 Style::default().fg(theme.warning.to_color()),
             ),
             Span::styled(
@@ -824,7 +828,7 @@ pub fn draw_bookmark_picker(
 
     if rows.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
-            "  No bookmarks yet. Use leader+m on a session.",
+            "  No bookmarks. Use Ctrl+Space H in a session.",
             Style::default().fg(theme.text_muted.to_color()),
         )));
         frame.render_widget(empty, chunks[0]);
@@ -866,7 +870,8 @@ pub fn draw_bookmark_picker(
         })
         .collect();
 
-    frame.render_widget(List::new(items), chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(List::new(items), chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -1023,7 +1028,8 @@ pub fn draw_session_switcher(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -1110,7 +1116,8 @@ pub fn draw_opencode_session_picker(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -1184,7 +1191,8 @@ pub fn draw_claude_session_picker(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -1258,7 +1266,8 @@ pub fn draw_codex_session_picker(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(

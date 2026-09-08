@@ -321,9 +321,7 @@ impl App {
     ) -> Vec<LearningQa> {
         let stranded: Vec<LearningQa> = rows
             .iter_mut()
-            .filter(|row| {
-                row.status.is_in_flight() && !self.learning_runs_in_flight.contains(&row.id)
-            })
+            .filter(|row| row.status.is_in_flight() && !self.learning_runs.is_in_flight(&row.id))
             .map(|row| {
                 row.status = crate::app::LearningQaStatus::Failed;
                 row.error = Some(

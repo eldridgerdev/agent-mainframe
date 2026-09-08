@@ -856,7 +856,8 @@ fn prompt_context_comes_from_the_live_anchor() {
 /// Deliver an answer the way a finished thread would, without running a
 /// real harness.
 fn deliver(app: &mut App, qa_id: &str, result: Result<String, String>) {
-    app.learning_answer_tx
+    app.learning_runs
+        .sender()
         .send(LearningAnswer {
             qa_id: qa_id.to_string(),
             result,
@@ -2740,7 +2741,7 @@ fn a_question_stranded_by_a_previous_run_reloads_as_failed_not_thinking() {
     assert!(stranded.status.is_in_flight());
 
     // A fresh process knows about no live runs, so the row is stranded.
-    app.learning_runs_in_flight.clear();
+    app.learning_runs.clear_in_flight_for_test();
     let rows = app.reconcile_interrupted_qa(vec![stranded.clone()]);
     assert_eq!(rows[0].status, crate::app::LearningQaStatus::Failed);
     assert_eq!(
@@ -2751,7 +2752,7 @@ fn a_question_stranded_by_a_previous_run_reloads_as_failed_not_thinking() {
     assert!(reason.contains("Ask it again"), "{reason}");
 
     // A run this process is genuinely still waiting on is left alone.
-    app.learning_runs_in_flight.insert(stranded.id.clone());
+    app.learning_runs.begin(stranded.id.clone());
     let rows = app.reconcile_interrupted_qa(vec![stranded.clone()]);
     assert_eq!(rows[0].status, stranded.status);
     assert!(rows[0].error.is_none());

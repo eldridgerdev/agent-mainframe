@@ -326,7 +326,7 @@ impl App {
     /// it, then open the per-run harness picker (or skip straight to the run
     /// when only one harness is available).
     pub fn pr_review_start_investigation(&mut self) {
-        if self.pr_investigation_bg.is_some() {
+        if self.pr_review_work.investigation_pending() {
             self.message = Some("An investigation is already running".into());
             return;
         }
@@ -565,7 +565,7 @@ impl App {
         );
 
         let (tx, rx) = std::sync::mpsc::channel();
-        self.pr_investigation_bg = Some(rx);
+        self.pr_review_work.begin_investigation(rx);
         // STRICTLY READ-ONLY (`AMF_PLAN.md`). This worker may only: read the PR
         // over `gh`, build the prompt, and run `HeadlessRunner::run_investigation`
         // (a read-only repo pass repo config cannot loosen). It must never write
@@ -626,14 +626,14 @@ impl App {
     /// that lands after the user cancelled (`Esc` on the loading frame) is still
     /// persisted so a reopen isn't stuck on `Running`.
     pub fn poll_pr_investigation_bg(&mut self) -> bool {
-        let Some(rx) = self.pr_investigation_bg.as_ref() else {
+        let Some(result) = self.pr_review_work.poll_investigation() else {
             return false;
         };
-        let outcome = match rx.try_recv() {
+        let outcome = match result {
             Ok(o) => o,
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.pr_investigation_bg = None;
+                self.pr_review_work.cancel_investigation();
                 if let AppMode::PrInvestigationLoading(load) =
                     std::mem::replace(&mut self.mode, AppMode::Normal)
                 {
@@ -643,7 +643,7 @@ impl App {
                 return true;
             }
         };
-        self.pr_investigation_bg = None;
+        self.pr_review_work.cancel_investigation();
         use crate::app::pr_review::PrInvestigationStatus;
 
         // Restore the pane (still loading = the user didn't bail).
@@ -738,7 +738,7 @@ impl App {
         else {
             return;
         };
-        self.pr_investigation_bg = None;
+        self.pr_review_work.cancel_investigation();
         use crate::app::pr_review::PrInvestigationStatus;
         let mut review = *load.review;
         let project_id = self
@@ -803,7 +803,7 @@ impl App {
 
     /// Open the completed-investigation action menu for the selected comment.
     pub fn pr_review_open_investigation_actions(&mut self) {
-        if self.pr_investigation_bg.is_some() {
+        if self.pr_review_work.investigation_pending() {
             return;
         }
         if !self.pr_review_investigation_actionable() {

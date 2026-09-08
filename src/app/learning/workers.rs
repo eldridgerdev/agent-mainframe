@@ -849,7 +849,6 @@ impl App {
         // The dispatch below and the mode stored on the row must agree, so both
         // go through `effective_for` rather than trusting the caller's ask.
         let run_mode = run_mode.effective_for(&harness);
-        let tx = self.learning_answer_tx.clone();
         let id = qa_id.to_string();
         self.log_info(
             "learning",
@@ -863,7 +862,7 @@ impl App {
         // Remembered so a reopen of this overlay doesn't mistake a run this
         // process is still waiting on for one stranded by an earlier one (see
         // `reconcile_interrupted_qa`).
-        self.learning_runs_in_flight.insert(id.clone());
+        let tx = self.learning_runs.begin(id.clone());
         // Tests drive the same channel by hand (see `deliver`). Launching a
         // real agent CLI from a unit test would be slow, flaky, and would spend
         // the developer's tokens, so the row still transitions to Running but
@@ -898,9 +897,8 @@ impl App {
     /// should redraw.
     pub fn poll_learning_answers_bg(&mut self) -> bool {
         let mut changed = false;
-        while let Ok(answer) = self.learning_answer_rx.try_recv() {
+        while let Some(answer) = self.learning_runs.next_answer() {
             changed = true;
-            self.learning_runs_in_flight.remove(&answer.qa_id);
             let outcome = match answer.result {
                 Ok(text) => Ok(text.trim().to_string()),
                 Err(message) => {

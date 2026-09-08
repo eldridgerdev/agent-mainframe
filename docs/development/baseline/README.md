@@ -67,3 +67,21 @@ formatting, strict locked all-target Clippy and diff whitespace checks. Helper
 placement was refined by actual dependency closure: shared helpers called by
 support also live in support, with test-only `pub(super)` visibility; the original
 helper TSV remains the M1 proposal. No production API was made public.
+
+## M3/M4 verification — 2026-09-08
+
+The four branch-matching tests moved as recorded in
+[the state test mapping](../state-test-paths.tsv). All other paths still match the
+M2 mapping or the original baseline. One integration regression was added:
+`app::tests::pr_triage::closed_fetch_cannot_replace_a_reopened_pr_with_its_queued_result`.
+Set comparison accounts for all 2,511 originals and this one addition (2,512 total).
+
+Full parallel suites passed after each extraction: PR Triage 2,511 (21.90s),
+Final Review 2,511 (26.45s), Learning 2,511 (22.31s), runtime ownership 2,512
+(22.23s). Each boundary passed formatting and strict locked all-target Clippy.
+PR/state, Review/state and Learning/state function-body comparisons found no
+changes during their mechanical extractions (616, 508 and 579 bodies respectively,
+normalizing imports, paths and formatting). M4 changes are the separate lifecycle
+API migration, covered by existing stale-result/close/reopen regressions and the
+new fetch regression. App now has 125 fields; the baseline field TSV remains the
+original 130-field inventory.

@@ -823,33 +823,34 @@ mod tests {
         let (_tx, rx) = std::sync::mpsc::channel();
         // Dropping the sender is fine: the badge only checks that the
         // background slot is occupied, it never reads progress here.
-        app.ai_review_bg = Some(rx);
-        app.ai_review_pending = Some(crate::app::AiReviewState {
-            workdir,
-            pr: crate::github::PrRef {
-                number: 321,
-                head_sha: "abc123".to_string(),
-                url: "https://github.com/o/r/pull/321".to_string(),
-                owner: "o".to_string(),
-                repo: "r".to_string(),
-                head_ref: "usage-feat".to_string(),
-            },
-            findings: Vec::new(),
-            summary: None,
-            attribution: None,
-            selected: 0,
-            detail_scroll: 0,
-            detail_content_lines: 0,
-            last_run: None,
-            harness: None,
-            harness_pick: None,
-            harness_pick_origin: None,
-            model: None,
-            model_picked: false,
-            model_pick: None,
-            finding_editor: None,
-            post_confirm: None,
-        });
+        app.ai_review_run.set_receiver_for_test(Some(rx));
+        app.ai_review_run
+            .set_origin_for_test(Some(crate::app::AiReviewState {
+                workdir,
+                pr: crate::github::PrRef {
+                    number: 321,
+                    head_sha: "abc123".to_string(),
+                    url: "https://github.com/o/r/pull/321".to_string(),
+                    owner: "o".to_string(),
+                    repo: "r".to_string(),
+                    head_ref: "usage-feat".to_string(),
+                },
+                findings: Vec::new(),
+                summary: None,
+                attribution: None,
+                selected: 0,
+                detail_scroll: 0,
+                detail_content_lines: 0,
+                last_run: None,
+                harness: None,
+                harness_pick: None,
+                harness_pick_origin: None,
+                model: None,
+                model_picked: false,
+                model_pick: None,
+                finding_editor: None,
+                post_confirm: None,
+            }));
     }
 
     fn render_feature_row_with_pr(
@@ -1341,7 +1342,7 @@ mod tests {
         // at the intermediate state, not just after both fields are empty.
         let rendered = render_feature_row_configured(vec![], Some(pr_status()), |app| {
             set_ai_review_running(app, PathBuf::from("/tmp/usage-feat"));
-            app.ai_review_bg = None;
+            app.ai_review_run.set_receiver_for_test(None);
         });
 
         assert!(rendered.contains("[PR #321 · 4 open]"));

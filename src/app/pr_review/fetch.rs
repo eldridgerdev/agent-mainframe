@@ -362,12 +362,10 @@ impl App {
             changed = true;
         }
 
-        if self.ai_review_pending.as_ref().is_some_and(|pending| {
+        if self.ai_review_run.origin().as_ref().is_some_and(|pending| {
             pending.workdir == workdir && pending.pr.number == predecessor_pr_number
         }) {
-            self.ai_review_pending = None;
-            self.ai_review_bg = None;
-            self.ai_review_progress = None;
+            self.ai_review_run.finish();
             changed = true;
         }
 
@@ -395,13 +393,11 @@ impl App {
                     && state.origin.pr.number == predecessor_pr_number
         );
         if stale_loading {
-            self.pr_review_bg = None;
+            self.pr_review_work.cancel_fetch();
             self.mode = AppMode::Normal;
             changed = true;
         } else if stale_ai_run {
-            self.ai_review_bg = None;
-            self.ai_review_pending = None;
-            self.ai_review_progress = None;
+            self.ai_review_run.finish();
             self.mode = AppMode::Normal;
             changed = true;
         }
@@ -666,7 +662,7 @@ impl App {
         );
 
         let (tx, rx) = std::sync::mpsc::channel();
-        self.pr_review_bg = Some(rx);
+        self.pr_review_work.begin_fetch(rx);
 
         let usage_baselines = match &self.mode {
             AppMode::PrReview(state) if state.review.pr.number == pr.number => {
@@ -697,12 +693,12 @@ impl App {
     /// pane (or report the error and return to the dashboard). Returns `true`
     /// when state changed and a redraw is warranted.
     pub fn poll_pr_review_bg(&mut self) -> bool {
-        let Some(rx) = self.pr_review_bg.as_ref() else {
+        let Some(result) = self.pr_review_work.poll_fetch() else {
             return false;
         };
-        match rx.try_recv() {
+        match result {
             Ok(result) => {
-                self.pr_review_bg = None;
+                self.pr_review_work.cancel_fetch();
                 // If the user navigated away from the loading screen, drop it.
                 let AppMode::PrReviewLoading(state) = &self.mode else {
                     return false;
@@ -768,7 +764,7 @@ impl App {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.pr_review_bg = None;
+                self.pr_review_work.cancel_fetch();
                 if matches!(self.mode, AppMode::PrReviewLoading(_)) {
                     self.mode = AppMode::Normal;
                     self.message = Some("PR fetch failed unexpectedly".to_string());

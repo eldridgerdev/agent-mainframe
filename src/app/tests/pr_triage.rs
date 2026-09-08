@@ -41,7 +41,7 @@ fn pr_review_close_returns_to_dashboard() {
     enter_pr_review(&mut app, 1);
     app.close_pr_review();
     assert!(matches!(app.mode, AppMode::Normal));
-    assert!(app.pr_review_bg.is_none());
+    assert!(!app.pr_review_work.fetch_pending());
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn pr_investigation_run_never_enters_the_writable_fix_path() {
         matches!(app.mode, AppMode::PrInvestigationLoading(_)),
         "investigation shows its own modal loading frame, not a session view"
     );
-    assert!(app.pr_investigation_bg.is_some());
+    assert!(app.pr_review_work.investigation_pending());
     assert!(
         app.pr_review_return.is_none(),
         "no leader+P stash — that belongs to the fix hand-off"
@@ -315,7 +315,7 @@ fn pr_investigation_run_never_enters_the_writable_fix_path() {
         matches!(app.mode, AppMode::PrReview(_)),
         "returned to PR Triage"
     );
-    assert!(app.pr_investigation_bg.is_none());
+    assert!(!app.pr_review_work.investigation_pending());
     assert!(app.pr_review_return.is_none());
     assert!(!matches!(app.selection, Selection::Session(..)));
     assert_eq!(
@@ -999,7 +999,10 @@ fn ai_review_model_picker_opens_for_pi() {
         }
         _ => panic!("expected AI Review pane"),
     }
-    assert!(app.ai_review_bg.is_none(), "review should not have started");
+    assert!(
+        !app.ai_review_run.is_pending(),
+        "review should not have started"
+    );
 }
 
 #[test]
@@ -3802,8 +3805,8 @@ fn ai_review_running_for_workdir_matches_the_pending_reviews_workdir() {
     assert!(!app.ai_review_running_for_workdir(&workdir));
 
     let (_tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(origin);
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(origin));
 
     assert!(app.ai_review_running_for_workdir(&workdir));
     assert!(!app.ai_review_running_for_workdir(&other_workdir));
@@ -5008,8 +5011,8 @@ fn poll_ai_pr_review_bg_warns_when_reviewing_and_done_arrive_together() {
     };
 
     let (tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(origin.clone());
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(origin.clone()));
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin,
         progress: crate::app::AiReviewRunProgress {
@@ -5065,8 +5068,8 @@ fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
     };
 
     let (tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(origin.clone());
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(origin.clone()));
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin,
         progress: crate::app::AiReviewRunProgress {
@@ -5137,8 +5140,8 @@ fn completed_ai_review_carries_run_attribution_into_the_pane_and_cache() {
     let pr = origin.pr.clone();
 
     let (tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(origin.clone());
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(origin.clone()));
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin,
         progress: crate::app::AiReviewRunProgress {
@@ -5199,8 +5202,8 @@ fn completed_zero_ai_review_updates_visible_triage_immediately() {
         _ => unreachable!(),
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(origin);
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(origin));
     tx.send(crate::app::ai_review::AiReviewProgress::Done(Ok(
         crate::app::ai_review::AiReviewOutcome {
             findings: vec![],
@@ -5241,8 +5244,8 @@ fn ai_review_errors_update_visible_triage_for_agent_and_diff_failures() {
             _ => unreachable!(),
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        app.ai_review_bg = Some(rx);
-        app.ai_review_pending = Some(origin);
+        app.ai_review_run.set_receiver_for_test(Some(rx));
+        app.ai_review_run.set_origin_for_test(Some(origin));
         tx.send(crate::app::ai_review::AiReviewProgress::Done(Err(
             anyhow::anyhow!(detail),
         )))
@@ -5276,8 +5279,9 @@ fn disconnected_ai_review_worker_persists_error_and_updates_triage() {
         _ => unreachable!(),
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(sample_ai_review_state(workdir, pr.clone()));
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run
+        .set_origin_for_test(Some(sample_ai_review_state(workdir, pr.clone())));
     drop(tx);
 
     assert!(app.poll_ai_pr_review_bg());
@@ -5319,8 +5323,8 @@ fn escape_keeps_ai_review_running_through_triage_return_and_completion() {
         _ => unreachable!(),
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(origin.clone());
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(origin.clone()));
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin,
         progress: crate::app::AiReviewRunProgress {
@@ -5333,7 +5337,7 @@ fn escape_keeps_ai_review_running_through_triage_return_and_completion() {
 
     app.cancel_ai_pr_review();
     assert!(matches!(app.mode, AppMode::AiReview(_)));
-    assert!(app.ai_review_bg.is_some());
+    assert!(app.ai_review_run.is_pending());
     app.close_ai_review();
     match &app.mode {
         AppMode::PrReview(state) => assert!(matches!(
@@ -5378,8 +5382,8 @@ fn poll_ai_pr_review_bg_surfaces_streamed_activity_and_usage() {
     };
 
     let (tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(origin.clone());
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(origin.clone()));
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin,
         progress: crate::app::AiReviewRunProgress {
@@ -5430,14 +5434,15 @@ fn running_ai_review_can_reopen_preserved_progress_after_escape() {
     };
     let started_at = std::time::Instant::now() - std::time::Duration::from_secs(75);
     let (tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(origin.clone());
-    app.ai_review_progress = Some(crate::app::AiReviewRunProgress {
-        stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
-        started_at,
-        activity: None,
-        usage: None,
-    });
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(origin.clone()));
+    app.ai_review_run
+        .set_progress_for_test(Some(crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at,
+            activity: None,
+            usage: None,
+        }));
 
     // Progress that lands after leaving the full-screen view is retained in
     // the app-level run state rather than discarded with the old mode.
@@ -6945,4 +6950,46 @@ fn integrate_cherry_picks_into_a_clean_source_worktree() {
         source.join("b.txt").exists(),
         "the triage commit landed in the source worktree"
     );
+}
+
+#[test]
+fn closed_fetch_cannot_replace_a_reopened_pr_with_its_queued_result() {
+    let mut app = pr_review_test_app();
+    let workdir = tempfile::TempDir::new().unwrap();
+    let old_review = pr_review_with_comments(1);
+    let (old_tx, old_rx) = std::sync::mpsc::channel();
+    app.pr_review_work.begin_fetch(old_rx);
+    app.mode = AppMode::PrReviewLoading(PrReviewLoadState {
+        workdir: workdir.path().to_path_buf(),
+        pr: old_review.pr.clone(),
+        usage_baselines: HashMap::new(),
+    });
+    old_tx.send(Ok(old_review)).unwrap();
+
+    app.close_pr_review();
+    assert!(!app.poll_pr_review_bg());
+    assert!(matches!(app.mode, AppMode::Normal));
+
+    let mut new_review = pr_review_with_comments(0);
+    new_review.pr.number = 2;
+    let (new_tx, new_rx) = std::sync::mpsc::channel();
+    app.pr_review_work.begin_fetch(new_rx);
+    app.mode = AppMode::PrReviewLoading(PrReviewLoadState {
+        workdir: workdir.path().to_path_buf(),
+        pr: new_review.pr.clone(),
+        usage_baselines: HashMap::new(),
+    });
+    assert!(
+        old_tx
+            .send(Err(anyhow::anyhow!("late old failure")))
+            .is_err()
+    );
+    new_tx.send(Ok(new_review)).unwrap();
+    assert!(app.poll_pr_review_bg());
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected the reopened PR");
+    };
+    assert_eq!(state.review.pr.number, 2);
+    assert!(state.review.comments.is_empty());
+    assert!(!app.pr_review_work.fetch_pending());
 }

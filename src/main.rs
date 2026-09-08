@@ -1283,11 +1283,11 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
-        if app.pr_review_bg.is_some() && app.poll_pr_review_bg() {
+        if app.pr_review_work.fetch_pending() && app.poll_pr_review_bg() {
             force_redraw = true;
         }
 
-        if app.pr_investigation_bg.is_some() && app.poll_pr_investigation_bg() {
+        if app.pr_review_work.investigation_pending() && app.poll_pr_investigation_bg() {
             force_redraw = true;
         }
 
@@ -1323,7 +1323,7 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
-        if app.ai_review_bg.is_some() && app.poll_ai_pr_review_bg() {
+        if app.ai_review_run.is_pending() && app.poll_ai_pr_review_bg() {
             force_redraw = true;
         }
 

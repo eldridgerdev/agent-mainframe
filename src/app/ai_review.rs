@@ -1183,7 +1183,7 @@ impl App {
     /// Close the AI Review pane (`esc`/`q`): back to the PR Triage pane it was
     /// opened from, if any, else the dashboard. The background thread, if
     /// running, isn't aborted — [`Self::poll_ai_pr_review_bg`] still surfaces
-    /// the result via [`Self::ai_review_pending`].
+    /// the result via the pending run origin.
     pub fn close_ai_review(&mut self) {
         match self.ai_review_return_to.take() {
             Some(return_to) => self.mode = *return_to,
@@ -1252,8 +1252,8 @@ impl App {
     /// the exact cached terminal result retained by the pane.
     pub(crate) fn ai_review_triage_status(&self, state: &PrReviewState) -> AiReviewTriageStatus {
         let pr = &state.review.pr;
-        let running = self.ai_review_bg.is_some()
-            && self.ai_review_pending.as_ref().is_some_and(|pending| {
+        let running = self.ai_review_run.is_pending()
+            && self.ai_review_run.origin().as_ref().is_some_and(|pending| {
                 pending.workdir == state.workdir
                     && pending.pr.number == pr.number
                     && pending.pr.head_sha == pr.head_sha
@@ -1492,18 +1492,22 @@ impl App {
     /// full-screen running view. If this pane's review is already running,
     /// reopen its preserved progress view instead of starting another pass.
     pub fn start_ai_pr_review(&mut self) {
-        if self.ai_review_bg.is_some() {
+        if self.ai_review_run.is_pending() {
             let origin = match &self.mode {
                 AppMode::AiReview(state) => state.clone(),
                 _ => return,
             };
-            let same_run = self.ai_review_pending.as_ref().is_some_and(|pending| {
+            let same_run = self.ai_review_run.origin().as_ref().is_some_and(|pending| {
                 pending.workdir == origin.workdir && pending.pr.number == origin.pr.number
-            }) && self.ai_review_progress.is_some();
+            }) && self.ai_review_run.progress().is_some();
             if same_run {
                 self.mode = AppMode::AiReviewRunning(AiReviewRunState {
                     origin,
-                    progress: self.ai_review_progress.clone().expect("checked above"),
+                    progress: self
+                        .ai_review_run
+                        .progress()
+                        .clone()
+                        .expect("checked above"),
                 });
             } else {
                 self.push_toast_warning("Another AI review is already running");
@@ -1638,8 +1642,7 @@ impl App {
         }
 
         let (tx, rx) = std::sync::mpsc::channel();
-        self.ai_review_bg = Some(rx);
-        self.ai_review_pending = Some(origin.clone());
+        self.ai_review_run.begin(rx, origin.clone());
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || match GhCli::pr_diff(&thread_workdir, number) {
             Ok(diff) => run_ai_pr_review(
@@ -1664,7 +1667,7 @@ impl App {
             activity: None,
             usage: None,
         };
-        self.ai_review_progress = Some(progress.clone());
+        self.ai_review_run.show_progress(progress.clone());
         self.mode = AppMode::AiReviewRunning(AiReviewRunState { origin, progress });
     }
 
@@ -1929,15 +1932,15 @@ impl App {
     /// — then re-caches and surfaces a toast. Returns `true` when a redraw is
     /// warranted.
     pub fn poll_ai_pr_review_bg(&mut self) -> bool {
-        let Some(rx) = self.ai_review_bg.as_ref() else {
+        if !self.ai_review_run.is_pending() {
             return false;
-        };
+        }
         let mut changed = false;
         let mut large_diff_warning: Option<usize> = None;
         loop {
-            match rx.try_recv() {
+            match self.ai_review_run.poll() {
                 Ok(AiReviewProgress::Reviewing { token_estimate }) => {
-                    if let Some(progress) = &mut self.ai_review_progress {
+                    if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.stage = AiReviewStage::Reviewing { token_estimate };
                     }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
@@ -1949,7 +1952,7 @@ impl App {
                     changed = true;
                 }
                 Ok(AiReviewProgress::Activity(activity)) => {
-                    if let Some(progress) = &mut self.ai_review_progress {
+                    if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.activity = Some(activity.clone());
                     }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
@@ -1961,7 +1964,7 @@ impl App {
                     input_tokens,
                     output_tokens,
                 }) => {
-                    if let Some(progress) = &mut self.ai_review_progress {
+                    if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.usage = Some((input_tokens, output_tokens));
                     }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
@@ -1970,9 +1973,7 @@ impl App {
                     changed = true;
                 }
                 Ok(AiReviewProgress::Done(result)) => {
-                    self.ai_review_bg = None;
-                    self.ai_review_progress = None;
-                    let Some(pending) = self.ai_review_pending.take() else {
+                    let Some(pending) = self.ai_review_run.finish() else {
                         if let Err(e) = result {
                             self.log_error("pr_review", format!("AI review failed: {e}"));
                             self.push_toast_error(format!("AI review failed: {e}"));
@@ -2105,9 +2106,7 @@ impl App {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.ai_review_bg = None;
-                    self.ai_review_progress = None;
-                    let pending = self.ai_review_pending.take();
+                    let pending = self.ai_review_run.finish();
                     let detail = "AI review worker disconnected unexpectedly";
                     let pr_number = pending.as_ref().map(|p| p.pr.number);
                     if let Some(pending) = pending {
@@ -2161,7 +2160,7 @@ impl App {
     /// Cancel the running screen (`esc`/`q`): return to the AI Review pane.
     /// The background thread isn't aborted — if it finishes later,
     /// [`Self::poll_ai_pr_review_bg`] still surfaces the result (via
-    /// [`Self::ai_review_pending`], which survives this).
+    /// the pending run origin, which survives this).
     pub fn cancel_ai_pr_review(&mut self) {
         if let AppMode::AiReviewRunning(state) = &self.mode {
             self.mode = AppMode::AiReview(state.origin.clone());
@@ -2499,9 +2498,10 @@ impl App {
     /// workdir rather than assuming `self.mode` still points at the pane that
     /// kicked it off.
     pub(crate) fn ai_review_running_for_workdir(&self, workdir: &Path) -> bool {
-        self.ai_review_bg.is_some()
+        self.ai_review_run.is_pending()
             && self
-                .ai_review_pending
+                .ai_review_run
+                .origin()
                 .as_ref()
                 .is_some_and(|pending| pending.workdir == workdir)
     }

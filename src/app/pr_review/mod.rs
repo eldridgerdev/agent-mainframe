@@ -53,3 +53,5 @@ pub use domain::reply_posted_via_amf;
 pub use fetch::normalize;
 #[cfg(test)]
 pub use memory::{BootstrapOutcome, CompactOutcome};
+
+pub(crate) mod runtime;

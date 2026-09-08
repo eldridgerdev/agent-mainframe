@@ -1246,7 +1246,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
     if matches!(app.mode, AppMode::AiReview(_)) {
-        let ai_review_running = app.ai_review_bg.is_some();
+        let ai_review_running = app.ai_review_run.is_pending();
         let finding_fix_costs = app.ai_review_finding_fix_costs();
         if let AppMode::AiReview(state) = &mut app.mode {
             super::dialogs::draw_ai_review(
@@ -2703,8 +2703,8 @@ mod tests {
             post_confirm: None,
         };
         let (_tx, rx) = std::sync::mpsc::channel();
-        app.ai_review_bg = Some(rx);
-        app.ai_review_pending = Some(origin);
+        app.ai_review_run.set_receiver_for_test(Some(rx));
+        app.ai_review_run.set_origin_for_test(Some(origin));
         assert_eq!(
             pr_triage_sidebar_text(&app, &feature),
             Some("PR: #321 · 4 open\nStatus: Working\nAI review: Running".to_string())
@@ -2846,26 +2846,27 @@ mod tests {
             head_ref: "main".to_string(),
         };
         let (_tx, rx) = std::sync::mpsc::channel();
-        app.ai_review_bg = Some(rx);
-        app.ai_review_pending = Some(crate::app::AiReviewState {
-            workdir,
-            pr,
-            findings: Vec::new(),
-            summary: None,
-            attribution: None,
-            selected: 0,
-            detail_scroll: 0,
-            detail_content_lines: 0,
-            last_run: None,
-            harness: None,
-            harness_pick: None,
-            harness_pick_origin: None,
-            model: None,
-            model_picked: false,
-            model_pick: None,
-            finding_editor: None,
-            post_confirm: None,
-        });
+        app.ai_review_run.set_receiver_for_test(Some(rx));
+        app.ai_review_run
+            .set_origin_for_test(Some(crate::app::AiReviewState {
+                workdir,
+                pr,
+                findings: Vec::new(),
+                summary: None,
+                attribution: None,
+                selected: 0,
+                detail_scroll: 0,
+                detail_content_lines: 0,
+                last_run: None,
+                harness: None,
+                harness_pick: None,
+                harness_pick_origin: None,
+                model: None,
+                model_picked: false,
+                model_pick: None,
+                finding_editor: None,
+                post_confirm: None,
+            }));
 
         let backend = TestBackend::new(140, 30);
         let mut terminal = Terminal::new(backend).unwrap();

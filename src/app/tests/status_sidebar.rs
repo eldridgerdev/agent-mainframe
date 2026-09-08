@@ -424,7 +424,11 @@ fn active_pr_successor_replaces_badge_and_invalidates_old_pr_targets() {
     });
     let mut old_ai_pr = old_state.review.pr.clone();
     old_ai_pr.number = 449;
-    app.ai_review_pending = Some(sample_ai_review_state(old_state.workdir.clone(), old_ai_pr));
+    app.ai_review_run
+        .set_origin_for_test(Some(sample_ai_review_state(
+            old_state.workdir.clone(),
+            old_ai_pr,
+        )));
 
     let feature = &app.store.projects[0].features[0];
     let feature_id = feature.id.clone();
@@ -451,7 +455,7 @@ fn active_pr_successor_replaces_badge_and_invalidates_old_pr_targets() {
 
     assert_eq!(app.active_pr_for_feature(&feature_id).unwrap().number, 450);
     assert!(app.pr_review_return.is_none());
-    assert!(app.ai_review_pending.is_none());
+    assert!(app.ai_review_run.origin().is_none());
     // Explicitly opened closed PRs remain viewable; only implicit restore
     // targets are invalidated by discovering the current open successor.
     assert!(matches!(
@@ -545,7 +549,7 @@ fn unchanged_active_pr_badge_does_not_cancel_explicit_closed_pr_fetch() {
         },
     );
     let (_tx, rx) = std::sync::mpsc::channel();
-    app.pr_review_bg = Some(rx);
+    app.pr_review_work.begin_fetch(rx);
     app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
         workdir: feature.workdir.clone(),
         pr: crate::github::PrRef {
@@ -574,7 +578,7 @@ fn unchanged_active_pr_badge_does_not_cancel_explicit_closed_pr_fetch() {
         &app.mode,
         AppMode::PrReviewLoading(state) if state.pr.number == 449
     ));
-    assert!(app.pr_review_bg.is_some());
+    assert!(app.pr_review_work.fetch_pending());
 }
 
 /// A `Found` terminal result is durable: it lands in the in-memory cache and,
@@ -809,14 +813,16 @@ fn predecessor_invalidation_preserves_live_successor_ai_review() {
     });
     let ai_origin = sample_ai_review_state(successor.workdir.clone(), successor.review.pr.clone());
     let (_tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
-    app.ai_review_pending = Some(ai_origin.clone());
-    app.ai_review_progress = Some(crate::app::AiReviewRunProgress {
-        stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
-        started_at: std::time::Instant::now(),
-        activity: None,
-        usage: None,
-    });
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run
+        .set_origin_for_test(Some(ai_origin.clone()));
+    app.ai_review_run
+        .set_progress_for_test(Some(crate::app::AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: std::time::Instant::now(),
+            activity: None,
+            usage: None,
+        }));
     app.mode = AppMode::AiReviewRunning(crate::app::AiReviewRunState {
         origin: ai_origin,
         progress: crate::app::AiReviewRunProgress {
@@ -832,9 +838,9 @@ fn predecessor_invalidation_preserves_live_successor_ai_review() {
     );
 
     assert!(app.pr_review_return.is_some());
-    assert!(app.ai_review_pending.is_some());
-    assert!(app.ai_review_bg.is_some());
-    assert!(app.ai_review_progress.is_some());
+    assert!(app.ai_review_run.origin().is_some());
+    assert!(app.ai_review_run.is_pending());
+    assert!(app.ai_review_run.progress().is_some());
     assert!(matches!(
         &app.mode,
         AppMode::AiReviewRunning(state) if state.origin.pr.number == 450
@@ -1105,10 +1111,10 @@ fn visible_animation_is_enabled_while_ai_pr_review_runs_in_the_background() {
     assert!(!app.has_visible_animation());
 
     let (_tx, rx) = std::sync::mpsc::channel();
-    app.ai_review_bg = Some(rx);
+    app.ai_review_run.set_receiver_for_test(Some(rx));
     assert!(app.has_visible_animation());
 
-    app.ai_review_bg = None;
+    app.ai_review_run.set_receiver_for_test(None);
     assert!(!app.has_visible_animation());
 }
 

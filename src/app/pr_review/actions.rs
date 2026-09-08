@@ -298,7 +298,7 @@ impl App {
 
     /// Close PR Triage / cancel a pending load and return to the dashboard.
     pub fn close_pr_review(&mut self) {
-        self.pr_review_bg = None;
+        self.pr_review_work.cancel_fetch();
         self.mode = AppMode::Normal;
     }
 

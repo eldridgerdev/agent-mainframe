@@ -161,3 +161,9 @@ fetch transformations take explicit inputs; orchestration modules import the
 App/state types they use. Tests for the private branch-matching helper moved to
 `pr_review::state::tests`; other PR unit test paths remain stable. Shared internal
 helpers are visible only within the feature; test-only facade imports are gated.
+
+Final Review now lives in `app/review/{preparation,progression,comments,headless,state}.rs`.
+The root preserves consumed entrypoints; sibling modules import helpers directly
+from their owner. Private report/snapshot fields retain visibility within the
+original feature boundary. Viewer workers/children remain mode-owned. Its unit
+suite remains `review::tests`, with integration coverage in `tests/final_review.rs`.

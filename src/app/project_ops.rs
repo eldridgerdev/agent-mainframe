@@ -314,12 +314,23 @@ impl App {
                 self.tmux.kill_session(&session).map_err(|err| anyhow::anyhow!(
                     "Could not finish deleting project '{project_name}': {err}. Project retained; earlier cleanup may already have completed."
                 ))?;
-                // A retry can encounter a worktree removed by the previous attempt.
-                if is_worktree && workdir.exists() {
-                    self.worktree.remove(&repo, &workdir).map_err(|err| anyhow::anyhow!(
-                        "Could not remove worktree '{}': {err}. Project retained; some sessions or worktrees may already have been removed. Retry deletion after fixing the error.",
-                        workdir.display()
-                    ))?;
+                // A missing directory doesn't mean git's worktree registration
+                // is gone too: a manually deleted directory or interrupted
+                // cleanup can leave it registered, which would block the
+                // branch from being reused. Check the registration directly
+                // instead of trusting the directory's presence, and only skip
+                // removal when it's already unregistered (e.g. a retry after
+                // a previous attempt's `git worktree remove` succeeded).
+                if is_worktree {
+                    let still_registered = WorktreeManager::list(&repo)
+                        .map(|worktrees| worktrees.iter().any(|wt| wt.path == workdir))
+                        .unwrap_or(true);
+                    if still_registered {
+                        self.worktree.remove(&repo, &workdir).map_err(|err| anyhow::anyhow!(
+                            "Could not remove worktree '{}': {err}. Project retained; some sessions or worktrees may already have been removed. Retry deletion after fixing the error.",
+                            workdir.display()
+                        ))?;
+                    }
                 }
                 self.clear_pr_association_for_deleted_feature(&feature_id, &repo, &branch);
             }

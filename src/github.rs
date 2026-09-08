@@ -260,6 +260,18 @@ struct CreatedPrReviewResponse {
     id: u64,
 }
 
+/// Refs needed to reconstruct a PR's diff locally (`GhCli::pr_diff_local`).
+/// The PR head is fetched by its `pull/<n>/head` ref, so only the base branch
+/// name is load-bearing here; the rest is kept for context/logging parity with
+/// the other PR-view calls.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrDiffRefs {
+    base_ref_name: String,
+    head_ref_name: String,
+    head_ref_oid: String,
+}
+
 impl GhCli {
     /// Check that a working `gh` binary is on PATH. Mirrors
     /// `TmuxManager::check_available` / `ClaudeLauncher::check_available`.
@@ -394,8 +406,95 @@ impl GhCli {
     /// itself (one `gh` call). Only the whole string's leading/trailing
     /// whitespace is trimmed ([`Self::gh_stdout`]); interior diff content is
     /// untouched.
+    ///
+    /// `gh pr diff` fetches the diff from GitHub's REST API, which caps the
+    /// response for very large PRs (`HTTP 406`, "the diff exceeded the maximum
+    /// number of lines"). There is no `gh` flag to lift that cap, so on exactly
+    /// that failure we fall back to computing the diff locally with `git`, which
+    /// has no such limit — see [`Self::pr_diff_local`].
     pub fn pr_diff(workdir: &Path, number: u32) -> Result<String> {
-        Self::gh_stdout(workdir, &["pr", "diff", &number.to_string()])
+        match Self::gh_stdout(workdir, &["pr", "diff", &number.to_string()]) {
+            Ok(diff) => Ok(diff),
+            Err(e) if is_diff_too_large_error(&e.to_string()) => {
+                Self::pr_diff_local(workdir, number).with_context(|| {
+                    format!(
+                        "`gh pr diff` refused PR #{number} as too large, and the local git \
+                         fallback also failed"
+                    )
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Compute a PR's merge-base diff locally, bypassing the API line cap that
+    /// makes `gh pr diff` fail on huge PRs.
+    ///
+    /// Fetches the PR head (`pull/<n>/head`) and the base branch into private
+    /// `refs/amf/` refs so nothing about the working tree, checked-out branch,
+    /// or `origin/*` tracking refs changes, diffs `base...head` (the same
+    /// merge-base three-dot range `gh pr diff` shows), then deletes the temp
+    /// refs. Uses the `origin` remote, which for an AMF triage worktree is the
+    /// base repository.
+    fn pr_diff_local(workdir: &Path, number: u32) -> Result<String> {
+        let json = Self::gh_stdout(
+            workdir,
+            &[
+                "pr",
+                "view",
+                &number.to_string(),
+                "--json",
+                "baseRefName,headRefName,headRefOid",
+            ],
+        )?;
+        let refs: PrDiffRefs = serde_json::from_str(&json)
+            .context("Failed to parse `gh pr view` output for the local diff fallback.")?;
+
+        let head_ref = format!("refs/amf/pr-{number}-head");
+        let base_ref = format!("refs/amf/pr-{number}-base");
+
+        let fetch = Command::new("git")
+            .args(["fetch", "--quiet", "--no-tags", "origin"])
+            .arg(format!("+pull/{number}/head:{head_ref}"))
+            .arg(format!("+refs/heads/{}:{base_ref}", refs.base_ref_name))
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `git fetch` for the local diff fallback.")?;
+        if !fetch.status.success() {
+            bail!(
+                "`git fetch` for PR #{number} failed: {}",
+                String::from_utf8_lossy(&fetch.stderr).trim()
+            );
+        }
+
+        let diff = Command::new("git")
+            .args([
+                "-c",
+                "core.pager=cat",
+                "diff",
+                "--no-color",
+                &format!("{base_ref}...{head_ref}"),
+            ])
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `git diff` for the local diff fallback.");
+
+        // Best-effort cleanup regardless of whether the diff succeeded.
+        for r in [&head_ref, &base_ref] {
+            let _ = Command::new("git")
+                .args(["update-ref", "-d", r])
+                .current_dir(workdir)
+                .status();
+        }
+
+        let diff = diff?;
+        if !diff.status.success() {
+            bail!(
+                "`git diff` for PR #{number} failed: {}",
+                String::from_utf8_lossy(&diff.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&diff.stdout).trim().to_string())
     }
 
     /// The PR's title, description body, and changed-file list — the minimal
@@ -1219,6 +1318,25 @@ fn is_rate_limited(text: &str) -> bool {
         || (lowered.contains("rate limit") && lowered.contains("exceeded"))
 }
 
+/// Whether a `gh pr diff` failure is GitHub refusing the diff for being too
+/// large, rather than a transient or auth error.
+///
+/// The REST API caps the `application/vnd.github.diff` media type and answers
+/// an oversized PR with `HTTP 406` and a body like *"the diff exceeded the
+/// maximum number of lines"* / *"Sorry, this diff is taking too long to
+/// generate"*. Matched on text because `gh` only forwards the message; the
+/// exit code alone can't tell this apart from other failures. Kept narrow so a
+/// genuine error (no such PR, not authenticated, network down) still surfaces
+/// instead of triggering the local fallback.
+fn is_diff_too_large_error(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("maximum number of lines")
+        || lowered.contains("diff exceeded the maximum")
+        || lowered.contains("diff is taking too long")
+        || (lowered.contains("http 406") && lowered.contains("diff"))
+        || (lowered.contains("too large") && lowered.contains("diff"))
+}
+
 fn parse_review_threads_page(stdout: &[u8]) -> Result<(Vec<ReviewThread>, Option<String>)> {
     let v: serde_json::Value =
         serde_json::from_slice(stdout).context("Failed to parse review-threads GraphQL JSON.")?;
@@ -1730,6 +1848,34 @@ mod tests {
         assert!(is_rate_limited("API rate limit exceeded for user ID 1."));
         assert!(is_rate_limited("You have exceeded a secondary rate limit."));
         assert!(is_rate_limited("HTTP 403: rate limit exceeded"));
+    }
+
+    #[test]
+    fn diff_too_large_detection_covers_how_gh_forwards_it() {
+        // The wordings GitHub's REST API has used for an oversized diff.
+        assert!(is_diff_too_large_error(
+            "`gh pr diff 1234` failed: the diff exceeded the maximum number of lines (20000)"
+        ));
+        assert!(is_diff_too_large_error(
+            "HTTP 406: Sorry, this diff is taking too long to generate. (https://api.github.com/repos/o/r/pulls/1234)"
+        ));
+        assert!(is_diff_too_large_error(
+            "GraphQL: the diff is too large to render (repository.pullRequest)"
+        ));
+    }
+
+    /// The local-diff fallback must fire *only* for the size cap. A missing PR
+    /// or an auth failure has to keep bubbling up as the real error.
+    #[test]
+    fn ordinary_diff_failures_do_not_trigger_the_local_fallback() {
+        assert!(!is_diff_too_large_error(
+            "no pull requests found for branch"
+        ));
+        assert!(!is_diff_too_large_error("HTTP 404: Not Found"));
+        assert!(!is_diff_too_large_error(
+            "could not resolve to a PullRequest with the number of 999999"
+        ));
+        assert!(!is_diff_too_large_error(""));
     }
 
     /// An ordinary failure must not be mistaken for a rate limit: that would

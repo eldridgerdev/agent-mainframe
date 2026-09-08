@@ -12,6 +12,18 @@ are tagged.
 
 ### Fixed
 
+- **AI review in PR Triage no longer fails on very large pull requests.** The
+  `A`/`w`/`O` review passes fetch the PR diff with `gh pr diff`, which pulls it
+  from GitHub's API — and GitHub refuses to render a diff past a size cap
+  ("the diff exceeded the maximum number of lines"), so the review never
+  started. AMF now recognises that specific refusal and falls back to building
+  the same merge-base diff locally with `git`, which has no such limit. The
+  fallback fetches the PR head and base into private refs (leaving your working
+  tree, branch, and `origin/*` untouched) and cleans them up afterward. Every
+  other `gh pr diff` failure — no PR, not authenticated, offline — still
+  surfaces as before. A diff that large may still exceed the review model's
+  context window, which is reported separately. No migration is required.
+
 - **The "latest prompt" menu (leader, then `l`) now shows every prompt sent
   in a Claude session, not just the ones near the end of the most recent
   resume.** It previously only read the tail of the single most-recently

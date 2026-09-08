@@ -10,6 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
+### Security
+
+- Updated TLS certificate validation dependencies to address certificate and
+  revocation-list validation vulnerabilities in HTTPS connections. No migration
+  is required.
+
 ### Fixed
 
 - **The "latest prompt" menu (leader, then `l`) now shows every prompt sent

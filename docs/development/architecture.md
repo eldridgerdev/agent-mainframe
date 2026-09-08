@@ -167,3 +167,15 @@ The root preserves consumed entrypoints; sibling modules import helpers directly
 from their owner. Private report/snapshot fields retain visibility within the
 original feature boundary. Viewer workers/children remain mode-owned. Its unit
 suite remains `review::tests`, with integration coverage in `tests/final_review.rs`.
+
+Learning now lives in `app/learning/{lifecycle,navigation,workers,follow_up,state}.rs`.
+Its unit suite and handler fixtures retain `learning::tests` paths. Pure file-tree,
+selection, prompt and thread transformations take explicit data; App methods
+handle DB writes, launching and mode transitions. Central `state.rs` re-exports
+feature state and keeps AppMode plus shared routing/configuration state.
+
+For all three extracted features, orchestration depends on its state/domain,
+shared App routing and existing managers. State/domain do not import handlers or
+renderers. Sibling workflow calls remain App methods; free helpers are imported
+from the specific owning module. Follow-up workflows deliberately depend on
+existing TODO/session/plan entrypoints rather than copying their state.

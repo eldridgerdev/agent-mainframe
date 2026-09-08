@@ -85,13 +85,17 @@ sudo install -m 755 amf-aarch64-apple-darwin/amf /usr/local/bin/amf
 
 ### Build from source
 
-Building requires Rust 1.85 or newer and `tmux`:
+Building uses the current stable Rust toolchain, a C compiler, and `tmux`:
 
 ```bash
 git clone https://github.com/eldridgerdev/agent-mainframe
 cd agent-mainframe
-cargo install --path .
+cargo install --path . --locked
 ```
+
+For contributor setup, focused tests and CI commands, see the
+[development checks](docs/development/checks.md) and
+[architecture guide](docs/development/architecture.md).
 
 For a container installation, see the
 [Docker guide](docs/docker-no-tmux.md).

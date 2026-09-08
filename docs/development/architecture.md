@@ -1,181 +1,138 @@
-# Architecture and refactor map
+# Architecture
 
-This describes revision `c4088b70cd22393dd055dd249816da6e0f6825f0`, before
-maintainability refactors. See [baseline evidence](baseline/README.md) for the
-complete test inventory, planned test paths, helper callers, and App fields.
-The M2 test layout below is now implemented; production paths still describe
-the baseline unless explicitly labelled as destinations.
+AMF is a single Rust executable. It retains the existing event loop and persistence
+formats; feature extraction does not introduce a new framework or library.
+See [checks.md](checks.md) for setup, focused suites, CI and contribution guidance.
+The [baseline inventory](baseline/README.md) records the pre-refactor ownership map
+and complete test preservation evidence.
 
-## Runtime and dependencies
-
-`src/main.rs` owns CLI dispatch, startup, terminal setup/teardown and `run_loop`.
-The loop reads terminal/IPC events, polls feature workers, reconciles external
-session state, schedules pane refreshes, and redraws through `ui::draw`. It uses
-deadlines and mode-dependent work, not one fixed polling interval. Viewing and
-Compose both keep the pane live; active PR sweeps have an independent cadence.
+## Runtime and dependency directions
 
 ```text
 main (startup, events, deadlines, worker polling)
-  -> handlers (key/mouse dispatch) -> app feature methods
-  -> ui (dashboard, pane, pickers, dialogs) -> App/state/display helpers
-app feature methods -> project/domain data + feature state
+  -> handlers (key/mouse dispatch) -> App feature methods
+  -> ui (dashboard, pane, pickers, dialogs) -> display state/helpers
+App feature methods -> project/domain data + feature state
                     -> db::AmfDb + feature persistence modules
-                    -> traits::{TmuxOps, WorktreeOps} / external managers
-workers -> channels/mailbox -> App poll/apply methods -> AppMode/display state
+                    -> external managers / TmuxOps / WorktreeOps
+workers -> channels/mailbox -> feature poll/apply methods -> AppMode/display state
 ```
 
-`src/handlers/mod.rs` routes by `AppMode`; specialized handlers translate input
-into feature operations. `src/ui/dashboard.rs` dispatches the renderer and
-`src/ui/dialogs/` renders overlays. Neither layer should acquire new persistence
-or process-launch responsibilities during extraction. Existing handlers also
-mutate dialog fields directly: the diagram is a responsibility map, not a claim
-that App already exposes a fully encapsulated API.
+`src/main.rs` owns CLI dispatch, terminal setup/teardown and `run_loop`. The loop
+reads terminal/IPC events, polls workers, reconciles session state, schedules
+pane refreshes and redraws. It uses deadlines and mode-dependent work; Viewing
+and Compose both keep the pane live. Active PR sweeps have their own cadence.
 
-`src/app/mod.rs` declares feature modules, re-exports state, defines App/AppConfig,
-constructs production and test instances (`new`, `new_for_test`), and owns shared
-pane/sidebar worker infrastructure, logging, and configuration access.
-`src/app/state.rs` holds `AppMode`, selection and most dialog state, including
-feature-specific receivers and child-process guards. Feature files are mostly
-`impl App` blocks; they can currently access unrelated App fields through their
-parent module. File extraction alone will not remove that coupling.
+`src/handlers/mod.rs` routes by AppMode. Handlers translate input into feature
+operations and sometimes edit dialog fields directly. `src/ui/dashboard.rs`
+dispatches renderers; `ui/dialogs/` renders overlays. Neither layer should gain
+persistence or process-launch responsibilities.
 
-`src/project.rs` models projects, features and sessions. `src/db/mod.rs` owns the
-SQLite connection and open/seed entrypoints; `migrations.rs` owns schema changes.
-`store.rs` persists project state. Other DB modules persist session status,
-tokens, debug logs, editors, prompts/overrides, TODOs, plan interviews, Learning,
-PR triage/investigations/terminal state, and PR/AI review caches. Feature code
-calls these methods; the DB module also knows project/domain types and uses
-WorktreeManager while resolving legacy stores. It is not an independent generic
-storage layer.
+`src/app/mod.rs` constructs App/AppConfig, declares features and owns shared
+pane/sidebar infrastructure, logging and configuration access. Features remain
+`impl App` orchestration. `src/app/state.rs` keeps AppMode and shared routing,
+configuration, session and TODO/plan state, with compatibility re-exports of the
+three extracted features' types. Cross-feature mode transitions remain on App.
+
+## Feature modules
+
+| Feature | Files under `src/app/` | Responsibility |
+| --- | --- | --- |
+| PR Triage | `pr_review/domain.rs` | Comment/review model, attribution, prompt/hunk transforms |
+| | `pr_review/fetch.rs` | GitHub normalization, fetch/cache and PR picker coordination |
+| | `pr_review/actions.rs` | Selection, marks and action orchestration |
+| | `pr_review/reply.rs` | Reply drafting, provenance and posting |
+| | `pr_review/investigation.rs` | Read-only investigation requests, results and follow-ups |
+| | `pr_review/integration.rs` | Fix target/harness selection, injection and linked session navigation |
+| | `pr_review/memory.rs` | Review-memory bootstrap, compact and append workflows |
+| | `pr_review/state.rs`, `runtime.rs` | Dialog types and background work ownership |
+| Final Review | `review/preparation.rs` | Diff snapshots, persisted progression/history and review notes |
+| | `review/progression.rs` | Navigation, selection, approvals, filters and review summary |
+| | `review/comments.rs` | Anchors, comments, suggestions and editor operations |
+| | `review/headless.rs` | Walkthrough/co-review/check workers, completion and feedback dispatch |
+| | `review/state.rs` | Viewer/comment/undo/history state and mode-owned child handles |
+| Learning | `learning/lifecycle.rs` | Open/close, reload, settings and persistence coordination |
+| | `learning/navigation.rs` | File trees, anchors, selection and answer navigation |
+| | `learning/workers.rs` | Question prompts, execution and answer application |
+| | `learning/follow_up.rs` | TODO creation and agent-session handoffs |
+| | `learning/state.rs`, `runtime.rs` | Session/display types and persistent answer tracking |
+
+Feature roots expose consumed entrypoints and compatibility re-exports. Free
+helpers are imported from their owning sibling module; new private helper access
+is bounded to the original feature. Extracted modules import explicit App types.
+Pure transformations take data rather than an all-purpose App/context object.
+State/domain code does not import handlers or renderers. Orchestration may use
+existing cross-feature APIs for TODO/plan/session handoffs.
+
+The neighboring `ai_review.rs`, `review_destination.rs`, `review_memory.rs` and
+`triage_feature.rs` retain their existing responsibilities. Extraction does not
+absorb them just to shrink a file. Shared DiffScope/layout concepts remain
+available to ordinary diff browsing rather than becoming private to Final Review.
+
+## Runtime ownership and stale results
+
+App now has 125 fields, down from the 130 recorded in
+[app-fields.tsv](baseline/app-fields.tsv). Three groups establish concrete
+boundaries with private fields and shared production/test defaults:
+
+- `PrReviewWork`: independent fetch/investigation receivers; begin, poll and
+  cancel methods. Cancel drops the receiver without killing the spawned worker.
+  AppMode still determines whether a result has a live target.
+- `AiReviewRun`: receiver, pending origin and live progress. Completion or PR
+  invalidation clears them together; closing the running screen preserves them
+  for later result application and reopening. Existing PR/workdir/head matching
+  stays in feature orchestration, including successor invalidation.
+- `LearningRuns`: persistent answer channel and in-flight question IDs. Delivery
+  retires its matching ID, then orchestration updates the visible matching row
+  or the original DB row when the overlay has closed/switched. Closing the
+  overlay does not cancel the worker or erase its pending identity.
+
+Final Review already owns its children in mode state; it keeps that boundary.
+No second authoritative copy was added. Shared routing/store/configuration,
+manager injection, IPC/watcher/observer guards, pane/sidebar queues and debug/perf
+remain on App. Review-memory jobs, refresh caches and cross-feature notification
+state remain available for later incremental ownership work.
+
+## Data and side effects
+
+`src/project.rs` models projects, features and sessions. `db/mod.rs` owns the
+SQLite connection and open/seed entrypoints; `migrations.rs` owns schema changes;
+`store.rs` persists projects. Other DB modules persist session status, tokens,
+debug logs, editors, prompt templates/overrides, TODOs, plan interviews, Learning,
+PR triage/investigations/terminal state and PR/AI review caches. DB code knows
+project/domain types and uses WorktreeManager to resolve legacy stores.
 
 `src/traits.rs` provides mockable TmuxOps and WorktreeOps, implemented by
-`src/tmux.rs` and `src/worktree.rs`. GitHub operations live in `src/github.rs`;
-headless agent execution in `src/headless.rs`; harness integration includes
-Claude, Codex, OpenCode (under app), and Pi. IPC, filesystem watching, tmux
-observation, editor tracking and resource inspection have dedicated modules.
-These boundaries include filesystem writes, subprocess creation and OS handles.
-Injection is partial: feature modules still call concrete managers and filesystem
-APIs directly. Preserve those calls during mechanical moves; introduce narrow
-adapters only in the subsequent ownership change.
+`tmux.rs` and `worktree.rs`. GitHub calls live in `github.rs`; headless execution
+in `headless.rs`; harness integration supports Claude Code, Codex, OpenCode and
+Pi. IPC, filesystem watching, tmux observation, editors and resource inspection
+have dedicated modules. Injection is partial: App workflows still call concrete
+managers and filesystem APIs. Preserve those boundaries and process lifetimes;
+introduce an adapter only where it establishes a concrete dependency boundary.
 
-## Test suites (M2 complete)
+## Tests
 
-[app-tests.tsv](baseline/app-tests.tsv) maps every current `app::tests` test to
-its implemented full path. The original function name must remain unchanged.
-[tests.txt](baseline/tests.txt) also records tests outside that file, which stay
-in place unless a later feature extraction warrants a move.
+`src/app/tests/mod.rs` declares behavior suites and shared `support.rs`:
 
-| Child module under `src/app/tests/` | Responsibility / production callers exercised |
+| Suite | Coverage |
 | --- | --- |
-| `startup_navigation` | Startup, utility naming, dashboard selection/navigation |
-| `pane_input` | Pane mailbox/render updates, view input, Compose, command dispatch |
-| `status_sidebar` | Session sync, IPC status, harness/sidebar caches and PR badges |
-| `prompts_configuration` | AppConfig, context settings, prompt library/overrides, pre-call UI |
-| `hooks_setup` | Local hook installation/cleanup and worktree hook completion |
-| `feature_sessions` | Project/feature creation, recovery, start/stop, session pickers |
-| `plans` | Plan interview, drafts, consent, synthesis and handoff |
-| `automation` | CLI/automation project and feature operations |
-| `pr_triage` | PR loading, AI review, investigations, replies, memory and integration |
-| `final_review` | Diff review progression, comments, interdiff, tree/context controls |
-| `todos` | TODO scopes, editing, launch and deletion disposition |
-| `resources` | Agent admission and start/autostart guards |
-| `editor_lifecycle` | Owned editor processes, PID identity and stop races |
-| `attention` | Attention reconciliation, pending inputs and dashboard badges |
+| `startup_navigation`, `pane_input` | Startup, dashboard navigation, view/mailbox/input and Compose |
+| `status_sidebar`, `attention` | Sync, IPC status, sidebar caches, badges and attention reconciliation |
+| `feature_sessions`, `hooks_setup`, `automation` | Creation/recovery/start/stop, local hooks and automation entrypoints |
+| `prompts_configuration`, `plans`, `todos` | Configuration/prompts, plan interviews and scoped TODO workflows |
+| `pr_triage`, `final_review` | PR/AI/investigation/memory/integration and diff review workflows |
+| `resources`, `editor_lifecycle` | Admission, process identity and editor stop races |
 
-Learning's substantial existing suite is inline in `app/learning.rs`; there is
-no Learning suite in the central file to move for M2. Retain it until M3.
+Each extracted feature also retains its own `tests.rs`; Learning's suite was
+already local and its handler fixture paths remain stable. Four branch-matching
+tests moved with PR state. Preserve the old/new path maps when auditing coverage.
+Shared helpers belong in support only when multiple suites consume them. Temporary
+repositories, DBs and process guards remain per-test, with their original lifetimes.
 
-[test-helpers.tsv](baseline/test-helpers.tsv) inventories all top-level helper
-functions, the pending-interview constant, and BusyPane guard, with lexical
-callers. Multi-suite helpers belong in `support.rs`; single-suite fixtures stay
-local. Keep `App::new_for_test` on App initially, then share production/group
-defaults in M4. Mock types remain generated from `traits.rs`. Preserve returned
-TempDir/NamedTempFile lifetimes, per-test DBs, mock expectations and BusyPane's
-Drop cleanup; do not create global fixtures or broaden production visibility.
-Helper imports should use narrow test-only visibility. Shared fixture ownership
-does not imply that a PR-specific builder is a general production abstraction.
+## Deferred reliability work
 
-## Feature extraction destinations (M3)
-
-Do these sequentially, validating each feature before proceeding. Keep existing
-entrypoints and temporary re-exports stable for main, handlers, UI and tests.
-
-| Current owner | Destination children | Callers and boundary |
-| --- | --- | --- |
-| `app/pr_review.rs` | `pr_review/{mod,domain,fetch,actions,reply,investigation,integration,memory,state}.rs` | main polls; PR handlers/renderers, AI review, triage_feature and sync use its types/methods. Separate fetch/cache from decisions and reply/investigation work; coordinate existing triage_feature integration without duplicating it. |
-| `app/review.rs` | `review/{mod,preparation,progression,comments,headless,state}.rs` | diff/review handlers and UI, feature launch, notifications, main polling. Preparation loads diff/history; progression selects/approves; comments handles anchors/editor/suggestions; headless coordinates walkthrough/co-review/overview/checks. |
-| `app/learning.rs` | `learning/{mod,lifecycle,navigation,workers,follow_up,state}.rs` | Learning handlers/renderers, main answer polling and cross-feature TODO/plan handoff. Lifecycle opens/closes/persists; navigation lists/loads/selects; workers ask/apply answers; follow_up owns downstream workflows. |
-
-Move PrReview/AI/reply/investigation/memory dialog types to the PR owner, review
-viewer/comment/progression types to the review owner, and Learning types to the
-Learning owner. Leave shared DiffScope/layout concepts available to ordinary
-diff browsing, and keep `AppMode` central. AI review, review_destination,
-review_memory and triage_feature already exist as neighboring modules: preserve
-their responsibilities rather than absorbing them merely to shrink a file.
-Pure transformations take explicit data; App orchestration keeps mode changes.
-Feature modules may depend on shared domain/managers and narrow neighboring
-entrypoints; do not import handlers/renderers into extracted domain modules.
-
-## App ownership (M4)
-
-[app-fields.tsv](baseline/app-fields.tsv) assigns all 130 App fields, including
-private fields/channels, to feature or infrastructure ownership. Types are
-recorded verbatim apart from whitespace. Referencing files are lexical navigation
-aids (including tests and same-name tokens), not a semantic call graph.
-
-Start with PR triage: `pr_review_bg`, `pr_investigation_bg`, `pr_review_return`,
-review-memory workers/pending compaction, and AI review worker/progress/pending/
-return/refresh state. Respect the existing distinction between a pending run and
-an AppMode-owned display. The fix-cost and GitHub-user caches are feature-owned;
-active/terminal PR badge caches and rate-limit backoff remain shared sync state.
-Preserve successor invalidation across those owners.
-
-Final Review's `awaiting_review_fixes` is on App, but much of its actual worker
-and child ownership is already in `DiffViewerState` and related mode state.
-Inspect that state before creating any new App group. Learning's App-level
-`learning_answer_tx`, `learning_answer_rx`, and `learning_runs_in_flight` form a
-coherent coordination group; displayed session data remains mode-owned. Preserve
-session/request matching and abandoned-result handling on close/switch/reopen.
-
-Other assigned owners (plans, TODOs, Compose/pane, context/usage, attention,
-editors, hooks, summary and pre-call) identify responsibilities, not authorization
-to refactor all of them in M4. Keep shared routing/config/store, injected managers,
-IPC/watcher/observer guards, harness checks, debug/perf and viewport infrastructure
-on App unless a concrete later boundary requires a move. Never replace App with
-a generic context carrying the same unrelated state.
-
-## Deferred work
-
-The audit's store overwrite, migration atomicity, repository cache identity, IPC
-socket ownership, startup resource handling and synchronous GitHub calls remain
-separate reliability work. M1 changes no production code or persistence format.
-No extraction-blocking dependency was found during this map; each M3 extraction
-must still inspect its exact lifecycle and staleness guards before moving code.
-
-## M3 progress: PR Triage
-
-`app/pr_review/` now contains the planned domain, fetch, actions, reply,
-investigation, integration, memory and state modules, plus its unit tests.
-Central state re-exports its moved dialog types for compatibility. Domain and
-fetch transformations take explicit inputs; orchestration modules import the
-App/state types they use. Tests for the private branch-matching helper moved to
-`pr_review::state::tests`; other PR unit test paths remain stable. Shared internal
-helpers are visible only within the feature; test-only facade imports are gated.
-
-Final Review now lives in `app/review/{preparation,progression,comments,headless,state}.rs`.
-The root preserves consumed entrypoints; sibling modules import helpers directly
-from their owner. Private report/snapshot fields retain visibility within the
-original feature boundary. Viewer workers/children remain mode-owned. Its unit
-suite remains `review::tests`, with integration coverage in `tests/final_review.rs`.
-
-Learning now lives in `app/learning/{lifecycle,navigation,workers,follow_up,state}.rs`.
-Its unit suite and handler fixtures retain `learning::tests` paths. Pure file-tree,
-selection, prompt and thread transformations take explicit data; App methods
-handle DB writes, launching and mode transitions. Central `state.rs` re-exports
-feature state and keeps AppMode plus shared routing/configuration state.
-
-For all three extracted features, orchestration depends on its state/domain,
-shared App routing and existing managers. State/domain do not import handlers or
-renderers. Sibling workflow calls remain App methods; free helpers are imported
-from the specific owning module. Follow-up workflows deliberately depend on
-existing TODO/session/plan entrypoints rather than copying their state.
+Store overwrite, migration atomicity, repository cache identity, IPC socket
+ownership, startup resource handling and synchronous GitHub-call findings remain
+separate reliability work. This refactor changes no persistence schema or user
+workflow to address them. No extraction blocker was found; inspect exact identity
+and cleanup guards before any future ownership change.

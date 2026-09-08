@@ -151,3 +151,13 @@ socket ownership, startup resource handling and synchronous GitHub calls remain
 separate reliability work. M1 changes no production code or persistence format.
 No extraction-blocking dependency was found during this map; each M3 extraction
 must still inspect its exact lifecycle and staleness guards before moving code.
+
+## M3 progress: PR Triage
+
+`app/pr_review/` now contains the planned domain, fetch, actions, reply,
+investigation, integration, memory and state modules, plus its unit tests.
+Central state re-exports its moved dialog types for compatibility. Domain and
+fetch transformations take explicit inputs; orchestration modules import the
+App/state types they use. Tests for the private branch-matching helper moved to
+`pr_review::state::tests`; other PR unit test paths remain stable. Shared internal
+helpers are visible only within the feature; test-only facade imports are gated.

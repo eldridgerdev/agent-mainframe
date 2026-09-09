@@ -38,12 +38,15 @@ impl App {
         };
         let _ = explorer.set_cwd(start_dir);
 
-        let AppMode::PlanInterview(interview) =
-            std::mem::replace(&mut self.mode, AppMode::Normal)
-        else {
-            // The guard above already proved the mode; restore and bail if it
-            // somehow changed underneath us.
-            return;
+        let interview = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::PlanInterview(interview) => interview,
+            other => {
+                // The guard above already proved the mode; if it somehow
+                // changed underneath us, put it back rather than leaving
+                // `AppMode::Normal` installed and the interview state dropped.
+                self.mode = other;
+                return;
+            }
         };
         self.mode = AppMode::PlanInterviewAttachDoc(Box::new(AttachDocState {
             explorer,

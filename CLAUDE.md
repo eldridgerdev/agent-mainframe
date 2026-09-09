@@ -600,12 +600,19 @@ explicit, opt-in exception: those passes then run through
   cap with a stated reason.
 - **Reachability:** `plan_interview::prepare_attached_docs(workdir, &[PathBuf])`
   runs right before each pass. An in-workdir doc is referenced where it lies; an
-  external one is copied into `<workdir>/.amf/interview-docs/` (generated,
-  gitignored scratch via `extension::generated_amf_subdir`) so a CWD-scoped
-  read-only harness can open it. The staging dir is wiped at the start of every
-  `prepare_attached_docs` call and by `App::clear_plan_interview_doc_staging`
-  on interview accept / abort. A doc that has moved or gone unreadable is
-  dropped and reported, never fatal.
+  external one is copied into a **per-pass** subdirectory
+  `<workdir>/.amf/interview-docs/<pid>-<seq>/` (generated scratch via
+  `extension::generated_amf_subdir`) so a CWD-scoped read-only harness can open
+  it. Each call gets its own subdir on purpose: a dismissed plan review leaves
+  its worker running, and a later pass (or teardown) must not delete the copies
+  it is still reading. Before the first external copy, `ensure_amf_ignored`
+  adds `.amf/` to the repo's `.git/info/exclude` (untracked, per-repo) unless it
+  is already ignored, so an agent's `git add -A` cannot commit a private doc.
+  The whole `interview-docs` tree is cleared by
+  `App::clear_plan_interview_doc_staging` on interview accept / abort **and on
+  pause** (whose `background_running` guard means no pass is in flight); it is
+  no longer wiped at the start of a pass. A doc that has moved or gone
+  unreadable is dropped and reported, never fatal.
 - **Prompts:** the five interview input builders (`*_input_json`) carry an
   `attached_documents` array (`path` + `origin`); `round` / `synthesis` /
   `critique` templates gained a `{{tool_access_note}}` token, resolved to

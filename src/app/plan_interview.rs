@@ -59,6 +59,13 @@ impl App {
             return;
         }
 
+        // Drop any staged copies of external reference docs before the user
+        // opens a session in this workdir: the `background_running` guard above
+        // has already ruled out an in-flight pass, and the next pass on resume
+        // re-stages from scratch. Leaving them would strand a private doc as an
+        // untracked file for the duration of the pause.
+        self.clear_plan_interview_doc_staging();
+
         let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::PlanInterview(mut state) => {
                 state.abort_confirmation = false;
@@ -494,9 +501,10 @@ impl App {
     }
 
     /// Remove any staged reference-document copies for the interview currently
-    /// on screen. Safe to call whenever the interview is ending: the directory
-    /// is generated `.amf/` scratch and `prepare_attached_docs` re-creates it
-    /// from scratch on the next pass anyway.
+    /// on screen. Safe to call whenever the interview is ending or being parked
+    /// with no pass in flight: the directory is generated `.amf/` scratch and
+    /// `prepare_attached_docs` re-creates it from scratch on the next pass
+    /// anyway.
     fn clear_plan_interview_doc_staging(&self) {
         if let AppMode::PlanInterview(state) = &self.mode {
             plan_interview::clear_staged_interview_docs(&state.context_workdir());
@@ -1028,7 +1036,9 @@ impl App {
             };
             let _ = tx.send(result);
         });
-        self.message = None;
+        // Leave `self.message` alone: a `note_dropped_attachments` notice from
+        // this pass must survive, exactly as it does on the round and synthesis
+        // paths.
         Ok(())
     }
 
@@ -1146,7 +1156,9 @@ impl App {
             let result = HeadlessRunner::run_read_only(&harness, &workdir, &prompt, None);
             let _ = tx.send(result);
         });
-        self.message = None;
+        // Leave `self.message` alone: a `note_dropped_attachments` notice from
+        // this pass must survive, exactly as it does on the round and synthesis
+        // paths.
         Ok(())
     }
 

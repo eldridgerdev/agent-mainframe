@@ -54,10 +54,17 @@ pub const ATTACHED_DOC_MAX_BYTES: u64 = 512 * 1024;
 /// is text. A reference doc the interviewer cannot read as text is no use.
 const ATTACHED_DOC_SNIFF_BYTES: usize = 8_192;
 
-/// Subdirectory of a workdir's generated `.amf/` tree where reference
+/// Subdirectory of a workdir's generated `.amf/` tree under which reference
 /// documents from outside the workdir are copied so a CWD-scoped read-only
-/// harness can reach them. Cleared on every interview teardown.
+/// harness can reach them. Each pass gets its own child directory of this one
+/// (see [`prepare_attached_docs`]); the whole tree is cleared on every
+/// interview teardown.
 pub const INTERVIEW_DOCS_SUBDIR: &str = "interview-docs";
+
+/// Monotonic per-process counter that gives each [`prepare_attached_docs`] call
+/// its own staging subdirectory, so a re-staging pass — or a teardown — never
+/// deletes the copies a still-running earlier pass is reading.
+static STAGING_RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The `{{tool_access_note}}` value for the round and synthesis passes when no
 /// reference document is attached: the historical contract, verbatim.
@@ -412,10 +419,10 @@ pub fn gather_repository_context(workdir: &Path) -> RepositoryContext {
 /// read-only headless pass, and return the list to name in the prompt.
 ///
 /// A document already inside `workdir` is referenced where it lies. One from
-/// outside is copied into `.amf/interview-docs/` so a CWD-scoped read-only
-/// harness can open it. A document that has since moved or become unreadable
-/// is dropped from the result (and returned in the second tuple field, by its
-/// original path) rather than failing the pass.
+/// outside is copied into a per-pass subdirectory of `.amf/interview-docs/` so
+/// a CWD-scoped read-only harness can open it. A document that has since moved
+/// or become unreadable is dropped from the result (and returned in the second
+/// tuple field, by its original path) rather than failing the pass.
 pub fn prepare_attached_docs(
     workdir: &Path,
     docs: &[std::path::PathBuf],
@@ -423,10 +430,20 @@ pub fn prepare_attached_docs(
     let mut prepared = Vec::new();
     let mut dropped = Vec::new();
     let canonical_workdir = fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
-    // Start from a clean staging dir every pass: it only ever holds the current
-    // run's copies, so a leftover from an interrupted interview cannot shadow a
-    // renamed or removed attachment.
-    clear_staged_interview_docs(&canonical_workdir);
+    // Each pass stages into its own subdirectory. Concurrent passes are real: a
+    // dismissed plan review keeps its worker running, so starting a directed
+    // revision or investigation — or tearing the interview down — must not
+    // delete the copies that worker is still reading. A per-run directory keeps
+    // them apart, and its unique name means a leftover from an interrupted
+    // interview can never shadow a renamed or removed attachment either. The
+    // whole tree is still dropped by `clear_staged_interview_docs` at teardown,
+    // when `pause_plan_interview`'s guard guarantees no pass is in flight.
+    let run_dir = format!(
+        "{}-{}",
+        std::process::id(),
+        STAGING_RUN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let mut amf_ignored = false;
     let mut staged_seq = 0usize;
     for source in docs {
         let Ok(canonical) = fs::canonicalize(source) else {
@@ -445,6 +462,14 @@ pub fn prepare_attached_docs(
             });
             continue;
         }
+        // About to copy a file from outside the tree into `.amf/`. Make sure the
+        // repository ignores that directory first, so an agent's `git add -A` in
+        // a project whose `.gitignore` lacks the entry cannot commit a private
+        // reference doc that outlives the interview.
+        if !amf_ignored {
+            ensure_amf_ignored(&canonical_workdir);
+            amf_ignored = true;
+        }
         staged_seq += 1;
         let base = canonical
             .file_name()
@@ -452,25 +477,86 @@ pub fn prepare_attached_docs(
             .unwrap_or_else(|| "document".into());
         let file_name = format!("{staged_seq:02}-{base}");
         let staged_dir =
-            crate::extension::generated_amf_subdir(&canonical_workdir, INTERVIEW_DOCS_SUBDIR);
-        if fs::copy(&canonical, staged_dir.join(&file_name)).is_err() {
+            crate::extension::generated_amf_subdir(&canonical_workdir, INTERVIEW_DOCS_SUBDIR)
+                .join(&run_dir);
+        if fs::create_dir_all(&staged_dir)
+            .and_then(|()| fs::copy(&canonical, staged_dir.join(&file_name)).map(|_| ()))
+            .is_err()
+        {
             dropped.push(source.clone());
             staged_seq -= 1;
             continue;
         }
         prepared.push(AttachedDoc {
             source: canonical,
-            rel_path: format!(".amf/{INTERVIEW_DOCS_SUBDIR}/{file_name}"),
+            rel_path: format!(".amf/{INTERVIEW_DOCS_SUBDIR}/{run_dir}/{file_name}"),
             origin: AttachedDocOrigin::Staged,
         });
     }
     (prepared, dropped)
 }
 
-/// Remove the staged reference-document copies for `workdir`. Best-effort: the
-/// directory is generated scratch under `.amf/` and safe to delete at any time.
+/// Remove every pass's staged reference-document copies for `workdir`.
+/// Best-effort: the directory is generated scratch under `.amf/` and safe to
+/// delete whenever no interview pass is running.
 pub fn clear_staged_interview_docs(workdir: &Path) {
     let _ = fs::remove_dir_all(workdir.join(".amf").join(INTERVIEW_DOCS_SUBDIR));
+}
+
+/// Best-effort: make sure `workdir`'s repository ignores `.amf/` before an
+/// external reference document is copied into it. The pattern goes to
+/// `.git/info/exclude` (per-repo, untracked) rather than the tracked
+/// `.gitignore`, and nothing happens when the directory is already ignored or
+/// `workdir` is not a Git work tree.
+fn ensure_amf_ignored(workdir: &Path) {
+    use std::process::{Command, Stdio};
+
+    let already_ignored = Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["check-ignore", "-q", ".amf/"])
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if already_ignored {
+        return;
+    }
+
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["rev-parse", "--git-path", "info/exclude"])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let rel = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if rel.is_empty() {
+        return;
+    }
+    // `--git-path` prints relative to `-C`'s directory; a rare absolute result
+    // replaces the join entirely, which is also correct.
+    let exclude_path = workdir.join(rel);
+    let mut contents = fs::read_to_string(&exclude_path).unwrap_or_default();
+    if contents
+        .lines()
+        .any(|line| matches!(line.trim(), ".amf" | ".amf/"))
+    {
+        return;
+    }
+    if !contents.is_empty() && !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents.push_str(".amf/\n");
+    if let Some(parent) = exclude_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&exclude_path, contents);
 }
 
 /// One reference document as it appears in the interview input JSON: the path
@@ -1977,6 +2063,91 @@ mod tests {
         assert!(!staged_abs.exists());
         // The in-tree doc is untouched by the cleanup.
         assert!(in_tree.exists());
+    }
+
+    #[test]
+    fn prepare_attached_docs_isolates_each_pass_so_one_does_not_clobber_another() {
+        let workdir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let external = outside.path().join("brief.md");
+        std::fs::write(&external, "external").unwrap();
+
+        // A first pass stages the doc and, in the real flow, its worker keeps
+        // reading the copy after the pass returns.
+        let (first, _) = prepare_attached_docs(workdir.path(), &[external.clone()]);
+        let first_abs = workdir.path().join(&first[0].rel_path);
+        assert_eq!(std::fs::read_to_string(&first_abs).unwrap(), "external");
+
+        // A second pass starts before that worker finishes. It must not delete
+        // or overwrite the first pass's copy.
+        let (second, _) = prepare_attached_docs(workdir.path(), &[external.clone()]);
+        let second_abs = workdir.path().join(&second[0].rel_path);
+
+        assert_ne!(first[0].rel_path, second[0].rel_path);
+        assert!(first_abs.exists(), "first pass's staged copy was removed");
+        assert_eq!(std::fs::read_to_string(&first_abs).unwrap(), "external");
+        assert_eq!(std::fs::read_to_string(&second_abs).unwrap(), "external");
+
+        // Teardown still clears every pass's copies.
+        clear_staged_interview_docs(workdir.path());
+        assert!(!first_abs.exists());
+        assert!(!second_abs.exists());
+    }
+
+    #[test]
+    fn prepare_attached_docs_excludes_amf_when_the_repo_does_not_already_ignore_it() {
+        use std::process::{Command, Stdio};
+
+        let workdir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+
+        let run_git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(workdir.path())
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run_git(&["init"]);
+
+        let external = outside.path().join("private-spec.md");
+        std::fs::write(&external, "secret").unwrap();
+
+        let (prepared, dropped) = prepare_attached_docs(workdir.path(), &[external]);
+        assert!(dropped.is_empty());
+        assert_eq!(prepared.len(), 1);
+
+        // `.amf/` is now ignored, so an agent's `git add -A` cannot pick up the
+        // staged copy of the private doc.
+        let exclude_path = workdir.path().join(".git").join("info").join("exclude");
+        let exclude = std::fs::read_to_string(&exclude_path).unwrap();
+        assert!(
+            exclude.lines().any(|line| line.trim() == ".amf/"),
+            "exclude missing the .amf/ entry: {exclude:?}"
+        );
+        let ignored = Command::new("git")
+            .arg("-C")
+            .arg(workdir.path())
+            .args(["check-ignore", "-q", ".amf/interview-docs"])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(ignored.success(), "git still does not ignore the staging dir");
+
+        // A second pass does not append a duplicate entry.
+        let external2 = outside.path().join("notes.md");
+        std::fs::write(&external2, "more").unwrap();
+        let _ = prepare_attached_docs(workdir.path(), &[external2]);
+        let exclude2 = std::fs::read_to_string(&exclude_path).unwrap();
+        assert_eq!(
+            exclude2.lines().filter(|line| line.trim() == ".amf/").count(),
+            1,
+            "duplicate .amf/ entry written: {exclude2:?}"
+        );
     }
 
     #[test]

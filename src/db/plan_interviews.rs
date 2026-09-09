@@ -192,8 +192,7 @@ pub fn load(
     // Attached docs gained a column via MIGRATION_035 (backfilled `'[]'`); an
     // unreadable value is treated as "none attached" rather than failing the
     // whole draft, since the paths are re-validated on resume anyway.
-    let attached_docs: Vec<String> =
-        serde_json::from_str(&attached_docs_json).unwrap_or_default();
+    let attached_docs: Vec<String> = serde_json::from_str(&attached_docs_json).unwrap_or_default();
 
     Ok(Some(PlanInterviewRecord {
         feature_id: feature_id.to_string(),

@@ -529,7 +529,10 @@ impl App {
         let joined = names.join(", ");
         self.log_warn(
             "plan_interview",
-            format!("skipped {} unreadable attached doc(s): {joined}", dropped.len()),
+            format!(
+                "skipped {} unreadable attached doc(s): {joined}",
+                dropped.len()
+            ),
         );
         self.message = Some(format!(
             "Skipped {} attached doc(s) no longer readable: {joined}",

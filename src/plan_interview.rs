@@ -137,7 +137,10 @@ impl std::fmt::Display for AttachError {
             ),
             AttachError::NotText => write!(f, "that file does not look like a text document"),
             AttachError::LimitReached => {
-                write!(f, "at most {MAX_ATTACHED_DOCS} reference docs can be attached")
+                write!(
+                    f,
+                    "at most {MAX_ATTACHED_DOCS} reference docs can be attached"
+                )
             }
             AttachError::Duplicate => write!(f, "that document is already attached"),
         }
@@ -154,8 +157,7 @@ pub fn validate_attachment(
     if existing.len() >= MAX_ATTACHED_DOCS {
         return Err(AttachError::LimitReached);
     }
-    let canonical =
-        fs::canonicalize(path).map_err(|e| AttachError::Unreadable(e.to_string()))?;
+    let canonical = fs::canonicalize(path).map_err(|e| AttachError::Unreadable(e.to_string()))?;
     let meta = fs::metadata(&canonical).map_err(|e| AttachError::Unreadable(e.to_string()))?;
     if meta.is_dir() {
         return Err(AttachError::IsDirectory);
@@ -168,7 +170,11 @@ pub fn validate_attachment(
     }
     let mut head = Vec::with_capacity(ATTACHED_DOC_SNIFF_BYTES);
     fs::File::open(&canonical)
-        .and_then(|mut f| f.by_ref().take(ATTACHED_DOC_SNIFF_BYTES as u64).read_to_end(&mut head))
+        .and_then(|mut f| {
+            f.by_ref()
+                .take(ATTACHED_DOC_SNIFF_BYTES as u64)
+                .read_to_end(&mut head)
+        })
         .map_err(|e| AttachError::Unreadable(e.to_string()))?;
     if looks_binary(&head) {
         return Err(AttachError::NotText);
@@ -1879,8 +1885,15 @@ mod tests {
             claude_md: None,
         };
 
-        let interviewer =
-            build_interviewer_prompt("guided-plans", "Brief.", &questions, &[None], &context, 1, &[]);
+        let interviewer = build_interviewer_prompt(
+            "guided-plans",
+            "Brief.",
+            &questions,
+            &[None],
+            &context,
+            1,
+            &[],
+        );
         assert!(interviewer.contains("What is still unknown?"));
         assert!(interviewer.contains("\"answer\": null"));
 
@@ -2136,7 +2149,10 @@ mod tests {
             .stderr(Stdio::null())
             .status()
             .unwrap();
-        assert!(ignored.success(), "git still does not ignore the staging dir");
+        assert!(
+            ignored.success(),
+            "git still does not ignore the staging dir"
+        );
 
         // A second pass does not append a duplicate entry.
         let external2 = outside.path().join("notes.md");
@@ -2144,7 +2160,10 @@ mod tests {
         let _ = prepare_attached_docs(workdir.path(), &[external2]);
         let exclude2 = std::fs::read_to_string(&exclude_path).unwrap();
         assert_eq!(
-            exclude2.lines().filter(|line| line.trim() == ".amf/").count(),
+            exclude2
+                .lines()
+                .filter(|line| line.trim() == ".amf/")
+                .count(),
             1,
             "duplicate .amf/ entry written: {exclude2:?}"
         );

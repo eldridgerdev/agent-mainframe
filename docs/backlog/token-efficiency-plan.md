@@ -3,6 +3,7 @@
 - **Status:** Partial
 - **Owner:** unassigned
 - **Relates to:** [per-session agent usage](per-session-usage-plan.md),
+  [premium-model efficiency options](premium-model-efficiency-options-plan.md),
   [plan-mode interview](plan-mode-interview-plan.md),
   [prompt library](prompt-library-plan.md),
   [final-review enhancements](final-review-enhancements-plan.md),

@@ -80,7 +80,10 @@ app/
 │                    # this feature / a dedicated session / another
 │                    # feature / a new companion feature (own worktree,
 │                    # ReviewSource link, push-or-cherry-pick integration)
-├── plan_interview.rs # guided discovery, AI rounds, plan review
+├── plan_interview.rs # guided discovery, AI rounds, plan review,
+│                    # attached reference docs (read-only switch)
+├── plan_interview_attach.rs # file browser to attach a reference doc
+│                    # (AppMode::PlanInterviewAttachDoc); open/confirm/cancel
 ├── todos.rs         # scoped TODOs overlay (worktree/project/global
 │                    # panes, add, edit, toggle, reorder, move/copy,
 │                    # spawn agent, delete-time disposition)
@@ -190,7 +193,9 @@ Key dispatch per mode:
 
 - Harness-neutral one-shot runs for Claude, Codex, OpenCode, and Pi
 - Restricted no-tools mode for context-complete prompts
-- Read-only repository tools for directed plan revisions
+- Read-only repository tools for directed plan revisions, and for the
+  round/synthesis/critique passes when the interview has attached reference
+  docs (see "Plan-interview reference docs" below)
 - Harness selection and fallback for plan interviews
 
 **Prompt registry** (`src/prompts/`): the single home for every headless
@@ -574,6 +579,42 @@ option, and answers are pitched at a first-time reader by default. See
   banner that describes a state the row isn't in are the failure modes
   this mode exists to avoid; new actions should state what happened and
   which key to press instead.
+
+### Plan-interview reference docs
+
+The interview's `round` / `synthesis` / `critique` passes run **no-tools** by
+default. Attaching one or more reference documents on the brief step is the
+explicit, opt-in exception: those passes then run through
+`HeadlessRunner::run_read_only` so the interviewer can read the attached docs
+*and* the surrounding codebase.
+
+- **Attaching:** `Ctrl+D` on the brief step opens
+  `AppMode::PlanInterviewAttachDoc` — a `ratatui_explorer::FileExplorer` browser
+  (`app/plan_interview_attach.rs`, `handlers/plan_interview_attach.rs`,
+  `ui/dialogs/plan_interview_attach.rs`) that stashes the live
+  `PlanInterviewState` and restores it on confirm or cancel, a deliberate
+  sibling of `BrowsingPath` rather than a refactor of it. `Ctrl+X` drops the
+  last attachment. Cap `MAX_ATTACHED_DOCS` (4). Any readable text file anywhere
+  on disk; `plan_interview::validate_attachment` rejects a directory, an
+  oversize file (`ATTACHED_DOC_MAX_BYTES`), a binary sniff, a duplicate, or the
+  cap with a stated reason.
+- **Reachability:** `plan_interview::prepare_attached_docs(workdir, &[PathBuf])`
+  runs right before each pass. An in-workdir doc is referenced where it lies; an
+  external one is copied into `<workdir>/.amf/interview-docs/` (generated,
+  gitignored scratch via `extension::generated_amf_subdir`) so a CWD-scoped
+  read-only harness can open it. The staging dir is wiped at the start of every
+  `prepare_attached_docs` call and by `App::clear_plan_interview_doc_staging`
+  on interview accept / abort. A doc that has moved or gone unreadable is
+  dropped and reported, never fatal.
+- **Prompts:** the five interview input builders (`*_input_json`) carry an
+  `attached_documents` array (`path` + `origin`); `round` / `synthesis` /
+  `critique` templates gained a `{{tool_access_note}}` token, resolved to
+  `TOOL_ACCESS_NOTE_NONE` / `CRITIQUE_TOOL_ACCESS_NOTE_NONE` (historical
+  no-tools wording) or `TOOL_ACCESS_NOTE_ATTACHED` (the read-only exception).
+- **Persistence:** `PlanInterviewRecord.attached_docs: Vec<String>`,
+  `MIGRATION_035` (column backfilled `'[]'`). A resumed or re-run interview
+  restores the list verbatim; paths are re-validated at dispatch, not on
+  resume.
 
 ### Editable Headless Prompts
 

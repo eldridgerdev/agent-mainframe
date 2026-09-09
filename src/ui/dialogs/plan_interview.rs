@@ -164,7 +164,7 @@ pub fn draw_plan_interview_dialog(
     frame.render_widget(question_prompt(state, theme), chunks[1]);
 
     match state.phase {
-        PlanInterviewPhase::Brief => draw_editor(
+        PlanInterviewPhase::Brief => draw_brief(
             frame,
             chunks[2],
             state,
@@ -184,7 +184,7 @@ pub fn draw_plan_interview_dialog(
         },
         PlanInterviewPhase::ResumePrompt => draw_resume_prompt(frame, chunks[2], state, theme),
         PlanInterviewPhase::KickoffHandoff => draw_kickoff_handoff(frame, chunks[2], state, theme),
-        PlanInterviewPhase::AiConsent => draw_ai_consent(frame, chunks[2], theme),
+        PlanInterviewPhase::AiConsent => draw_ai_consent(frame, chunks[2], state, theme),
         PlanInterviewPhase::AiLoading => {
             draw_ai_loading(frame, chunks[2], state, theme, throbber_state)
         }
@@ -299,6 +299,16 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
             spans.push(hint("Backspace", theme));
             spans.push(Span::raw(" clear pick  "));
         }
+        if state.phase == PlanInterviewPhase::Brief {
+            // Attaching a reference doc is a brief-step action: it sets the
+            // interview's doc list and flips its passes to a read-only run.
+            spans.push(hint("Ctrl+D", theme));
+            spans.push(Span::raw(" attach doc  "));
+            if !state.attached_docs.is_empty() {
+                spans.push(hint("Ctrl+X", theme));
+                spans.push(Span::raw(" remove last  "));
+            }
+        }
         spans.extend([
             hint("Ctrl+B", theme),
             Span::raw(" back  "),
@@ -321,9 +331,15 @@ fn footer_line(state: &PlanInterviewState, message: Option<&str>, theme: &Theme)
 /// is too short to hold it: a truncated consent screen could hide the `Enter`
 /// (no-token) choice or a token label, which is exactly the information the
 /// step exists to convey. Both variants name all three actions and their cost.
-fn draw_ai_consent(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
+fn draw_ai_consent(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    theme: &Theme,
+) {
     let warning = Style::default().fg(theme.warning.to_color());
-    let full = vec![
+    let attached = state.attached_docs.len();
+    let mut full = vec![
         Line::from(
             "a  Ask AI follow-ups: generate more questions before drafting the plan (uses tokens).",
         ),
@@ -340,11 +356,19 @@ fn draw_ai_consent(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme
             crate::plan_interview::MAX_AI_ROUNDS
         )),
     ];
+    if attached > 0 {
+        full.push(Line::from(Span::styled(
+            format!(
+                "{attached} reference doc(s) attached: every paid pass runs read-only and may also read the repository, so a token estimate is a floor.",
+            ),
+            warning,
+        )));
+    }
 
     let lines = if wrapped_height(&full, area.width) <= area.height as usize {
         full
     } else {
-        vec![
+        let mut compact = vec![
             Line::from("a  Ask AI follow-ups (uses tokens)"),
             Line::from("Ctrl+F  Draft plan now (uses tokens)"),
             Line::from(Span::styled("Enter  Review raw plan (no tokens)", warning)),
@@ -352,7 +376,14 @@ fn draw_ai_consent(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme
                 "Up to {} AI rounds over your brief and repo context.",
                 crate::plan_interview::MAX_AI_ROUNDS
             )),
-        ]
+        ];
+        if attached > 0 {
+            compact.push(Line::from(Span::styled(
+                format!("{attached} doc(s) attached — passes run read-only."),
+                warning,
+            )));
+        }
+        compact
     };
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
@@ -1192,6 +1223,66 @@ fn draw_editor(
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(input, area);
+}
+
+/// The feature-brief step: the brief editor, plus a panel listing any attached
+/// reference documents (which switch the interview's headless passes to a
+/// read-only run). The panel is absent until the first doc is attached.
+fn draw_brief(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &PlanInterviewState,
+    placeholder: &str,
+    theme: &Theme,
+) {
+    if state.attached_docs.is_empty() {
+        draw_editor(frame, area, state, placeholder, theme);
+        return;
+    }
+
+    // One row per doc + top/bottom border, capped so a long list never crowds
+    // out the editor.
+    let panel_height = (state.attached_docs.len() as u16 + 2).min(6);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(panel_height)])
+        .split(area);
+
+    draw_editor(frame, chunks[0], state, placeholder, theme);
+
+    let rows: Vec<Line<'static>> = state
+        .attached_docs
+        .iter()
+        .map(|path| {
+            let missing = !path.is_file();
+            let shown = crate::app::util::shorten_path(path);
+            let mut spans = vec![
+                Span::styled("• ", Style::default().fg(theme.text_muted.to_color())),
+                Span::styled(shown, Style::default().fg(theme.text.to_color())),
+            ];
+            if missing {
+                spans.push(Span::styled(
+                    "  (missing)",
+                    Style::default().fg(theme.danger.to_color()),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect();
+
+    let panel = Paragraph::new(rows)
+        .block(
+            Block::default()
+                .title(format!(
+                    " Reference docs · {}/{} · interview runs read-only ",
+                    state.attached_docs.len(),
+                    crate::plan_interview::MAX_ATTACHED_DOCS
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border.to_color())),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(panel, chunks[1]);
 }
 
 /// A choice question: the radio list, then the always-present custom-answer box

@@ -289,6 +289,7 @@ fn handle_click(
             | AppMode::DeletingProject(_)
             | AppMode::DeletingFeature(_, _)
             | AppMode::BrowsingPath(_)
+            | AppMode::PlanInterviewAttachDoc(_)
             | AppMode::CommandPicker(_)
             | AppMode::Searching(_)
             | AppMode::OpencodeSessionPicker(_)

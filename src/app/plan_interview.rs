@@ -493,6 +493,42 @@ impl App {
         }
     }
 
+    /// Remove any staged reference-document copies for the interview currently
+    /// on screen. Safe to call whenever the interview is ending: the directory
+    /// is generated `.amf/` scratch and `prepare_attached_docs` re-creates it
+    /// from scratch on the next pass anyway.
+    fn clear_plan_interview_doc_staging(&self) {
+        if let AppMode::PlanInterview(state) = &self.mode {
+            plan_interview::clear_staged_interview_docs(&state.context_workdir());
+        }
+    }
+
+    /// Surface reference documents that could not be prepared for a headless
+    /// pass — moved, deleted, or turned unreadable since they were attached.
+    /// Never fatal: the pass proceeds with whatever prepared.
+    fn note_dropped_attachments(&mut self, dropped: &[std::path::PathBuf]) {
+        if dropped.is_empty() {
+            return;
+        }
+        let names: Vec<String> = dropped
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.to_string_lossy().into_owned())
+            })
+            .collect();
+        let joined = names.join(", ");
+        self.log_warn(
+            "plan_interview",
+            format!("skipped {} unreadable attached doc(s): {joined}", dropped.len()),
+        );
+        self.message = Some(format!(
+            "Skipped {} attached doc(s) no longer readable: {joined}",
+            dropped.len()
+        ));
+    }
+
     /// Resume the offered draft, restoring answers and any plan already
     /// generated for it.
     pub(crate) fn resume_plan_interview_draft(&mut self) -> Result<()> {
@@ -586,6 +622,7 @@ impl App {
             questions,
             answers,
             workdir,
+            attached_docs,
         ) = match &self.mode {
             AppMode::PlanInterview(state) => (
                 state.preferred_harness.clone(),
@@ -596,6 +633,7 @@ impl App {
                 state.questions.clone(),
                 state.answers.clone(),
                 state.context_workdir(),
+                state.attached_docs.clone(),
             ),
             _ => return Ok(()),
         };
@@ -618,24 +656,33 @@ impl App {
         };
 
         let context = plan_interview::gather_repository_context(&workdir);
+        let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
+        self.note_dropped_attachments(&dropped);
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
+        let read_only = !attached.is_empty();
         let prompt = self.resolve_headless_prompt(
             crate::prompts::PromptId::PlanInterviewRound,
             &harness,
             &repo,
             &workdir,
-            &crate::prompts::PromptContext::new().with(
-                "interview_input",
-                plan_interview::interviewer_input_json(
-                    &feature_name,
-                    &brief,
-                    &questions,
-                    &answers,
-                    &context,
-                    round,
+            &crate::prompts::PromptContext::new()
+                .with(
+                    "interview_input",
+                    plan_interview::interviewer_input_json(
+                        &feature_name,
+                        &brief,
+                        &questions,
+                        &answers,
+                        &context,
+                        round,
+                        &attached,
+                    ),
+                )
+                .with(
+                    "tool_access_note",
+                    plan_interview::round_synthesis_tool_access_note(read_only),
                 ),
-            ),
         );
         let token_estimate = estimate_tokens(&prompt);
 
@@ -650,8 +697,13 @@ impl App {
         self.log_info(
             "plan_interview",
             format!(
-                "starting AI round {round} with {} (~{token_estimate} tokens)",
-                harness.display_name()
+                "starting AI round {round} with {} (~{token_estimate} tokens{})",
+                harness.display_name(),
+                if read_only {
+                    format!(", read-only for {} attached doc(s)", attached.len())
+                } else {
+                    String::new()
+                }
             ),
         );
 
@@ -660,7 +712,11 @@ impl App {
         let thread_harness = harness;
         let thread_workdir = workdir;
         std::thread::spawn(move || {
-            let result = HeadlessRunner::run(&thread_harness, &thread_workdir, &prompt, None, true);
+            let result = if read_only {
+                HeadlessRunner::run_read_only(&thread_harness, &thread_workdir, &prompt, None)
+            } else {
+                HeadlessRunner::run(&thread_harness, &thread_workdir, &prompt, None, true)
+            };
             let _ = tx.send((round, result));
         });
 
@@ -683,6 +739,7 @@ impl App {
             answers,
             workdir,
             revision_critique,
+            attached_docs,
         ) = match &mut self.mode {
             AppMode::PlanInterview(state) => (
                 state.preferred_harness.clone(),
@@ -696,6 +753,7 @@ impl App {
                 // feedback staged rather than spend it on a pass that never
                 // happens.
                 state.staged_revision_critique().map(str::to_string),
+                state.attached_docs.clone(),
             ),
             _ => return Ok(()),
         };
@@ -743,6 +801,9 @@ impl App {
         };
 
         let context = plan_interview::gather_repository_context(&workdir);
+        let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
+        self.note_dropped_attachments(&dropped);
+        let read_only = !attached.is_empty();
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
         let prompt = self.resolve_headless_prompt(
@@ -760,11 +821,16 @@ impl App {
                         &answers,
                         &context,
                         revision_critique.as_deref(),
+                        &attached,
                     ),
                 )
                 .with(
                     "revision_addendum",
                     plan_interview::synthesis_revision_addendum(revision_critique.as_deref()),
+                )
+                .with(
+                    "tool_access_note",
+                    plan_interview::round_synthesis_tool_access_note(read_only),
                 ),
         );
         let token_estimate = estimate_tokens(&prompt);
@@ -785,13 +851,18 @@ impl App {
         self.log_info(
             "plan_interview",
             format!(
-                "starting plan {} with {} (~{token_estimate} tokens)",
+                "starting plan {} with {} (~{token_estimate} tokens{})",
                 if revision_critique.is_some() {
                     "revision"
                 } else {
                     "synthesis"
                 },
-                harness.display_name()
+                harness.display_name(),
+                if read_only {
+                    format!(", read-only for {} attached doc(s)", attached.len())
+                } else {
+                    String::new()
+                }
             ),
         );
 
@@ -799,7 +870,11 @@ impl App {
         self.plan_interview_synthesis_bg = Some(rx);
         let thread_harness = harness;
         std::thread::spawn(move || {
-            let result = HeadlessRunner::run(&thread_harness, &workdir, &prompt, None, true);
+            let result = if read_only {
+                HeadlessRunner::run_read_only(&thread_harness, &workdir, &prompt, None)
+            } else {
+                HeadlessRunner::run(&thread_harness, &workdir, &prompt, None, true)
+            };
             let _ = tx.send(result);
         });
 
@@ -843,6 +918,7 @@ impl App {
             answers,
             workdir,
             plan,
+            attached_docs,
         ) = match &self.mode {
             AppMode::PlanInterview(state) => {
                 let Some(plan) = state.synthesized_plan.clone() else {
@@ -857,6 +933,7 @@ impl App {
                     state.answers.clone(),
                     state.context_workdir(),
                     plan,
+                    state.attached_docs.clone(),
                 )
             }
             _ => return Ok(()),
@@ -880,6 +957,9 @@ impl App {
         };
 
         let context = plan_interview::gather_repository_context(&workdir);
+        let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
+        self.note_dropped_attachments(&dropped);
+        let read_only = !attached.is_empty();
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
         let prompt = self.resolve_headless_prompt(
@@ -887,17 +967,23 @@ impl App {
             &harness,
             &repo,
             &workdir,
-            &crate::prompts::PromptContext::new().with(
-                "interview_input",
-                plan_interview::critique_input_json(
-                    &feature_name,
-                    &plan,
-                    &brief,
-                    &questions,
-                    &answers,
-                    &context,
+            &crate::prompts::PromptContext::new()
+                .with(
+                    "interview_input",
+                    plan_interview::critique_input_json(
+                        &feature_name,
+                        &plan,
+                        &brief,
+                        &questions,
+                        &answers,
+                        &context,
+                        &attached,
+                    ),
+                )
+                .with(
+                    "tool_access_note",
+                    plan_interview::critique_tool_access_note(read_only),
                 ),
-            ),
         );
         let token_estimate = estimate_tokens(&prompt);
 
@@ -922,15 +1008,24 @@ impl App {
         self.log_info(
             "plan_interview",
             format!(
-                "starting plan review with {} (~{token_estimate} tokens)",
-                harness.display_name()
+                "starting plan review with {} (~{token_estimate} tokens{})",
+                harness.display_name(),
+                if read_only {
+                    format!(", read-only for {} attached doc(s)", attached.len())
+                } else {
+                    String::new()
+                }
             ),
         );
 
         let (tx, rx) = mpsc::channel();
         self.plan_interview_critique_bg = Some(rx);
         std::thread::spawn(move || {
-            let result = HeadlessRunner::run(&harness, &workdir, &prompt, None, true);
+            let result = if read_only {
+                HeadlessRunner::run_read_only(&harness, &workdir, &prompt, None)
+            } else {
+                HeadlessRunner::run(&harness, &workdir, &prompt, None, true)
+            };
             let _ = tx.send(result);
         });
         self.message = None;
@@ -956,6 +1051,7 @@ impl App {
             workdir,
             plan,
             instruction,
+            attached_docs,
         ) = match &self.mode {
             AppMode::PlanInterview(state)
                 if state.phase == PlanInterviewPhase::DirectedFeedback =>
@@ -973,6 +1069,7 @@ impl App {
                     state.context_workdir(),
                     plan,
                     state.editor.text().trim().to_string(),
+                    state.attached_docs.clone(),
                 )
             }
             _ => return Ok(()),
@@ -996,6 +1093,8 @@ impl App {
             return Ok(());
         };
 
+        let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
+        self.note_dropped_attachments(&dropped);
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
         let prompt = self.resolve_headless_prompt(
@@ -1012,6 +1111,7 @@ impl App {
                     &brief,
                     &questions,
                     &answers,
+                    &attached,
                 ),
             ),
         );
@@ -1147,6 +1247,7 @@ impl App {
             workdir,
             plan,
             focuses,
+            attached_docs,
         ) = match &self.mode {
             AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Investigation => {
                 let Some(plan) = state.synthesized_plan.clone() else {
@@ -1162,6 +1263,7 @@ impl App {
                     state.context_workdir(),
                     plan,
                     plan_interview::investigation_focuses(state.editor.text()),
+                    state.attached_docs.clone(),
                 )
             }
             _ => return Ok(()),
@@ -1192,6 +1294,9 @@ impl App {
             return Ok(());
         };
 
+        let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
+        self.note_dropped_attachments(&dropped);
+
         // Resolve both templates once, on the UI thread where overrides can be
         // read; the worker thread only renders them per focus / per findings set.
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
@@ -1220,6 +1325,7 @@ impl App {
                         &brief,
                         &questions,
                         &answers,
+                        &attached,
                     ),
                 ),
             )
@@ -2316,6 +2422,9 @@ impl App {
         branch: &str,
         plan: &str,
     ) {
+        // The interview is done; drop its staged reference-doc copies.
+        self.clear_plan_interview_doc_staging();
+
         let feature_id = self
             .store
             .find_project(project_name)
@@ -2394,6 +2503,7 @@ impl App {
     /// Abort discovery but keep creating the feature, explicitly without plan
     /// mode so the legacy plan-file behavior is not triggered.
     pub(crate) fn launch_plan_interview_without_plan(&mut self) -> Result<()> {
+        self.clear_plan_interview_doc_staging();
         let pending = match &mut self.mode {
             AppMode::PlanInterview(state) => state.pending_launch.take(),
             _ => return Ok(()),
@@ -2413,6 +2523,7 @@ impl App {
     /// created (and may contain hook changes), so keep it rather than removing
     /// user data. Pending placeholder features created for hooks are removed.
     pub(crate) fn cancel_plan_interview_feature(&mut self) -> Result<()> {
+        self.clear_plan_interview_doc_staging();
         let pending = match &mut self.mode {
             AppMode::PlanInterview(state) => state.pending_launch.take(),
             _ => return Ok(()),

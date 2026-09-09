@@ -76,6 +76,11 @@ pub struct PlanInterviewRecord {
     /// `questions` because a round that returned nothing usable still counted
     /// against the cap — resuming a draft must not hand back paid rounds.
     pub ai_rounds_completed: usize,
+    /// Absolute paths of the reference documents the feature owner attached to
+    /// this interview. Not per-question, so it stands alone rather than being
+    /// squared up against `questions`. A resumed or re-run interview re-checks
+    /// each path and drops any that no longer exist.
+    pub attached_docs: Vec<String>,
     /// DB-owned timestamps. Ignored on [`save`], which sets them itself.
     pub created_at: String,
     pub updated_at: String,
@@ -127,7 +132,8 @@ pub fn load(
     let row = conn
         .query_row(
             "SELECT feature_name, brief, questions, answers, plan,
-                    ai_rounds_completed, created_at, updated_at, custom_answers
+                    ai_rounds_completed, created_at, updated_at, custom_answers,
+                    attached_docs
              FROM plan_interviews WHERE feature_id = ?1 AND stage = ?2",
             params![feature_id, stage.as_db_str()],
             |row| {
@@ -141,6 +147,7 @@ pub fn load(
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
                     row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             },
         )
@@ -156,6 +163,7 @@ pub fn load(
         created_at,
         updated_at,
         custom_answers_json,
+        attached_docs_json,
     )) = row
     else {
         return Ok(None);
@@ -181,6 +189,11 @@ pub fn load(
             format!("stored plan-interview custom answers for feature {feature_id} are unreadable")
         })?;
     custom_answers.resize(questions.len(), None);
+    // Attached docs gained a column via MIGRATION_035 (backfilled `'[]'`); an
+    // unreadable value is treated as "none attached" rather than failing the
+    // whole draft, since the paths are re-validated on resume anyway.
+    let attached_docs: Vec<String> =
+        serde_json::from_str(&attached_docs_json).unwrap_or_default();
 
     Ok(Some(PlanInterviewRecord {
         feature_id: feature_id.to_string(),
@@ -192,6 +205,7 @@ pub fn load(
         custom_answers,
         plan,
         ai_rounds_completed: ai_rounds_completed.max(0) as usize,
+        attached_docs,
         created_at,
         updated_at,
     }))
@@ -208,18 +222,20 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
     let mut custom_answers = record.custom_answers.clone();
     custom_answers.resize(record.questions.len(), None);
     let custom_answers = serde_json::to_string(&custom_answers)?;
+    let attached_docs = serde_json::to_string(&record.attached_docs)?;
 
     conn.execute(
         "INSERT INTO plan_interviews
             (feature_id, stage, feature_name, brief, questions, answers, plan,
-             ai_rounds_completed, created_at, updated_at, custom_answers)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9)
+             ai_rounds_completed, created_at, updated_at, custom_answers, attached_docs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9, ?10)
          ON CONFLICT(feature_id, stage) DO UPDATE SET
             feature_name        = excluded.feature_name,
             brief               = excluded.brief,
             questions           = excluded.questions,
             answers             = excluded.answers,
             custom_answers      = excluded.custom_answers,
+            attached_docs       = excluded.attached_docs,
             plan                = excluded.plan,
             ai_rounds_completed = excluded.ai_rounds_completed,
             updated_at          = datetime('now')",
@@ -233,6 +249,7 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             record.plan,
             record.ai_rounds_completed as i64,
             custom_answers,
+            attached_docs,
         ],
     )?;
     Ok(())
@@ -381,6 +398,23 @@ mod tests {
         assert_eq!(loaded.ai_rounds_completed, 1);
         assert!(loaded.plan.is_none());
         assert!(!loaded.created_at.is_empty());
+    }
+
+    #[test]
+    fn attached_docs_round_trip_and_carry_to_the_final_row() {
+        let (_tmp, db) = open_temp_db();
+        let mut record = draft("feat-1");
+        record.attached_docs = vec!["/abs/spec.md".into(), "/abs/notes/brief.md".into()];
+        db.save_plan_interview(&record).unwrap();
+
+        let loaded = db.plan_interview_draft("feat-1").unwrap().unwrap();
+        assert_eq!(loaded.attached_docs, record.attached_docs);
+
+        // finalize_draft re-keys and flips the stage without dropping the list.
+        db.finalize_plan_interview_draft("feat-1", "feat-1", "# Plan: guided-plans\n")
+            .unwrap();
+        let final_row = db.plan_interview_final("feat-1").unwrap().unwrap();
+        assert_eq!(final_row.attached_docs, record.attached_docs);
     }
 
     #[test]

@@ -152,6 +152,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add prompt_overrides table for editable feature/global headless prompts",
             MIGRATION_034,
         ),
+        (
+            "Add attached_docs column to plan_interviews for attached reference documents",
+            MIGRATION_035,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -890,6 +894,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_overrides_identity
     ON prompt_overrides(prompt_id, scope, COALESCE(scope_key, ''), COALESCE(harness, ''));
 ";
 
+/// A JSON array of absolute paths: the reference documents a feature owner
+/// attached to a plan interview so its round / synthesis / critique passes run
+/// read-only and can read them. Not per-question, so it is a single scalar
+/// column rather than something squared up against the answer count. Existing
+/// rows backfill to `'[]'` (no attachments), matching the in-memory default.
+const MIGRATION_035: &str = "
+ALTER TABLE plan_interviews ADD COLUMN attached_docs TEXT NOT NULL DEFAULT '[]';
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -930,7 +943,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 34);
+        assert_eq!(version, 35);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1025,7 +1038,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 34);
+        assert_eq!(version, 35);
     }
 
     #[test]
@@ -1367,7 +1380,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 34);
+        assert_eq!(rows, 35);
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an
@@ -1378,6 +1391,10 @@ mod tests {
         for seed_version in [None, Some(33)] {
             let conn = Connection::open_in_memory().unwrap();
             if let Some(version) = seed_version {
+                // A DB really at v33 has every earlier table; stand up the ones
+                // migrations after 034 alter (035 alters `plan_interviews`).
+                conn.execute_batch(super::MIGRATION_001).unwrap();
+                conn.execute_batch(super::MIGRATION_016).unwrap();
                 conn.execute_batch(
                     "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                         applied_at TEXT NOT NULL, description TEXT NOT NULL);",
@@ -1474,7 +1491,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 34);
+        assert_eq!(version, 35);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

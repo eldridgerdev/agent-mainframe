@@ -1404,6 +1404,7 @@ fn status_file_cleanup_during_remove() {
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_list_sessions().returning(|| Ok(vec![]));
+    tmux.expect_session_exists().returning(|_| false);
 
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.db = Some(db);

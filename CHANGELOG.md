@@ -21,6 +21,23 @@ are tagged.
 - Failed AI reviews now retain Claude’s structured error details and show the
   process exit status, making failures with empty stderr easier to diagnose.
 
+- **AI review in PR Triage no longer fails on very large pull requests.** The
+  `A`/`w`/`O` review passes fetch the PR diff with `gh pr diff`, which pulls it
+  from GitHub's API — and GitHub refuses to render a diff past a size cap
+  ("the diff exceeded the maximum number of lines"), so the review never
+  started. AMF now recognises that specific refusal and falls back to building
+  the same merge-base diff locally with `git`, which has no such limit. The
+  fallback fetches the PR head and base — from whichever repository `gh`
+  resolves the PR against, so fork checkouts and `gh repo set-default` work —
+  into private per-process refs (leaving your working tree, branch, and
+  `origin/*` untouched) and cleans them up afterward, and its `git diff` is
+  pinned to the same flags AMF uses elsewhere so a repo-local `diff.external`
+  or `diff.context` setting can't distort it. If the PR is already merged (so
+  the local diff would come back empty), AMF re-surfaces GitHub's original
+  refusal instead of reviewing nothing. Every
+  other `gh pr diff` failure — no PR, not authenticated, offline — still
+  surfaces as before. A diff that large may still exceed the review model's
+  context window, which is reported separately. No migration is required.
 
 - **The "latest prompt" menu (leader, then `l`) now shows every prompt sent
   in a Claude session, not just the ones near the end of the most recent

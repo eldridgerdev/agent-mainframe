@@ -64,6 +64,15 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 };
             }
         }
+        KeyCode::BackTab => {
+            if let AppMode::CreatingProject(state) = &mut app.mode {
+                state.step = match state.step {
+                    CreateProjectStep::Name => CreateProjectStep::Agent,
+                    CreateProjectStep::Path => CreateProjectStep::Name,
+                    CreateProjectStep::Agent => CreateProjectStep::Path,
+                };
+            }
+        }
         KeyCode::Backspace => {
             if let AppMode::CreatingProject(state) = &mut app.mode {
                 match state.step {

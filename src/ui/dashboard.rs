@@ -1401,7 +1401,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     {
         let scroll = state.scroll_offset;
         draw_view_pane(frame, app, view, false, false);
-        super::dialogs::draw_help(frame, scroll, &app.theme);
+        let scroll = super::dialogs::draw_help(frame, scroll, &app.theme);
+        if let AppMode::Help(state) = &mut app.mode {
+            state.scroll_offset = scroll;
+        }
         draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
@@ -1668,6 +1671,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 frame,
                 state,
                 allowed_agents.as_slice(),
+                app.message.as_deref(),
                 &app.theme,
             );
         }
@@ -1765,7 +1769,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && state.from_view.is_none()
     {
         let scroll = state.scroll_offset;
-        super::dialogs::draw_help(frame, scroll, &app.theme);
+        let scroll = super::dialogs::draw_help(frame, scroll, &app.theme);
+        if let AppMode::Help(state) = &mut app.mode {
+            state.scroll_offset = scroll;
+        }
     }
 
     if let AppMode::NotificationPicker(selected, None) = &app.mode {

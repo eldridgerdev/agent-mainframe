@@ -2482,11 +2482,9 @@ fn delete_project_clears_terminal_pr_associations_for_all_features() {
         at: "2026-08-21T13:32:59Z".to_string(),
     };
 
-    let mut app = App::new_for_test(
-        store,
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_kill_session().returning(|_| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.store_path = store_file.path().to_path_buf();
     app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
     app.db
@@ -2694,4 +2692,116 @@ fn create_project_automation_dry_run_returns_plan_without_mutating_store() {
     assert_eq!(response.project_path, repo);
     assert!(response.is_git);
     assert!(app.store.projects.is_empty());
+}
+
+#[test]
+fn usability_project_form_can_move_back_without_losing_input() {
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::CreatingProject(CreateProjectState {
+        step: CreateProjectStep::Agent,
+        name: "my-project".into(),
+        path: "/tmp/my-project".into(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+    });
+    crate::handlers::handle_create_project_key(
+        &mut app,
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+    )
+    .unwrap();
+    assert!(
+        matches!(&app.mode, AppMode::CreatingProject(s) if matches!(s.step, CreateProjectStep::Path) && s.name == "my-project" && s.path == "/tmp/my-project")
+    );
+}
+
+#[test]
+fn usability_project_rejects_file_path_and_focuses_preserved_input() {
+    let file = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::CreatingProject(CreateProjectState {
+        step: CreateProjectStep::Agent,
+        name: "example".into(),
+        path: file.path().to_string_lossy().into_owned(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+    });
+    app.create_project().unwrap();
+    assert!(app.store.projects.is_empty());
+    assert!(app.message.as_deref().unwrap().contains("not a directory"));
+    assert!(
+        matches!(&app.mode, AppMode::CreatingProject(s) if matches!(s.step, CreateProjectStep::Path) && s.name == "example")
+    );
+}
+
+#[test]
+fn usability_failed_session_removal_preserves_records() {
+    for session_count in [1, 2] {
+        let mut store = store_with_feature(ProjectStatus::Active);
+        store.projects[0].features[0].sessions = (0..session_count)
+            .map(|i| make_session(&format!("agent-{i}"), None))
+            .collect();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().returning(|_| true);
+        if session_count == 1 {
+            tmux.expect_kill_session()
+                .times(1)
+                .returning(|_| Err(anyhow::anyhow!("tmux unavailable")));
+        } else {
+            tmux.expect_window_exists().returning(|_, _| true);
+            tmux.expect_kill_window()
+                .times(1)
+                .returning(|_, _| Err(anyhow::anyhow!("tmux unavailable")));
+        }
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+        app.selection = Selection::Session(0, 0, 0);
+        let error = app.remove_session().unwrap_err();
+        assert!(error.to_string().contains("Session retained"));
+        assert_eq!(
+            app.store.projects[0].features[0].sessions.len(),
+            session_count
+        );
+        assert_eq!(
+            app.store.projects[0].features[0].status,
+            ProjectStatus::Active
+        );
+    }
+}
+
+#[test]
+fn usability_failed_project_cleanup_preserves_records_for_retry() {
+    for fail_tmux in [true, false] {
+        let workdir = TempDir::new().unwrap();
+        let mut store = store_with_feature(ProjectStatus::Active);
+        store.projects[0].features[0].is_worktree = true;
+        store.projects[0].features[0].workdir = workdir.path().to_path_buf();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_kill_session().times(1).returning(move |_| {
+            if fail_tmux {
+                Err(anyhow::anyhow!("tmux unavailable"))
+            } else {
+                Ok(())
+            }
+        });
+        let mut worktree = MockWorktreeOps::new();
+        if !fail_tmux {
+            worktree
+                .expect_remove()
+                .times(1)
+                .returning(|_, _| Err(anyhow::anyhow!("permission denied")));
+        }
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(worktree));
+        app.mode = AppMode::DeletingProject("my-project".into());
+        let error = app.delete_project().unwrap_err();
+        assert!(error.to_string().contains("Project retained"));
+        assert_eq!(app.store.projects.len(), 1);
+        assert_eq!(app.store.projects[0].features.len(), 1);
+    }
 }

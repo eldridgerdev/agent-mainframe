@@ -10,15 +10,14 @@ use crate::app::{CreateProjectState, CreateProjectStep};
 use crate::project::AgentKind;
 use crate::theme::Theme;
 
-use super::super::dashboard::centered_rect;
-
 pub fn draw_create_project_dialog(
     frame: &mut Frame,
     state: &CreateProjectState,
     allowed_agents: &[AgentKind],
+    message: Option<&str>,
     theme: &Theme,
 ) {
-    let area = centered_rect(60, 40, frame.area());
+    let area = crate::ui::dialog_rect(frame.area(), 90, 20);
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
@@ -35,9 +34,9 @@ pub fn draw_create_project_dialog(
         .constraints([
             Constraint::Length(2),
             Constraint::Length(2),
-            Constraint::Length(6),
-            Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(allowed_agents.len() as u16 + 1),
+            Constraint::Min(1),
+            Constraint::Length(3),
         ])
         .split(inner);
 
@@ -65,7 +64,7 @@ pub fn draw_create_project_dialog(
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ];
-    let path_field = Paragraph::new(Line::from(path_spans));
+    let path_field = Paragraph::new(Line::from(path_spans)).wrap(Wrap { trim: false });
     frame.render_widget(path_field, chunks[1]);
 
     let agent_active = matches!(state.step, CreateProjectStep::Agent);
@@ -99,24 +98,50 @@ pub fn draw_create_project_dialog(
     }
     frame.render_widget(Paragraph::new(agent_lines), chunks[2]);
 
+    if let Some(message) = message {
+        frame.render_widget(
+            Paragraph::new(message)
+                .style(Style::default().fg(theme.danger.to_color()))
+                .wrap(Wrap { trim: false }),
+            chunks[3],
+        );
+    }
+
     let enter_label = if matches!(state.step, CreateProjectStep::Agent) {
         " confirm  "
     } else {
         " next  "
     };
-    let hints = Paragraph::new(Line::from(vec![
-        Span::styled(" Tab", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" switch field  "),
-        Span::styled("Ctrl+B", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" browse  "),
-        Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" choose agent  "),
+    let mut hints = vec![
+        Span::styled(
+            " Tab/Shift+Tab",
+            Style::default().fg(theme.warning.to_color()),
+        ),
+        Span::raw(" fields  "),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(enter_label),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" cancel"),
-    ]));
-    frame.render_widget(hints, chunks[3]);
+    ];
+    match state.step {
+        CreateProjectStep::Path => {
+            hints.push(Span::styled(
+                "  Ctrl+B",
+                Style::default().fg(theme.warning.to_color()),
+            ));
+            hints.push(Span::raw(" browse"));
+        }
+        CreateProjectStep::Agent => {
+            hints.push(Span::styled(
+                "  ↑/↓ or j/k",
+                Style::default().fg(theme.warning.to_color()),
+            ));
+            hints.push(Span::raw(" choose harness"));
+        }
+        CreateProjectStep::Name => {}
+    }
+    let hints = Paragraph::new(Line::from(hints)).wrap(Wrap { trim: false });
+    frame.render_widget(hints, chunks[4]);
 }
 
 fn cursor_span_project<'a>(
@@ -137,9 +162,7 @@ fn cursor_span_project<'a>(
 }
 
 pub fn draw_delete_project_confirm(frame: &mut Frame, name: &str, theme: &Theme) {
-    let area = centered_rect(50, 25, frame.area());
-    crate::ui::draw_modal_overlay(frame, area, theme);
-
+    let width = frame.area().width.min(76);
     let text = Paragraph::new(vec![
         Line::from(""),
         Line::from(vec![
@@ -187,8 +210,11 @@ pub fn draw_delete_project_confirm(frame: &mut Frame, name: &str, theme: &Theme)
             Span::raw(" to cancel"),
         ]),
     ])
-    .wrap(Wrap { trim: false })
-    .block(
+    .wrap(Wrap { trim: false });
+    let height = text.line_count(width.saturating_sub(2)).saturating_add(2);
+    let area = crate::ui::dialog_rect(frame.area(), width, height.min(u16::MAX as usize) as u16);
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let text = text.block(
         Block::default()
             .title(" Confirm Delete ")
             .borders(Borders::ALL)

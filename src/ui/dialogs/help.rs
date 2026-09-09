@@ -3,18 +3,18 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
 
 use super::super::dashboard::centered_rect;
 use crate::theme::Theme;
 
-pub fn draw_help(frame: &mut Frame, scroll_offset: usize, theme: &Theme) {
-    let area = centered_rect(55, 70, frame.area());
-    draw_help_at(frame, area, scroll_offset, theme);
+pub fn draw_help(frame: &mut Frame, scroll_offset: usize, theme: &Theme) -> usize {
+    let area = centered_rect(90, 85, frame.area());
+    draw_help_at(frame, area, scroll_offset, theme)
 }
 
-fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &Theme) {
+fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &Theme) -> usize {
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let normal_keybinds: Vec<(&str, &str)> = vec![
@@ -231,7 +231,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  While viewing (embedded tmux):",
+        "  While viewing: Ctrl+Q exits; Ctrl+Space opens leader commands.",
         Style::default()
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
@@ -240,7 +240,11 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     let view_keybinds: Vec<(&str, &str)> = vec![
         ("Ctrl+Q", "Exit view"),
         ("Ctrl+Space", "Open leader command menu"),
-        ("any text key", "Open compose input (agent sessions)"),
+        (
+            "any text key",
+            "Open compose input (agent sessions, without leader)",
+        ),
+        ("", "Commands below require Ctrl+Space first:"),
         ("s", "Steering coach (experimental)"),
         ("e", "Toggle compose/direct input (agent sessions)"),
         ("d", "Diff viewer (all changes / commit)"),
@@ -252,7 +256,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ),
         ("b", "Show/hide sidebar"),
         ("v", "Expand/collapse todos"),
-        ("Ctrl+Space z", "Complete this session's referenced TODO"),
+        ("z", "Complete this session's referenced TODO"),
         ("N", "Quick-capture a TODO for this worktree"),
         ("t / T", "Cycle next/prev session"),
         ("w", "Session switcher"),
@@ -461,12 +465,13 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ]));
     }
 
-    let total_lines = lines.len();
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total_lines = paragraph.line_count(area.width.saturating_sub(2));
     let visible_height = area.height.saturating_sub(2) as usize;
     let max_scroll = total_lines.saturating_sub(visible_height);
     let scroll = scroll_offset.min(max_scroll) as u16;
 
-    let help = Paragraph::new(lines).scroll((scroll, 0)).block(
+    let help = paragraph.scroll((scroll, 0)).block(
         Block::default()
             .title(" Keybindings ")
             .borders(Borders::ALL)
@@ -476,7 +481,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     frame.render_widget(help, area);
 
-    if total_lines > visible_height {
+    if total_lines > visible_height && area.width > 0 && area.height > 2 {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let mut scrollbar_state =
             ScrollbarState::new(max_scroll).position(scroll_offset.min(max_scroll));
@@ -488,4 +493,5 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         };
         frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
     }
+    scroll as usize
 }

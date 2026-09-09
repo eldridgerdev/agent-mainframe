@@ -240,7 +240,11 @@ fn draw_agent_config_dialog(
     selected_agent: usize,
     theme: &Theme,
 ) {
-    let area = centered_rect(50, 35, frame.area());
+    let height = header_lines
+        .len()
+        .saturating_add(allowed_agents.len())
+        .saturating_add(6);
+    let area = crate::ui::dialog_rect(frame.area(), 72, height.min(u16::MAX as usize) as u16);
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()

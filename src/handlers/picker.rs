@@ -287,6 +287,19 @@ pub fn handle_syntax_language_picker_key(app: &mut App, key: KeyCode) -> Result<
 }
 
 pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // While filtering, printable keys belong to the query, including the
+    // keys that navigate or toggle filters in selection mode.
+    if let AppMode::MarkdownFilePicker(state) = &mut app.mode
+        && state.search_active
+        && !key.modifiers.intersects(
+            crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
+        )
+        && let KeyCode::Char(c) = key.code
+    {
+        state.query.push(c);
+        clamp_markdown_picker_selection(state);
+        return Ok(());
+    }
     match key {
         KeyEvent {
             code: KeyCode::Esc, ..
@@ -326,7 +339,7 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<(
             }
         }
         KeyEvent {
-            code: KeyCode::Down | KeyCode::Char('j'),
+            code: KeyCode::Down | KeyCode::Tab | KeyCode::Char('j'),
             ..
         } => {
             if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
@@ -342,7 +355,7 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<(
             }
         }
         KeyEvent {
-            code: KeyCode::Up | KeyCode::Char('k'),
+            code: KeyCode::Up | KeyCode::BackTab | KeyCode::Char('k'),
             ..
         } => {
             if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
@@ -875,6 +888,7 @@ pub fn handle_new_session_name_key(app: &mut App, key: KeyCode) -> Result<()> {
             let label = state.input.trim().to_string();
             if label.is_empty() {
                 app.message = Some("Name cannot be empty".into());
+                app.push_toast_warning("Name cannot be empty");
                 app.mode = AppMode::NamingNewSession(state);
                 return Ok(());
             }
@@ -1224,6 +1238,34 @@ mod tests {
             AppMode::MarkdownFilePicker(state) => assert_eq!(state.selected, 2),
             _ => panic!("expected markdown picker to stay open"),
         }
+    }
+
+    #[test]
+    fn usability_markdown_search_accepts_navigation_letters_and_uppercase() {
+        let mut app = picker_app();
+        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
+            files: vec![PathBuf::from("/tmp/demo/jkPLAN.md")],
+            selected: 0,
+            plan_only: false,
+            search_active: true,
+            query: String::new(),
+            workdir: PathBuf::from("/tmp/demo"),
+            repo_root: None,
+            purpose: crate::app::MarkdownFilePickerPurpose::Browse,
+            from_view: Some(picker_view()),
+        });
+        for c in "jkPLAN".chars() {
+            let modifiers = if c.is_uppercase() {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            handle_markdown_file_picker_key(&mut app, KeyEvent::new(KeyCode::Char(c), modifiers))
+                .unwrap();
+        }
+        assert!(
+            matches!(&app.mode, AppMode::MarkdownFilePicker(s) if s.query == "jkPLAN" && !s.plan_only)
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::app::*;
 use crate::project::{AgentKind, Feature, Project, SessionKind};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
 use chrono::{Duration, Utc};
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 
 #[test]
@@ -275,4 +275,97 @@ fn item_index_at_visible_row_maps_status_line_to_same_session() {
     assert!(matches!(app.item_index_at_visible_row(2, 4), Some(2)));
     assert!(matches!(app.item_index_at_visible_row(3, 4), Some(2)));
     assert_eq!(app.item_index_at_visible_row(4, 4), None);
+}
+
+#[test]
+fn usability_search_types_navigation_letters_and_reveals_collapsed_result() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].collapsed = true;
+    store.projects[0].features[0].collapsed = true;
+    store.projects[0].features[0]
+        .sessions
+        .push(make_session("jkl", None));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.start_search();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.matches.len() == 3));
+    for c in "jkl".chars() {
+        crate::handlers::handle_search_key(&mut app, KeyCode::Char(c)).unwrap();
+    }
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.query == "jkl" && s.matches.len() == 1));
+    crate::handlers::handle_search_key(&mut app, KeyCode::Enter).unwrap();
+    assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
+    assert!(
+        app.visible_items()
+            .iter()
+            .any(|item| matches!(item, VisibleItem::Session(0, 0, 0)))
+    );
+}
+
+#[test]
+fn usability_search_tab_navigation_and_empty_results_are_safe() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Stopped),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.start_search();
+    crate::handlers::handle_search_key(&mut app, KeyCode::BackTab).unwrap();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.selected_match == 1));
+    crate::handlers::handle_search_key(&mut app, KeyCode::Tab).unwrap();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.selected_match == 0));
+    crate::handlers::handle_search_key(&mut app, KeyCode::Char('!')).unwrap();
+    crate::handlers::handle_search_key(&mut app, KeyCode::Enter).unwrap();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.matches.is_empty()));
+    crate::handlers::handle_search_key(&mut app, KeyCode::Backspace).unwrap();
+    assert!(matches!(&app.mode, AppMode::Searching(s) if s.matches.len() == 2));
+}
+
+#[test]
+fn usability_help_end_then_up_moves_immediately() {
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Help(HelpState {
+        from_view: None,
+        scroll_offset: 0,
+    });
+    crate::handlers::handle_help_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE))
+        .unwrap();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+    let bottom = match &app.mode {
+        AppMode::Help(s) => s.scroll_offset,
+        _ => unreachable!(),
+    };
+    assert!(bottom > 0 && bottom < 1000);
+    crate::handlers::handle_help_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+    assert!(matches!(&app.mode, AppMode::Help(s) if s.scroll_offset == bottom - 1));
+}
+
+#[test]
+fn usability_search_finds_the_feature_name_shown_on_the_dashboard() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].nickname = Some("Release polish".into());
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.start_search();
+    crate::handlers::handle_paste(&mut app, "release").unwrap();
+    assert!(
+        matches!(&app.mode, AppMode::Searching(s) if s.matches.len() == 1 && s.matches[0].label == "Release polish")
+    );
 }

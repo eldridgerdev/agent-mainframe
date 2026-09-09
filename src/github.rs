@@ -416,12 +416,27 @@ impl GhCli {
         match Self::gh_stdout(workdir, &["pr", "diff", &number.to_string()]) {
             Ok(diff) => Ok(diff),
             Err(e) if is_diff_too_large_error(&e.to_string()) => {
-                Self::pr_diff_local(workdir, number).with_context(|| {
-                    format!(
-                        "`gh pr diff` refused PR #{number} as too large, and the local git \
-                         fallback also failed"
-                    )
-                })
+                match Self::pr_diff_local(workdir, number) {
+                    Ok(diff) if !diff.is_empty() => Ok(diff),
+                    // An empty `base...head` range means head is already an
+                    // ancestor of the base branch tip — i.e. the PR was merged
+                    // (with a merge commit) and the base branch now contains its
+                    // commits. `gh pr diff` still renders these; the local
+                    // fallback cannot, so re-surface the original refusal rather
+                    // than hand `run_ai_pr_review` an empty diff to review.
+                    Ok(_) => Err(e).with_context(|| {
+                        format!(
+                            "`gh pr diff` refused PR #{number} as too large, and the local git \
+                             fallback produced an empty diff (the PR is likely already merged)"
+                        )
+                    }),
+                    Err(fallback_err) => Err(fallback_err).with_context(|| {
+                        format!(
+                            "`gh pr diff` refused PR #{number} as too large, and the local git \
+                             fallback also failed"
+                        )
+                    }),
+                }
             }
             Err(e) => Err(e),
         }
@@ -434,8 +449,17 @@ impl GhCli {
     /// `refs/amf/` refs so nothing about the working tree, checked-out branch,
     /// or `origin/*` tracking refs changes, diffs `base...head` (the same
     /// merge-base three-dot range `gh pr diff` shows), then deletes the temp
-    /// refs. Uses the `origin` remote, which for an AMF triage worktree is the
-    /// base repository.
+    /// refs.
+    ///
+    /// The fetch source is the repository `gh` itself resolved for this PR
+    /// (`gh repo view --json url -q .url`), not a hardcoded `origin` — in a fork clone
+    /// `origin` is the fork and would not carry `pull/<n>/head` or the base
+    /// branch. The temp refs carry this process's pid so two AMF features
+    /// reviewing the same PR number concurrently don't fetch into, and delete,
+    /// each other's refs. The `git diff` invocation mirrors the flags every
+    /// other `git diff` in the codebase uses (`src/diff.rs`) so a repo-local
+    /// `diff.external` / textconv / `diff.context` setting can't reshape the
+    /// patch out from under `parse_unified_diff`.
     fn pr_diff_local(workdir: &Path, number: u32) -> Result<String> {
         let json = Self::gh_stdout(
             workdir,
@@ -450,11 +474,20 @@ impl GhCli {
         let refs: PrDiffRefs = serde_json::from_str(&json)
             .context("Failed to parse `gh pr view` output for the local diff fallback.")?;
 
-        let head_ref = format!("refs/amf/pr-{number}-head");
-        let base_ref = format!("refs/amf/pr-{number}-base");
+        // The repo `gh` resolves the PR against (honours `gh repo set-default`,
+        // an `upstream` remote, a fork checkout). Fetching `origin` blind would
+        // fail on exactly the fork clones `gh pr diff` handled fine.
+        let repo_url = Self::gh_stdout(workdir, &["repo", "view", "--json", "url", "-q", ".url"])
+            .context(
+            "Failed to resolve the PR's base repository for the local diff fallback.",
+        )?;
+
+        let pid = std::process::id();
+        let head_ref = format!("refs/amf/pr-{number}-{pid}-head");
+        let base_ref = format!("refs/amf/pr-{number}-{pid}-base");
 
         let fetch = Command::new("git")
-            .args(["fetch", "--quiet", "--no-tags", "origin"])
+            .args(["fetch", "--quiet", "--no-tags", &repo_url])
             .arg(format!("+pull/{number}/head:{head_ref}"))
             .arg(format!("+refs/heads/{}:{base_ref}", refs.base_ref_name))
             .current_dir(workdir)
@@ -472,7 +505,10 @@ impl GhCli {
                 "-c",
                 "core.pager=cat",
                 "diff",
+                "--find-renames",
+                "--no-ext-diff",
                 "--no-color",
+                "--unified=3",
                 &format!("{base_ref}...{head_ref}"),
             ])
             .current_dir(workdir)
@@ -1325,16 +1361,22 @@ fn is_rate_limited(text: &str) -> bool {
 /// an oversized PR with `HTTP 406` and a body like *"the diff exceeded the
 /// maximum number of lines"* / *"Sorry, this diff is taking too long to
 /// generate"*. Matched on text because `gh` only forwards the message; the
-/// exit code alone can't tell this apart from other failures. Kept narrow so a
-/// genuine error (no such PR, not authenticated, network down) still surfaces
-/// instead of triggering the local fallback.
+/// exit code alone can't tell this apart from other failures.
+///
+/// This only ever sees the error from a failed `gh pr diff <n>` (see
+/// [`GhCli::pr_diff`], the sole caller), so it can read `HTTP 406` — the
+/// media-type cap — as the size refusal directly: an ordinary `gh pr diff`
+/// failure is a `404` (no such PR), a `401` (not authenticated), or a network
+/// error, none of which are `406` or carry *"too large"*. (A previous version
+/// `&&`-ed those two clauses with `contains("diff")`, which is vacuous here —
+/// `gh_stdout` prefixes every message with `` `gh pr diff <n>` failed: ``.)
 fn is_diff_too_large_error(text: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
     lowered.contains("maximum number of lines")
         || lowered.contains("diff exceeded the maximum")
         || lowered.contains("diff is taking too long")
-        || (lowered.contains("http 406") && lowered.contains("diff"))
-        || (lowered.contains("too large") && lowered.contains("diff"))
+        || lowered.contains("http 406")
+        || lowered.contains("too large")
 }
 
 fn parse_review_threads_page(stdout: &[u8]) -> Result<(Vec<ReviewThread>, Option<String>)> {
@@ -1852,28 +1894,35 @@ mod tests {
 
     #[test]
     fn diff_too_large_detection_covers_how_gh_forwards_it() {
-        // The wordings GitHub's REST API has used for an oversized diff.
+        // Full messages as the caller sees them: `gh_stdout` wraps every
+        // failure as "`gh pr diff <n>` failed: <stderr>".
         assert!(is_diff_too_large_error(
             "`gh pr diff 1234` failed: the diff exceeded the maximum number of lines (20000)"
         ));
         assert!(is_diff_too_large_error(
-            "HTTP 406: Sorry, this diff is taking too long to generate. (https://api.github.com/repos/o/r/pulls/1234)"
+            "`gh pr diff 1234` failed: HTTP 406: Sorry, this diff is taking too long to generate. (https://api.github.com/repos/o/r/pulls/1234)"
         ));
         assert!(is_diff_too_large_error(
-            "GraphQL: the diff is too large to render (repository.pullRequest)"
+            "`gh pr diff 1234` failed: HTTP 406: the diff is too large to render (https://api.github.com/repos/o/r/pulls/1234)"
         ));
     }
 
     /// The local-diff fallback must fire *only* for the size cap. A missing PR
-    /// or an auth failure has to keep bubbling up as the real error.
+    /// or an auth failure has to keep bubbling up as the real error — tested on
+    /// the wrapped form the caller actually receives.
     #[test]
     fn ordinary_diff_failures_do_not_trigger_the_local_fallback() {
         assert!(!is_diff_too_large_error(
-            "no pull requests found for branch"
+            "`gh pr diff 42` failed: no pull requests found for branch"
         ));
-        assert!(!is_diff_too_large_error("HTTP 404: Not Found"));
         assert!(!is_diff_too_large_error(
-            "could not resolve to a PullRequest with the number of 999999"
+            "`gh pr diff 42` failed: HTTP 404: Not Found (https://api.github.com/repos/o/r/pulls/42)"
+        ));
+        assert!(!is_diff_too_large_error(
+            "`gh pr diff 999999` failed: could not resolve to a PullRequest with the number of 999999"
+        ));
+        assert!(!is_diff_too_large_error(
+            "`gh pr diff 42` failed: HTTP 401: Bad credentials"
         ));
         assert!(!is_diff_too_large_error(""));
     }

@@ -18,6 +18,10 @@ are tagged.
 
 ### Fixed
 
+- Failed AI reviews now retain Claude’s structured error details and show the
+  process exit status, making failures with empty stderr easier to diagnose.
+
+
 - **The "latest prompt" menu (leader, then `l`) now shows every prompt sent
   in a Claude session, not just the ones near the end of the most recent
   resume.** It previously only read the tail of the single most-recently

@@ -570,8 +570,9 @@ fn run_command(
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.trim();
         anyhow::bail!(
-            "{} headless command failed{}{}",
+            "{} headless command failed ({}){}{}",
             harness.display_name(),
+            output.status,
             if detail.is_empty() { "" } else { ": " },
             detail
         );
@@ -679,9 +680,19 @@ fn run_jsonl_command(
 
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
-        let detail = stderr.trim();
+        let mut details = Vec::new();
+        if !stderr.trim().is_empty() {
+            details.push(stderr.trim().to_string());
+        }
+        if let Some(error) = &json_output.event_error
+            && !error.trim().is_empty()
+            && !details.iter().any(|detail| detail == error.trim())
+        {
+            details.push(error.trim().to_string());
+        }
+        let detail = details.join("; ");
         anyhow::bail!(
-            "{} headless command failed{}{}",
+            "{} headless command failed ({status}){}{}",
             harness.display_name(),
             if detail.is_empty() { "" } else { ": " },
             detail
@@ -856,7 +867,21 @@ fn apply_claude_json_event(
                 output.event_error = event
                     .get("result")
                     .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+                    .filter(|message| !message.trim().is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        let errors = event.get("errors")?.as_array()?;
+                        let messages: Vec<_> =
+                            errors.iter().filter_map(|error| error.as_str()).collect();
+                        let detail = messages.join("; ");
+                        (!detail.trim().is_empty()).then_some(detail)
+                    })
+                    .or_else(|| {
+                        event
+                            .get("subtype")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    });
             } else {
                 output.final_message = event
                     .get("result")
@@ -1582,6 +1607,33 @@ mod tests {
         .to_string();
         assert!(error.contains("Opencode headless command failed"));
         assert!(error.contains("quota exhausted"));
+    }
+
+    #[test]
+    fn failed_claude_run_preserves_json_error_without_stderr() {
+        for script in [
+            r#"printf '%s\n' '{"type":"result","is_error":true,"result":"context window exceeded"}'; exit 7"#,
+            r#"printf '%s\n' '{"type":"result","is_error":true,"errors":["context window exceeded"]}'; exit 7"#,
+        ] {
+            let spec = HeadlessCommand {
+                binary: "sh".into(),
+                args: vec!["-c", script],
+                trailing: vec![],
+                envs: vec![],
+            };
+            let error = run_jsonl_command(
+                &AgentKind::Claude,
+                &spec,
+                Path::new("/tmp"),
+                "hello",
+                None,
+                |_| {},
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("context window exceeded"), "{error}");
+            assert!(error.contains("exit status: 7"), "{error}");
+        }
     }
 
     #[test]

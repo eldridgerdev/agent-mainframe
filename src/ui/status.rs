@@ -248,7 +248,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         | AppMode::CreatingBatchFeatures(_)
         | AppMode::RenamingSession(_)
         | AppMode::RenamingFeature(_)
-        | AppMode::BrowsingPath(_) => Line::from(vec![
+        | AppMode::BrowsingPath(_)
+        | AppMode::PlanInterviewAttachDoc(_) => Line::from(vec![
             Span::styled("Enter", key_style()),
             Span::raw(" confirm  "),
             Span::styled("Esc", key_style()),

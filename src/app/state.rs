@@ -4825,6 +4825,10 @@ pub enum AppMode {
     SessionConfig(SessionConfigState),
     ProjectAgentConfig(ProjectAgentConfigState),
     BrowsingPath(Box<BrowsePathState>),
+    /// A file browser opened from the plan-interview brief step to attach a
+    /// reference document. Stashes the live [`PlanInterviewState`] so both
+    /// confirm and cancel return to the interview exactly as it was.
+    PlanInterviewAttachDoc(Box<AttachDocState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),
     NamingNewSession(NewSessionNameState),
@@ -5580,6 +5584,20 @@ pub struct BrowsePathState {
     pub creating_folder: bool,
 }
 
+/// A file-picking browser for attaching a reference document to a plan
+/// interview. Kept apart from [`BrowsePathState`] on purpose: that one is a
+/// directory picker welded to project creation, this one selects a file and
+/// carries the interview it must return to.
+pub struct AttachDocState {
+    pub explorer: FileExplorer,
+    /// The interview this picker was opened from, moved in whole so confirm
+    /// and cancel can restore it without a rebuild.
+    pub interview: PlanInterviewState,
+    /// The reason the last selection was rejected, shown in the footer until
+    /// the next keypress. `None` when nothing has been rejected.
+    pub error: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct CreateProjectState {
     pub step: CreateProjectStep,
@@ -6056,6 +6074,14 @@ pub struct PlanInterviewState {
     /// the plan can record the result on that row — and so the header can say
     /// which TODO is being planned.
     pub todo_origin: Option<TodoPlanOrigin>,
+    /// Reference documents the feature owner attached on the brief step, as
+    /// canonical absolute paths. Empty is the norm; a non-empty list is the
+    /// explicit, opt-in trigger that switches the round / synthesis / critique
+    /// passes from a no-tools run to a read-only one so the interviewer can
+    /// read those documents (and the surrounding codebase). The files are read
+    /// at dispatch time, never here, so an edit between attaching and running
+    /// is picked up. Persisted in the interview draft and accepted record.
+    pub attached_docs: Vec<PathBuf>,
 }
 
 impl PlanInterviewState {
@@ -6182,6 +6208,7 @@ impl PlanInterviewState {
             prior_custom_answers: HashMap::new(),
             kickoff_handoff: None,
             todo_origin: None,
+            attached_docs: Vec::new(),
         }
     }
 
@@ -6208,6 +6235,33 @@ impl PlanInterviewState {
         }
     }
 
+    /// Validate a candidate reference document and, on success, add it to
+    /// [`Self::attached_docs`], returning its basename for the confirmation
+    /// message. Rejections carry the reason.
+    pub fn attach_doc(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<String, crate::plan_interview::AttachError> {
+        let canonical = crate::plan_interview::validate_attachment(path, &self.attached_docs)?;
+        let label = canonical
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| canonical.to_string_lossy().into_owned());
+        self.attached_docs.push(canonical);
+        Ok(label)
+    }
+
+    /// Drop the most recently attached reference document, returning its
+    /// basename if there was one to drop.
+    pub fn remove_last_attached_doc(&mut self) -> Option<String> {
+        let path = self.attached_docs.pop()?;
+        Some(
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+        )
+    }
+
     /// Hold a saved draft and ask the user whether to resume it, before any
     /// question is shown. Called on interview entry only, so the answers the
     /// draft would restore cannot overwrite answers given in this session.
@@ -6232,6 +6286,16 @@ impl PlanInterviewState {
 
         self.brief = draft.brief.clone();
         self.adopt_recorded_answers(&draft);
+        // Restore the attached reference documents verbatim. The paths are only
+        // read at headless-dispatch time, where `prepare_attached_docs` drops
+        // and reports any that have since moved — re-checking here would just
+        // duplicate that, and a still-listed missing file is itself a useful
+        // signal on the brief step.
+        self.attached_docs = draft
+            .attached_docs
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
 
         self.ai_rounds_completed = draft.ai_rounds_completed;
         // Rounds only run after an explicit opt-in, so a draft that spent one
@@ -6364,6 +6428,14 @@ impl PlanInterviewState {
 
         self.brief = self.prior_brief.clone().unwrap_or_default();
         self.editor = TextEditor::new(self.brief.clone());
+        // Carry the previously attached reference documents as this run's
+        // starting set, the same way the brief and answers are pre-filled; the
+        // user can drop any on the brief step before the first pass.
+        self.attached_docs = record
+            .attached_docs
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
         self.prior_brief.is_some() || !self.prior_answers.is_empty()
     }
 
@@ -6529,6 +6601,11 @@ impl PlanInterviewState {
             // resuming after synthesis does not silently re-spend those tokens.
             plan: self.synthesized_plan.clone(),
             ai_rounds_completed: self.ai_rounds_completed,
+            attached_docs: self
+                .attached_docs
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -8067,6 +8144,7 @@ mod tests {
             custom_answers: Vec::new(),
             plan: None,
             ai_rounds_completed: 0,
+            attached_docs: Vec::new(),
             created_at: String::new(),
             updated_at: "2026-07-30 12:00:00".into(),
         }

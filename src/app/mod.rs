@@ -26,6 +26,7 @@ mod opencode;
 pub(crate) mod opencode_storage;
 pub(crate) mod plan;
 mod plan_interview;
+mod plan_interview_attach;
 pub(crate) mod pr_review;
 pub(crate) mod precall;
 mod project_ops;

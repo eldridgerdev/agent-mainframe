@@ -10,6 +10,27 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **A plan interview can now include reference documents.** On the feature-brief
+  step, `Ctrl+D` opens a file browser (`Ctrl+X` removes the last one); attach up
+  to four readable text files from anywhere on disk — a spec, a ticket, design
+  notes. The interview's question, plan-synthesis, and plan-review passes
+  normally run with no file access; attaching at least one document is the
+  explicit opt-in that switches those passes to a read-only run, so the
+  interviewer can read the attached documents *and* the surrounding codebase
+  when shaping questions and the plan. A document outside the feature's
+  workdir is copied into a gitignored `.amf/interview-docs/` scratch folder so
+  the agent can reach it, and that folder is cleared when the interview ends;
+  one that has moved or become unreadable by the time a pass runs is skipped
+  with a notice rather than failing the pass. The optional-AI consent screen
+  says when documents are attached and notes that a token estimate is then only
+  a floor. Attachments are saved with the interview draft, so a resumed or
+  re-run interview keeps them (paths are re-checked when a pass runs). Nothing
+  changes for an interview with no attachments. A one-time schema migration
+  adds an `attached_docs` column to the stored interviews table; existing rows
+  are treated as having no attachments.
+
 ### Fixed
 
 - **AI review in PR Triage no longer fails on very large pull requests.** The

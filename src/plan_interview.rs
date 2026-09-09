@@ -2074,13 +2074,13 @@ mod tests {
 
         // A first pass stages the doc and, in the real flow, its worker keeps
         // reading the copy after the pass returns.
-        let (first, _) = prepare_attached_docs(workdir.path(), &[external.clone()]);
+        let (first, _) = prepare_attached_docs(workdir.path(), std::slice::from_ref(&external));
         let first_abs = workdir.path().join(&first[0].rel_path);
         assert_eq!(std::fs::read_to_string(&first_abs).unwrap(), "external");
 
         // A second pass starts before that worker finishes. It must not delete
         // or overwrite the first pass's copy.
-        let (second, _) = prepare_attached_docs(workdir.path(), &[external.clone()]);
+        let (second, _) = prepare_attached_docs(workdir.path(), std::slice::from_ref(&external));
         let second_abs = workdir.path().join(&second[0].rel_path);
 
         assert_ne!(first[0].rel_path, second[0].rel_path);

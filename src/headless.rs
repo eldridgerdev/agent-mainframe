@@ -846,7 +846,10 @@ fn run_jsonl_command(
         }
         let detail = details.join("; ");
         if is_prompt_too_long_message(&detail) {
-            return Err(prompt_too_long_error(harness, &detail));
+            return Err(prompt_too_long_error(
+                harness,
+                &format!("{detail} ({status})"),
+            ));
         }
         anyhow::bail!(
             "{} headless command failed ({status}){}{}",
@@ -1789,8 +1792,9 @@ mod tests {
                 None,
                 |_| {},
             )
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+            assert!(as_prompt_too_long(&error).is_some(), "{error}");
+            let error = error.to_string();
             assert!(error.contains("context window exceeded"), "{error}");
             assert!(error.contains("exit status: 7"), "{error}");
         }

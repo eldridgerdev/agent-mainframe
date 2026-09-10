@@ -793,7 +793,20 @@ impl App {
 pub fn start_here_candidates(workdir: &Path) -> Vec<String> {
     START_HERE_CANDIDATES
         .iter()
-        .filter(|candidate| workdir.join(candidate).is_file())
+        .filter(|candidate| {
+            let path = workdir.join(candidate);
+            // `is_file` alone matches both README.md and readme.md on a
+            // case-insensitive filesystem. Match the stored entry name so
+            // the reading list uses its actual spelling and lists it once.
+            path.parent()
+                .and_then(|parent| std::fs::read_dir(parent).ok())
+                .is_some_and(|entries| {
+                    entries.filter_map(Result::ok).any(|entry| {
+                        Some(entry.file_name().as_os_str()) == path.file_name()
+                            && entry.path().is_file()
+                    })
+                })
+        })
         .map(|candidate| (*candidate).to_string())
         .collect()
 }

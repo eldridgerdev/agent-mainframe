@@ -8,12 +8,15 @@ use tempfile::TempDir;
 // Editor reclamation on stop
 // ---------------------------------------------------------------------------
 
-/// Stand-in for a VS Code window AMF opened: a copy of `sh` named `code`,
+/// Stand-in for a VS Code window AMF opened: a symlink to Bash named `code`,
 /// launched with a VS Code-shaped argv, holding a child of its own the way a
 /// real window holds a language server.
-fn spawn_fake_editor(dir: &std::path::Path, workdir: &std::path::Path) -> std::process::Child {
+fn spawn_fake_editor(
+    dir: &std::path::Path,
+    workdir: &std::path::Path,
+) -> crate::resources::test_support::TestChild {
     let fake = dir.join("code");
-    std::fs::copy("/bin/sh", &fake).expect("copy sh");
+    std::os::unix::fs::symlink("/bin/bash", &fake).expect("link bash as a fake editor");
     spawn_stand_in(std::process::Command::new(&fake).args([
         "-c".as_ref(),
         "sleep 60 & wait".as_ref(),
@@ -22,26 +25,17 @@ fn spawn_fake_editor(dir: &std::path::Path, workdir: &std::path::Path) -> std::p
     ]))
 }
 
-/// Spawn a stand-in binary, retrying `ETXTBSY`.
-///
-/// These helpers copy `/bin/sh` and immediately execute the copy; a concurrent
-/// test forking in that window inherits the write descriptor and makes the exec
-/// fail with "text file busy". It is an artefact of the fixture, not of
-/// anything under test.
-fn spawn_stand_in(command: &mut std::process::Command) -> std::process::Child {
+/// Symlinking the stand-in avoids copying an executable while other tests
+/// fork, which can inherit a writable descriptor and cause `ETXTBSY`.
+fn spawn_stand_in(
+    command: &mut std::process::Command,
+) -> crate::resources::test_support::TestChild {
     command
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    for _ in 0..40 {
-        match command.spawn() {
-            Ok(child) => return child,
-            Err(err) if err.raw_os_error() == Some(26) => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(err) => panic!("stand-in should launch: {err}"),
-        }
-    }
-    panic!("stand-in stayed busy");
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(crate::resources::test_support::TestChild::new)
+        .expect("stand-in should launch")
 }
 
 /// The same stand-in, holding `windows` renderer subprocesses — how a real VS
@@ -50,16 +44,16 @@ fn spawn_fake_editor_hosting_windows(
     dir: &std::path::Path,
     workdir: &std::path::Path,
     windows: usize,
-) -> std::process::Child {
+) -> crate::resources::test_support::TestChild {
     let fake = dir.join("code");
-    std::fs::copy("/bin/sh", &fake).expect("copy sh");
+    std::os::unix::fs::symlink("/bin/bash", &fake).expect("link bash as a fake editor");
     // The renderers are spawned from a script file rather than an inline `-c`
     // string: an inline one would put `--type=renderer` in the *parent's* argv,
     // which is exactly what marks a process as a helper rather than a window.
     let mut script = String::new();
     for id in 1..=windows {
         script.push_str(&format!(
-            "{} -c 'sleep 60' --type=renderer --window-id={id} &\n",
+            "{} -c 'sleep 60 & wait' --type=renderer --window-id={id} &\n",
             fake.display()
         ));
     }
@@ -67,11 +61,26 @@ fn spawn_fake_editor_hosting_windows(
     let script_path = dir.join("windows.sh");
     std::fs::write(&script_path, script).expect("write window script");
 
-    spawn_stand_in(std::process::Command::new(&fake).args([
+    let child = spawn_stand_in(std::process::Command::new(&fake).args([
         script_path.as_os_str(),
         "--new-window".as_ref(),
         workdir.as_os_str(),
-    ]))
+    ]));
+    // Observe the renderer processes rather than assuming a fixed sleep is
+    // enough on a loaded CI runner. The guard cleans up if this times out.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while crate::resources::procs::vscode_window_count(
+        &crate::resources::procs::list_processes(),
+        child.id() as i64,
+    ) != windows
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stand-in never hosted {windows} renderer processes"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    child
 }
 
 /// An app whose feature lives in `workdir`, with a temp DB attached.
@@ -290,7 +299,6 @@ fn a_window_sharing_its_instance_with_others_is_left_alone() {
     let workdir = tmp.path().join("worktree");
     std::fs::create_dir_all(&workdir).unwrap();
     let mut editor = spawn_fake_editor_hosting_windows(tmp.path(), &workdir, 2);
-    std::thread::sleep(std::time::Duration::from_millis(300));
     let editor_pid = editor.id() as i64;
 
     let db_file = NamedTempFile::new().unwrap();
@@ -336,7 +344,6 @@ fn a_window_of_its_own_is_still_closed() {
     let workdir = tmp.path().join("worktree");
     std::fs::create_dir_all(&workdir).unwrap();
     let mut editor = spawn_fake_editor_hosting_windows(tmp.path(), &workdir, 1);
-    std::thread::sleep(std::time::Duration::from_millis(300));
     let editor_pid = editor.id() as i64;
 
     let db_file = NamedTempFile::new().unwrap();

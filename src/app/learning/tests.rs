@@ -161,6 +161,14 @@ fn start_here_lists_only_files_that_exist() {
 }
 
 #[test]
+fn start_here_preserves_a_lowercase_readme_without_an_uppercase_alias() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("readme.md"), "hi").unwrap();
+
+    assert_eq!(start_here_candidates(dir.path()), vec!["readme.md"]);
+}
+
+#[test]
 fn start_here_is_empty_for_a_project_following_no_conventions() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("thing.xyz"), "?").unwrap();

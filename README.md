@@ -310,6 +310,10 @@ changes. When you finish, AMF writes the feedback and hands it to an agent.
 With an authenticated `gh` CLI, AMF can also post the feedback to the branch's
 pull request.
 
+The optional AI co-reviewer that drafts line comments for the current file
+reviews an oversized file hunk group by hunk group rather than sending one
+truncated prompt; the status line reports if any group could not be reviewed.
+
 ### Work through pull-request feedback
 
 With an authenticated `gh` and a GitHub remote, a feature whose branch has a
@@ -350,6 +354,18 @@ shows which harness and model produced it and the run's token usage and
 estimated cost, and that line is included above the `— AI review via AMF`
 marker on the posted summary and every inline comment. A harness that reports
 no usage degrades to model-only attribution rather than showing a fake `$0.00`.
+
+When a PR diff is too large to review in one prompt, `W` splits it into
+per-file batches, reviews each on its own (splitting an oversized file hunk by
+hunk), and combines the findings with a synthesis pass — the running screen
+shows the batch progress. Coverage stays complete: any slice that still will
+not fit is listed rather than dropped, and the review summary is prefixed with
+a "⚠ Partial coverage" note whenever the diff had to be split. The size
+threshold is a per-harness default; set `review_prompt_budget_tokens` in
+`~/.config/amf/config.json` (or per repo in `amf.json`) to change it, or to
+`0` to turn pre-send splitting off. For a sprawling refactor, reviewing the
+branch commit by commit still gives the sharpest results — per-slice review
+cannot see across files.
 
 To seed review memory from earlier reviews, open the PR picker and press `b`.
 If `G` opened the feature's pull request directly, press `g` from PR Triage to

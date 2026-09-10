@@ -200,7 +200,7 @@ Key dispatch per mode:
 
 **Prompt registry** (`src/prompts/`): the single home for every headless
 prompt AMF sends (see "Editable Headless Prompts" below). `mod.rs` holds
-`PromptId` (15 stable ids), `PromptSpec` (title/summary/placeholders/
+`PromptId` (19 stable ids), `PromptSpec` (title/summary/placeholders/
 `default_template`/`harness_variants`), and `resolve_template_layered` /
 `resolve_prompt_layered`. `defaults.rs` is the built-in template text moved
 out of the call sites. `resolve.rs` has `PromptContext` +
@@ -630,17 +630,19 @@ registry that the user can view and override. See
 `docs/backlog/editable-prompts-call-site-inventory.md` for the call-site map
 and `AMF_PLAN.md` for the design decisions.
 
-- **Registry (`src/prompts/`).** `PromptId::ALL` is the 15 stable ids
+- **Registry (`src/prompts/`).** `PromptId::ALL` is the 19 stable ids
   (`plan_interview.round`/`.synthesis`/`.critique`/`.directed_revision`/
   `.investigation`/`.investigation_merge`, `learning.answer`,
   `review.walkthrough`/`.co_review`/`.changeset_overview`/`.diff_explain`,
   `pr_review.ai_review`, `review_memory.bootstrap`/`.compact`,
-  `session.summary`). `defaults.rs` holds the built-in text. The 6
+  `session.summary`, and the batched-review set
+  `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary`). `defaults.rs`
+  holds the built-in text. The 6
   plan-interview templates keep a single `{{interview_input}}` token carrying
   the exact JSON payload the models see today (the drift-guard test
   `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` pins them to the
   `plan_interview::*_PROMPT` prose, which is duplicated because a `const`
-  can't be `concat!`-ed); the other 9 use granular tokens.
+  can't be `concat!`-ed); the other 13 use granular tokens.
 - **Interpolation is unvalidated.** `render_template` substitutes `{{name}}`
   from a `PromptContext`; a token with no value — declared or not — is left
   literally, and substituted values are never re-scanned. An override may drop
@@ -682,6 +684,57 @@ and `AMF_PLAN.md` for the design decisions.
   synthesis) can't leave a stale clearance. **Automated** runs
   (`learning.answer`, `session.summary`) call `announce_headless_run` — a
   toast, never the modal — so a queued batch can't deadlock.
+
+### Batched Review of Oversized Diffs
+
+When an AI review's diff would overflow the model, it is split into bounded
+prompts and the findings recombined. Full rationale in
+`docs/batched-review.md`; `AMF_PLAN.md` has the design decisions.
+
+- **`src/diff_split.rs`** — lossless text-level splitting. `SplitDiff::parse`
+  (`split_inclusive('\n')`, CRLF- and no-trailing-newline-safe) →
+  `FileSection { path, header, hunks: Vec<HunkGroup> }`. `pack_file_sections`
+  greedily packs sections into `ReviewBatch::{Files, OversizedFile}` under a
+  token budget; `split_file_by_hunk` divides an oversized file into
+  `HunkSubunit`s (header repeated per slice, `oversized` flag for an
+  un-splittable lone hunk). `merge_hunk_findings` + `HunkOutcome` build the
+  deterministic per-file block.
+- **`src/review_batch.rs`** — orchestration. `trait BatchReviewRunner`
+  (`HeadlessBatchRunner` = prod; `review` renders `review.batch` per file
+  slice, `review_hunk` renders `review.hunk_split` per hunk group with
+  `{{file_path}}` / `{{hunk_label}}` populated) and `trait SynthesisRunner`
+  (`HeadlessSynthesisRunner`). `review_batches` runs each batch, halving on
+  `PromptTooLong` down to a hunk, recording an un-reviewable slice as
+  `UncoveredSlice` rather than dropping it. `synthesize` folds the per-batch
+  texts through `review.synthesis` (shrinking via `review.findings_summary`
+  and halving on overflow; deterministic concat fallback with
+  `synthesis_ran=false`). `batched_review` chains parse → pack → review →
+  synthesize into one `SynthesizedReview { text, synthesis_ran, uncovered }`.
+  `BatchProgress` enum feeds the UI.
+- **Size estimation / typed error** live in `src/headless.rs`:
+  `estimate_prompt_tokens` (bytes ÷ `PROMPT_ESTIMATE_BYTES_PER_TOKEN`),
+  `default_prompt_budget_tokens` (Claude/Codex 128k, OpenCode/Pi 96k),
+  `will_overflow` / `will_overflow_with_budget` (budget `0` = gate off), and
+  `PromptTooLong` + `is_prompt_too_long_message` / `as_prompt_too_long`
+  (best-effort classifier over the four CLIs' overflow phrasings), emitted by
+  `run_command` / `run_jsonl_command`.
+- **Wired into** the `W` AI PR review (`app/ai_review.rs`: `begin_ai_pr_review`
+  resolves `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary` +
+  `App::review_prompt_budget`; `run_ai_pr_review` branches to
+  `run_batched_ai_pr_review` when the pre-send estimate overflows **and** when
+  the single pass itself returns `PromptTooLong` — so a `0` budget still gets
+  the batched fallback with adaptive halving; `batched_coverage_note` prepends
+  the "⚠ Partial coverage" banner to `AiReviewOutcome::summary`) and
+  final-review co-review (`app/review.rs`: `generate_co_review` → worker thread
+  `run_batched_co_review` → `DiffViewerState::co_review_bg` → `poll_co_review`
+  → `apply_co_review_text`; a `0` budget skips the pre-send hunk-split entirely
+  and the single pass truncates the body with a visible marker).
+  `review_destination.rs` is untouched. The plan
+  interview has a non-diff guard instead: `plan_interview::guard_context_for_prompt`
+  drops the README/`CLAUDE.md` excerpts and notes it in the dialog footer.
+- **Config**: `AppConfig::review_prompt_budget_tokens` (global) /
+  `ExtensionConfig::review_prompt_budget_tokens` (project `amf.json`,
+  project-over-global), resolved by `App::review_prompt_budget(repo, harness)`.
 
 ### Agent Limits & Resource Health (resources/)
 

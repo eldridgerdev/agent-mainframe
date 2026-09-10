@@ -971,6 +971,13 @@ pub struct DiffViewerState {
     /// Path the in-flight co-review is being generated for, so draft comments
     /// land on the right file even if the reviewer navigates away.
     pub co_review_file: Option<String>,
+    /// In-flight *batched* co-review of an oversized file: a worker thread
+    /// hunk-splits it, reviews each slice, and sends back the concatenated
+    /// `<line>|<comment>` lines plus a count of slices that could not be
+    /// reviewed (or an error message). Used instead of `co_review_child` when
+    /// the single-file prompt would overflow.
+    pub co_review_bg:
+        Option<std::sync::mpsc::Receiver<std::result::Result<(String, usize), String>>>,
     /// Cached on-demand whole-changeset overview / risk summary (headless,
     /// reviewer-triggered — see `changeset_overview_open`). Kept until the
     /// reviewer explicitly regenerates it so reopening the modal is free.
@@ -1210,6 +1217,7 @@ impl DiffViewerState {
             walkthrough_file: None,
             co_review_child: None,
             co_review_file: None,
+            co_review_bg: None,
             changeset_overview: None,
             changeset_overview_child: None,
             changeset_overview_open: false,

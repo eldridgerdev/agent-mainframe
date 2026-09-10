@@ -372,3 +372,94 @@ pub const SESSION_SUMMARY: &str = r#"Summarize this {{harness_name}} session in 
 
 Session output:
 {{recent_lines}}"#;
+
+// ---------------------------------------------------------------------------
+// Batched review of an oversized diff (review_batch.rs)
+// ---------------------------------------------------------------------------
+
+/// `review.batch` — review one bounded slice of a diff that was too large to
+/// send in a single prompt. The slice holds one or more whole files; other
+/// parts of the change are reviewed in their own prompts and the findings are
+/// combined afterwards by `review.synthesis`.
+///
+/// Placeholders: `{{skill_directive}}`, `{{recurring_findings}}`,
+/// `{{file_list}}`, `{{annotated_diff}}`, `{{finding_heading_prefix}}`.
+pub const REVIEW_BATCH: &str = r#"{{skill_directive}}You are reviewing part of a larger pull request. The diff is too big to review at once, so it has been split; you are seeing one slice of it now. Review only the lines shown for correctness bugs and clear quality problems. Do NOT flag something as missing just because it is not in this slice — imports, helpers, types, tests, and callers may live in another slice you cannot see. Check especially for issues matching the team's known recurring findings below, if any. Skip praise and style nitpicks.
+
+Files in this slice: {{file_list}}
+
+{{recurring_findings}}Diff:
+
+{{annotated_diff}}
+
+---
+
+Output ONLY findings, no summary and no prose outside them. If you find nothing worth raising in this slice, output nothing at all.
+
+{{finding_heading_prefix}}<path>|<side>|<line>
+<finding text, 1-3 sentences>
+
+{{finding_heading_prefix}}General
+<a finding with no single file:line anchor>
+
+`<side>` must be `RIGHT` for a current-file line or `LEFT` for a removed base-file line. Copy the path, side, and one-based line number exactly from that row's bracketed coordinate label; never count patch rows or infer a line number from a hunk offset.
+"#;
+
+/// `review.hunk_split` — review one hunk group of a single file whose own diff
+/// was still too large after file-level batching. The rest of the file is not
+/// shown.
+///
+/// Placeholders: `{{file_path}}`, `{{hunk_label}}`, `{{annotated_diff}}`,
+/// `{{finding_heading_prefix}}`.
+pub const REVIEW_HUNK_SPLIT: &str = r#"You are reviewing {{hunk_label}} of `{{file_path}}`. This file's change was too large to review whole, so you are seeing only these hunks — the rest of the file, its imports, and its other hunks are not shown. Only raise an issue you are confident about from the lines here; when a concern depends on code you cannot see (a type definition, an import, an earlier guard), say so instead of asserting a bug. Skip praise and style nitpicks.
+
+Diff:
+
+{{annotated_diff}}
+
+---
+
+Output ONLY findings, no summary. If you find nothing worth raising in these hunks, output nothing at all.
+
+{{finding_heading_prefix}}<path>|<side>|<line>
+<finding text, 1-3 sentences>
+
+`<side>` must be `RIGHT` for a current-file line or `LEFT` for a removed base-file line. Copy the path, side, and one-based line number exactly from that row's bracketed coordinate label.
+"#;
+
+/// `review.synthesis` — combine the per-slice findings from a batched review
+/// into one coherent review with a summary. `{{uncovered_note}}` is empty
+/// unless some slice could not be reviewed even after splitting.
+///
+/// Placeholders: `{{batch_findings}}`, `{{uncovered_note}}`,
+/// `{{finding_heading_prefix}}`.
+pub const REVIEW_SYNTHESIS: &str = r#"A large pull request was reviewed in slices because its diff was too big for one pass. Below are the raw findings from every slice, in order. Combine them into one review: merge findings that describe the same issue, drop any that a later slice's context clearly resolves, and keep every distinct issue with its original file, side, and line intact. Do not invent findings that are not supported by the slice output below.
+
+{{uncovered_note}}Slice findings:
+
+{{batch_findings}}
+
+---
+
+Output ONLY the summary and findings in this exact format (no prose outside it). Always include the summary, even when there are no findings; one to three sentences on the main themes or risk:
+
+## Summary
+<overall review summary>
+
+{{finding_heading_prefix}}<path>|<side>|<line>
+<finding text, 1-3 sentences>
+
+{{finding_heading_prefix}}General
+<a finding with no single file:line anchor>
+"#;
+
+/// `review.findings_summary` — condense one slice's findings when the
+/// `review.synthesis` prompt itself overflows and its inputs must be shrunk
+/// before the final merge.
+///
+/// Placeholders: `{{batch_label}}`, `{{findings}}`, `{{max_chars}}`.
+pub const REVIEW_FINDINGS_SUMMARY: &str = r#"Condense the code-review findings below (from {{batch_label}}) to at most {{max_chars}} characters. Keep every distinct issue: preserve each finding's file path, side, one-based line number, and a one-sentence description. Drop only elaboration, rationale, and repetition — never a whole finding. Keep the same `<path>|<side>|<line>` heading shape the input uses.
+
+Findings:
+
+{{findings}}"#;

@@ -28,6 +28,7 @@ use crate::prompts::PromptId;
 /// Which gated headless call a pre-call notice belongs to. One variant per
 /// user-initiated call site; [`App::dispatch_precall`] maps each back to the
 /// method that starts it.
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PrecallAction {
     PlanRound,
@@ -42,6 +43,7 @@ pub enum PrecallAction {
     PrReviewAiReview,
     ReviewMemoryBootstrap,
     ReviewMemoryCompact,
+    ExpertAssistConsult,
 }
 
 impl PrecallAction {
@@ -59,6 +61,7 @@ impl PrecallAction {
             PrecallAction::PrReviewAiReview => PromptId::PrReviewAiReview,
             PrecallAction::ReviewMemoryBootstrap => PromptId::ReviewMemoryBootstrap,
             PrecallAction::ReviewMemoryCompact => PromptId::ReviewMemoryCompact,
+            PrecallAction::ExpertAssistConsult => PromptId::ExpertAssistConsult,
         }
     }
 }
@@ -76,6 +79,11 @@ pub struct PendingPrecall {
     /// The mode the run was initiated from, restored before the run is
     /// re-dispatched (or on cancel).
     pub prior_mode: Box<AppMode>,
+    /// Metadata frozen with the notice so a resumed run cannot target a
+    /// different consultation revision or evidence packet.
+    pub consultation_id: Option<String>,
+    pub request_revision: Option<i64>,
+    pub evidence_digest: Option<String>,
 }
 
 impl App {
@@ -88,6 +96,18 @@ impl App {
         action: PrecallAction,
         harness: &AgentKind,
         rendered_prompt: &str,
+    ) -> bool {
+        self.precall_gate_with_metadata(action, harness, rendered_prompt, None, None, None)
+    }
+
+    pub(crate) fn precall_gate_with_metadata(
+        &mut self,
+        action: PrecallAction,
+        harness: &AgentKind,
+        rendered_prompt: &str,
+        consultation_id: Option<String>,
+        request_revision: Option<i64>,
+        evidence_digest: Option<String>,
     ) -> bool {
         if self.precall_cleared == Some(action) {
             self.precall_cleared = None;
@@ -102,6 +122,9 @@ impl App {
             viewing: false,
             scroll: 0,
             prior_mode: Box::new(prior),
+            consultation_id,
+            request_revision,
+            evidence_digest,
         }));
         self.message = None;
         false
@@ -149,7 +172,15 @@ impl App {
         let Some(pending) = self.take_pending_precall() else {
             return Ok(());
         };
+        let expert_id = (pending.action == PrecallAction::ExpertAssistConsult)
+            .then(|| pending.consultation_id.clone())
+            .flatten();
         self.mode = *pending.prior_mode;
+        if let Some(id) = expert_id {
+            self.launch_expert_consultation(id)?;
+            self.precall_cleared = None;
+            return Ok(());
+        }
         self.precall_cleared = Some(pending.action);
         let result = self.dispatch_precall(pending.action);
         // The re-dispatched method's gate runs synchronously inside
@@ -159,6 +190,69 @@ impl App {
         // a stale `precall_cleared` would silently skip a later notice.
         self.precall_cleared = None;
         result
+    }
+
+    fn launch_expert_consultation(&mut self, id: String) -> Result<()> {
+        let Some(db) = self.db.as_ref() else {
+            anyhow::bail!("consultation storage is unavailable")
+        };
+        let Some(consultation) = db.expert_consultation(&id)? else {
+            anyhow::bail!("consultation {id} was not found")
+        };
+        let request = db.expert_request(&id, consultation.request_revision)?;
+        let owner = crate::db::expert_assist::ConsultationOwner::current()?;
+        let Some(attempt) = db.begin_expert_attempt(&id, consultation.revision, &owner)? else {
+            anyhow::bail!("consultation changed before it could start")
+        };
+        let worker_request = crate::headless::job::HeadlessJobRequest {
+            harness: request.profile.harness.clone(),
+            binary: request.profile.binary.clone(),
+            policy: request.profile.policy,
+            model: request.profile.model.clone(),
+            workdir: consultation.origin.workdir.clone(),
+            prompt: request.rendered_prompt.clone(),
+            limits: request.profile.limits.clone(),
+        };
+        let handle = match crate::headless::HeadlessRunner::start_job(worker_request) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let outcome = crate::db::expert_assist::ConsultationOutcome {
+                    status: crate::headless::job::HeadlessJobStatus::Failed,
+                    response: None,
+                    error: Some(error.to_string()),
+                    usage: Default::default(),
+                    usage_complete: false,
+                    elapsed_millis: 0,
+                };
+                db.finish_expert_attempt(&id, &attempt, &owner, outcome)?;
+                anyhow::bail!("could not start expert consultation: {error:#}");
+            }
+        };
+        self.expert_job = Some(crate::app::expert_assist::ExpertJobRuntime {
+            consultation_id: id.clone(),
+            attempt_id: attempt,
+            owner,
+            handle,
+        });
+        self.mode =
+            crate::app::AppMode::ExpertAssist(crate::app::expert_assist::ExpertAssistState {
+                consultation_id: Some(id.clone()),
+                request_revision: consultation.request_revision,
+                question: request.question,
+                acceptance_criteria: request.acceptance_criteria.join("\n"),
+                attempted_fixes: request.attempted_fixes.join("\n"),
+                field: crate::app::expert_assist::ExpertAssistField::Question,
+                phase: crate::app::expert_assist::ExpertAssistPhase::Running,
+                status: "Expert consultation is running.".into(),
+                response: None,
+                handoff_body: None,
+                handoff_revision: 0,
+                editing_handoff: false,
+                handoff_buffer: String::new(),
+                evidence_digest: None,
+            });
+        self.message = Some("Expert consultation started in the background.".into());
+        Ok(())
     }
 
     /// Cancel: restore the originating mode, run nothing.
@@ -213,6 +307,13 @@ impl App {
             }
             PrecallAction::ReviewMemoryCompact => {
                 self.review_memory_compact_confirm_run();
+                Ok(())
+            }
+            PrecallAction::ExpertAssistConsult => {
+                self.message = Some(
+                    "Expert Assist consultation is staged; the consultation worker is not wired yet."
+                        .into(),
+                );
                 Ok(())
             }
         }

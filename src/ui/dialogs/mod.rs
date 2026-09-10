@@ -8,6 +8,7 @@ mod debug;
 mod diff;
 mod dormant;
 mod editor_view;
+mod expert_assist;
 mod feature;
 mod handoff;
 mod harness;
@@ -39,6 +40,7 @@ pub use context_settings::draw_context_settings_dialog;
 pub use debug::draw_debug_log;
 pub use diff::{draw_diff_picker, draw_diff_viewer, draw_diff_viewer_loading};
 pub use dormant::draw_dormant_view;
+pub use expert_assist::draw_expert_assist_dialog;
 pub use feature::{
     draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
     draw_deleting_feature_dialog, draw_fork_feature_dialog, draw_steering_prompt_dialog,

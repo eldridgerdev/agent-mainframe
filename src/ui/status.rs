@@ -651,6 +651,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::ExpertAssist(_) => Line::from(vec![
+            Span::styled(" Tab", key_style()),
+            Span::raw(" next field  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" validate  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::PromptEditor(_) => Line::from(vec![
             Span::styled(" Tab", key_style()),
             Span::raw(" switch field  "),

@@ -1745,6 +1745,8 @@ fn run_loop<B: Backend + io::Write>(
         }
 
         let mut ipc_activity = false;
+        let expert_activity = app.poll_expert_assist();
+        force_redraw |= expert_activity;
         if app.ipc.is_some() {
             // Drain all buffered socket messages each iteration.
             ipc_activity = app.drain_ipc_messages();

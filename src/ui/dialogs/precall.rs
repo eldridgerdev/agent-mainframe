@@ -87,7 +87,7 @@ pub fn draw_prompt_precall(frame: &mut Frame, pending: &PendingPrecall, theme: &
         .constraints([Constraint::Min(3), Constraint::Length(2)])
         .split(inner);
 
-    let body = vec![
+    let mut body = vec![
         Line::raw(""),
         Line::from(Span::styled(
             " AMF is about to make a headless AI call.",
@@ -118,10 +118,37 @@ pub fn draw_prompt_precall(frame: &mut Frame, pending: &PendingPrecall, theme: &
             ),
         ]),
         Line::raw(""),
+    ];
+    if let Some(id) = &pending.consultation_id {
+        body.push(Line::from(vec![
+            muted("   Consultation: "),
+            Span::styled(id.clone(), Style::default().fg(theme.text_muted.to_color())),
+        ]));
+    }
+    if let Some(revision) = pending.request_revision {
+        body.push(Line::from(vec![
+            muted("   Revision: "),
+            Span::styled(
+                revision.to_string(),
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]));
+    }
+    if let Some(digest) = &pending.evidence_digest {
+        body.push(Line::from(vec![
+            muted("   Evidence: "),
+            Span::styled(
+                digest.clone(),
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]));
+    }
+    body.extend([
+        Line::raw(""),
         Line::from(muted("   v  view the exact prompt")),
         Line::from(muted("   e  edit its template (override manager)")),
         Line::from(muted("   Enter  make the call    Esc  cancel it")),
-    ];
+    ]);
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), chunks[0]);
 
     frame.render_widget(

@@ -156,17 +156,47 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add attached_docs column to plan_interviews for attached reference documents",
             MIGRATION_035,
         ),
+        (
+            "Persist Expert Assist consultations independently of full-replace project saves",
+            MIGRATION_036,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
         let target = (i + 1) as i64;
         if version < target {
+            // Older migrations include foreign_keys PRAGMAs that cannot run
+            // inside a transaction. New migrations commit schema + version
+            // together; failure rolls back via Transaction::drop.
+            let transaction = if target >= 36 {
+                let transaction = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let current: i64 = transaction.query_row(
+                    "SELECT COALESCE(MAX(version),0) FROM schema_version",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if current >= target {
+                    // Another AMF instance may have completed this migration
+                    // while we waited for the immediate write transaction.
+                    transaction.commit()?;
+                    continue;
+                }
+                Some(transaction)
+            } else {
+                None
+            };
             conn.execute_batch(sql)?;
             conn.execute(
                 "INSERT INTO schema_version (version, applied_at, description)
                  VALUES (?1, datetime('now'), ?2)",
                 rusqlite::params![target, desc],
             )?;
+            if let Some(transaction) = transaction {
+                transaction.commit()?;
+            }
         }
     }
 
@@ -903,6 +933,67 @@ const MIGRATION_035: &str = "
 ALTER TABLE plan_interviews ADD COLUMN attached_docs TEXT NOT NULL DEFAULT '[]';
 ";
 
+const MIGRATION_036: &str = "
+CREATE TABLE expert_consultations (
+    id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    project_id TEXT NOT NULL,
+    feature_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    origin_json TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    request_revision INTEGER NOT NULL DEFAULT 1 CHECK(request_revision > 0),
+    state TEXT NOT NULL DEFAULT 'draft',
+    active_attempt_id TEXT,
+    owner_json TEXT,
+    heartbeat_at INTEGER,
+    handoff_state TEXT NOT NULL DEFAULT 'none',
+    handoff_revision INTEGER NOT NULL DEFAULT 0,
+    delivery_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX expert_origin ON expert_consultations(project_id, feature_id, session_id);
+CREATE INDEX expert_recovery ON expert_consultations(state, heartbeat_at);
+CREATE TABLE expert_requests (
+    consultation_id TEXT NOT NULL REFERENCES expert_consultations(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    request_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(consultation_id, revision)
+);
+CREATE TABLE expert_attempts (
+    id TEXT PRIMARY KEY,
+    consultation_id TEXT NOT NULL REFERENCES expert_consultations(id) ON DELETE CASCADE,
+    request_revision INTEGER NOT NULL,
+    number INTEGER NOT NULL CHECK(number > 0),
+    owner_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    outcome_json TEXT,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    UNIQUE(consultation_id, number),
+    FOREIGN KEY(consultation_id, request_revision) REFERENCES expert_requests(consultation_id, revision)
+);
+CREATE TABLE expert_handoffs (
+    consultation_id TEXT NOT NULL REFERENCES expert_consultations(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(consultation_id, revision)
+);
+CREATE TABLE expert_deliveries (
+    id TEXT PRIMARY KEY,
+    consultation_id TEXT NOT NULL REFERENCES expert_consultations(id) ON DELETE CASCADE,
+    handoff_revision INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    UNIQUE(consultation_id, handoff_revision),
+    FOREIGN KEY(consultation_id, handoff_revision) REFERENCES expert_handoffs(consultation_id, revision)
+);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -943,7 +1034,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 35);
+        assert_eq!(version, 36);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1038,7 +1129,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 35);
+        assert_eq!(version, 36);
     }
 
     #[test]
@@ -1380,7 +1471,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 35);
+        assert_eq!(rows, 36);
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an
@@ -1491,7 +1582,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 35);
+        assert_eq!(version, 36);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

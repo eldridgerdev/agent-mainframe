@@ -4897,6 +4897,9 @@ pub enum AppMode {
     /// cancel. Automated runs (Learning Mode answers, session summaries) show
     /// a toast instead and never reach this.
     PromptPrecall(Box<crate::app::precall::PendingPrecall>),
+    /// Expert Assist request form and explicit lifecycle state.
+    #[allow(dead_code)]
+    ExpertAssist(crate::app::expert_assist::ExpertAssistState),
     SkillPicker(SkillPickerState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),

@@ -1913,6 +1913,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_prompt_precall(frame, pending, &app.theme);
     }
 
+    if let AppMode::ExpertAssist(state) = &app.mode {
+        super::dialogs::draw_expert_assist_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::PlaceholderFill(state) = &app.mode {
         super::dialogs::draw_placeholder_fill(frame, state, &app.theme);
     }

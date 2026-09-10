@@ -8,6 +8,7 @@ mod dialog;
 mod diff;
 pub(crate) mod diff_review;
 mod dormant;
+mod expert_assist;
 mod feature_creation;
 mod fork;
 mod handoff;
@@ -51,6 +52,7 @@ pub use dialog::{
 pub use diff::{handle_diff_picker_key, handle_diff_viewer_key, handle_review_harness_pick_key};
 pub use diff_review::handle_diff_review_key;
 pub use dormant::handle_dormant_key;
+pub use expert_assist::handle_expert_assist_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
 pub use handoff::handle_fresh_context_prompt_key;
@@ -172,6 +174,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::PromptLibrary(_) => handle_prompt_library_key(app, key.code),
         AppMode::PromptOverrides(_) => handle_prompt_overrides_key(app, key, visible_rows),
         AppMode::PromptPrecall(_) => handle_prompt_precall_key(app, key),
+        AppMode::ExpertAssist(_) => handle_expert_assist_key(app, key),
         AppMode::PromptEditor(_) => handle_prompt_editor_key(app, key),
         AppMode::PlaceholderFill(_) => handle_placeholder_fill_key(app, key),
         AppMode::SkillPicker(_) => handle_skill_picker_key(app, key),

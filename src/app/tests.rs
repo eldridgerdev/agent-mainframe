@@ -27435,6 +27435,9 @@ fn precall_edit_opens_the_manager_focused_and_returns_to_the_notice() {
         viewing: false,
         scroll: 0,
         prior_mode: Box::new(AppMode::Normal),
+        consultation_id: None,
+        request_revision: None,
+        evidence_digest: None,
     }));
 
     // `e` opens the override manager, pre-selected on that prompt.

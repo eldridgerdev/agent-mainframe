@@ -117,6 +117,9 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                                 // deliberately does not return to `from_view`.
                                 app.start_plan_interview_for_selected_feature();
                             }
+                            crate::app::LocalCommand::AskExpert => {
+                                app.open_expert_assist_form();
+                            }
                         },
                         CommandAction::CodexLiveDemo(debug_command) => {
                             if let Some(session_id) =

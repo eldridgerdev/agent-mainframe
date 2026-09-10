@@ -1,6 +1,7 @@
 mod ai_review_cache;
 mod debug_log;
 pub mod editors;
+pub mod expert_assist;
 pub mod learning;
 mod migrations;
 pub mod plan_interviews;

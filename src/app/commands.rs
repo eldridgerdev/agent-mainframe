@@ -59,6 +59,14 @@ impl App {
                     command: LocalCommand::PlanInterview,
                 },
             });
+            commands.push(CommandEntry {
+                name: "ask-expert".to_string(),
+                source: "AMF".to_string(),
+                path: None,
+                action: CommandAction::Local {
+                    command: LocalCommand::AskExpert,
+                },
+            });
         }
         commands.extend(local_debug_commands());
 

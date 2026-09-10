@@ -6,6 +6,10 @@ use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use crate::project::AgentKind;
 use crate::resources::limits::HeadlessLease;
 
+pub(crate) mod job;
+pub(crate) mod policy;
+pub use policy::{HeadlessCapabilities, HeadlessExecutionPolicy};
+
 /// How long an abandoned run gets to exit on `SIGTERM` before it is killed.
 /// Spent on a background thread, never on the UI thread.
 const ABANDONED_RUN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -109,7 +113,7 @@ pub enum HeadlessProgress {
 
 /// Usage reported by a single headless harness run. Each counter is optional:
 /// an omitted provider field means "unavailable", not zero.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HeadlessUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
@@ -206,6 +210,11 @@ const PI_PROGRESS_REQUIRED_FLAGS: [ProgressFlag; 1] = [ProgressFlag {
 }];
 
 impl HeadlessRunner {
+    /// Adapter capabilities, not proof of installed CLI behavior or model access.
+    pub fn capabilities(harness: &AgentKind) -> HeadlessCapabilities {
+        policy::capabilities(harness)
+    }
+
     pub fn check_available(harness: &AgentKind) -> Result<()> {
         match harness {
             AgentKind::Claude => crate::claude::ClaudeLauncher::check_available(),
@@ -290,14 +299,13 @@ impl HeadlessRunner {
     /// (`AMF_PLAN.md`). A named seam over [`read_only_command_for`] so the
     /// read-only contract is greppable and cannot be swapped for a
     /// tool-enabled path ([`Self::run`] / [`Self::run_with_progress`]) in a
-    /// later refactor without it being obvious. The command it builds cannot
-    /// edit files, run shell commands, or apply patches, and repo-controlled
-    /// config (settings files, hooks, plugins, MCP servers) cannot loosen it —
-    /// so no Vibeless edit-review hook and no worktree write is reachable from
-    /// an investigation. `debug_assert`s that the spec really is read-only.
+    /// later refactor without it being obvious. Claude, Opencode and Pi use
+    /// read-tool allowlists. Codex instead uses a read-only filesystem sandbox:
+    /// it can execute commands and this builder does not disable configured
+    /// external tools. It must not be described as a no-shell tool whitelist.
     pub fn run_investigation(harness: &AgentKind, workdir: &Path, prompt: &str) -> Result<String> {
         let spec = read_only_command_for(harness)?;
-        debug_assert!(
+        anyhow::ensure!(
             headless_command_is_read_only(harness, &spec),
             "investigation headless command for {harness:?} is not read-only: {:?}",
             spec.args
@@ -318,7 +326,34 @@ impl HeadlessRunner {
         model: Option<&str>,
         on_progress: impl Fn(HeadlessProgress) + Send + 'static,
     ) -> Result<String> {
-        let spec = command_for(harness, false);
+        Self::run_with_policy_and_progress(
+            harness,
+            workdir,
+            prompt,
+            model,
+            HeadlessExecutionPolicy::Ordinary,
+            on_progress,
+        )
+    }
+
+    /// Build the requested policy before enabling structured output. Explicit
+    /// policies probe their safety/model/progress flags before sending input;
+    /// unsupported policies fail rather than falling back to ordinary tools.
+    ///
+    /// Like `run_with_progress`, this is a blocking call intended for a worker.
+    /// It does not yet provide cancellation, deadlines, or spending limits.
+    pub fn run_with_policy_and_progress(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+        policy: HeadlessExecutionPolicy,
+        on_progress: impl Fn(HeadlessProgress) + Send + 'static,
+    ) -> Result<String> {
+        let spec = policy::command_for_policy(harness, policy)?;
+        if policy != HeadlessExecutionPolicy::Ordinary {
+            policy::check_command_available(harness, &spec, model)?;
+        }
         run_jsonl_command(harness, &spec, workdir, prompt, model, on_progress)
     }
 
@@ -585,7 +620,40 @@ fn run_command(
 struct JsonlOutput {
     final_message: Option<String>,
     event_error: Option<String>,
+    /// Pi reports a failed assistant attempt before its optional automatic
+    /// retry. Only an explicit successful retry can clear this failure.
+    retryable_error: Option<String>,
     usage: HeadlessUsage,
+    terminal_complete: bool,
+}
+
+impl JsonlOutput {
+    fn record_error(&mut self, message: Option<String>, fallback: &str) {
+        // A malformed later error must not erase an earlier failure. Likewise,
+        // text emitted after an error cannot turn a failed run into success.
+        self.event_error.get_or_insert_with(|| {
+            message
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or_else(|| fallback.to_string())
+        });
+    }
+
+    fn finish(self, harness: &AgentKind) -> Result<String> {
+        if let Some(error) = self.event_error.or(self.retryable_error) {
+            anyhow::bail!(
+                "{} headless command failed: {error}",
+                harness.display_name()
+            );
+        }
+        self.final_message
+            .filter(|message| !message.trim().is_empty())
+            .with_context(|| {
+                format!(
+                    "{} headless command completed without a final agent message",
+                    harness.display_name()
+                )
+            })
+    }
 }
 
 /// Drain a harness's structured event stream while the child is alive so the
@@ -675,7 +743,7 @@ fn run_jsonl_command(
         .with_context(|| format!("Failed to read stderr from {}", harness.display_name()))?;
     let json_output = stdout_reader
         .join()
-        .map_err(|_| anyhow::anyhow!("{} JSONL reader panicked", harness.display_name()))??;
+        .map_err(|_| anyhow::anyhow!("{} JSONL reader panicked", harness.display_name()))?;
 
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
@@ -688,19 +756,7 @@ fn run_jsonl_command(
         );
     }
     write_result.with_context(|| format!("Failed to send prompt to {}", harness.display_name()))?;
-    if let Some(message) = json_output.final_message {
-        return Ok(message);
-    }
-    if let Some(error) = json_output.event_error {
-        anyhow::bail!(
-            "{} headless command failed: {error}",
-            harness.display_name()
-        );
-    }
-    anyhow::bail!(
-        "{} headless command completed without a final agent message",
-        harness.display_name()
-    )
+    json_output?.finish(harness)
 }
 
 fn assemble_jsonl_args(
@@ -738,6 +794,30 @@ fn apply_jsonl_event(
     output: &mut JsonlOutput,
     on_progress: &impl Fn(HeadlessProgress),
 ) {
+    // Owned consultation jobs require a positive terminal signal in addition
+    // to a clean process exit and text. Unknown event shapes fail closed.
+    match (
+        harness,
+        event.get("type").and_then(serde_json::Value::as_str),
+    ) {
+        (AgentKind::Codex, Some("turn.started"))
+        | (AgentKind::Opencode, Some("step_start"))
+        | (AgentKind::Pi, Some("turn_start")) => output.terminal_complete = false,
+        (AgentKind::Codex, Some("turn.completed")) | (AgentKind::Pi, Some("agent_end")) => {
+            output.terminal_complete = true
+        }
+        (AgentKind::Claude, Some("result")) => {
+            output.terminal_complete =
+                event.get("subtype").and_then(serde_json::Value::as_str) == Some("success");
+        }
+        (AgentKind::Opencode, Some("step_finish")) => {
+            output.terminal_complete = event
+                .pointer("/part/reason")
+                .and_then(serde_json::Value::as_str)
+                == Some("stop");
+        }
+        _ => {}
+    }
     match harness {
         AgentKind::Claude => apply_claude_json_event(event, output, on_progress),
         AgentKind::Codex => apply_codex_json_event(event, output, on_progress),
@@ -791,11 +871,12 @@ fn apply_codex_json_event(
             emit_usage_from(Some(usage), false, output, on_progress);
         }
         Some("turn.failed") | Some("error") => {
-            output.event_error = event
+            let message = event
                 .get("message")
-                .or_else(|| event.get("error").and_then(|error| error.get("message")))
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
+                .map(str::to_string)
+                .or_else(|| json_error_message(event.get("error")));
+            output.record_error(message, "Codex reported a failed turn");
         }
         _ => {}
     }
@@ -848,15 +929,22 @@ fn apply_claude_json_event(
             "Completed a repository check".to_string(),
         )),
         Some("result") => {
-            if event
+            let is_error = event
                 .get("is_error")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
-            {
-                output.event_error = event
-                    .get("result")
+                || event
+                    .get("subtype")
                     .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+                    .is_some_and(|subtype| subtype.starts_with("error"));
+            if is_error {
+                output.record_error(
+                    event
+                        .get("result")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    "Claude reported an unsuccessful result",
+                );
             } else {
                 output.final_message = event
                     .get("result")
@@ -913,7 +1001,10 @@ fn apply_opencode_json_event(
             ));
         }
         Some("error") => {
-            output.event_error = json_error_message(event.get("error"));
+            output.record_error(
+                json_error_message(event.get("error")),
+                "Opencode reported an error",
+            );
         }
         _ => {}
     }
@@ -953,17 +1044,23 @@ fn apply_pi_json_event(
                 return;
             };
             if message.get("role").and_then(serde_json::Value::as_str) == Some("assistant") {
-                if message
+                if let Some(reason @ ("error" | "aborted" | "length")) = message
                     .get("stopReason")
                     .and_then(serde_json::Value::as_str)
-                    == Some("error")
                 {
-                    output.event_error = message
+                    output.final_message = None;
+                    let detail = message
                         .get("errorMessage")
                         .and_then(serde_json::Value::as_str)
-                        .map(str::to_string);
-                }
-                if let Some(text) = assistant_message_text(message) {
+                        .filter(|message| !message.trim().is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("Pi response did not complete ({reason})"));
+                    if reason == "error" {
+                        output.retryable_error = Some(detail);
+                    } else {
+                        output.record_error(Some(detail), "Pi response did not complete");
+                    }
+                } else if let Some(text) = assistant_message_text(message) {
                     output.final_message = Some(text);
                 }
                 emit_usage_from(message.get("usage"), true, output, on_progress);
@@ -976,15 +1073,16 @@ fn apply_pi_json_event(
             "Retrying the Pi request".to_string(),
         )),
         Some("auto_retry_end") => {
-            if !event
-                .get("success")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true)
-            {
-                output.event_error = event
-                    .get("finalError")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+            if event.get("success").and_then(serde_json::Value::as_bool) == Some(true) {
+                output.retryable_error = None;
+            } else {
+                output.record_error(
+                    event
+                        .get("finalError")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    "Pi exhausted its retries",
+                );
             }
         }
         Some("compaction_start") => on_progress(HeadlessProgress::Activity(
@@ -1073,6 +1171,18 @@ fn json_error_message(error: Option<&serde_json::Value>) -> Option<String> {
 }
 
 fn command_for(harness: &AgentKind, restricted: bool) -> HeadlessCommand {
+    command_for_with_binary(
+        harness,
+        restricted,
+        crate::claude::ClaudeLauncher::resolve_binary,
+    )
+}
+
+fn command_for_with_binary(
+    harness: &AgentKind,
+    restricted: bool,
+    claude_binary: impl FnOnce() -> String,
+) -> HeadlessCommand {
     match harness {
         AgentKind::Claude => {
             let mut args = vec!["-p", "--output-format", "text"];
@@ -1085,7 +1195,7 @@ fn command_for(harness: &AgentKind, restricted: bool) -> HeadlessCommand {
                 args.extend(["--safe-mode", "--tools", ""]);
             }
             HeadlessCommand {
-                binary: crate::claude::ClaudeLauncher::resolve_binary(),
+                binary: claude_binary(),
                 args,
                 trailing: vec![],
                 envs: vec![],
@@ -1200,9 +1310,16 @@ fn headless_command_is_read_only(harness: &AgentKind, cmd: &HeadlessCommand) -> 
 }
 
 fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
+    read_only_command_with_binary(harness, crate::claude::ClaudeLauncher::resolve_binary)
+}
+
+fn read_only_command_with_binary(
+    harness: &AgentKind,
+    claude_binary: impl FnOnce() -> String,
+) -> Result<HeadlessCommand> {
     match harness {
         AgentKind::Claude => Ok(HeadlessCommand {
-            binary: crate::claude::ClaudeLauncher::resolve_binary(),
+            binary: claude_binary(),
             args: vec![
                 "-p",
                 "--output-format",

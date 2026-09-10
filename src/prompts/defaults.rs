@@ -372,3 +372,24 @@ pub const SESSION_SUMMARY: &str = r#"Summarize this {{harness_name}} session in 
 
 Session output:
 {{recent_lines}}"#;
+
+/// `expert_assist.consult` — a bounded, user-requested expert consultation.
+/// The evidence packet is deterministic and may contain explicit omission
+/// markers; those markers are requests for evidence, not tool instructions.
+pub const EXPERT_ASSIST_CONSULT: &str = r#"You are providing focused advice to an implementer working in an existing AMF agent session.
+
+Question:
+{{question}}
+
+Acceptance criteria:
+{{acceptance_criteria}}
+
+Attempted fixes:
+{{attempted_fixes}}
+
+Evidence packet:
+{{evidence_packet}}
+
+Access boundary: {{effective_access}}
+
+Return either concise advice, a proposed patch with paths and base evidence, or a structured request for missing evidence naming the exact evidence ID and range. Do not claim to have inspected omitted or unavailable material. Do not send changes or run follow-up work."#;

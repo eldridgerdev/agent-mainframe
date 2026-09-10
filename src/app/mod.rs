@@ -15,6 +15,7 @@ mod context_settings;
 mod diff;
 pub(crate) mod dormant;
 pub(crate) mod editor_ops;
+pub(crate) mod expert_assist;
 mod feature_ops;
 pub(crate) mod fix_cost;
 mod handoff;
@@ -318,6 +319,7 @@ pub enum LocalCommand {
     RefreshNotifications,
     CheckPendingDiffReview,
     PlanInterview,
+    AskExpert,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -832,6 +834,7 @@ pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
     pub db: Option<crate::db::AmfDb>,
+    pub(crate) expert_job: Option<expert_assist::ExpertJobRuntime>,
     /// Set by `precall_confirm` when the user clears a pre-call notice; the
     /// re-dispatched `start_*` method consumes it to skip the gate and spawn.
     pub precall_cleared: Option<precall::PrecallAction>,
@@ -2395,6 +2398,7 @@ impl App {
             store,
             store_path,
             db: Some(db),
+            expert_job: None,
             precall_cleared: None,
             precall_return: None,
             config,
@@ -2643,6 +2647,7 @@ impl App {
             store,
             store_path: PathBuf::new(),
             db: None,
+            expert_job: None,
             precall_cleared: None,
             precall_return: None,
             config: AppConfig {

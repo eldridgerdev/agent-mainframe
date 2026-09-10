@@ -494,6 +494,11 @@ fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
         review_memory_path: loaded
             .as_ref()
             .and_then(|config| config.review_memory_path.clone()),
+        // The wizard doesn't edit the batched-review size budget; carry it
+        // through untouched.
+        review_prompt_budget_tokens: loaded
+            .as_ref()
+            .and_then(|config| config.review_prompt_budget_tokens),
         // The wizard doesn't edit prompt overrides; carry them through.
         prompt_overrides: loaded
             .map(|config| config.prompt_overrides)

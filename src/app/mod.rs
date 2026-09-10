@@ -564,6 +564,14 @@ pub struct AppConfig {
     /// `context_warning_percent` for the bands to remain meaningful.
     #[serde(default = "default_context_critical_percent")]
     pub context_critical_percent: u8,
+    /// Global fallback for [`crate::extension::ExtensionConfig::review_prompt_budget_tokens`]:
+    /// the estimated prompt-token ceiling above which `W` AI PR review and
+    /// final-review co-review split an oversized diff into slices. `None` uses
+    /// the built-in per-harness default (Claude/Codex 128k, OpenCode/Pi 96k);
+    /// `0` disables pre-send splitting (adaptive halving only). A project's
+    /// `amf.json` `review_prompt_budget_tokens` overrides this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_prompt_budget_tokens: Option<usize>,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -709,6 +717,7 @@ impl Default for AppConfig {
             context_window_override: None,
             context_warning_percent: default_context_warning_percent(),
             context_critical_percent: default_context_critical_percent(),
+            review_prompt_budget_tokens: None,
         }
     }
 }
@@ -3307,6 +3316,18 @@ impl App {
     ) -> String {
         let (text, _source) = self.resolve_headless_template(id, harness, repo, workdir);
         crate::prompts::render_template(&text, ctx)
+    }
+
+    /// The batched-review size budget in estimated prompt tokens for a run of
+    /// `harness` against `repo`: the project's `amf.json`
+    /// `review_prompt_budget_tokens`, else the global
+    /// `AppConfig::review_prompt_budget_tokens`, else the built-in per-harness
+    /// default. A configured `0` is honored (disables pre-send splitting).
+    pub(crate) fn review_prompt_budget(&self, repo: &Path, harness: &AgentKind) -> usize {
+        self.extension_for_repo(repo)
+            .review_prompt_budget_tokens
+            .or(self.config.review_prompt_budget_tokens)
+            .unwrap_or_else(|| crate::headless::default_prompt_budget_tokens(harness))
     }
 
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {

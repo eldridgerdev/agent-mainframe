@@ -672,29 +672,40 @@ impl App {
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
         let read_only = !attached.is_empty();
-        let prompt = self.resolve_headless_prompt(
-            crate::prompts::PromptId::PlanInterviewRound,
-            &harness,
-            &repo,
-            &workdir,
-            &crate::prompts::PromptContext::new()
-                .with(
-                    "interview_input",
-                    plan_interview::interviewer_input_json(
-                        &feature_name,
-                        &brief,
-                        &questions,
-                        &answers,
-                        &context,
-                        round,
-                        &attached,
-                    ),
+        let guarded = plan_interview::guard_context_for_prompt(
+            |ctx| {
+                self.resolve_headless_prompt(
+                    crate::prompts::PromptId::PlanInterviewRound,
+                    &harness,
+                    &repo,
+                    &workdir,
+                    &crate::prompts::PromptContext::new()
+                        .with(
+                            "interview_input",
+                            plan_interview::interviewer_input_json(
+                                &feature_name,
+                                &brief,
+                                &questions,
+                                &answers,
+                                ctx,
+                                round,
+                                &attached,
+                            ),
+                        )
+                        .with(
+                            "tool_access_note",
+                            plan_interview::round_synthesis_tool_access_note(read_only),
+                        ),
                 )
-                .with(
-                    "tool_access_note",
-                    plan_interview::round_synthesis_tool_access_note(read_only),
-                ),
+            },
+            &context,
+            self.review_prompt_budget(&repo, &harness),
         );
+        if let Some(notice) = &guarded.notice {
+            self.log_warn("plan_interview", notice.clone());
+            self.message = Some(notice.clone());
+        }
+        let prompt = guarded.prompt;
         let token_estimate = estimate_tokens(&prompt);
 
         if !self.precall_gate(
@@ -817,33 +828,46 @@ impl App {
         let read_only = !attached.is_empty();
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
-        let prompt = self.resolve_headless_prompt(
-            crate::prompts::PromptId::PlanInterviewSynthesis,
-            &harness,
-            &repo,
-            &workdir,
-            &crate::prompts::PromptContext::new()
-                .with(
-                    "interview_input",
-                    plan_interview::synthesis_input_json(
-                        &feature_name,
-                        &brief,
-                        &questions,
-                        &answers,
-                        &context,
-                        revision_critique.as_deref(),
-                        &attached,
-                    ),
+        let guarded = plan_interview::guard_context_for_prompt(
+            |ctx| {
+                self.resolve_headless_prompt(
+                    crate::prompts::PromptId::PlanInterviewSynthesis,
+                    &harness,
+                    &repo,
+                    &workdir,
+                    &crate::prompts::PromptContext::new()
+                        .with(
+                            "interview_input",
+                            plan_interview::synthesis_input_json(
+                                &feature_name,
+                                &brief,
+                                &questions,
+                                &answers,
+                                ctx,
+                                revision_critique.as_deref(),
+                                &attached,
+                            ),
+                        )
+                        .with(
+                            "revision_addendum",
+                            plan_interview::synthesis_revision_addendum(
+                                revision_critique.as_deref(),
+                            ),
+                        )
+                        .with(
+                            "tool_access_note",
+                            plan_interview::round_synthesis_tool_access_note(read_only),
+                        ),
                 )
-                .with(
-                    "revision_addendum",
-                    plan_interview::synthesis_revision_addendum(revision_critique.as_deref()),
-                )
-                .with(
-                    "tool_access_note",
-                    plan_interview::round_synthesis_tool_access_note(read_only),
-                ),
+            },
+            &context,
+            self.review_prompt_budget(&repo, &harness),
         );
+        if let Some(notice) = &guarded.notice {
+            self.log_warn("plan_interview", notice.clone());
+            self.message = Some(notice.clone());
+        }
+        let prompt = guarded.prompt;
         let token_estimate = estimate_tokens(&prompt);
 
         if !self.precall_gate(
@@ -973,29 +997,40 @@ impl App {
         let read_only = !attached.is_empty();
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
-        let prompt = self.resolve_headless_prompt(
-            crate::prompts::PromptId::PlanInterviewCritique,
-            &harness,
-            &repo,
-            &workdir,
-            &crate::prompts::PromptContext::new()
-                .with(
-                    "interview_input",
-                    plan_interview::critique_input_json(
-                        &feature_name,
-                        &plan,
-                        &brief,
-                        &questions,
-                        &answers,
-                        &context,
-                        &attached,
-                    ),
+        let guarded = plan_interview::guard_context_for_prompt(
+            |ctx| {
+                self.resolve_headless_prompt(
+                    crate::prompts::PromptId::PlanInterviewCritique,
+                    &harness,
+                    &repo,
+                    &workdir,
+                    &crate::prompts::PromptContext::new()
+                        .with(
+                            "interview_input",
+                            plan_interview::critique_input_json(
+                                &feature_name,
+                                &plan,
+                                &brief,
+                                &questions,
+                                &answers,
+                                ctx,
+                                &attached,
+                            ),
+                        )
+                        .with(
+                            "tool_access_note",
+                            plan_interview::critique_tool_access_note(read_only),
+                        ),
                 )
-                .with(
-                    "tool_access_note",
-                    plan_interview::critique_tool_access_note(read_only),
-                ),
+            },
+            &context,
+            self.review_prompt_budget(&repo, &harness),
         );
+        if let Some(notice) = &guarded.notice {
+            self.log_warn("plan_interview", notice.clone());
+            self.message = Some(notice.clone());
+        }
+        let prompt = guarded.prompt;
         let token_estimate = estimate_tokens(&prompt);
 
         if !self.precall_gate(

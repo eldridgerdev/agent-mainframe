@@ -364,6 +364,77 @@ pub struct RepositoryContext {
     pub claude_md: Option<String>,
 }
 
+impl RepositoryContext {
+    /// The context with its two largest, most droppable pieces removed — the
+    /// README and `CLAUDE.md` excerpts. The top-level entry list stays: it is
+    /// small and orients the model. Used by [`guard_context_for_prompt`] when a
+    /// plan-interview prompt would overflow.
+    pub fn without_file_excerpts(&self) -> RepositoryContext {
+        RepositoryContext {
+            top_level_entries: self.top_level_entries.clone(),
+            readme_head: None,
+            claude_md: None,
+        }
+    }
+
+    /// Whether [`Self::without_file_excerpts`] would actually drop anything.
+    fn has_file_excerpts(&self) -> bool {
+        self.readme_head.is_some() || self.claude_md.is_some()
+    }
+}
+
+/// The result of the plan-interview overflow guard: the prompt to send, plus a
+/// one-line notice for the dialog footer when the full context did not fit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardedPlanPrompt {
+    pub prompt: String,
+    pub notice: Option<String>,
+}
+
+/// Non-diff overflow guard for the plan-interview prompts (round / synthesis /
+/// critique): render with the full repository context; if the estimate exceeds
+/// `budget_tokens`, retry once with the README / `CLAUDE.md` excerpts dropped;
+/// if it still would, send it anyway and say so. `render` takes a
+/// [`RepositoryContext`] and produces the fully-resolved prompt (built-in
+/// default or an override). `budget_tokens` comes from
+/// `App::review_prompt_budget`; `0` disables the guard.
+pub fn guard_context_for_prompt(
+    render: impl Fn(&RepositoryContext) -> String,
+    context: &RepositoryContext,
+    budget_tokens: usize,
+) -> GuardedPlanPrompt {
+    let full = render(context);
+    if !crate::headless::will_overflow_with_budget(&full, budget_tokens) {
+        return GuardedPlanPrompt {
+            prompt: full,
+            notice: None,
+        };
+    }
+
+    if context.has_file_excerpts() {
+        let trimmed = render(&context.without_file_excerpts());
+        let notice = if crate::headless::will_overflow_with_budget(&trimmed, budget_tokens) {
+            "Prompt is very large: dropped the repository README/CLAUDE.md excerpts, but it may \
+             still exceed the model's context window."
+        } else {
+            "Prompt was too large: dropped the repository README/CLAUDE.md excerpts to fit the \
+             model's context window."
+        };
+        return GuardedPlanPrompt {
+            prompt: trimmed,
+            notice: Some(notice.to_string()),
+        };
+    }
+
+    GuardedPlanPrompt {
+        prompt: full,
+        notice: Some(
+            "Prompt is very large and may exceed the model's context window; sending it as is."
+                .to_string(),
+        ),
+    }
+}
+
 /// The deliberately small handoff between an isolated repository investigator
 /// and the no-tools planning pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1600,6 +1671,99 @@ mod tests {
     /// template.
     fn prose_prefix(template: &str) -> &str {
         template.split("{{").next().unwrap_or(template)
+    }
+
+    fn ctx_with_excerpts() -> RepositoryContext {
+        RepositoryContext {
+            top_level_entries: vec!["src".to_string(), "README.md".to_string()],
+            readme_head: Some("R".repeat(2_000)),
+            claude_md: Some("C".repeat(2_000)),
+        }
+    }
+
+    /// 100 tokens ≈ 400 bytes; tests dial prompt sizes either side of it.
+    const TEST_BUDGET: usize = 100;
+
+    #[test]
+    fn guard_leaves_a_prompt_that_fits_untouched() {
+        let ctx = ctx_with_excerpts();
+        let guarded = guard_context_for_prompt(
+            |c| {
+                format!(
+                    "prompt with {} bytes of context",
+                    c.readme_head.as_ref().map_or(0, String::len)
+                )
+            },
+            &ctx,
+            TEST_BUDGET,
+        );
+        assert!(guarded.notice.is_none());
+        assert!(guarded.prompt.contains("2000 bytes"));
+    }
+
+    #[test]
+    fn guard_drops_file_excerpts_when_that_makes_the_prompt_fit() {
+        let ctx = ctx_with_excerpts();
+        let guarded = guard_context_for_prompt(
+            |c| {
+                if c.readme_head.is_some() {
+                    "x".repeat(4_000) // ~1000 tokens, over budget
+                } else {
+                    "small".to_string()
+                }
+            },
+            &ctx,
+            TEST_BUDGET,
+        );
+        assert_eq!(guarded.prompt, "small");
+        assert!(
+            guarded
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("dropped the repository README/CLAUDE.md excerpts to fit")
+        );
+    }
+
+    #[test]
+    fn guard_warns_when_the_prompt_overflows_even_without_excerpts() {
+        let ctx = ctx_with_excerpts();
+        let guarded = guard_context_for_prompt(|_| "y".repeat(4_000), &ctx, TEST_BUDGET);
+        assert!(
+            guarded
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("may still exceed")
+        );
+    }
+
+    #[test]
+    fn guard_warns_without_trimming_when_there_are_no_excerpts_to_drop() {
+        let ctx = RepositoryContext {
+            top_level_entries: vec!["src".to_string()],
+            readme_head: None,
+            claude_md: None,
+        };
+        let big = "z".repeat(4_000);
+        let guarded = guard_context_for_prompt(|_| big.clone(), &ctx, TEST_BUDGET);
+        assert_eq!(guarded.prompt, big);
+        assert!(
+            guarded
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("may exceed the model's context window")
+        );
+    }
+
+    #[test]
+    fn guard_is_disabled_by_a_zero_budget() {
+        let ctx = ctx_with_excerpts();
+        let big = "q".repeat(100_000);
+        let guarded = guard_context_for_prompt(|_| big.clone(), &ctx, 0);
+        assert_eq!(guarded.prompt, big);
+        assert!(guarded.notice.is_none());
     }
 
     /// The three interview keys name three different things and must never

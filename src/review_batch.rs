@@ -143,12 +143,7 @@ pub trait BatchReviewRunner {
     /// overrides it to render the dedicated `review.hunk_split` prompt so its
     /// `{{file_path}}` / `{{hunk_label}}` placeholders are populated and an
     /// override of that prompt actually takes effect.
-    fn review_hunk(
-        &self,
-        diff_text: &str,
-        _file_path: &str,
-        _hunk_label: &str,
-    ) -> Result<String> {
+    fn review_hunk(&self, diff_text: &str, _file_path: &str, _hunk_label: &str) -> Result<String> {
         self.review(diff_text)
     }
 }

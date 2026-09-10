@@ -10,6 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
+### Security
+
+- Updated TLS certificate validation dependencies to address certificate and
+  revocation-list validation vulnerabilities in HTTPS connections. No migration
+  is required.
+
 ### Added
 
 - **A plan interview can now include reference documents.** On the feature-brief
@@ -68,6 +74,9 @@ are tagged.
   No migration is required.
 
 ### Fixed
+
+- Failed AI reviews now retain Claude’s structured error details and show the
+  process exit status, making failures with empty stderr easier to diagnose.
 
 - **AI review in PR Triage no longer fails on very large pull requests.** The
   `A`/`w`/`O` review passes fetch the PR diff with `gh pr diff`, which pulls it

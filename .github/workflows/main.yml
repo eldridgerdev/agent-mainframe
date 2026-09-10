@@ -7,19 +7,53 @@ on:
       - "v*"
   pull_request:
     branches: ["main", "master"]
+  schedule:
+    - cron: "17 7 * * 1"
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    # Preserve the existing Linux check name used by branch protection.
+    name: ${{ matrix.check_name }}
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            check_name: Test
+          - runner: macos-latest
+            check_name: Test (macOS)
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux test prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config git tmux bash coreutils procps
+
+      - name: Install macOS test prerequisites
+        if: runner.os == 'macOS'
+        run: brew install tmux
+
+      - name: Verify test prerequisites
+        shell: bash
+        run: |
+          for tool in git tmux sh bash ps sleep mkfifo cc; do
+            command -v "$tool"
+          done
+          rustc --version
+          cargo --version
 
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@v4
@@ -33,13 +67,11 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: cargo test
-        run: |
-          rustc --version && cargo --version  # Print version info for debugging
-          cargo test --workspace --verbose
-
+        run: cargo test --workspace --locked --verbose
 
   lint:
     name: Lint
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +93,29 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: cargo fmt
         run: cargo fmt --check
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install audit build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev
+
+      - name: Install pinned cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit locked dependencies against RustSec
+        run: cargo audit --file Cargo.lock

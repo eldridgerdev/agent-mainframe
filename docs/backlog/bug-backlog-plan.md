@@ -113,7 +113,7 @@ The selected pane could open as an empty shell.
 - **Status:** Backlog
 - **Reported:** 2026-07-20
 - **Relates to:** PR Triage fix-prompt assembly
-  (`src/app/pr_review.rs::PrComment::fix_prompt`, `fix_prompt_body`,
+  (`src/app/pr_review/domain.rs::PrComment::fix_prompt`, `fix_prompt_body`,
   `combined_fix_prompt`)
 - **Lead:** The prompt currently gives the agent a `file:line` pointer, the
   review comment, and its GitHub diff hunk, but the agent can still interpret
@@ -218,7 +218,7 @@ composer is open, so it is not shown on return either.
 - **Status:** Backlog
 - **Reported:** 2026-07-20
 - **Relates to:** AI Review posting (`src/app/ai_review.rs::ai_review_post`), PR
-  Triage refresh (`src/app/pr_review.rs::refresh_pr_review`,
+  Triage refresh (`src/app/pr_review/fetch.rs::refresh_pr_review`,
   `start_pr_review_fetch`, `pr_review_cache`)
 - **Root cause (by design, currently):** `ai_review_post` marks the kept
   findings `published` and re-caches the AI Review pane's own state, but it
@@ -518,7 +518,7 @@ state are gone.
 - State is likely mutated in the in-memory `PrReviewState` but **not
   flushed to SQLite before the pane is left** to switch into the fix
   session. The `f`-marks-`Fixing` path is said to persist before leaving;
-  the `m` / `s` / reply paths may only update memory. → `src/app/pr_review.rs`,
+  the `m` / `s` / reply paths may only update memory. → `src/app/pr_review/actions.rs`, `src/app/pr_review/reply.rs`,
   `src/handlers/pr_review.rs`.
 - The return path may **re-fetch without re-overlaying** persisted triage
   — confirm `apply_persisted_triage` runs on the cache-hit, background-fetch,

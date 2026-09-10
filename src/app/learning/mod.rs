@@ -6,7 +6,6 @@
 //!
 //! Browsing never writes source files. Session/Q&A history is persisted through
 //! the Learning DB module; follow-ups delegate to existing TODO/session APIs.
-#![allow(dead_code)]
 
 mod follow_up;
 mod lifecycle;

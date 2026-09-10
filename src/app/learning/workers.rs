@@ -140,7 +140,10 @@ pub fn learning_prompt_context_tokens(
 
 /// The full built-in Learning Mode prompt for one question. A thin wrapper
 /// over the registry template; overrides go through the resolver at the call
-/// site ([`crate::app::App::learning_enqueue`]).
+/// site ([`crate::app::App::learning_enqueue`]). Tests use this to assert on
+/// the built-in default template directly; production renders it through the
+/// override layers at that call site, so this wrapper is `#[cfg(test)]`.
+#[cfg(test)]
 pub fn build_prompt(ctx: &LearningPromptContext) -> String {
     crate::prompts::render_template(
         crate::prompts::PromptId::LearningAnswer
@@ -318,7 +321,9 @@ pub struct AskAnchor {
 
 impl App {
     /// Assemble the prompt context for a question asked right now, against the
-    /// overlay's current anchor.
+    /// overlay's current anchor. A test-only convenience over
+    /// [`App::learning_prompt_context_at`], which is what production calls.
+    #[cfg(test)]
     pub fn learning_prompt_context(
         &self,
         question: &str,
@@ -460,6 +465,10 @@ impl App {
     /// answer. Several questions may be in flight at once.
     ///
     /// Returns the new row's id.
+    ///
+    /// A test-only convenience over [`App::learning_ask_at`]; production always
+    /// asks against an explicitly captured place, so it calls `_at` directly.
+    #[cfg(test)]
     pub fn learning_ask(
         &mut self,
         question: &str,

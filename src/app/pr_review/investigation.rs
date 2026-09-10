@@ -84,8 +84,8 @@ pub struct InvestigationFollowUp<'a> {
 }
 
 /// Everything [`build_investigation_prompt`] needs, as a plain value so the
-/// builder stays pure and unit-testable (mirrors
-/// [`crate::app::learning::LearningPromptContext`]).
+/// builder stays pure and unit-testable (mirrors `learning`'s
+/// `LearningPromptContext`).
 #[derive(Debug, Clone)]
 pub struct InvestigationPromptContext<'a> {
     /// The review comment being investigated.
@@ -112,7 +112,7 @@ pub struct InvestigationPromptContext<'a> {
 /// only the review comment, the PR's title + description, and the list of files
 /// the PR touches — the "minimal context" the plan calls for. The read-only
 /// instruction block is last so it's the freshest thing the model reads (the
-/// same ordering rationale as [`crate::app::learning::build_prompt`]).
+/// same ordering rationale as `learning`'s prompt builder).
 pub fn build_investigation_prompt(ctx: &InvestigationPromptContext<'_>) -> String {
     let mut out = String::from(
         "Investigate this PR review comment. Someone triaging the pull request \

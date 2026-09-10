@@ -777,7 +777,9 @@ impl App {
 
 impl App {
     /// The text the current anchor covers, captured verbatim onto a Q&A row so
-    /// the answer stays readable after the file moves on.
+    /// the answer stays readable after the file moves on. Test-only sugar over
+    /// the free [`selection_text`] helper, which is what production uses.
+    #[cfg(test)]
     pub fn learning_selection_text(&self) -> String {
         match &self.mode {
             AppMode::Learning(state) => selection_text(state),

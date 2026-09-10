@@ -98,8 +98,11 @@ Override:
   `~/.config/amf/config.json` (a number of tokens).
 - **Per repository** — `review_prompt_budget_tokens` in the repo's
   `amf.json`, which overrides the global value.
-- `0` disables the pre-send split entirely; AMF then only reacts to an
-  actual "prompt too long" error.
+- `0` disables the pre-send split entirely. For the `W` review AMF then
+  only reacts to an actual "prompt too long" error, retrying that run as a
+  batched review with adaptive halving. Co-review has no post-failure
+  retry, so with `0` an oversized file is sent in one pass with its body
+  bounded by a visible "diff truncated" marker.
 
 ## Editable prompts
 

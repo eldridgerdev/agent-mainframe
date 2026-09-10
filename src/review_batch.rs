@@ -42,8 +42,13 @@ use crate::project::AgentKind;
 const LONE_HUNK_REASON: &str = "exceeds the size budget even as a single hunk";
 
 /// Renders a per-batch review prompt from a slice of diff text. Supplied by
-/// the call site from the registry-resolved template.
+/// the call site from the registry-resolved `review.batch` template.
 type BatchPromptRenderer = Box<dyn Fn(&str) -> String + Send + Sync>;
+
+/// Renders a per-hunk-group review prompt from `(slice diff, file path, hunk
+/// label)`. Supplied by the call site from the registry-resolved
+/// `review.hunk_split` template.
+type HunkPromptRenderer = Box<dyn Fn(&str, &str, &str) -> String + Send + Sync>;
 
 /// Renders a synthesis or findings-summary prompt from two string inputs
 /// (findings + coverage note, or label + findings).
@@ -130,16 +135,34 @@ pub enum BatchProgress {
 /// so all four harnesses share one path.
 pub trait BatchReviewRunner {
     fn review(&self, diff_text: &str) -> Result<String>;
+
+    /// Review one hunk-group slice of a file whose own diff was still too large
+    /// after file-level batching. `file_path` and `hunk_label` (`"hunk 3"` /
+    /// `"hunks 4\u{2013}6"`) name the slice for the prompt. The default
+    /// delegates to [`BatchReviewRunner::review`]; [`HeadlessBatchRunner`]
+    /// overrides it to render the dedicated `review.hunk_split` prompt so its
+    /// `{{file_path}}` / `{{hunk_label}}` placeholders are populated and an
+    /// override of that prompt actually takes effect.
+    fn review_hunk(
+        &self,
+        diff_text: &str,
+        _file_path: &str,
+        _hunk_label: &str,
+    ) -> Result<String> {
+        self.review(diff_text)
+    }
 }
 
-/// Production [`BatchReviewRunner`]: renders the per-batch prompt and runs it
-/// through [`HeadlessRunner`]. `render_prompt` is supplied by the call site
-/// from the registry-resolved `review.batch` / `review.hunk_split` template.
+/// Production [`BatchReviewRunner`]: renders the per-batch / per-hunk prompt and
+/// runs it through [`HeadlessRunner`]. `render_prompt` is supplied by the call
+/// site from the registry-resolved `review.batch` template, `render_hunk_prompt`
+/// from `review.hunk_split`.
 pub struct HeadlessBatchRunner {
     harness: AgentKind,
     workdir: PathBuf,
     model: Option<String>,
     render_prompt: BatchPromptRenderer,
+    render_hunk_prompt: HunkPromptRenderer,
 }
 
 impl HeadlessBatchRunner {
@@ -148,29 +171,38 @@ impl HeadlessBatchRunner {
         workdir: PathBuf,
         model: Option<String>,
         render_prompt: BatchPromptRenderer,
+        render_hunk_prompt: HunkPromptRenderer,
     ) -> Self {
         Self {
             harness,
             workdir,
             model,
             render_prompt,
+            render_hunk_prompt,
         }
     }
-}
 
-impl BatchReviewRunner for HeadlessBatchRunner {
-    fn review(&self, diff_text: &str) -> Result<String> {
-        let prompt = (self.render_prompt)(diff_text);
-        // Repo-aware (not `restricted`): per-batch prompts lose cross-file
+    fn run(&self, prompt: &str) -> Result<String> {
+        // Repo-aware (not `restricted`): per-slice prompts lose cross-file
         // context, so letting the harness read the tree back is worth more
         // than the isolation.
         HeadlessRunner::run(
             &self.harness,
             &self.workdir,
-            &prompt,
+            prompt,
             self.model.as_deref(),
             false,
         )
+    }
+}
+
+impl BatchReviewRunner for HeadlessBatchRunner {
+    fn review(&self, diff_text: &str) -> Result<String> {
+        self.run(&(self.render_prompt)(diff_text))
+    }
+
+    fn review_hunk(&self, diff_text: &str, file_path: &str, hunk_label: &str) -> Result<String> {
+        self.run(&(self.render_hunk_prompt)(diff_text, file_path, hunk_label))
     }
 }
 
@@ -328,7 +360,7 @@ fn review_hunk_section(
     path: &str,
     out: &mut BatchReviewOutput,
 ) -> std::result::Result<String, String> {
-    match runner.review(&section.reassemble()) {
+    match runner.review_hunk(&section.reassemble(), path, label) {
         Ok(text) => Ok(text),
         Err(err) if as_prompt_too_long(&err).is_some() => {
             if section.hunks.len() <= 1 {
@@ -798,6 +830,60 @@ mod tests {
         assert_eq!(out.findings.len(), 1);
         assert_eq!(out.findings[0].paths, ["big.rs"]);
         assert!(out.findings[0].text.starts_with("## big.rs"));
+        assert!(out.uncovered.is_empty());
+    }
+
+    #[test]
+    fn hunk_slices_go_through_review_hunk_with_the_file_path_and_label() {
+        // A runner that keeps `review` and `review_hunk` calls apart so we can
+        // assert the hunk-split path uses the dedicated seam (and so its
+        // `review.hunk_split` prompt / `{{file_path}}` / `{{hunk_label}}`
+        // placeholders are actually populated by the production runner).
+        struct SeamRunner {
+            hunk_calls: RefCell<Vec<(String, String)>>,
+        }
+        impl BatchReviewRunner for SeamRunner {
+            fn review(&self, diff_text: &str) -> Result<String> {
+                // The whole-file prompt always overflows so the flow hunk-splits.
+                Err(crate::headless::prompt_too_long_error(
+                    &AgentKind::Claude,
+                    &format!("prompt is too long ({} bytes)", diff_text.len()),
+                ))
+            }
+            fn review_hunk(
+                &self,
+                _diff_text: &str,
+                file_path: &str,
+                hunk_label: &str,
+            ) -> Result<String> {
+                self.hunk_calls
+                    .borrow_mut()
+                    .push((file_path.to_string(), hunk_label.to_string()));
+                Ok(format!("### {file_path}|RIGHT|1\nlooked at {hunk_label}"))
+            }
+        }
+
+        let file = section("src/big.rs", &[120, 120, 120]);
+        let runner = SeamRunner {
+            hunk_calls: RefCell::new(Vec::new()),
+        };
+        let out = review_batches(
+            vec![ReviewBatch::Files(vec![file])],
+            &runner,
+            // Budget that fits the header plus a single hunk but not two.
+            80,
+            &mut sink(),
+        );
+
+        let calls = runner.hunk_calls.borrow();
+        assert!(!calls.is_empty(), "the hunk seam was used");
+        assert!(calls.iter().all(|(path, _)| path == "src/big.rs"));
+        assert!(
+            calls.iter().all(|(_, label)| label.starts_with("hunk")),
+            "each slice carries a hunk label: {calls:?}"
+        );
+        assert_eq!(out.findings.len(), 1);
+        assert!(out.findings[0].text.contains("looked at hunk"));
         assert!(out.uncovered.is_empty());
     }
 

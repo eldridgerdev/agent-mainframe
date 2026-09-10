@@ -929,6 +929,7 @@ fn process_ai_review_output(output: String, diff: &str) -> Result<AiReviewOutcom
 /// the UI thread, used only when the single-prompt form would overflow.
 pub(crate) struct BatchReviewTemplates {
     pub batch: String,
+    pub hunk_split: String,
     pub synthesis: String,
     pub summary: String,
     pub budget_tokens: usize,
@@ -952,6 +953,20 @@ fn batch_slice_context(
         })
         .unwrap_or_default();
     ai_review_prompt_context(slice_diff, memory, skill).with("file_list", file_list)
+}
+
+/// `{{token}}` context for a single `review.hunk_split` slice: the hunk group's
+/// annotated diff plus the file path and hunk label that name it.
+fn hunk_slice_context(
+    slice_diff: &str,
+    file_path: &str,
+    hunk_label: &str,
+) -> crate::prompts::PromptContext {
+    crate::prompts::PromptContext::new()
+        .with("file_path", file_path.to_string())
+        .with("hunk_label", hunk_label.to_string())
+        .with("annotated_diff", annotated_diff_for_ai_review(slice_diff))
+        .with("finding_heading_prefix", AI_FINDING_HEADING_PREFIX)
 }
 
 /// `{{token}}` context for `review.synthesis`.
@@ -1007,6 +1022,7 @@ fn run_batched_ai_pr_review(
     tx: &std::sync::mpsc::Sender<AiReviewProgress>,
 ) -> Option<Result<AiReviewOutcome>> {
     let batch_tpl = templates.batch.clone();
+    let hunk_tpl = templates.hunk_split.clone();
     let memory_for_batch = memory.to_string();
     let skill_for_batch = skill.map(str::to_string);
     let batch_runner = crate::review_batch::HeadlessBatchRunner::new(
@@ -1017,6 +1033,12 @@ fn run_batched_ai_pr_review(
             crate::prompts::render_template(
                 &batch_tpl,
                 &batch_slice_context(slice, &memory_for_batch, skill_for_batch.as_deref()),
+            )
+        }),
+        Box::new(move |slice: &str, file_path: &str, hunk_label: &str| {
+            crate::prompts::render_template(
+                &hunk_tpl,
+                &hunk_slice_context(slice, file_path, hunk_label),
             )
         }),
     );
@@ -1151,7 +1173,10 @@ fn run_ai_pr_review(
 
     // Too large for one prompt: fall back to slice-by-slice review + synthesis.
     // A diff that does not parse into file sections returns `None` here and
-    // drops through to the ordinary single pass.
+    // drops through to the ordinary single pass. Skipped when the pre-send
+    // size gate is disabled (`review_prompt_budget_tokens: 0`); in that case
+    // an actual "prompt too long" from the single pass below triggers the
+    // same fallback instead.
     if crate::headless::will_overflow_with_budget(&prompt, batch_templates.budget_tokens)
         && let Some(result) = run_batched_ai_pr_review(
             &harness,
@@ -1216,6 +1241,42 @@ fn run_ai_pr_review(
         );
         outcome
     });
+
+    // The single pass came back "prompt is too long" — reachable when the
+    // pre-send gate is off (`review_prompt_budget_tokens: 0`) or when the byte
+    // estimate was optimistic. Fall back to the same slice-by-slice review +
+    // synthesis the size gate would have run, with its own adaptive halving.
+    let result = match result {
+        Err(err) if crate::headless::as_prompt_too_long(&err).is_some() => {
+            let _ = tx.send(AiReviewProgress::Activity(
+                "Prompt too long — retrying as a batched review".to_string(),
+            ));
+            match run_batched_ai_pr_review(
+                &harness,
+                &workdir,
+                &diff,
+                &memory,
+                skill.as_deref(),
+                model.as_deref(),
+                &batch_templates,
+                &tx,
+            ) {
+                Some(batched) => batched.map(|mut outcome| {
+                    outcome.attribution = AiReviewAttribution::from_run(
+                        &harness,
+                        model.as_deref(),
+                        None,
+                        &pricing,
+                        started_at.elapsed(),
+                    );
+                    outcome
+                }),
+                // Diff did not parse into file sections — nothing to batch.
+                None => Err(err),
+            }
+        }
+        other => other,
+    };
     let _ = tx.send(AiReviewProgress::Done(result));
 }
 
@@ -1848,6 +1909,14 @@ impl App {
             batch: self
                 .resolve_headless_template(
                     crate::prompts::PromptId::ReviewBatch,
+                    &harness,
+                    &repo,
+                    &workdir,
+                )
+                .0,
+            hunk_split: self
+                .resolve_headless_template(
+                    crate::prompts::PromptId::ReviewHunkSplit,
                     &harness,
                     &repo,
                     &workdir,

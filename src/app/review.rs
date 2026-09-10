@@ -1752,11 +1752,16 @@ impl App {
         let model = self.config.review_model_for(ReviewAction::CoReview);
 
         // Oversized file: review it hunk-slice by hunk-slice on a worker thread
-        // rather than sending the single truncated prompt.
+        // rather than sending the single truncated prompt. `review_prompt_budget`
+        // of `0` disables pre-send splitting entirely (the documented opt-out,
+        // matching the `W` path) — the file then falls through to the single
+        // pass, where `co_review_context` bounds the body with a visible
+        // "diff truncated" marker.
         let full_body_len = co_review_annotated_body(&file.hunks).len();
         let co_review_budget = self.review_prompt_budget(&repo, &crate::project::AgentKind::Claude);
-        if full_body_len > CO_REVIEW_MAX_BODY
-            || crate::headless::will_overflow_with_budget(&prompt, co_review_budget)
+        if co_review_budget != 0
+            && (full_body_len > CO_REVIEW_MAX_BODY
+                || crate::headless::will_overflow_with_budget(&prompt, co_review_budget))
         {
             let (template, _) = self.resolve_headless_template(
                 crate::prompts::PromptId::ReviewCoReview,
@@ -5001,7 +5006,9 @@ fn walkthrough_context(file: &crate::diff::DiffFile) -> crate::prompts::PromptCo
 /// token cost.
 /// Rough per-slice cap on the annotated co-review body. Beyond this the file is
 /// reviewed hunk-slice by hunk-slice ([`App::spawn_batched_co_review`]) instead
-/// of being silently truncated.
+/// of being silently truncated — unless `review_prompt_budget_tokens` is `0`,
+/// which opts out of all pre-send splitting and lets the single pass truncate
+/// the body with a visible marker.
 const CO_REVIEW_MAX_BODY: usize = 8000;
 
 /// The line-numbered co-review body for a run of hunks. No length cap — callers

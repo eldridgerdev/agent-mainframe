@@ -155,11 +155,11 @@ impl App {
     /// `<line>|<comment>`; `poll_co_review` parses them into *draft* line
     /// comments the reviewer then accepts / edits / dismisses.
     pub fn generate_co_review(&mut self) {
-        let (workdir, path, ctx) = {
+        let (workdir, file) = {
             let AppMode::DiffViewer(state) = &self.mode else {
                 return;
             };
-            if !state.review || state.co_review_child.is_some() {
+            if !state.review || state.co_review_child.is_some() || state.co_review_bg.is_some() {
                 return;
             }
             let Some(file) = state.files.get(state.selected_file) else {
@@ -173,12 +173,9 @@ impl App {
                 self.message = Some("AI co-review: nothing to review in this file".to_string());
                 return;
             }
-            (
-                state.workdir.clone(),
-                file.path.clone(),
-                co_review_context(file),
-            )
+            (state.workdir.clone(), file.clone())
         };
+        let path = file.path.clone();
 
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
@@ -187,7 +184,7 @@ impl App {
             &crate::project::AgentKind::Claude,
             &repo,
             &workdir,
-            &ctx,
+            &co_review_context(&file),
         );
         if !self.precall_gate(
             crate::app::precall::PrecallAction::ReviewCoReview,
@@ -197,6 +194,43 @@ impl App {
             return;
         }
         let model = self.config.review_model_for(ReviewAction::CoReview);
+
+        // Oversized file: review it hunk-slice by hunk-slice on a worker thread
+        // rather than sending the single truncated prompt. `review_prompt_budget`
+        // of `0` disables pre-send splitting entirely (the documented opt-out,
+        // matching the `W` path) — the file then falls through to the single
+        // pass, where `co_review_context` bounds the body with a visible
+        // "diff truncated" marker.
+        let full_body_len = co_review_annotated_body(&file.hunks).len();
+        let co_review_budget = self.review_prompt_budget(&repo, &crate::project::AgentKind::Claude);
+        if co_review_budget != 0
+            && (full_body_len > CO_REVIEW_MAX_BODY
+                || crate::headless::will_overflow_with_budget(&prompt, co_review_budget))
+        {
+            let (template, _) = self.resolve_headless_template(
+                crate::prompts::PromptId::ReviewCoReview,
+                &crate::project::AgentKind::Claude,
+                &repo,
+                &workdir,
+            );
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (thread_workdir, thread_model) = (workdir.clone(), model.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(run_batched_co_review(
+                    &thread_workdir,
+                    &file,
+                    &template,
+                    thread_model.as_deref(),
+                ));
+            });
+            if let AppMode::DiffViewer(state) = &mut self.mode {
+                state.co_review_bg = Some(rx);
+                state.co_review_file = Some(path.clone());
+            }
+            self.message = Some(format!("AI co-review (batched) running on {path}…"));
+            return;
+        }
+
         match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
             Ok(child) => {
                 self.message = Some(format!("AI co-review running on {path}…"));
@@ -213,8 +247,56 @@ impl App {
 
     /// Poll an in-flight co-review pass; on completion parse its findings into
     /// draft line comments for the file it ran on. Mirrors
-    /// `poll_review_walkthrough`.
+    /// `poll_review_walkthrough`. Handles both the single `spawn_headless` pass
+    /// and the batched worker-thread pass for an oversized file.
     pub fn poll_co_review(&mut self) -> Result<()> {
+        // Batched (worker-thread) pass.
+        let bg_msg = match &self.mode {
+            AppMode::DiffViewer(state) => state
+                .co_review_bg
+                .as_ref()
+                .map(std::sync::mpsc::Receiver::try_recv),
+            _ => None,
+        };
+        if let Some(recv) = bg_msg {
+            match recv {
+                Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let AppMode::DiffViewer(state) = &mut self.mode {
+                        state.co_review_bg = None;
+                        state.co_review_file = None;
+                    }
+                    self.message = Some("AI co-review failed: worker exited".to_string());
+                    return Ok(());
+                }
+                Ok(result) => {
+                    let path = match &mut self.mode {
+                        AppMode::DiffViewer(state) => {
+                            state.co_review_bg = None;
+                            state.co_review_file.take()
+                        }
+                        _ => None,
+                    };
+                    let Some(path) = path else { return Ok(()) };
+                    match result {
+                        Ok((text, unreviewed)) => {
+                            self.apply_co_review_text(&path, &text);
+                            if unreviewed > 0 {
+                                let tail =
+                                    format!("{unreviewed} hunk group(s) could not be reviewed");
+                                self.message = Some(match self.message.take() {
+                                    Some(base) if !base.is_empty() => format!("{base} · {tail}"),
+                                    _ => format!("AI co-review: {tail}"),
+                                });
+                            }
+                        }
+                        Err(msg) => self.message = Some(format!("AI co-review failed: {msg}")),
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         let finished = match &mut self.mode {
             AppMode::DiffViewer(state) => match state.co_review_child.as_mut() {
                 Some(child) => child.try_wait()?,
@@ -242,15 +324,22 @@ impl App {
             self.message = Some(format!("AI co-review failed: {stderr}"));
             return Ok(());
         }
-        let text = String::from_utf8_lossy(&output.stdout);
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        self.apply_co_review_text(&path, &text);
+        Ok(())
+    }
 
+    /// Parse `<line>|<comment>` co-review output into non-overlapping draft
+    /// line comments for `path`, sort them, and set the status message. Shared
+    /// by the single and batched co-review polls.
+    fn apply_co_review_text(&mut self, path: &str, text: &str) {
         let added = if let AppMode::DiffViewer(state) = &mut self.mode {
             let Some(file) = state.files.iter().find(|f| f.path == path) else {
-                return Ok(());
+                return;
             };
             let locs = file.addressable_lines();
-            let drafts = parse_co_review_output(&text, &locs);
-            let existing = state.line_comments.entry(path.clone()).or_default();
+            let drafts = parse_co_review_output(text, &locs);
+            let existing = state.line_comments.entry(path.to_string()).or_default();
             let mut added = 0usize;
             for draft in drafts {
                 // Don't stack a draft on a line that already carries a comment
@@ -273,7 +362,7 @@ impl App {
             });
             added
         } else {
-            return Ok(());
+            return;
         };
 
         self.message = Some(if added == 0 {
@@ -282,7 +371,6 @@ impl App {
             format!("AI co-review added {added} draft comment(s) — a accept · d dismiss")
         });
         self.persist_review_progress();
-        Ok(())
     }
 
     /// Open the changeset-overview modal (reviewer-triggered, `O`). Reuses a
@@ -1445,12 +1533,20 @@ pub(super) fn walkthrough_context(file: &crate::diff::DiffFile) -> crate::prompt
 /// line tagged by its **new** line number so the model can anchor findings
 /// precisely, and bounded like the walkthrough so a large file can't blow up
 /// token cost.
-pub(super) fn co_review_context(file: &crate::diff::DiffFile) -> crate::prompts::PromptContext {
-    use crate::diff::DiffLineKind;
-    const MAX_BODY: usize = 8000;
+/// Rough per-slice cap on the annotated co-review body. Beyond this the file is
+/// reviewed hunk-slice by hunk-slice ([`App::spawn_batched_co_review`]) instead
+/// of being silently truncated — unless `review_prompt_budget_tokens` is `0`,
+/// which opts out of all pre-send splitting and lets the single pass truncate
+/// the body with a visible marker.
+const CO_REVIEW_MAX_BODY: usize = 8000;
 
+/// The line-numbered co-review body for a run of hunks. No length cap — callers
+/// that need one apply it (the single-shot [`co_review_context`]) or split the
+/// hunks first (the batched path).
+fn co_review_annotated_body(hunks: &[crate::diff::DiffHunk]) -> String {
+    use crate::diff::DiffLineKind;
     let mut body = String::new();
-    for hunk in &file.hunks {
+    for hunk in hunks {
         let mut new_line = hunk.new_start;
         for line in &hunk.lines {
             match line.kind {
@@ -1469,14 +1565,92 @@ pub(super) fn co_review_context(file: &crate::diff::DiffFile) -> crate::prompts:
             }
         }
     }
-    if body.len() > MAX_BODY {
-        body.truncate(MAX_BODY);
+    body
+}
+
+/// `{{token}}` context for a `review.co_review` pass over `hunks` of `path`.
+fn co_review_slice_context(
+    path: &str,
+    hunks: &[crate::diff::DiffHunk],
+) -> crate::prompts::PromptContext {
+    crate::prompts::PromptContext::new()
+        .with("file_path", path.to_string())
+        .with("annotated_body", co_review_annotated_body(hunks))
+}
+
+pub(super) fn co_review_context(file: &crate::diff::DiffFile) -> crate::prompts::PromptContext {
+    let mut body = co_review_annotated_body(&file.hunks);
+    if body.len() > CO_REVIEW_MAX_BODY {
+        body.truncate(CO_REVIEW_MAX_BODY);
         body.push_str("\n… (diff truncated)");
     }
-
     crate::prompts::PromptContext::new()
         .with("file_path", file.path.clone())
         .with("annotated_body", body)
+}
+
+/// Worker-thread body of a batched co-review: split `file` into hunk slices
+/// each under [`CO_REVIEW_MAX_BODY`], run `review.co_review` (`template`) over
+/// each, and concatenate the `<line>|<comment>` outputs. `Err` only when every
+/// slice failed; a partial failure drops the failed slice and keeps going.
+fn run_batched_co_review(
+    workdir: &Path,
+    file: &crate::diff::DiffFile,
+    template: &str,
+    model: Option<&str>,
+) -> std::result::Result<(String, usize), String> {
+    let Some(section) = crate::diff_split::SplitDiff::parse(&file.patch)
+        .files
+        .into_iter()
+        .next()
+    else {
+        return Err("could not parse the file diff for batched co-review".to_string());
+    };
+    // ~CO_REVIEW_MAX_BODY bytes ≈ that many / 4 tokens per slice.
+    let split = crate::diff_split::split_file_by_hunk(&section, CO_REVIEW_MAX_BODY / 4);
+
+    let mut combined = String::new();
+    let mut attempted = 0usize;
+    let mut failed = 0usize;
+    let mut last_err = String::new();
+    for sub in &split.subunits {
+        let hunks: &[crate::diff::DiffHunk] = match sub.hunk_span {
+            Some((a, b)) => file.hunks.get(a..=b).unwrap_or(&[]),
+            None => &[],
+        };
+        if hunks.is_empty() {
+            continue;
+        }
+        attempted += 1;
+        let prompt =
+            crate::prompts::render_template(template, &co_review_slice_context(&file.path, hunks));
+        match crate::headless::HeadlessRunner::run(
+            &crate::project::AgentKind::Claude,
+            workdir,
+            &prompt,
+            model,
+            false,
+        ) {
+            Ok(text) => {
+                let text = text.trim();
+                if !text.is_empty() {
+                    if !combined.is_empty() {
+                        combined.push('\n');
+                    }
+                    combined.push_str(text);
+                }
+            }
+            Err(err) => {
+                failed += 1;
+                last_err = err.to_string();
+            }
+        }
+    }
+
+    if attempted > 0 && failed == attempted {
+        return Err(format!("all {attempted} slice(s) failed: {last_err}"));
+    }
+    Ok((combined, failed))
 }
 
 /// The `{{files_block}}` context for `PromptId::ReviewChangesetOverview`.

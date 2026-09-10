@@ -757,6 +757,27 @@ interview with prior answers pre-filled, get an updated
       label slices so they are multi-select-ready if that kind is ever added.
       Visual proof regenerable via
       `scripts/dev/screenshot/scenarios/plan-interview-custom-answer.txt`.
+- [x] Let the feature owner attach reference documents to an interview. The
+      round / synthesis / critique passes normally run no-tools; attaching one
+      or more docs on the brief step is the explicit, opt-in trigger that
+      switches them to `HeadlessRunner::run_read_only` so the interviewer can
+      read those docs *and* the surrounding codebase. `Ctrl+D` on the brief step
+      opens a `ratatui_explorer` file browser (`AppMode::PlanInterviewAttachDoc`,
+      a sibling of `BrowsingPath` that carries the live `PlanInterviewState`);
+      `Ctrl+X` drops the last one. Any readable text file anywhere on disk is
+      allowed (dir / oversize / binary rejected with a reason,
+      `plan_interview::validate_attachment`). `prepare_attached_docs` references
+      an in-workdir doc where it lies and copies an external one into
+      `.amf/interview-docs/` (gitignored scratch, via
+      `extension::generated_amf_subdir`) so a CWD-scoped read-only harness can
+      reach it; the staging dir is wiped at the start of every pass and on
+      interview teardown. The five interview input builders gained an
+      `attached_documents` JSON array; round / synthesis / critique gained a
+      `{{tool_access_note}}` token (two constants: the historical no-tools
+      wording, or the read-only exception). Persistence: `PlanInterviewRecord`
+      gained `attached_docs: Vec<String>`; `MIGRATION_035` adds the column
+      (backfilled `'[]'`); a resumed or re-run interview restores the list and
+      re-validates each path at dispatch.
 
 ## Open questions
 

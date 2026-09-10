@@ -198,6 +198,38 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.continue_plan_interview_after_done()?;
             }
         }
+        // Attach / detach a reference document. Brief step only: the list is
+        // the interview's, set before any question, and the read-only switch it
+        // triggers applies to every later pass.
+        KeyCode::Char('d') if control => {
+            let on_brief = matches!(
+                &app.mode,
+                AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Brief
+            );
+            if on_brief {
+                app.message = None;
+                app.open_plan_interview_attach_doc();
+            }
+        }
+        KeyCode::Char('x') if control => {
+            let on_brief = matches!(
+                &app.mode,
+                AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Brief
+            );
+            if on_brief {
+                let removed = match &mut app.mode {
+                    AppMode::PlanInterview(state) => state.remove_last_attached_doc(),
+                    _ => None,
+                };
+                match removed {
+                    Some(name) => {
+                        app.persist_plan_interview_draft();
+                        app.message = Some(format!("Removed {name}"));
+                    }
+                    None => app.message = Some("No attached reference docs to remove".into()),
+                }
+            }
+        }
         // Open the always-available custom-answer box for a choice question.
         // Free-text questions keep `e` as a literal character (handled by the
         // text catch-all below).

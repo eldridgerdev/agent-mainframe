@@ -16,6 +16,63 @@ are tagged.
   revocation-list validation vulnerabilities in HTTPS connections. No migration
   is required.
 
+### Added
+
+- **A plan interview can now include reference documents.** On the feature-brief
+  step, `Ctrl+D` opens a file browser (`Ctrl+X` removes the last one); attach up
+  to four readable text files from anywhere on disk — a spec, a ticket, design
+  notes. The interview's question, plan-synthesis, and plan-review passes
+  normally run with no file access; attaching at least one document is the
+  explicit opt-in that switches those passes to a read-only run, so the
+  interviewer can read the attached documents *and* the surrounding codebase
+  when shaping questions and the plan. A document outside the feature's
+  workdir is copied into a gitignored `.amf/interview-docs/` scratch folder so
+  the agent can reach it, and that folder is cleared when the interview ends;
+  one that has moved or become unreadable by the time a pass runs is skipped
+  with a notice rather than failing the pass. The optional-AI consent screen
+  says when documents are attached and notes that a token estimate is then only
+  a floor. Attachments are saved with the interview draft, so a resumed or
+  re-run interview keeps them (paths are re-checked when a pass runs). Nothing
+  changes for an interview with no attachments. A one-time schema migration
+  adds an `attached_docs` column to the stored interviews table; existing rows
+  are treated as having no attachments.
+
+- **AMF's AI reviews now split an oversized diff into slices instead of
+  failing or silently truncating it.** When the diff for the `W` AI PR review,
+  or for a final-review AI co-review (`Ctrl+Space`, then `f`, then the
+  co-review key) on a very large file, would exceed the review model's context
+  window, AMF parses the unified diff into per-file sections, packs them into
+  budgeted batches, reviews each batch on its own, splits any single file
+  that is still too big hunk by hunk, and then combines every batch's findings
+  into one review with a synthesis pass. The running screen reports progress
+  ("Reviewing batch 3/12", "Splitting `src/foo.rs` hunk by hunk", "Combining
+  findings"). Coverage stays complete: a hunk that cannot be made to fit even
+  on its own is listed explicitly rather than dropped. The `W` review's
+  summary — in the pane, the post dialog, and any review posted to GitHub —
+  gets a "⚠ Partial coverage" note when the diff had to be split, naming any
+  slice that could not be reviewed and saying if the synthesis pass could not
+  run (the findings are then combined verbatim). Batching only kicks in past
+  the size threshold; ordinary reviews are unchanged. The threshold is a
+  per-harness default (Claude/Codex ~128k tokens, OpenCode/Pi ~96k) and can be
+  overridden globally with `review_prompt_budget_tokens` in
+  `~/.config/amf/config.json`, or per repository with the same key in
+  `amf.json`; `0` disables pre-send splitting and relies only on retrying a
+  smaller prompt after an actual "prompt too long" error. The
+  batch/hunk/synthesis prompts are editable like every other headless prompt
+  (dashboard `E`) — the new ids are `review.batch`, `review.hunk_split`,
+  `review.synthesis`, and `review.findings_summary`. For a very large refactor
+  where per-slice review loses too much cross-file context, reviewing the
+  branch commit by commit (a focused PR per commit, or `git rebase -i` to
+  split one) still gives the best results. No migration is required.
+
+- **The plan interview no longer sends an over-long prompt when the repository
+  context is large.** If an adaptive interview round, the plan synthesis, or
+  the advisory plan review would exceed the model's context window, AMF first
+  drops the repository `README` / `CLAUDE.md` excerpts from that one prompt
+  and retries; the interview dialog's footer says what was trimmed. If it is
+  still too large, the prompt is sent as is with a note that it may not fit.
+  No migration is required.
+
 ### Fixed
 
 - Failed AI reviews now retain Claude’s structured error details and show the

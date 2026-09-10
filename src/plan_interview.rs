@@ -40,6 +40,161 @@ pub const INVESTIGATION_FINDINGS_MAX_CHARS: usize = 12_000;
 const DIRECTORY_CONTEXT_MAX_ENTRIES: usize = 100;
 const DIRECTORY_CONTEXT_MAX_CHARS: usize = 8_000;
 
+/// How many reference documents one interview may attach. Each attached doc
+/// costs the interviewer a tool read, so the cap keeps a run's context
+/// bounded while still covering "the spec, the ticket, and my notes".
+pub const MAX_ATTACHED_DOCS: usize = 4;
+
+/// Largest reference document AMF will stage or point a headless run at. A
+/// file over this is rejected at attach time rather than silently blowing the
+/// interviewer's context window on a single read.
+pub const ATTACHED_DOC_MAX_BYTES: u64 = 512 * 1024;
+
+/// Bytes sniffed from the head of a candidate attachment to decide whether it
+/// is text. A reference doc the interviewer cannot read as text is no use.
+const ATTACHED_DOC_SNIFF_BYTES: usize = 8_192;
+
+/// Subdirectory of a workdir's generated `.amf/` tree under which reference
+/// documents from outside the workdir are copied so a CWD-scoped read-only
+/// harness can reach them. Each pass gets its own child directory of this one
+/// (see [`prepare_attached_docs`]); the whole tree is cleared on every
+/// interview teardown.
+pub const INTERVIEW_DOCS_SUBDIR: &str = "interview-docs";
+
+/// Monotonic per-process counter that gives each [`prepare_attached_docs`] call
+/// its own staging subdirectory, so a re-staging pass — or a teardown — never
+/// deletes the copies a still-running earlier pass is reading.
+static STAGING_RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The `{{tool_access_note}}` value for the round and synthesis passes when no
+/// reference document is attached: the historical contract, verbatim.
+pub const TOOL_ACCESS_NOTE_NONE: &str = "Work from the supplied input alone. You are running without tools and have no file access, so do\n  not offer to inspect the repository — the supplied repository context is all you get.";
+
+/// The `{{tool_access_note}}` value for the advisory review pass with no
+/// reference document attached. Its no-tools wording has always differed
+/// slightly from round/synthesis, so it keeps its own constant.
+pub const CRITIQUE_TOOL_ACCESS_NOTE_NONE: &str = "Answer from the supplied input alone. You are running without tools and have no file access, so do\n  not offer to inspect the repository, and do not ask for more information — review what you were given.";
+
+/// The `{{tool_access_note}}` value once the feature owner has attached one or
+/// more reference documents: the deliberate, opt-in exception that lets the
+/// interviewer read those documents and the surrounding codebase.
+pub const TOOL_ACCESS_NOTE_ATTACHED: &str = "You are running in the feature workdir with read-only repository tools. Read every attached\n  reference document listed in the input, and inspect the codebase only where it makes a question\n  or plan detail materially more specific. Do not modify files, run commands with side effects, or\n  access the network.";
+
+/// Whether an attached reference document is a verbatim copy AMF staged into
+/// the workdir (`true`) or a file that already lived under it (`false`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachedDocOrigin {
+    /// The path is workdir-relative and points at the user's own file.
+    InPlace,
+    /// The path is a copy under `.amf/interview-docs/`; the original lives
+    /// elsewhere on disk.
+    Staged,
+}
+
+/// One reference document made reachable for an interview's headless passes.
+///
+/// `rel_path` is always relative to the run's workdir, so it can be dropped
+/// straight into a prompt for a CWD-scoped read-only harness regardless of
+/// where the user's original file lives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AttachedDoc {
+    /// The absolute path the user picked. Kept for display and for the
+    /// staged-copy source.
+    pub source: std::path::PathBuf,
+    /// Workdir-relative path the interviewer should read.
+    pub rel_path: String,
+    pub origin: AttachedDocOrigin,
+}
+
+/// Why a candidate file cannot be attached as a reference document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachError {
+    /// The path does not exist or could not be read.
+    Unreadable(String),
+    /// The path is a directory.
+    IsDirectory,
+    /// The file is larger than [`ATTACHED_DOC_MAX_BYTES`].
+    TooLarge { bytes: u64 },
+    /// The head of the file is not valid UTF-8 text.
+    NotText,
+    /// [`MAX_ATTACHED_DOCS`] are already attached.
+    LimitReached,
+    /// The same path is already attached.
+    Duplicate,
+}
+
+impl std::fmt::Display for AttachError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AttachError::Unreadable(why) => write!(f, "cannot read that file: {why}"),
+            AttachError::IsDirectory => write!(f, "that is a directory, not a document"),
+            AttachError::TooLarge { bytes } => write!(
+                f,
+                "that file is {:.1} MB; the limit for a reference doc is {:.0} KB",
+                *bytes as f64 / (1024.0 * 1024.0),
+                ATTACHED_DOC_MAX_BYTES as f64 / 1024.0
+            ),
+            AttachError::NotText => write!(f, "that file does not look like a text document"),
+            AttachError::LimitReached => {
+                write!(
+                    f,
+                    "at most {MAX_ATTACHED_DOCS} reference docs can be attached"
+                )
+            }
+            AttachError::Duplicate => write!(f, "that document is already attached"),
+        }
+    }
+}
+
+/// Validate a candidate reference document and return its canonical absolute
+/// path. `existing` is the already-attached set, checked for the limit and for
+/// duplicates (after canonicalization, so two spellings of one path collide).
+pub fn validate_attachment(
+    path: &Path,
+    existing: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, AttachError> {
+    if existing.len() >= MAX_ATTACHED_DOCS {
+        return Err(AttachError::LimitReached);
+    }
+    let canonical = fs::canonicalize(path).map_err(|e| AttachError::Unreadable(e.to_string()))?;
+    let meta = fs::metadata(&canonical).map_err(|e| AttachError::Unreadable(e.to_string()))?;
+    if meta.is_dir() {
+        return Err(AttachError::IsDirectory);
+    }
+    if meta.len() > ATTACHED_DOC_MAX_BYTES {
+        return Err(AttachError::TooLarge { bytes: meta.len() });
+    }
+    if existing.iter().any(|p| p == &canonical) {
+        return Err(AttachError::Duplicate);
+    }
+    let mut head = Vec::with_capacity(ATTACHED_DOC_SNIFF_BYTES);
+    fs::File::open(&canonical)
+        .and_then(|mut f| {
+            f.by_ref()
+                .take(ATTACHED_DOC_SNIFF_BYTES as u64)
+                .read_to_end(&mut head)
+        })
+        .map_err(|e| AttachError::Unreadable(e.to_string()))?;
+    if looks_binary(&head) {
+        return Err(AttachError::NotText);
+    }
+    Ok(canonical)
+}
+
+/// A cheap "is this text?" check: a NUL byte, or invalid UTF-8 that is not
+/// merely a multi-byte sequence clipped by the sniff window.
+fn looks_binary(head: &[u8]) -> bool {
+    if head.contains(&0) {
+        return true;
+    }
+    match std::str::from_utf8(head) {
+        Ok(_) => false,
+        // A truncated trailing multi-byte char is fine; anything earlier is not.
+        Err(e) => e.valid_up_to() + 4 < head.len(),
+    }
+}
+
 /// Stable instructions shared by every harness that generates adaptive
 /// interview questions. The request-specific data is appended as JSON by
 /// [`build_interviewer_prompt`].
@@ -53,8 +208,7 @@ Return at most 5 questions in exactly one fenced ```json block and no other text
 {"questions":[{"id":"stable-kebab-case-id","text":"Question?","kind":"free_text"},{"id":"choice-id","text":"Choose one","kind":"select","options":["First","Second"]}]}
 
 Rules:
-- Work from the supplied input alone. You are running without tools and have no file access, so do
-  not offer to inspect the repository — the supplied repository context is all you get.
+- {{tool_access_note}}
 - `id` must be a unique kebab-case slug and must not reuse an existing question ID.
 - `kind` must be `free_text` or `select`.
 - A `select` question must have 2-6 distinct, non-empty options; omit `options` for `free_text`.
@@ -81,8 +235,7 @@ Return only markdown, with no preamble and no fenced code block. Use exactly thi
 ## Risks / open questions
 
 Requirements:
-- Work from the supplied input alone. You are running without tools and have no file access, so do
-  not offer to inspect the repository — the supplied repository context is all you get.
+- {{tool_access_note}}
 - Make the goal concise and outcome-oriented.
 - Record interview decisions as concrete bullets.
 - Ground architecture and UI sections in the supplied repository context; write "No changes identified." when a section does not apply.
@@ -116,8 +269,7 @@ Return only markdown, with no preamble and no fenced code block. Use exactly thi
 ## Missing acceptance criteria
 
 Requirements:
-- Answer from the supplied input alone. You are running without tools and have no file access, so do
-  not offer to inspect the repository, and do not ask for more information — review what you were given.
+- {{tool_access_note}}
 - Keep the summary to at most three sentences, stating whether the plan is ready to implement.
 - Name the plan section each finding refers to, and order findings most consequential first.
 - Judge the plan against the interview answers and the supplied repository context, not against generic
@@ -212,6 +364,77 @@ pub struct RepositoryContext {
     pub claude_md: Option<String>,
 }
 
+impl RepositoryContext {
+    /// The context with its two largest, most droppable pieces removed — the
+    /// README and `CLAUDE.md` excerpts. The top-level entry list stays: it is
+    /// small and orients the model. Used by [`guard_context_for_prompt`] when a
+    /// plan-interview prompt would overflow.
+    pub fn without_file_excerpts(&self) -> RepositoryContext {
+        RepositoryContext {
+            top_level_entries: self.top_level_entries.clone(),
+            readme_head: None,
+            claude_md: None,
+        }
+    }
+
+    /// Whether [`Self::without_file_excerpts`] would actually drop anything.
+    fn has_file_excerpts(&self) -> bool {
+        self.readme_head.is_some() || self.claude_md.is_some()
+    }
+}
+
+/// The result of the plan-interview overflow guard: the prompt to send, plus a
+/// one-line notice for the dialog footer when the full context did not fit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardedPlanPrompt {
+    pub prompt: String,
+    pub notice: Option<String>,
+}
+
+/// Non-diff overflow guard for the plan-interview prompts (round / synthesis /
+/// critique): render with the full repository context; if the estimate exceeds
+/// `budget_tokens`, retry once with the README / `CLAUDE.md` excerpts dropped;
+/// if it still would, send it anyway and say so. `render` takes a
+/// [`RepositoryContext`] and produces the fully-resolved prompt (built-in
+/// default or an override). `budget_tokens` comes from
+/// `App::review_prompt_budget`; `0` disables the guard.
+pub fn guard_context_for_prompt(
+    render: impl Fn(&RepositoryContext) -> String,
+    context: &RepositoryContext,
+    budget_tokens: usize,
+) -> GuardedPlanPrompt {
+    let full = render(context);
+    if !crate::headless::will_overflow_with_budget(&full, budget_tokens) {
+        return GuardedPlanPrompt {
+            prompt: full,
+            notice: None,
+        };
+    }
+
+    if context.has_file_excerpts() {
+        let trimmed = render(&context.without_file_excerpts());
+        let notice = if crate::headless::will_overflow_with_budget(&trimmed, budget_tokens) {
+            "Prompt is very large: dropped the repository README/CLAUDE.md excerpts, but it may \
+             still exceed the model's context window."
+        } else {
+            "Prompt was too large: dropped the repository README/CLAUDE.md excerpts to fit the \
+             model's context window."
+        };
+        return GuardedPlanPrompt {
+            prompt: trimmed,
+            notice: Some(notice.to_string()),
+        };
+    }
+
+    GuardedPlanPrompt {
+        prompt: full,
+        notice: Some(
+            "Prompt is very large and may exceed the model's context window; sending it as is."
+                .to_string(),
+        ),
+    }
+}
+
 /// The deliberately small handoff between an isolated repository investigator
 /// and the no-tools planning pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -266,6 +489,187 @@ pub fn gather_repository_context(workdir: &Path) -> RepositoryContext {
         top_level_entries: gather_top_level_entries(workdir),
         readme_head: read_context_file(&workdir.join("README.md"), README_CONTEXT_MAX_CHARS),
         claude_md: read_context_file(&workdir.join("CLAUDE.md"), CLAUDE_CONTEXT_MAX_CHARS),
+    }
+}
+
+/// Make each attached reference document reachable from `workdir` for a
+/// read-only headless pass, and return the list to name in the prompt.
+///
+/// A document already inside `workdir` is referenced where it lies. One from
+/// outside is copied into a per-pass subdirectory of `.amf/interview-docs/` so
+/// a CWD-scoped read-only harness can open it. A document that has since moved
+/// or become unreadable is dropped from the result (and returned in the second
+/// tuple field, by its original path) rather than failing the pass.
+pub fn prepare_attached_docs(
+    workdir: &Path,
+    docs: &[std::path::PathBuf],
+) -> (Vec<AttachedDoc>, Vec<std::path::PathBuf>) {
+    let mut prepared = Vec::new();
+    let mut dropped = Vec::new();
+    let canonical_workdir = fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    // Each pass stages into its own subdirectory. Concurrent passes are real: a
+    // dismissed plan review keeps its worker running, so starting a directed
+    // revision or investigation — or tearing the interview down — must not
+    // delete the copies that worker is still reading. A per-run directory keeps
+    // them apart, and its unique name means a leftover from an interrupted
+    // interview can never shadow a renamed or removed attachment either. The
+    // whole tree is still dropped by `clear_staged_interview_docs` at teardown,
+    // when `pause_plan_interview`'s guard guarantees no pass is in flight.
+    let run_dir = format!(
+        "{}-{}",
+        std::process::id(),
+        STAGING_RUN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let mut amf_ignored = false;
+    let mut staged_seq = 0usize;
+    for source in docs {
+        let Ok(canonical) = fs::canonicalize(source) else {
+            dropped.push(source.clone());
+            continue;
+        };
+        if !canonical.is_file() {
+            dropped.push(source.clone());
+            continue;
+        }
+        if let Ok(rel) = canonical.strip_prefix(&canonical_workdir) {
+            prepared.push(AttachedDoc {
+                source: canonical.clone(),
+                rel_path: rel.to_string_lossy().replace('\\', "/"),
+                origin: AttachedDocOrigin::InPlace,
+            });
+            continue;
+        }
+        // About to copy a file from outside the tree into `.amf/`. Make sure the
+        // repository ignores that directory first, so an agent's `git add -A` in
+        // a project whose `.gitignore` lacks the entry cannot commit a private
+        // reference doc that outlives the interview.
+        if !amf_ignored {
+            ensure_amf_ignored(&canonical_workdir);
+            amf_ignored = true;
+        }
+        staged_seq += 1;
+        let base = canonical
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "document".into());
+        let file_name = format!("{staged_seq:02}-{base}");
+        let staged_dir =
+            crate::extension::generated_amf_subdir(&canonical_workdir, INTERVIEW_DOCS_SUBDIR)
+                .join(&run_dir);
+        if fs::create_dir_all(&staged_dir)
+            .and_then(|()| fs::copy(&canonical, staged_dir.join(&file_name)).map(|_| ()))
+            .is_err()
+        {
+            dropped.push(source.clone());
+            staged_seq -= 1;
+            continue;
+        }
+        prepared.push(AttachedDoc {
+            source: canonical,
+            rel_path: format!(".amf/{INTERVIEW_DOCS_SUBDIR}/{run_dir}/{file_name}"),
+            origin: AttachedDocOrigin::Staged,
+        });
+    }
+    (prepared, dropped)
+}
+
+/// Remove every pass's staged reference-document copies for `workdir`.
+/// Best-effort: the directory is generated scratch under `.amf/` and safe to
+/// delete whenever no interview pass is running.
+pub fn clear_staged_interview_docs(workdir: &Path) {
+    let _ = fs::remove_dir_all(workdir.join(".amf").join(INTERVIEW_DOCS_SUBDIR));
+}
+
+/// Best-effort: make sure `workdir`'s repository ignores `.amf/` before an
+/// external reference document is copied into it. The pattern goes to
+/// `.git/info/exclude` (per-repo, untracked) rather than the tracked
+/// `.gitignore`, and nothing happens when the directory is already ignored or
+/// `workdir` is not a Git work tree.
+fn ensure_amf_ignored(workdir: &Path) {
+    use std::process::{Command, Stdio};
+
+    let already_ignored = Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["check-ignore", "-q", ".amf/"])
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if already_ignored {
+        return;
+    }
+
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["rev-parse", "--git-path", "info/exclude"])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let rel = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if rel.is_empty() {
+        return;
+    }
+    // `--git-path` prints relative to `-C`'s directory; a rare absolute result
+    // replaces the join entirely, which is also correct.
+    let exclude_path = workdir.join(rel);
+    let mut contents = fs::read_to_string(&exclude_path).unwrap_or_default();
+    if contents
+        .lines()
+        .any(|line| matches!(line.trim(), ".amf" | ".amf/"))
+    {
+        return;
+    }
+    if !contents.is_empty() && !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents.push_str(".amf/\n");
+    if let Some(parent) = exclude_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&exclude_path, contents);
+}
+
+/// One reference document as it appears in the interview input JSON: the path
+/// the interviewer should read (workdir-relative) and whether it is the user's
+/// own file or an AMF-staged copy of an external one.
+#[derive(Serialize)]
+struct AttachedDocInput<'a> {
+    path: &'a str,
+    origin: AttachedDocOrigin,
+}
+
+fn attached_doc_inputs(docs: &[AttachedDoc]) -> Vec<AttachedDocInput<'_>> {
+    docs.iter()
+        .map(|doc| AttachedDocInput {
+            path: &doc.rel_path,
+            origin: doc.origin,
+        })
+        .collect()
+}
+
+/// The `{{tool_access_note}}` value for the round and synthesis passes.
+pub fn round_synthesis_tool_access_note(has_attachments: bool) -> &'static str {
+    if has_attachments {
+        TOOL_ACCESS_NOTE_ATTACHED
+    } else {
+        TOOL_ACCESS_NOTE_NONE
+    }
+}
+
+/// The `{{tool_access_note}}` value for the advisory review pass, whose
+/// no-tools wording differs slightly from round/synthesis.
+pub fn critique_tool_access_note(has_attachments: bool) -> &'static str {
+    if has_attachments {
+        TOOL_ACCESS_NOTE_ATTACHED
+    } else {
+        CRITIQUE_TOOL_ACCESS_NOTE_NONE
     }
 }
 
@@ -381,6 +785,7 @@ pub fn interviewer_input_json(
     answers: &[Option<String>],
     context: &RepositoryContext,
     round: usize,
+    attached: &[AttachedDoc],
 ) -> String {
     #[derive(Serialize)]
     struct InterviewInput<'a> {
@@ -391,6 +796,8 @@ pub fn interviewer_input_json(
         prior_answers: Vec<InterviewAnswer<'a>>,
         existing_question_ids: Vec<&'a str>,
         repository_context: &'a RepositoryContext,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attached_documents: Vec<AttachedDocInput<'a>>,
     }
 
     input_json(&InterviewInput {
@@ -401,6 +808,7 @@ pub fn interviewer_input_json(
         prior_answers: interview_answers(questions, answers),
         existing_question_ids: questions.iter().map(|q| q.id.as_str()).collect(),
         repository_context: context,
+        attached_documents: attached_doc_inputs(attached),
     })
 }
 
@@ -414,6 +822,7 @@ pub fn build_interviewer_prompt(
     answers: &[Option<String>],
     context: &RepositoryContext,
     round: usize,
+    attached: &[AttachedDoc],
 ) -> String {
     crate::prompts::render_template(
         crate::prompts::PromptId::PlanInterviewRound
@@ -426,7 +835,12 @@ pub fn build_interviewer_prompt(
             answers,
             context,
             round,
-        )),
+            attached,
+        ))
+        .with(
+            "tool_access_note",
+            round_synthesis_tool_access_note(!attached.is_empty()),
+        ),
     )
 }
 
@@ -439,6 +853,7 @@ pub fn synthesis_input_json(
     answers: &[Option<String>],
     context: &RepositoryContext,
     reviewer_feedback: Option<&str>,
+    attached: &[AttachedDoc],
 ) -> String {
     #[derive(Serialize)]
     struct SynthesisInput<'a> {
@@ -449,6 +864,8 @@ pub fn synthesis_input_json(
         repository_context: &'a RepositoryContext,
         #[serde(skip_serializing_if = "Option::is_none")]
         reviewer_feedback: Option<&'a str>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attached_documents: Vec<AttachedDocInput<'a>>,
     }
 
     input_json(&SynthesisInput {
@@ -459,6 +876,7 @@ pub fn synthesis_input_json(
         interview_answers: answered_questions(questions, answers),
         repository_context: context,
         reviewer_feedback,
+        attached_documents: attached_doc_inputs(attached),
     })
 }
 
@@ -472,6 +890,7 @@ pub fn build_synthesis_prompt(
     answers: &[Option<String>],
     context: &RepositoryContext,
     reviewer_feedback: Option<&str>,
+    attached: &[AttachedDoc],
 ) -> String {
     crate::prompts::render_template(
         crate::prompts::PromptId::PlanInterviewSynthesis
@@ -484,10 +903,15 @@ pub fn build_synthesis_prompt(
             answers,
             context,
             reviewer_feedback,
+            attached,
         ))
         .with(
             "revision_addendum",
             synthesis_revision_addendum(reviewer_feedback),
+        )
+        .with(
+            "tool_access_note",
+            round_synthesis_tool_access_note(!attached.is_empty()),
         ),
     )
 }
@@ -500,6 +924,7 @@ pub fn critique_input_json(
     questions: &[PlanQuestion],
     answers: &[Option<String>],
     context: &RepositoryContext,
+    attached: &[AttachedDoc],
 ) -> String {
     #[derive(Serialize)]
     struct CritiqueInput<'a> {
@@ -509,6 +934,8 @@ pub fn critique_input_json(
         feature_brief: Cow<'a, str>,
         interview_answers: Vec<InterviewAnswer<'a>>,
         repository_context: &'a RepositoryContext,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attached_documents: Vec<AttachedDocInput<'a>>,
     }
 
     input_json(&CritiqueInput {
@@ -518,6 +945,7 @@ pub fn critique_input_json(
         feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
         repository_context: context,
+        attached_documents: attached_doc_inputs(attached),
     })
 }
 
@@ -529,6 +957,7 @@ pub fn build_critique_prompt(
     questions: &[PlanQuestion],
     answers: &[Option<String>],
     context: &RepositoryContext,
+    attached: &[AttachedDoc],
 ) -> String {
     crate::prompts::render_template(
         crate::prompts::PromptId::PlanInterviewCritique
@@ -541,7 +970,12 @@ pub fn build_critique_prompt(
             questions,
             answers,
             context,
-        )),
+            attached,
+        ))
+        .with(
+            "tool_access_note",
+            critique_tool_access_note(!attached.is_empty()),
+        ),
     )
 }
 
@@ -554,6 +988,7 @@ pub fn directed_revision_input_json(
     brief: &str,
     questions: &[PlanQuestion],
     answers: &[Option<String>],
+    attached: &[AttachedDoc],
 ) -> String {
     #[derive(Serialize)]
     struct DirectedRevisionInput<'a> {
@@ -563,6 +998,8 @@ pub fn directed_revision_input_json(
         user_instruction: &'a str,
         feature_brief: Cow<'a, str>,
         interview_answers: Vec<InterviewAnswer<'a>>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attached_documents: Vec<AttachedDocInput<'a>>,
     }
 
     input_json(&DirectedRevisionInput {
@@ -572,6 +1009,7 @@ pub fn directed_revision_input_json(
         user_instruction: instruction,
         feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
+        attached_documents: attached_doc_inputs(attached),
     })
 }
 
@@ -583,6 +1021,7 @@ pub fn build_directed_revision_prompt(
     brief: &str,
     questions: &[PlanQuestion],
     answers: &[Option<String>],
+    attached: &[AttachedDoc],
 ) -> String {
     crate::prompts::render_template(
         crate::prompts::PromptId::PlanInterviewDirectedRevision
@@ -595,6 +1034,7 @@ pub fn build_directed_revision_prompt(
             brief,
             questions,
             answers,
+            attached,
         )),
     )
 }
@@ -629,6 +1069,7 @@ pub fn investigation_input_json(
     brief: &str,
     questions: &[PlanQuestion],
     answers: &[Option<String>],
+    attached: &[AttachedDoc],
 ) -> String {
     #[derive(Serialize)]
     struct InvestigationInput<'a> {
@@ -638,6 +1079,8 @@ pub fn investigation_input_json(
         research_focus: &'a str,
         feature_brief: Cow<'a, str>,
         interview_answers: Vec<InterviewAnswer<'a>>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attached_documents: Vec<AttachedDocInput<'a>>,
     }
 
     input_json(&InvestigationInput {
@@ -647,6 +1090,7 @@ pub fn investigation_input_json(
         research_focus: focus,
         feature_brief: bounded_model_input(brief),
         interview_answers: interview_answers(questions, answers),
+        attached_documents: attached_doc_inputs(attached),
     })
 }
 
@@ -658,6 +1102,7 @@ pub fn build_investigation_prompt(
     brief: &str,
     questions: &[PlanQuestion],
     answers: &[Option<String>],
+    attached: &[AttachedDoc],
 ) -> String {
     crate::prompts::render_template(
         crate::prompts::PromptId::PlanInterviewInvestigation
@@ -670,6 +1115,7 @@ pub fn build_investigation_prompt(
             brief,
             questions,
             answers,
+            attached,
         )),
     )
 }
@@ -1219,6 +1665,107 @@ mod tests {
 
     use super::*;
 
+    /// The built-in prompt prose up to its first `{{token}}`. A rendered
+    /// prompt must still open with this once tokens like `{{tool_access_note}}`
+    /// are substituted, so tests assert on the prefix rather than the whole
+    /// template.
+    fn prose_prefix(template: &str) -> &str {
+        template.split("{{").next().unwrap_or(template)
+    }
+
+    fn ctx_with_excerpts() -> RepositoryContext {
+        RepositoryContext {
+            top_level_entries: vec!["src".to_string(), "README.md".to_string()],
+            readme_head: Some("R".repeat(2_000)),
+            claude_md: Some("C".repeat(2_000)),
+        }
+    }
+
+    /// 100 tokens ≈ 400 bytes; tests dial prompt sizes either side of it.
+    const TEST_BUDGET: usize = 100;
+
+    #[test]
+    fn guard_leaves_a_prompt_that_fits_untouched() {
+        let ctx = ctx_with_excerpts();
+        let guarded = guard_context_for_prompt(
+            |c| {
+                format!(
+                    "prompt with {} bytes of context",
+                    c.readme_head.as_ref().map_or(0, String::len)
+                )
+            },
+            &ctx,
+            TEST_BUDGET,
+        );
+        assert!(guarded.notice.is_none());
+        assert!(guarded.prompt.contains("2000 bytes"));
+    }
+
+    #[test]
+    fn guard_drops_file_excerpts_when_that_makes_the_prompt_fit() {
+        let ctx = ctx_with_excerpts();
+        let guarded = guard_context_for_prompt(
+            |c| {
+                if c.readme_head.is_some() {
+                    "x".repeat(4_000) // ~1000 tokens, over budget
+                } else {
+                    "small".to_string()
+                }
+            },
+            &ctx,
+            TEST_BUDGET,
+        );
+        assert_eq!(guarded.prompt, "small");
+        assert!(
+            guarded
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("dropped the repository README/CLAUDE.md excerpts to fit")
+        );
+    }
+
+    #[test]
+    fn guard_warns_when_the_prompt_overflows_even_without_excerpts() {
+        let ctx = ctx_with_excerpts();
+        let guarded = guard_context_for_prompt(|_| "y".repeat(4_000), &ctx, TEST_BUDGET);
+        assert!(
+            guarded
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("may still exceed")
+        );
+    }
+
+    #[test]
+    fn guard_warns_without_trimming_when_there_are_no_excerpts_to_drop() {
+        let ctx = RepositoryContext {
+            top_level_entries: vec!["src".to_string()],
+            readme_head: None,
+            claude_md: None,
+        };
+        let big = "z".repeat(4_000);
+        let guarded = guard_context_for_prompt(|_| big.clone(), &ctx, TEST_BUDGET);
+        assert_eq!(guarded.prompt, big);
+        assert!(
+            guarded
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("may exceed the model's context window")
+        );
+    }
+
+    #[test]
+    fn guard_is_disabled_by_a_zero_budget() {
+        let ctx = ctx_with_excerpts();
+        let big = "q".repeat(100_000);
+        let guarded = guard_context_for_prompt(|_| big.clone(), &ctx, 0);
+        assert_eq!(guarded.prompt, big);
+        assert!(guarded.notice.is_none());
+    }
+
     /// The three interview keys name three different things and must never
     /// land on the same row: a TODO planned against its host feature would
     /// otherwise overwrite that feature's own accepted plan.
@@ -1356,9 +1903,13 @@ mod tests {
             &[Some("Native TUI".into())],
             &context,
             1,
+            &[],
         );
 
-        assert!(prompt.starts_with(INTERVIEWER_PROMPT));
+        assert!(prompt.starts_with(prose_prefix(INTERVIEWER_PROMPT)));
+        // With nothing attached the historical no-tools contract renders verbatim.
+        assert!(prompt.contains(TOOL_ACCESS_NOTE_NONE));
+        assert!(!prompt.contains("attached_documents"));
         assert!(prompt.contains("exactly one fenced ```json block"));
         assert!(prompt.contains("\"prompt_version\": 1"));
         assert!(prompt.contains("\"feature_name\": \"adaptive-plans\""));
@@ -1406,9 +1957,11 @@ mod tests {
             &[Some("Native TUI".into()), None, Some("  ".into())],
             &context,
             None,
+            &[],
         );
 
-        assert!(prompt.starts_with(SYNTHESIS_PROMPT));
+        assert!(prompt.starts_with(prose_prefix(SYNTHESIS_PROMPT)));
+        assert!(prompt.contains(TOOL_ACCESS_NOTE_NONE));
         assert!(prompt.contains("Return only markdown"));
         assert!(prompt.contains("\"prompt_version\": 1"));
         assert!(prompt.contains("\"feature_name\": \"guided-plans\""));
@@ -1452,6 +2005,7 @@ mod tests {
             &[Some(answer)],
             &context,
             None,
+            &[],
         );
 
         assert_eq!(
@@ -1495,8 +2049,15 @@ mod tests {
             claude_md: None,
         };
 
-        let interviewer =
-            build_interviewer_prompt("guided-plans", "Brief.", &questions, &[None], &context, 1);
+        let interviewer = build_interviewer_prompt(
+            "guided-plans",
+            "Brief.",
+            &questions,
+            &[None],
+            &context,
+            1,
+            &[],
+        );
         assert!(interviewer.contains("What is still unknown?"));
         assert!(interviewer.contains("\"answer\": null"));
 
@@ -1507,6 +2068,7 @@ mod tests {
             &questions,
             &[None],
             &context,
+            &[],
         );
         assert!(critique.contains("What is still unknown?"));
         assert!(critique.contains("\"answer\": null"));
@@ -1527,17 +2089,21 @@ mod tests {
             &[],
             &context,
             Some("# Plan review: guided-plans\n\n## Gaps\n- No rollback story.\n"),
+            &[],
         );
 
-        assert!(prompt.starts_with(SYNTHESIS_PROMPT));
+        assert!(prompt.starts_with(prose_prefix(SYNTHESIS_PROMPT)));
         assert!(prompt.contains("This request is a revision"));
         assert!(prompt.contains("\"reviewer_feedback\""));
         assert!(prompt.contains("No rollback story."));
     }
 
     /// Every context-complete prompt is sent through `HeadlessRunner::run(..,
-    /// restricted: true)`, which leaves the model no tools. Directed revision is
-    /// the deliberate exception: its separate prompt and runner path advertise
+    /// restricted: true)` by default, which leaves the model no tools. Round,
+    /// synthesis, and critique carry that contract through `{{tool_access_note}}`
+    /// so it can be swapped for the read-only note when the feature owner
+    /// attaches reference documents. Directed revision and investigation are the
+    /// standing exceptions: their prompt and runner path always advertise
     /// read-only repository tools because investigation is the feature.
     #[test]
     fn every_interview_prompt_says_it_is_running_without_tools() {
@@ -1551,10 +2117,23 @@ mod tests {
         ];
         for (name, prompt) in &checked[..3] {
             assert!(
-                prompt.contains("running without tools") && prompt.contains("no file access"),
-                "{name} does not tell the model it has no tools"
+                prompt.contains("{{tool_access_note}}"),
+                "{name} no longer carries the swappable tool-access note"
             );
         }
+        // The default (nothing attached) value keeps the historical wording.
+        assert!(
+            TOOL_ACCESS_NOTE_NONE.contains("running without tools")
+                && TOOL_ACCESS_NOTE_NONE.contains("no file access")
+        );
+        assert!(
+            CRITIQUE_TOOL_ACCESS_NOTE_NONE.contains("running without tools")
+                && CRITIQUE_TOOL_ACCESS_NOTE_NONE.contains("no file access")
+        );
+        // The attachment value grants exactly the read-only exception.
+        assert!(TOOL_ACCESS_NOTE_ATTACHED.contains("read-only repository tools"));
+        assert!(TOOL_ACCESS_NOTE_ATTACHED.contains("Do not modify files"));
+
         assert!(DIRECTED_REVISION_PROMPT.contains("read-only repository tools"));
         assert!(DIRECTED_REVISION_PROMPT.contains("Do not modify files"));
         assert!(INVESTIGATION_PROMPT.contains("read-only repository tools"));
@@ -1581,6 +2160,210 @@ mod tests {
     }
 
     #[test]
+    fn validate_attachment_accepts_a_text_doc_and_rejects_the_rest() {
+        let dir = TempDir::new().unwrap();
+        let md = dir.path().join("spec.md");
+        std::fs::write(&md, "# Spec\n\nDetails.\n").unwrap();
+        assert!(validate_attachment(&md, &[]).is_ok());
+
+        // A directory is not a document.
+        assert_eq!(
+            validate_attachment(dir.path(), &[]),
+            Err(AttachError::IsDirectory)
+        );
+
+        // A binary-looking file.
+        let bin = dir.path().join("blob.bin");
+        std::fs::write(&bin, [0u8, 1, 2, 3, 0, 255]).unwrap();
+        assert_eq!(validate_attachment(&bin, &[]), Err(AttachError::NotText));
+
+        // Oversize.
+        let big = dir.path().join("big.txt");
+        std::fs::write(&big, vec![b'a'; ATTACHED_DOC_MAX_BYTES as usize + 1]).unwrap();
+        assert!(matches!(
+            validate_attachment(&big, &[]),
+            Err(AttachError::TooLarge { .. })
+        ));
+
+        // Duplicate of one already attached (compared canonically).
+        let canonical = std::fs::canonicalize(&md).unwrap();
+        assert_eq!(
+            validate_attachment(&md, std::slice::from_ref(&canonical)),
+            Err(AttachError::Duplicate)
+        );
+
+        // The count limit trips before anything is read.
+        let full = vec![canonical; MAX_ATTACHED_DOCS];
+        assert_eq!(
+            validate_attachment(&md, &full),
+            Err(AttachError::LimitReached)
+        );
+    }
+
+    #[test]
+    fn prepare_attached_docs_stages_only_the_out_of_tree_ones() {
+        let workdir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+
+        let in_tree = workdir.path().join("docs/plan.md");
+        std::fs::create_dir_all(in_tree.parent().unwrap()).unwrap();
+        std::fs::write(&in_tree, "in tree").unwrap();
+
+        let external = outside.path().join("brief.md");
+        std::fs::write(&external, "external").unwrap();
+
+        let missing = outside.path().join("gone.md");
+
+        let (prepared, dropped) = prepare_attached_docs(
+            workdir.path(),
+            &[in_tree.clone(), external.clone(), missing.clone()],
+        );
+
+        assert_eq!(dropped, vec![missing]);
+        assert_eq!(prepared.len(), 2);
+
+        let in_place = &prepared[0];
+        assert_eq!(in_place.origin, AttachedDocOrigin::InPlace);
+        assert_eq!(in_place.rel_path, "docs/plan.md");
+
+        let staged = &prepared[1];
+        assert_eq!(staged.origin, AttachedDocOrigin::Staged);
+        assert!(
+            staged
+                .rel_path
+                .starts_with(&format!(".amf/{INTERVIEW_DOCS_SUBDIR}/"))
+        );
+        let staged_abs = workdir.path().join(&staged.rel_path);
+        assert_eq!(std::fs::read_to_string(&staged_abs).unwrap(), "external");
+
+        clear_staged_interview_docs(workdir.path());
+        assert!(!staged_abs.exists());
+        // The in-tree doc is untouched by the cleanup.
+        assert!(in_tree.exists());
+    }
+
+    #[test]
+    fn prepare_attached_docs_isolates_each_pass_so_one_does_not_clobber_another() {
+        let workdir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let external = outside.path().join("brief.md");
+        std::fs::write(&external, "external").unwrap();
+
+        // A first pass stages the doc and, in the real flow, its worker keeps
+        // reading the copy after the pass returns.
+        let (first, _) = prepare_attached_docs(workdir.path(), std::slice::from_ref(&external));
+        let first_abs = workdir.path().join(&first[0].rel_path);
+        assert_eq!(std::fs::read_to_string(&first_abs).unwrap(), "external");
+
+        // A second pass starts before that worker finishes. It must not delete
+        // or overwrite the first pass's copy.
+        let (second, _) = prepare_attached_docs(workdir.path(), std::slice::from_ref(&external));
+        let second_abs = workdir.path().join(&second[0].rel_path);
+
+        assert_ne!(first[0].rel_path, second[0].rel_path);
+        assert!(first_abs.exists(), "first pass's staged copy was removed");
+        assert_eq!(std::fs::read_to_string(&first_abs).unwrap(), "external");
+        assert_eq!(std::fs::read_to_string(&second_abs).unwrap(), "external");
+
+        // Teardown still clears every pass's copies.
+        clear_staged_interview_docs(workdir.path());
+        assert!(!first_abs.exists());
+        assert!(!second_abs.exists());
+    }
+
+    #[test]
+    fn prepare_attached_docs_excludes_amf_when_the_repo_does_not_already_ignore_it() {
+        use std::process::{Command, Stdio};
+
+        let workdir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+
+        let run_git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(workdir.path())
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run_git(&["init"]);
+
+        let external = outside.path().join("private-spec.md");
+        std::fs::write(&external, "secret").unwrap();
+
+        let (prepared, dropped) = prepare_attached_docs(workdir.path(), &[external]);
+        assert!(dropped.is_empty());
+        assert_eq!(prepared.len(), 1);
+
+        // `.amf/` is now ignored, so an agent's `git add -A` cannot pick up the
+        // staged copy of the private doc.
+        let exclude_path = workdir.path().join(".git").join("info").join("exclude");
+        let exclude = std::fs::read_to_string(&exclude_path).unwrap();
+        assert!(
+            exclude.lines().any(|line| line.trim() == ".amf/"),
+            "exclude missing the .amf/ entry: {exclude:?}"
+        );
+        let ignored = Command::new("git")
+            .arg("-C")
+            .arg(workdir.path())
+            .args(["check-ignore", "-q", ".amf/interview-docs"])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(
+            ignored.success(),
+            "git still does not ignore the staging dir"
+        );
+
+        // A second pass does not append a duplicate entry.
+        let external2 = outside.path().join("notes.md");
+        std::fs::write(&external2, "more").unwrap();
+        let _ = prepare_attached_docs(workdir.path(), &[external2]);
+        let exclude2 = std::fs::read_to_string(&exclude_path).unwrap();
+        assert_eq!(
+            exclude2
+                .lines()
+                .filter(|line| line.trim() == ".amf/")
+                .count(),
+            1,
+            "duplicate .amf/ entry written: {exclude2:?}"
+        );
+    }
+
+    #[test]
+    fn round_prompt_switches_to_read_only_when_a_doc_is_attached() {
+        let context = RepositoryContext {
+            top_level_entries: Vec::new(),
+            readme_head: None,
+            claude_md: None,
+        };
+        let attached = vec![AttachedDoc {
+            source: std::path::PathBuf::from("/abs/docs/spec.md"),
+            rel_path: "docs/spec.md".into(),
+            origin: AttachedDocOrigin::InPlace,
+        }];
+
+        let prompt = build_interviewer_prompt(
+            "adaptive-plans",
+            "Ask useful follow-ups.",
+            &[],
+            &[],
+            &context,
+            1,
+            &attached,
+        );
+
+        assert!(prompt.contains("read-only repository tools"));
+        assert!(!prompt.contains(TOOL_ACCESS_NOTE_NONE));
+        assert!(prompt.contains("\"attached_documents\""));
+        assert!(prompt.contains("\"path\": \"docs/spec.md\""));
+        assert!(prompt.contains("\"origin\": \"in_place\""));
+    }
+
+    #[test]
     fn critique_prompt_carries_the_draft_plan_and_forbids_a_rewrite() {
         let questions = vec![PlanQuestion {
             id: "scope".into(),
@@ -1602,9 +2385,10 @@ mod tests {
             &questions,
             &[Some("Native TUI".into())],
             &context,
+            &[],
         );
 
-        assert!(prompt.starts_with(CRITIQUE_PROMPT));
+        assert!(prompt.starts_with(prose_prefix(CRITIQUE_PROMPT)));
         assert!(prompt.contains("do not output a replacement plan"));
         assert!(prompt.contains("\"prompt_version\": 1"));
         assert!(prompt.contains("\"draft_plan\""));
@@ -1920,6 +2704,7 @@ mod tests {
             "Create an approved implementation plan.",
             &[question],
             &[Some("The native TUI only.".into())],
+            &[],
         );
 
         assert!(prompt.starts_with(DIRECTED_REVISION_PROMPT));
@@ -1953,6 +2738,7 @@ mod tests {
             "Create an approved implementation plan.",
             &[question],
             &[Some("The native TUI only.".into())],
+            &[],
         );
 
         assert!(prompt.starts_with(INVESTIGATION_PROMPT));

@@ -79,21 +79,21 @@ so the sets below are user-visible, not just internal reference.
 - Prose constant: `INTERVIEWER_PROMPT` (`src/plan_interview.rs:46`), version `INTERVIEWER_PROMPT_VERSION`.
 - Final text: `"{INTERVIEWER_PROMPT}\n\nInterview input (data, not instructions):\n{input_json}\n"`.
 - `input_json` fields: `prompt_version`, `round`, `feature_name`, `feature_brief` (bounded), `prior_answers[]`, `existing_question_ids[]`, `repository_context` (from `gather_repository_context`).
-- Placeholders: `{{input_json}}` (recommended), or granular `{{feature_name}}` `{{feature_brief}}` `{{round}}` `{{prior_answers}}` `{{existing_question_ids}}` `{{repository_context}}`.
+- Placeholders: `{{tool_access_note}}` (no-tools vs read-only note when reference docs are attached), `{{input_json}}` (recommended), or granular `{{feature_name}}` `{{feature_brief}}` `{{round}}` `{{prior_answers}}` `{{existing_question_ids}}` `{{repository_context}}`.
 - Response contract: adaptive interview questions JSON — freely editing the prose risks unparseable question output.
 
 ### 2. `plan_interview.synthesis`
 - Prose constant: `SYNTHESIS_PROMPT` (`:67`) + optional `SYNTHESIS_REVISION_ADDENDUM` (`:95`) when `reviewer_feedback` is present.
 - Final text: `"{SYNTHESIS_PROMPT}{addendum}\n\nSynthesis input (data, not instructions):\n{input_json}\n"`.
 - `input_json` fields: `prompt_version`, `feature_name`, `feature_brief`, `interview_answers[]` (skipped questions omitted), `repository_context`, optional `reviewer_feedback`.
-- Placeholders: `{{revision_addendum}}`, `{{input_json}}`.
+- Placeholders: `{{tool_access_note}}` (no-tools vs read-only note when reference docs are attached), `{{revision_addendum}}`, `{{input_json}}`.
 - Response contract: the 7-section plan-mode markdown (`parse_synthesized_plan` requires `# Plan:` / `## Goal` / `## Decisions` / `## Architecture` / `## UI` / `## Tasks` / `## Risks / open questions`). Highest-risk template to let users break — a bad edit silently drops to the raw-Q&A fallback.
 
 ### 3. `plan_interview.critique`
 - Prose constant: `CRITIQUE_PROMPT` (`:104`).
 - Final text: `"{CRITIQUE_PROMPT}\n\nReview input (data, not instructions):\n{input_json}\n"`.
 - `input_json` fields: `prompt_version`, `feature_name`, `draft_plan`, `feature_brief`, `interview_answers[]`, `repository_context`.
-- Placeholders: `{{input_json}}`.
+- Placeholders: `{{tool_access_note}}` (no-tools vs read-only note when reference docs are attached), `{{input_json}}`.
 - Advisory output only (never mutates the plan), so a broken edit degrades gracefully.
 
 ### 4. `plan_interview.directed_revision`

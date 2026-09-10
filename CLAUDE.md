@@ -10,9 +10,18 @@ Use them alongside the architecture guide; source is authoritative when a featur
 changes. Tests live in feature suites and beside small units, and all four agent
 harnesses (Claude Code, Codex, OpenCode, Pi) are supported.
 
+**HeadlessRunner** (headless.rs):
+
+- Harness-neutral one-shot runs for Claude, Codex, OpenCode, and Pi
+- Restricted no-tools mode for context-complete prompts
+- Read-only repository tools for directed plan revisions, and for the
+  round/synthesis/critique passes when the interview has attached reference
+  docs (see "Plan-interview reference docs" below)
+- Harness selection and fallback for plan interviews
+
 **Prompt registry** (`src/prompts/`): the single home for every headless
 prompt AMF sends (see "Editable Headless Prompts" below). `mod.rs` holds
-`PromptId` (15 stable ids), `PromptSpec` (title/summary/placeholders/
+`PromptId` (19 stable ids), `PromptSpec` (title/summary/placeholders/
 `default_template`/`harness_variants`), and `resolve_template_layered` /
 `resolve_prompt_layered`. `defaults.rs` is the built-in template text moved
 out of the call sites. `resolve.rs` has `PromptContext` +
@@ -324,6 +333,49 @@ option, and answers are pitched at a first-time reader by default. See
   this mode exists to avoid; new actions should state what happened and
   which key to press instead.
 
+### Plan-interview reference docs
+
+The interview's `round` / `synthesis` / `critique` passes run **no-tools** by
+default. Attaching one or more reference documents on the brief step is the
+explicit, opt-in exception: those passes then run through
+`HeadlessRunner::run_read_only` so the interviewer can read the attached docs
+*and* the surrounding codebase.
+
+- **Attaching:** `Ctrl+D` on the brief step opens
+  `AppMode::PlanInterviewAttachDoc` — a `ratatui_explorer::FileExplorer` browser
+  (`app/plan_interview_attach.rs`, `handlers/plan_interview_attach.rs`,
+  `ui/dialogs/plan_interview_attach.rs`) that stashes the live
+  `PlanInterviewState` and restores it on confirm or cancel, a deliberate
+  sibling of `BrowsingPath` rather than a refactor of it. `Ctrl+X` drops the
+  last attachment. Cap `MAX_ATTACHED_DOCS` (4). Any readable text file anywhere
+  on disk; `plan_interview::validate_attachment` rejects a directory, an
+  oversize file (`ATTACHED_DOC_MAX_BYTES`), a binary sniff, a duplicate, or the
+  cap with a stated reason.
+- **Reachability:** `plan_interview::prepare_attached_docs(workdir, &[PathBuf])`
+  runs right before each pass. An in-workdir doc is referenced where it lies; an
+  external one is copied into a **per-pass** subdirectory
+  `<workdir>/.amf/interview-docs/<pid>-<seq>/` (generated scratch via
+  `extension::generated_amf_subdir`) so a CWD-scoped read-only harness can open
+  it. Each call gets its own subdir on purpose: a dismissed plan review leaves
+  its worker running, and a later pass (or teardown) must not delete the copies
+  it is still reading. Before the first external copy, `ensure_amf_ignored`
+  adds `.amf/` to the repo's `.git/info/exclude` (untracked, per-repo) unless it
+  is already ignored, so an agent's `git add -A` cannot commit a private doc.
+  The whole `interview-docs` tree is cleared by
+  `App::clear_plan_interview_doc_staging` on interview accept / abort **and on
+  pause** (whose `background_running` guard means no pass is in flight); it is
+  no longer wiped at the start of a pass. A doc that has moved or gone
+  unreadable is dropped and reported, never fatal.
+- **Prompts:** the five interview input builders (`*_input_json`) carry an
+  `attached_documents` array (`path` + `origin`); `round` / `synthesis` /
+  `critique` templates gained a `{{tool_access_note}}` token, resolved to
+  `TOOL_ACCESS_NOTE_NONE` / `CRITIQUE_TOOL_ACCESS_NOTE_NONE` (historical
+  no-tools wording) or `TOOL_ACCESS_NOTE_ATTACHED` (the read-only exception).
+- **Persistence:** `PlanInterviewRecord.attached_docs: Vec<String>`,
+  `MIGRATION_035` (column backfilled `'[]'`). A resumed or re-run interview
+  restores the list verbatim; paths are re-validated at dispatch, not on
+  resume.
+
 ### Editable Headless Prompts
 
 Every one-shot ("headless") AI call AMF makes runs a template from a central
@@ -331,17 +383,19 @@ registry that the user can view and override. See
 `docs/backlog/editable-prompts-call-site-inventory.md` for the call-site map
 and `AMF_PLAN.md` for the design decisions.
 
-- **Registry (`src/prompts/`).** `PromptId::ALL` is the 15 stable ids
+- **Registry (`src/prompts/`).** `PromptId::ALL` is the 19 stable ids
   (`plan_interview.round`/`.synthesis`/`.critique`/`.directed_revision`/
   `.investigation`/`.investigation_merge`, `learning.answer`,
   `review.walkthrough`/`.co_review`/`.changeset_overview`/`.diff_explain`,
   `pr_review.ai_review`, `review_memory.bootstrap`/`.compact`,
-  `session.summary`). `defaults.rs` holds the built-in text. The 6
+  `session.summary`, and the batched-review set
+  `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary`). `defaults.rs`
+  holds the built-in text. The 6
   plan-interview templates keep a single `{{interview_input}}` token carrying
   the exact JSON payload the models see today (the drift-guard test
   `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` pins them to the
   `plan_interview::*_PROMPT` prose, which is duplicated because a `const`
-  can't be `concat!`-ed); the other 9 use granular tokens.
+  can't be `concat!`-ed); the other 13 use granular tokens.
 - **Interpolation is unvalidated.** `render_template` substitutes `{{name}}`
   from a `PromptContext`; a token with no value — declared or not — is left
   literally, and substituted values are never re-scanned. An override may drop
@@ -383,6 +437,57 @@ and `AMF_PLAN.md` for the design decisions.
   synthesis) can't leave a stale clearance. **Automated** runs
   (`learning.answer`, `session.summary`) call `announce_headless_run` — a
   toast, never the modal — so a queued batch can't deadlock.
+
+### Batched Review of Oversized Diffs
+
+When an AI review's diff would overflow the model, it is split into bounded
+prompts and the findings recombined. Full rationale in
+`docs/batched-review.md`; `AMF_PLAN.md` has the design decisions.
+
+- **`src/diff_split.rs`** — lossless text-level splitting. `SplitDiff::parse`
+  (`split_inclusive('\n')`, CRLF- and no-trailing-newline-safe) →
+  `FileSection { path, header, hunks: Vec<HunkGroup> }`. `pack_file_sections`
+  greedily packs sections into `ReviewBatch::{Files, OversizedFile}` under a
+  token budget; `split_file_by_hunk` divides an oversized file into
+  `HunkSubunit`s (header repeated per slice, `oversized` flag for an
+  un-splittable lone hunk). `merge_hunk_findings` + `HunkOutcome` build the
+  deterministic per-file block.
+- **`src/review_batch.rs`** — orchestration. `trait BatchReviewRunner`
+  (`HeadlessBatchRunner` = prod; `review` renders `review.batch` per file
+  slice, `review_hunk` renders `review.hunk_split` per hunk group with
+  `{{file_path}}` / `{{hunk_label}}` populated) and `trait SynthesisRunner`
+  (`HeadlessSynthesisRunner`). `review_batches` runs each batch, halving on
+  `PromptTooLong` down to a hunk, recording an un-reviewable slice as
+  `UncoveredSlice` rather than dropping it. `synthesize` folds the per-batch
+  texts through `review.synthesis` (shrinking via `review.findings_summary`
+  and halving on overflow; deterministic concat fallback with
+  `synthesis_ran=false`). `batched_review` chains parse → pack → review →
+  synthesize into one `SynthesizedReview { text, synthesis_ran, uncovered }`.
+  `BatchProgress` enum feeds the UI.
+- **Size estimation / typed error** live in `src/headless.rs`:
+  `estimate_prompt_tokens` (bytes ÷ `PROMPT_ESTIMATE_BYTES_PER_TOKEN`),
+  `default_prompt_budget_tokens` (Claude/Codex 128k, OpenCode/Pi 96k),
+  `will_overflow` / `will_overflow_with_budget` (budget `0` = gate off), and
+  `PromptTooLong` + `is_prompt_too_long_message` / `as_prompt_too_long`
+  (best-effort classifier over the four CLIs' overflow phrasings), emitted by
+  `run_command` / `run_jsonl_command`.
+- **Wired into** the `W` AI PR review (`app/ai_review.rs`: `begin_ai_pr_review`
+  resolves `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary` +
+  `App::review_prompt_budget`; `run_ai_pr_review` branches to
+  `run_batched_ai_pr_review` when the pre-send estimate overflows **and** when
+  the single pass itself returns `PromptTooLong` — so a `0` budget still gets
+  the batched fallback with adaptive halving; `batched_coverage_note` prepends
+  the "⚠ Partial coverage" banner to `AiReviewOutcome::summary`) and
+  final-review co-review (`app/review.rs`: `generate_co_review` → worker thread
+  `run_batched_co_review` → `DiffViewerState::co_review_bg` → `poll_co_review`
+  → `apply_co_review_text`; a `0` budget skips the pre-send hunk-split entirely
+  and the single pass truncates the body with a visible marker).
+  `review_destination.rs` is untouched. The plan
+  interview has a non-diff guard instead: `plan_interview::guard_context_for_prompt`
+  drops the README/`CLAUDE.md` excerpts and notes it in the dialog footer.
+- **Config**: `AppConfig::review_prompt_budget_tokens` (global) /
+  `ExtensionConfig::review_prompt_budget_tokens` (project `amf.json`,
+  project-over-global), resolved by `App::review_prompt_budget(repo, harness)`.
 
 ### Agent Limits & Resource Health (resources/)
 

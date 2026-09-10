@@ -72,11 +72,20 @@ pub enum PromptId {
     ReviewMemoryCompact,
     /// One-line session summary from tmux pane content (`summary.rs`).
     SessionSummary,
+    /// Batched review: one bounded slice of an oversized diff
+    /// (`review_batch.rs`).
+    ReviewBatch,
+    /// Batched review: one hunk group of a file too large to review whole.
+    ReviewHunkSplit,
+    /// Batched review: combine every slice's findings into one review.
+    ReviewSynthesis,
+    /// Batched review: shrink one slice's findings when synthesis overflows.
+    ReviewFindingsSummary,
 }
 
 impl PromptId {
     /// Every registered prompt, in registry (and manager-list) order.
-    pub const ALL: [PromptId; 15] = [
+    pub const ALL: [PromptId; 19] = [
         PromptId::PlanInterviewRound,
         PromptId::PlanInterviewSynthesis,
         PromptId::PlanInterviewCritique,
@@ -92,6 +101,10 @@ impl PromptId {
         PromptId::ReviewMemoryBootstrap,
         PromptId::ReviewMemoryCompact,
         PromptId::SessionSummary,
+        PromptId::ReviewBatch,
+        PromptId::ReviewHunkSplit,
+        PromptId::ReviewSynthesis,
+        PromptId::ReviewFindingsSummary,
     ];
 
     /// The stable string key. Used verbatim as the SQLite `prompt_id` and the
@@ -113,6 +126,10 @@ impl PromptId {
             PromptId::ReviewMemoryBootstrap => "review_memory.bootstrap",
             PromptId::ReviewMemoryCompact => "review_memory.compact",
             PromptId::SessionSummary => "session.summary",
+            PromptId::ReviewBatch => "review.batch",
+            PromptId::ReviewHunkSplit => "review.hunk_split",
+            PromptId::ReviewSynthesis => "review.synthesis",
+            PromptId::ReviewFindingsSummary => "review.findings_summary",
         }
     }
 
@@ -177,12 +194,12 @@ pub fn spec(id: PromptId) -> &'static PromptSpec {
 
 const NO_HARNESS_VARIANTS: &[(AgentKind, &str)] = &[];
 
-static SPECS: [PromptSpec; 15] = [
+static SPECS: [PromptSpec; 19] = [
     PromptSpec {
         id: PromptId::PlanInterviewRound,
         title: "Plan interview: adaptive round",
         summary: "Asks the next round of feature-discovery questions during a guided plan.",
-        placeholders: &["interview_input"],
+        placeholders: &["tool_access_note", "interview_input"],
         default_template: defaults::PLAN_INTERVIEW_ROUND,
         harness_variants: NO_HARNESS_VARIANTS,
     },
@@ -190,7 +207,7 @@ static SPECS: [PromptSpec; 15] = [
         id: PromptId::PlanInterviewSynthesis,
         title: "Plan interview: synthesis",
         summary: "Turns the completed interview into the plan-mode markdown document.",
-        placeholders: &["revision_addendum", "interview_input"],
+        placeholders: &["tool_access_note", "revision_addendum", "interview_input"],
         default_template: defaults::PLAN_INTERVIEW_SYNTHESIS,
         harness_variants: NO_HARNESS_VARIANTS,
     },
@@ -198,7 +215,7 @@ static SPECS: [PromptSpec; 15] = [
         id: PromptId::PlanInterviewCritique,
         title: "Plan interview: draft review",
         summary: "Advisory review of a draft plan for gaps, risks, and unclear decisions.",
-        placeholders: &["interview_input"],
+        placeholders: &["tool_access_note", "interview_input"],
         default_template: defaults::PLAN_INTERVIEW_CRITIQUE,
         harness_variants: NO_HARNESS_VARIANTS,
     },
@@ -315,6 +332,49 @@ static SPECS: [PromptSpec; 15] = [
         default_template: defaults::SESSION_SUMMARY,
         harness_variants: NO_HARNESS_VARIANTS,
     },
+    PromptSpec {
+        id: PromptId::ReviewBatch,
+        title: "Batched review: diff slice",
+        summary: "Reviews one bounded slice of a diff too large to review at once.",
+        placeholders: &[
+            "skill_directive",
+            "recurring_findings",
+            "file_list",
+            "annotated_diff",
+            "finding_heading_prefix",
+        ],
+        default_template: defaults::REVIEW_BATCH,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::ReviewHunkSplit,
+        title: "Batched review: hunk slice",
+        summary: "Reviews one hunk group of a file too large to review whole.",
+        placeholders: &[
+            "file_path",
+            "hunk_label",
+            "annotated_diff",
+            "finding_heading_prefix",
+        ],
+        default_template: defaults::REVIEW_HUNK_SPLIT,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::ReviewSynthesis,
+        title: "Batched review: synthesis",
+        summary: "Combines every slice's findings into one review with a summary.",
+        placeholders: &["batch_findings", "uncovered_note", "finding_heading_prefix"],
+        default_template: defaults::REVIEW_SYNTHESIS,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::ReviewFindingsSummary,
+        title: "Batched review: findings summary",
+        summary: "Shrinks one slice's findings when the synthesis prompt overflows.",
+        placeholders: &["batch_label", "findings", "max_chars"],
+        default_template: defaults::REVIEW_FINDINGS_SUMMARY,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
 ];
 
 #[cfg(test)]
@@ -354,6 +414,22 @@ mod tests {
     fn from_key_rejects_unknown_keys() {
         assert_eq!(PromptId::from_key("nope.not.a.prompt"), None);
         assert_eq!(PromptId::from_key(""), None);
+    }
+
+    #[test]
+    fn batched_review_prompt_keys_are_stable() {
+        // These are written to override rows and `amf.json`; a rename orphans
+        // committed overrides.
+        for (id, key) in [
+            (PromptId::ReviewBatch, "review.batch"),
+            (PromptId::ReviewHunkSplit, "review.hunk_split"),
+            (PromptId::ReviewSynthesis, "review.synthesis"),
+            (PromptId::ReviewFindingsSummary, "review.findings_summary"),
+        ] {
+            assert_eq!(id.as_str(), key);
+            assert_eq!(PromptId::from_key(key), Some(id));
+            assert!(!spec(id).default_template.trim().is_empty());
+        }
     }
 
     #[test]

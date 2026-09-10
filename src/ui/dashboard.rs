@@ -1720,6 +1720,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         AppMode::BrowsingPath(state) => {
             super::dialogs::draw_browse_path_dialog(frame, state, &app.theme);
         }
+        AppMode::PlanInterviewAttachDoc(state) => {
+            super::dialogs::draw_plan_interview_attach_doc_dialog(frame, state, &app.theme);
+        }
         _ => {}
     }
 

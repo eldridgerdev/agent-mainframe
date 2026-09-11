@@ -4411,12 +4411,14 @@ fn cancelling_over_limit_plan_start_restores_completed_review() {
 
 fn plan_critique_response() -> String {
     "# Plan review: planned-feature\n\n\
-     ## Summary\nReady with caveats.\n\n\
-     ## Gaps\n- No rollback story.\n\n\
-     ## Risks\n- None identified.\n\n\
-     ## Contradictions\n- None identified.\n\n\
-     ## Unclear decisions\n- None identified.\n\n\
-     ## Missing acceptance criteria\n- None identified.\n"
+     ## Objective and non-goals\nBuild the feature without changing unrelated behavior.\n\n\
+     ## Ordered implementation steps\n- Add the core behavior.\n\n\
+     ## Code map\n- src/app/plan_interview.rs.\n\n\
+     ## Invariants and decisions\n- Preserve existing plan decisions.\n\n\
+     ## Validation plan\n- Run focused tests and the full suite.\n\n\
+     ## Risks and stop conditions\n- Stop if the target contract is unclear.\n\n\
+     ## Definition of done\n- Tests pass and acceptance criteria are met.\n\n\
+     ## Clarification questions\nNone.\n"
         .to_string()
 }
 

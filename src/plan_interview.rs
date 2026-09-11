@@ -261,21 +261,34 @@ advisory analysis only: do not rewrite the plan and do not output a replacement 
 Return only markdown, with no preamble and no fenced code block. Use exactly this structure:
 # Plan review: <feature name>
 
-## Summary
-## Gaps
-## Risks
-## Contradictions
-## Unclear decisions
-## Missing acceptance criteria
+## Objective and non-goals
+## Ordered implementation steps
+## Code map
+## Invariants and decisions
+## Validation plan
+## Risks and stop conditions
+## Definition of done
+## Clarification questions
 
 Requirements:
 - {{tool_access_note}}
-- Keep the summary to at most three sentences, stating whether the plan is ready to implement.
-- Name the plan section each finding refers to, and order findings most consequential first.
-- Judge the plan against the interview answers and the supplied repository context, not against generic
-  best practice.
-- Write "None identified." under a heading with no genuine finding. Never pad a section by restating the plan.
-- Flag a decision as unclear only when the plan and interview genuinely disagree or leave it open."#;
+- Write an implementation brief for the cheaper model, not a replacement plan or a speculative patch.
+- Make the ordered steps concrete and dependency-aware. Name relevant files, modules, symbols, and
+  ownership boundaries only when supported by the supplied repository context.
+- State the rationale behind consequential decisions, the invariants that must remain true, and the
+  alternatives that were rejected.
+- Include focused tests, fixtures, commands, failure paths, recovery paths, and observable acceptance
+  checks in the validation plan.
+- List up to three clarification questions. Each question must identify the plan decision it unblocks
+  and the evidence or choice required. Format each as `- Q1: <question> — unblocks: <decision>`.
+  Write "None." when no question is necessary.
+- Use "None identified." under any other heading with no genuine finding. Never pad a section by
+  restating the plan.
+- Spend extra reasoning on ambiguity, sequencing, and implementation risk; do not merely repeat the
+  user's brief or generic best practice.
+- If the review input contains `previous_expert_findings` and `clarification_answers`, resolve those
+  answers into the implementation brief. Do not ask another clarification round; write "None."
+  under Clarification questions."#;
 
 /// Stable instructions for a user-directed revision from the review gate.
 /// Unlike the other interview prompts, this call deliberately has read-only

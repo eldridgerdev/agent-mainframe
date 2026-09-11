@@ -160,6 +160,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist Expert Assist consultations independently of full-replace project saves",
             MIGRATION_036,
         ),
+        (
+            "Persist automatic Expert preflight briefs and plan fingerprints",
+            MIGRATION_037,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -994,6 +998,11 @@ CREATE TABLE expert_deliveries (
 );
 ";
 
+const MIGRATION_037: &str = "
+ALTER TABLE plan_interviews ADD COLUMN expert_brief TEXT;
+ALTER TABLE plan_interviews ADD COLUMN preflight_fingerprint TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1034,7 +1043,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 36);
+        assert_eq!(version, 37);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1129,7 +1138,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 36);
+        assert_eq!(version, 37);
     }
 
     #[test]

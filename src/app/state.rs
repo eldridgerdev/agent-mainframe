@@ -1,5 +1,6 @@
 use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Child;
@@ -6034,6 +6035,8 @@ pub struct PlanInterviewState {
     /// Cleared whenever the plan changes, since the findings describe the
     /// draft they were written against.
     pub critique: Option<String>,
+    /// SHA-256 fingerprint of the plan the persisted preflight reviewed.
+    pub preflight_fingerprint: Option<String>,
     /// Start time and prompt-size estimate for the agent-review loading frame.
     pub critique_started_at: Option<std::time::Instant>,
     pub critique_token_estimate: usize,
@@ -6205,6 +6208,7 @@ impl PlanInterviewState {
             investigation_started_at: None,
             investigation_token_estimate: 0,
             critique: None,
+            preflight_fingerprint: None,
             critique_started_at: None,
             critique_token_estimate: 0,
             critique_scroll_offset: 0,
@@ -6323,6 +6327,8 @@ impl PlanInterviewState {
         // a second time.
         if let Some(plan) = draft.plan {
             self.synthesized_plan = Some(plan);
+            self.critique = draft.expert_brief;
+            self.preflight_fingerprint = draft.preflight_fingerprint;
             self.synthesis_attempted = true;
             self.phase = PlanInterviewPhase::Review;
             return true;
@@ -6622,6 +6628,11 @@ impl PlanInterviewState {
                 .iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect(),
+            expert_brief: self.critique.clone(),
+            preflight_fingerprint: self
+                .synthesized_plan
+                .as_deref()
+                .map(|plan| format!("{:x}", Sha256::digest(plan.as_bytes()))),
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -6962,6 +6973,7 @@ impl PlanInterviewState {
     /// Drop an advisory review that no longer describes the current plan.
     fn clear_critique(&mut self) {
         self.critique = None;
+        self.preflight_fingerprint = None;
         self.critique_questions.clear();
         self.critique_answers.clear();
         self.critique_question_index = 0;
@@ -8228,6 +8240,8 @@ mod tests {
             plan: None,
             ai_rounds_completed: 0,
             attached_docs: Vec::new(),
+            expert_brief: None,
+            preflight_fingerprint: None,
             created_at: String::new(),
             updated_at: "2026-07-30 12:00:00".into(),
         }

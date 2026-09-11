@@ -153,12 +153,13 @@ default for a user who has just asked AMF to build something.
 
 ## Next implementation slice
 
-The first implementation slice is now complete: the existing plan critique is
-an automatic high-risk preflight, returns a structured implementation brief,
+The first implementation slice is complete: the existing plan critique is an
+automatic high-risk preflight, returns a structured implementation brief,
 supports up to three clarification questions and one follow-up, and carries
-the accepted brief into the implementation kickoff. The remaining work is a
-configurable off/suggest/require policy, durable preflight result and plan
-fingerprint persistence, lifecycle usage/outcome recording, and real quality
-and cost evaluation before selecting model defaults.
+the accepted brief into the implementation kickoff. The policy now supports
+off, suggest, and require modes, and draft persistence stores the accepted
+brief and the SHA-256 fingerprint of the reviewed plan. Lifecycle usage and
+outcome export plus real quality and cost evaluation remain before selecting
+production model defaults.
 
 Real provider conformance, pricing, and quality measurements remain pending.

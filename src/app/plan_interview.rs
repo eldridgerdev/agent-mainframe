@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use super::pr_review::estimate_tokens;
 use super::{
     App, AppMode, PendingPlanLaunch, PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget,
-    PreparedFeatureLaunch, Selection, StartIntent, TodoPlanOrigin,
+    PlanPreflightPolicy, PreparedFeatureLaunch, Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
@@ -1773,7 +1773,8 @@ impl App {
                 (Ok(response), AppMode::PlanInterview(state)) => {
                     match plan_interview::parse_plan_preflight(&response) {
                         Some(result) => {
-                            state.stash_critique(result.markdown, result.clarification_questions)
+                            state.stash_critique(result.markdown, result.clarification_questions);
+                            true
                         }
                         None => false,
                     }
@@ -1781,6 +1782,7 @@ impl App {
                 _ => false,
             };
             if stashed {
+                self.persist_plan_interview_draft();
                 self.log_info(
                     "plan_interview",
                     "dismissed plan review finished; kept for re-open".to_string(),
@@ -1817,6 +1819,7 @@ impl App {
                 if let AppMode::PlanInterview(state) = &mut self.mode {
                     state.apply_critique(result.markdown, result.clarification_questions);
                 }
+                self.persist_plan_interview_draft();
                 self.message = None;
             }
             None => {
@@ -2036,7 +2039,11 @@ impl App {
                 }),
             _ => return,
         };
-        let should_preflight = should_auto_plan_preflight(&plan);
+        let should_preflight = match self.config.plan_preflight_policy {
+            PlanPreflightPolicy::Off => false,
+            PlanPreflightPolicy::Suggest => should_auto_plan_preflight(&plan),
+            PlanPreflightPolicy::Require => true,
+        };
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.apply_synthesis(plan);
         }

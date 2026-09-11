@@ -423,6 +423,19 @@ impl ZaiPlanConfig {
 /// files have no `config_version` field and so read as 0.
 pub const APP_CONFIG_VERSION: u32 = 1;
 
+/// Controls when the Expert implementation preflight is consulted for a plan.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PlanPreflightPolicy {
+    /// Never consult an Expert automatically.
+    Off,
+    /// Consult only when the synthesized plan contains high-risk signals.
+    #[default]
+    Suggest,
+    /// Consult every synthesized plan before acceptance.
+    Require,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -445,6 +458,8 @@ pub struct AppConfig {
     pub transparent_background: bool,
     #[serde(default)]
     pub token_pricing: TokenPricingConfig,
+    #[serde(default)]
+    pub plan_preflight_policy: PlanPreflightPolicy,
     /// Default state of the Remote Control toggle for new Claude features.
     /// Still subject to the availability guard (z.ai / provider / version),
     /// so enabling this never forces RC onto an incompatible session.
@@ -692,6 +707,7 @@ impl Default for AppConfig {
             theme: crate::theme::ThemeName::default(),
             transparent_background: false,
             token_pricing: TokenPricingConfig::default(),
+            plan_preflight_policy: PlanPreflightPolicy::default(),
             remote_control_default: false,
             view_auto_refresh: false,
             max_agent_autostart_sessions: default_agent_restart_limit(),

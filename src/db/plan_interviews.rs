@@ -81,6 +81,8 @@ pub struct PlanInterviewRecord {
     /// squared up against `questions`. A resumed or re-run interview re-checks
     /// each path and drops any that no longer exist.
     pub attached_docs: Vec<String>,
+    pub expert_brief: Option<String>,
+    pub preflight_fingerprint: Option<String>,
     /// DB-owned timestamps. Ignored on [`save`], which sets them itself.
     pub created_at: String,
     pub updated_at: String,
@@ -133,7 +135,7 @@ pub fn load(
         .query_row(
             "SELECT feature_name, brief, questions, answers, plan,
                     ai_rounds_completed, created_at, updated_at, custom_answers,
-                    attached_docs
+                    attached_docs, expert_brief, preflight_fingerprint
              FROM plan_interviews WHERE feature_id = ?1 AND stage = ?2",
             params![feature_id, stage.as_db_str()],
             |row| {
@@ -148,6 +150,8 @@ pub fn load(
                     row.get::<_, String>(7)?,
                     row.get::<_, String>(8)?,
                     row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             },
         )
@@ -164,6 +168,8 @@ pub fn load(
         updated_at,
         custom_answers_json,
         attached_docs_json,
+        expert_brief,
+        preflight_fingerprint,
     )) = row
     else {
         return Ok(None);
@@ -205,6 +211,8 @@ pub fn load(
         plan,
         ai_rounds_completed: ai_rounds_completed.max(0) as usize,
         attached_docs,
+        expert_brief,
+        preflight_fingerprint,
         created_at,
         updated_at,
     }))
@@ -226,8 +234,9 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
     conn.execute(
         "INSERT INTO plan_interviews
             (feature_id, stage, feature_name, brief, questions, answers, plan,
-             ai_rounds_completed, created_at, updated_at, custom_answers, attached_docs)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9, ?10)
+             ai_rounds_completed, created_at, updated_at, custom_answers, attached_docs,
+             expert_brief, preflight_fingerprint)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9, ?10, ?11, ?12)
          ON CONFLICT(feature_id, stage) DO UPDATE SET
             feature_name        = excluded.feature_name,
             brief               = excluded.brief,
@@ -235,6 +244,8 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             answers             = excluded.answers,
             custom_answers      = excluded.custom_answers,
             attached_docs       = excluded.attached_docs,
+            expert_brief        = excluded.expert_brief,
+            preflight_fingerprint = excluded.preflight_fingerprint,
             plan                = excluded.plan,
             ai_rounds_completed = excluded.ai_rounds_completed,
             updated_at          = datetime('now')",
@@ -249,6 +260,8 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             record.ai_rounds_completed as i64,
             custom_answers,
             attached_docs,
+            record.expert_brief,
+            record.preflight_fingerprint,
         ],
     )?;
     Ok(())

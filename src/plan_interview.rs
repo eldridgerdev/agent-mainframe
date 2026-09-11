@@ -1151,7 +1151,21 @@ pub fn parse_plan_critique(response: &str) -> Option<String> {
     if title.to_ascii_lowercase().starts_with("# plan:") {
         return None;
     }
-    if !critique.lines().any(|line| line.starts_with("## ")) {
+    const REQUIRED_SECTIONS: [&str; 8] = [
+        "## Objective and non-goals",
+        "## Ordered implementation steps",
+        "## Code map",
+        "## Invariants and decisions",
+        "## Validation plan",
+        "## Risks and stop conditions",
+        "## Definition of done",
+        "## Clarification questions",
+    ];
+    let lower = critique.to_ascii_lowercase();
+    if REQUIRED_SECTIONS
+        .iter()
+        .any(|section| !lower.contains(&section.to_ascii_lowercase()))
+    {
         return None;
     }
     Some(format!("{critique}\n"))
@@ -2236,12 +2250,16 @@ mod tests {
     #[test]
     fn critique_parser_accepts_the_contract_and_unwraps_a_fenced_reply() {
         let response = "```markdown\n# Plan review: guided-plans\n\n\
-            ## Summary\nReady with caveats.\n\n## Gaps\n- No rollback story.\n```";
+            ## Objective and non-goals\nReady with caveats.\n\n\
+            ## Ordered implementation steps\n- Step one.\n\n## Code map\n- src/lib.rs.\n\n\
+            ## Invariants and decisions\n- Preserve the API.\n\n## Validation plan\n- Run tests.\n\n\
+            ## Risks and stop conditions\n- Stop on ambiguity.\n\n## Definition of done\n- Tests pass.\n\n\
+            ## Clarification questions\nNone.\n```";
 
         let critique = parse_plan_critique(response).unwrap();
 
         assert!(critique.starts_with("# Plan review: guided-plans"));
-        assert!(critique.contains("- No rollback story."));
+        assert!(critique.contains("- Stop on ambiguity."));
         assert!(critique.ends_with('\n'));
     }
 
@@ -2256,7 +2274,13 @@ mod tests {
             "# plan review",
             "# Review of the guided-plans plan",
         ] {
-            let response = format!("{title}\n\n## Summary\nReady with caveats.\n");
+            let response = format!(
+                "{title}\n\n## Objective and non-goals\nReady.\n\n\
+                 ## Ordered implementation steps\n- Step.\n\n## Code map\n- src/lib.rs.\n\n\
+                 ## Invariants and decisions\n- Keep behavior.\n\n## Validation plan\n- Test.\n\n\
+                 ## Risks and stop conditions\n- Stop.\n\n## Definition of done\n- Done.\n\n\
+                 ## Clarification questions\nNone.\n"
+            );
             assert!(
                 parse_plan_critique(&response).is_some(),
                 "rejected a usable review titled {title:?}"
@@ -2264,7 +2288,11 @@ mod tests {
         }
 
         // A bare fence is as common a wrapper as a tagged one.
-        let fenced = "```\n# Plan review: guided-plans\n\n## Summary\nReady.\n```";
+        let fenced = "```\n# Plan review: guided-plans\n\n## Objective and non-goals\nReady.\n\n\
+            ## Ordered implementation steps\n- Step.\n\n## Code map\n- src/lib.rs.\n\n\
+            ## Invariants and decisions\n- Keep behavior.\n\n## Validation plan\n- Test.\n\n\
+            ## Risks and stop conditions\n- Stop.\n\n## Definition of done\n- Done.\n\n\
+            ## Clarification questions\nNone.\n```";
         let critique = parse_plan_critique(fenced).unwrap();
         assert!(critique.starts_with("# Plan review: guided-plans"));
         assert!(!critique.contains("```"));

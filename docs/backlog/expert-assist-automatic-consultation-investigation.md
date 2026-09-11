@@ -13,7 +13,9 @@ session, handoff composer, or automatic message delivery.
 
 This should be an opt-in or policy-controlled preflight at first, with a local
 risk and value check deciding whether to spend the expert call. It should not
-run on every plan round or every feature start. The closed Expert Assist PR
+run on every plan round or every feature start. The review may return a small
+set of clarification questions; the user answers them in the same review
+surface and AMF permits one bounded follow-up. The closed Expert Assist PR
 implemented useful runner, evidence, and persistence foundations, but its
 manual question form and post-hoc handoff add coordination after the expensive
 work has already begun.
@@ -48,7 +50,7 @@ is when to offer or require it and which harness/profile should run it.
 | --- | --- | --- | --- |
 | Before the interview | Can challenge an initial brief | Too little intent or acceptance detail; duplicates discovery | Do not use as the default |
 | During adaptive rounds | May improve questions | Repeats on every round and pays before the shape of the work is known | Keep the existing planner; no automatic expert call |
-| After synthesis, before acceptance | Complete plan plus evidence; prevents wasted implementation and revision work | One extra call; can be bounded and skipped by policy | **Preferred default** |
+| After synthesis, before acceptance | Complete plan plus evidence; prevents wasted implementation and revision work; can expose questions while correction is still cheap | One initial call plus at most one bounded follow-up; can be skipped by policy | **Preferred default** |
 | After acceptance, before agent start | Final plan is stable and kickoff is available | Slightly later; still avoids implementation tokens | Fallback when the review gate is bypassed |
 | On repeated implementation failure | Strong escalation signal and concrete failure evidence | Late, potentially includes retries and a large transcript | Trigger only on explicit local signals |
 | During ordinary implementation | May rescue a difficult task | Hard to target, competes with the implementer, risks duplicated context | Avoid automatic invocation |
@@ -71,14 +73,23 @@ expert:
 If the signals do not justify the cost, AMF proceeds normally. If they do, the
 user sees a short preflight notice with the expected purpose and bounded token
 budget. The expert returns structured findings: blockers, assumptions to
-verify, plan changes, and confidence. AMF never lets the expert edit the
-worktree. The user can accept the plan, revise it using the existing plan
-editor, or continue without the review.
+verify, plan changes, confidence, and optionally up to three clarification
+questions. Each question must state which plan decision it unblocks and what
+evidence or choice is required. AMF never lets the expert edit the worktree.
+
+When questions are returned, the review screen shows a short answer step. The
+user can answer, skip a question, revise the plan directly, or continue without
+answering. AMF then permits at most one follow-up review, which receives the
+original packet, the expert findings, and the user's answers. A follow-up cannot
+emit another question round; unresolved questions are recorded as assumptions
+and the user may still accept the plan. Empty or unchanged answers do not
+trigger a paid follow-up.
 
 The default should be one no-tools or tightly read-only review call. A second
-call requires a concrete new signal, such as a changed plan or failed
-acceptance check. Adaptive rounds and repository investigations remain planner
-features; they should not silently multiply expert calls.
+call is reserved for the bounded clarification follow-up or another concrete
+new signal, such as a materially changed plan or failed acceptance check. There
+is never an automatic third call. Adaptive rounds and repository investigations
+remain planner features; they should not silently multiply expert calls.
 
 ## Token and quality model
 
@@ -116,13 +127,16 @@ default for a user who has just asked AMF to build something.
 ## Next implementation slice
 
 1. Refactor the existing plan critique into a policy-driven **plan preflight**
-   with a compact structured result and plan/evidence fingerprint.
-2. Add a configurable policy: off, suggest, or require for selected risk
+   with a compact structured result, plan/evidence fingerprint, and bounded
+   clarification-question result.
+2. Add a review-screen answer step and one follow-up call that is consumed by
+   the plan revision/acceptance decision.
+3. Add a configurable policy: off, suggest, or require for selected risk
    classes; default to suggest while collecting local measurements.
-3. Show the result in the existing plan review and include accepted findings in
+4. Show the result in the existing plan review and include accepted findings in
    the kickoff prompt without sending anything automatically to a live
    session.
-4. Record usage and outcome against the plan/feature lifecycle, then evaluate
+5. Record usage and outcome against the plan/feature lifecycle, then evaluate
    avoided retries and accepted-change quality before selecting model defaults.
 
 Real provider conformance, pricing, and quality measurements remain pending.

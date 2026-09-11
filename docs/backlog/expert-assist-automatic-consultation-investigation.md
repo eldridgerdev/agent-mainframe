@@ -72,10 +72,30 @@ expert:
 
 If the signals do not justify the cost, AMF proceeds normally. If they do, the
 user sees a short preflight notice with the expected purpose and bounded token
-budget. The expert returns structured findings: blockers, assumptions to
-verify, plan changes, confidence, and optionally up to three clarification
-questions. Each question must state which plan decision it unblocks and what
-evidence or choice is required. AMF never lets the expert edit the worktree.
+budget. The expert returns an implementation brief, not just a critique. Its
+required sections are:
+
+- **Objective and non-goals:** what the implementer must accomplish and what
+  must remain untouched;
+- **Ordered implementation steps:** the safest sequence, including dependency
+  order and migration or compatibility ordering;
+- **Code map:** relevant files, modules, symbols, data boundaries, and
+  ownership points to inspect or change, with a reason for each target;
+- **Invariants and decisions:** behavior that must remain true, the rationale
+  for important choices, and alternatives that were rejected;
+- **Validation plan:** focused tests, fixtures, commands, and observable
+  acceptance checks, including failure and recovery paths;
+- **Risks and stop conditions:** likely failure modes, unsafe assumptions, and
+  when the implementer must pause for another review;
+- **Definition of done:** a short checklist the implementer can verify before
+  declaring the task complete.
+
+The expert also returns blockers, assumptions to verify, confidence, and
+optionally up to three clarification questions. Each question must state which
+plan decision it unblocks and what evidence or choice is required. The expert
+should spend its extra reasoning budget resolving ambiguity and making the
+implementation sequence precise, rather than producing a broad speculative
+patch or repeating the user brief. AMF never lets the expert edit the worktree.
 
 When questions are returned, the review screen shows a short answer step. The
 user can answer, skip a question, revise the plan directly, or continue without
@@ -84,6 +104,13 @@ original packet, the expert findings, and the user's answers. A follow-up cannot
 emit another question round; unresolved questions are recorded as assumptions
 and the user may still accept the plan. Empty or unchanged answers do not
 trigger a paid follow-up.
+
+The accepted implementation brief is attached to the kickoff context for the
+cheaper model. The implementer is told to follow the ordered steps, preserve
+the listed invariants, run the validation plan, and report any stop condition.
+The brief is a compact working contract: it reduces rediscovery and
+backtracking without making the expert responsible for edits or silently
+expanding the task.
 
 The default should be one no-tools or tightly read-only review call. A second
 call is reserved for the bounded clarification follow-up or another concrete
@@ -127,8 +154,8 @@ default for a user who has just asked AMF to build something.
 ## Next implementation slice
 
 1. Refactor the existing plan critique into a policy-driven **plan preflight**
-   with a compact structured result, plan/evidence fingerprint, and bounded
-   clarification-question result.
+   with a compact structured implementation brief, plan/evidence fingerprint,
+   and bounded clarification-question result.
 2. Add a review-screen answer step and one follow-up call that is consumed by
    the plan revision/acceptance decision.
 3. Add a configurable policy: off, suggest, or require for selected risk

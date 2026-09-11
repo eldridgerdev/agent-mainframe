@@ -1088,6 +1088,54 @@ fn draw_plan_critique(
     message: Option<&str>,
     theme: &Theme,
 ) {
+    if state.critique_answering {
+        let question = &state.critique_questions[state.critique_question_index];
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(5),
+                Constraint::Min(4),
+                Constraint::Length(2),
+            ])
+            .split(area);
+        let prompt = Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(
+                    "Question {} of {}",
+                    state.critique_question_index + 1,
+                    state.critique_questions.len()
+                ),
+                Style::default()
+                    .fg(theme.secondary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(question.question.clone()),
+            Line::from(Span::styled(
+                format!("Unblocks: {}", question.unblocks),
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+        ])
+        .wrap(Wrap { trim: false });
+        frame.render_widget(prompt, chunks[0]);
+        draw_editor(
+            frame,
+            chunks[1],
+            state,
+            "Answer the expert's question.",
+            theme,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                hint("Enter", theme),
+                Span::raw(" save  "),
+                hint("Esc", theme),
+                Span::raw(" cancel answers"),
+            ]))
+            .style(Style::default().bg(theme.effective_header_bg())),
+            chunks[2],
+        );
+        return;
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
@@ -1130,6 +1178,38 @@ fn draw_plan_critique(
         Span::raw(" scroll  "),
         hint("r", theme),
         Span::raw(" revise plan with this feedback  "),
+        if !state.critique_questions.is_empty() && !state.critique_followup_used {
+            hint("e", theme)
+        } else {
+            Span::raw("")
+        },
+        if !state.critique_questions.is_empty() && !state.critique_followup_used {
+            Span::raw(" answer clarification questions  ")
+        } else {
+            Span::raw("")
+        },
+        if !state.critique_questions.is_empty()
+            && !state.critique_followup_used
+            && state
+                .critique_answers
+                .iter()
+                .any(|answer| !answer.trim().is_empty())
+        {
+            hint("f", theme)
+        } else {
+            Span::raw("")
+        },
+        if !state.critique_questions.is_empty()
+            && !state.critique_followup_used
+            && state
+                .critique_answers
+                .iter()
+                .any(|answer| !answer.trim().is_empty())
+        {
+            Span::raw(" run one follow-up  ")
+        } else {
+            Span::raw("")
+        },
         hint("Esc", theme),
         Span::raw(" back to plan"),
     ]);

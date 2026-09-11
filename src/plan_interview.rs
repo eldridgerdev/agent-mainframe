@@ -908,6 +908,46 @@ pub fn build_critique_prompt(
     )
 }
 
+/// Build the single bounded follow-up review after the user answers expert
+/// clarification questions. The original findings and answers stay in the
+/// packet so the expert can resolve the exact ambiguity it raised.
+#[allow(clippy::too_many_arguments)]
+pub fn build_critique_followup_prompt(
+    feature_name: &str,
+    plan: &str,
+    brief: &str,
+    questions: &[PlanQuestion],
+    answers: &[Option<String>],
+    context: &RepositoryContext,
+    attached: &[AttachedDoc],
+    findings: &str,
+    clarification_answers: &[(String, String)],
+) -> String {
+    let input = serde_json::json!({
+        "prompt_version": CRITIQUE_PROMPT_VERSION,
+        "feature_name": feature_name,
+        "draft_plan": plan,
+        "feature_brief": bounded_model_input(brief),
+        "interview_answers": interview_answers(questions, answers),
+        "repository_context": context,
+        "attached_documents": attached_doc_inputs(attached),
+        "previous_expert_findings": findings,
+        "clarification_answers": clarification_answers.iter().map(|(id, answer)| {
+            serde_json::json!({"id": id, "answer": answer})
+        }).collect::<Vec<_>>(),
+    });
+    let rendered = serde_json::to_string_pretty(&input).unwrap_or_else(|_| "{}".into());
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PlanInterviewCritique
+            .spec()
+            .default_template,
+        &interview_input_ctx(rendered).with(
+            "tool_access_note",
+            critique_tool_access_note(!attached.is_empty()),
+        ),
+    )
+}
+
 /// The `{{interview_input}}` JSON for a user-directed plan revision. Run with
 /// read-only repository tools rather than the no-tools interview snapshot.
 pub fn directed_revision_input_json(

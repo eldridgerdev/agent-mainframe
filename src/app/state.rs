@@ -12,8 +12,8 @@ use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
 };
 use crate::plan_interview::{
-    CUSTOM_ANSWER_MAX_LEN, PlanQuestion, PlanQuestionKind, QuestionSource, serialize_choice_answer,
-    split_choice_answer,
+    CUSTOM_ANSWER_MAX_LEN, PlanClarificationQuestion, PlanQuestion, PlanQuestionKind,
+    QuestionSource, serialize_choice_answer, split_choice_answer,
 };
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
@@ -6041,6 +6041,14 @@ pub struct PlanInterviewState {
     pub critique_scroll_offset: usize,
     pub critique_rendered_width: u16,
     pub critique_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    /// Questions extracted from the structured expert preflight response.
+    pub critique_questions: Vec<PlanClarificationQuestion>,
+    /// User answers paired with `critique_questions`; empty means unanswered.
+    pub critique_answers: Vec<String>,
+    pub critique_question_index: usize,
+    pub critique_answering: bool,
+    /// The single clarification follow-up is consumed once it starts.
+    pub critique_followup_used: bool,
     /// Advisory review staged as input for the next synthesis pass by the
     /// review's "revise" action. Consumed once that pass actually starts, so a
     /// revision that cannot run leaves the feedback recoverable.
@@ -6202,6 +6210,11 @@ impl PlanInterviewState {
             critique_scroll_offset: 0,
             critique_rendered_width: 0,
             critique_rendered_lines: Vec::new(),
+            critique_questions: Vec::new(),
+            critique_answers: Vec::new(),
+            critique_question_index: 0,
+            critique_answering: false,
+            critique_followup_used: false,
             revision_critique: None,
             plan_revision: 0,
             critique_plan_revision: None,
@@ -6785,6 +6798,7 @@ impl PlanInterviewState {
             return false;
         }
         self.phase = PlanInterviewPhase::CritiqueLoading;
+        self.critique_followup_used = false;
         self.critique_started_at = Some(std::time::Instant::now());
         self.critique_token_estimate = token_estimate;
         self.critique_plan_revision = Some(self.plan_revision);
@@ -6792,8 +6806,12 @@ impl PlanInterviewState {
     }
 
     /// Show a finished advisory review. The plan is deliberately untouched.
-    pub fn apply_critique(&mut self, critique: String) {
+    pub fn apply_critique(&mut self, critique: String, questions: Vec<PlanClarificationQuestion>) {
         self.critique = Some(critique);
+        self.critique_answers = vec![String::new(); questions.len()];
+        self.critique_question_index = 0;
+        self.critique_answering = false;
+        self.critique_questions = questions;
         self.critique_started_at = None;
         self.critique_scroll_offset = 0;
         self.critique_rendered_width = 0;
@@ -6806,7 +6824,11 @@ impl PlanInterviewState {
     /// pulling them back into it. Returns false when there is nothing to keep
     /// or the plan moved on while the review was in flight, since the findings
     /// then describe a draft that is gone.
-    pub fn stash_critique(&mut self, critique: String) -> bool {
+    pub fn stash_critique(
+        &mut self,
+        critique: String,
+        questions: Vec<PlanClarificationQuestion>,
+    ) -> bool {
         if self.phase != PlanInterviewPhase::Review
             || self.critique.is_some()
             || self.critique_plan_revision != Some(self.plan_revision)
@@ -6814,6 +6836,10 @@ impl PlanInterviewState {
             return false;
         }
         self.critique = Some(critique);
+        self.critique_answers = vec![String::new(); questions.len()];
+        self.critique_question_index = 0;
+        self.critique_answering = false;
+        self.critique_questions = questions;
         self.critique_started_at = None;
         self.critique_scroll_offset = 0;
         self.critique_rendered_width = 0;
@@ -6829,6 +6855,55 @@ impl PlanInterviewState {
             return false;
         }
         self.phase = PlanInterviewPhase::Critique;
+        true
+    }
+
+    /// Begin collecting answers to the bounded expert clarification set.
+    pub fn begin_critique_answers(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Critique
+            || self.critique_questions.is_empty()
+            || self.critique_followup_used
+        {
+            return false;
+        }
+        self.critique_question_index = 0;
+        self.editor = TextEditor::new(self.critique_answers[0].clone());
+        self.critique_answering = true;
+        true
+    }
+
+    /// Save the current clarification answer and advance through the bounded set.
+    pub fn save_critique_answer(&mut self) -> bool {
+        if !self.critique_answering {
+            return false;
+        }
+        self.critique_answers[self.critique_question_index] = self.editor.text().to_string();
+        if self.critique_question_index + 1 >= self.critique_questions.len() {
+            self.critique_answering = false;
+        } else {
+            self.critique_question_index += 1;
+            self.editor =
+                TextEditor::new(self.critique_answers[self.critique_question_index].clone());
+        }
+        true
+    }
+
+    pub fn begin_critique_followup(&mut self, token_estimate: usize) -> bool {
+        if self.phase != PlanInterviewPhase::Critique
+            || self.critique_questions.is_empty()
+            || self.critique_followup_used
+            || !self
+                .critique_answers
+                .iter()
+                .any(|answer| !answer.trim().is_empty())
+        {
+            return false;
+        }
+        self.critique_followup_used = true;
+        self.phase = PlanInterviewPhase::CritiqueLoading;
+        self.critique_started_at = Some(std::time::Instant::now());
+        self.critique_token_estimate = token_estimate;
+        self.critique_plan_revision = Some(self.plan_revision);
         true
     }
 
@@ -6887,6 +6962,11 @@ impl PlanInterviewState {
     /// Drop an advisory review that no longer describes the current plan.
     fn clear_critique(&mut self) {
         self.critique = None;
+        self.critique_questions.clear();
+        self.critique_answers.clear();
+        self.critique_question_index = 0;
+        self.critique_answering = false;
+        self.critique_followup_used = false;
         self.critique_started_at = None;
         self.critique_scroll_offset = 0;
         self.critique_rendered_width = 0;

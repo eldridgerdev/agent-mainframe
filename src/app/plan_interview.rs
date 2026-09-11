@@ -1045,6 +1045,101 @@ impl App {
         Ok(())
     }
 
+    /// Run the one permitted expert clarification follow-up using the user's
+    /// answers. It reuses the existing review worker and never opens another
+    /// question round.
+    pub(crate) fn start_plan_interview_critique_followup(&mut self) -> Result<()> {
+        let (
+            harness,
+            feature_name,
+            brief,
+            questions,
+            answers,
+            workdir,
+            plan,
+            findings,
+            clarification_answers,
+            attached_docs,
+        ) =
+            match &self.mode {
+                AppMode::PlanInterview(state)
+                    if state.phase == PlanInterviewPhase::Critique
+                        && !state.critique_followup_used
+                        && state.critique_questions.iter().any(|_| true) =>
+                {
+                    let Some(plan) = state.synthesized_plan.clone() else {
+                        return Ok(());
+                    };
+                    let Some(findings) = state.critique.clone() else {
+                        return Ok(());
+                    };
+                    let answers = state
+                        .critique_questions
+                        .iter()
+                        .zip(&state.critique_answers)
+                        .map(|(question, answer)| (question.id.clone(), answer.clone()))
+                        .collect::<Vec<_>>();
+                    (
+                        state.ai_harness.clone().flatten().or_else(|| {
+                            HeadlessRunner::select_for_interview(&state.preferred_harness)
+                        }),
+                        state.feature_name.clone(),
+                        state.brief.clone(),
+                        state.questions.clone(),
+                        state.answers.clone(),
+                        state.context_workdir(),
+                        plan,
+                        findings,
+                        answers,
+                        state.attached_docs.clone(),
+                    )
+                }
+                _ => return Ok(()),
+            };
+        let Some(harness) = harness else {
+            self.message = Some("No expert harness is available for the follow-up".into());
+            return Ok(());
+        };
+        let context = plan_interview::gather_repository_context(&workdir);
+        let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
+        self.note_dropped_attachments(&dropped);
+        let prompt = plan_interview::build_critique_followup_prompt(
+            &feature_name,
+            &plan,
+            &brief,
+            &questions,
+            &answers,
+            &context,
+            &attached,
+            &findings,
+            &clarification_answers,
+        );
+        let token_estimate = estimate_tokens(&prompt);
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::PlanCritiqueFollowup,
+            &harness,
+            &prompt,
+        ) {
+            return Ok(());
+        }
+        if let AppMode::PlanInterview(state) = &mut self.mode
+            && !state.begin_critique_followup(token_estimate)
+        {
+            return Ok(());
+        }
+        let (tx, rx) = mpsc::channel();
+        self.plan_interview_critique_bg = Some(rx);
+        std::thread::spawn(move || {
+            let result = if attached.is_empty() {
+                HeadlessRunner::run(&harness, &workdir, &prompt, None, true)
+            } else {
+                HeadlessRunner::run_read_only(&harness, &workdir, &prompt, None)
+            };
+            let _ = tx.send(result);
+        });
+        Ok(())
+    }
+
     /// Run a free-form review-gate instruction through the planning agent.
     /// Unlike synthesis and critique, this pass may inspect the feature
     /// workdir, so it uses the runner's read-only tool contract.
@@ -1628,8 +1723,10 @@ impl App {
             // where `a` can re-open it instead of dropping it on the floor.
             let stashed = match (result, &mut self.mode) {
                 (Ok(response), AppMode::PlanInterview(state)) => {
-                    match plan_interview::parse_plan_critique(&response) {
-                        Some(critique) => state.stash_critique(critique),
+                    match plan_interview::parse_plan_preflight(&response) {
+                        Some(result) => {
+                            state.stash_critique(result.markdown, result.clarification_questions)
+                        }
                         None => false,
                     }
                 }
@@ -1648,8 +1745,8 @@ impl App {
         // different problems with different fixes, so they get different
         // messages rather than one catch-all.
         let (critique, failure) = match result {
-            Ok(response) => match plan_interview::parse_plan_critique(&response) {
-                Some(critique) => (Some(critique), None),
+            Ok(response) => match plan_interview::parse_plan_preflight(&response) {
+                Some(result) => (Some(result), None),
                 None => {
                     self.log_warn(
                         "plan_interview",
@@ -1668,9 +1765,9 @@ impl App {
         };
 
         match critique {
-            Some(critique) => {
+            Some(result) => {
                 if let AppMode::PlanInterview(state) = &mut self.mode {
-                    state.apply_critique(critique);
+                    state.apply_critique(result.markdown, result.clarification_questions);
                 }
                 self.message = None;
             }

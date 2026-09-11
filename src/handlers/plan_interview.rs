@@ -475,6 +475,30 @@ fn handle_plan_investigation_key(app: &mut App, key: KeyEvent) -> Result<()> {
 /// scrolls, returns to the untouched plan, or asks for an explicit revision —
 /// the review never rewrites the plan on its own.
 fn handle_plan_critique_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let answering = matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.critique_answering
+    );
+    if answering {
+        match key.code {
+            KeyCode::Esc => {
+                if let AppMode::PlanInterview(state) = &mut app.mode {
+                    state.critique_answering = false;
+                }
+            }
+            KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if let AppMode::PlanInterview(state) = &mut app.mode {
+                    state.save_critique_answer();
+                }
+            }
+            _ => {
+                if let AppMode::PlanInterview(state) = &mut app.mode {
+                    state.editor.handle_key(key);
+                }
+            }
+        }
+        return Ok(());
+    }
     let loading = matches!(
         &app.mode,
         AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::CritiqueLoading
@@ -502,6 +526,14 @@ fn handle_plan_critique_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.message = None;
                 app.start_plan_interview_synthesis()?;
             }
+        }
+        KeyCode::Char('e') if !loading && key.modifiers.is_empty() => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.begin_critique_answers();
+            }
+        }
+        KeyCode::Char('f') if !loading && key.modifiers.is_empty() => {
+            app.start_plan_interview_critique_followup()?;
         }
         _ if !loading => {
             if let AppMode::PlanInterview(state) = &mut app.mode {

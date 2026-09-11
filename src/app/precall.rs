@@ -34,6 +34,7 @@ pub enum PrecallAction {
     PlanRound,
     PlanSynthesis,
     PlanCritique,
+    PlanCritiqueFollowup,
     PlanDirectedRevision,
     PlanInvestigation,
     ReviewWalkthrough,
@@ -52,6 +53,7 @@ impl PrecallAction {
             PrecallAction::PlanRound => PromptId::PlanInterviewRound,
             PrecallAction::PlanSynthesis => PromptId::PlanInterviewSynthesis,
             PrecallAction::PlanCritique => PromptId::PlanInterviewCritique,
+            PrecallAction::PlanCritiqueFollowup => PromptId::PlanInterviewCritique,
             PrecallAction::PlanDirectedRevision => PromptId::PlanInterviewDirectedRevision,
             PrecallAction::PlanInvestigation => PromptId::PlanInterviewInvestigation,
             PrecallAction::ReviewWalkthrough => PromptId::ReviewWalkthrough,
@@ -279,6 +281,7 @@ impl App {
             PrecallAction::PlanRound => self.start_next_plan_interview_ai_round(),
             PrecallAction::PlanSynthesis => self.start_plan_interview_synthesis(),
             PrecallAction::PlanCritique => self.start_plan_interview_critique(),
+            PrecallAction::PlanCritiqueFollowup => self.start_plan_interview_critique_followup(),
             PrecallAction::PlanDirectedRevision => self.start_plan_interview_directed_feedback(),
             PrecallAction::PlanInvestigation => self.start_plan_interview_investigation(),
             PrecallAction::ReviewWalkthrough => {

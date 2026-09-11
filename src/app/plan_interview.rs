@@ -37,6 +37,29 @@ fn plan_kickoff_prompt(expert_brief: Option<&str>) -> String {
     )
 }
 
+/// Conservative local admission check for the automatic expert preflight.
+/// Ordinary plans should not pay for a second model; these terms identify
+/// changes where one prevented retry can plausibly repay the review.
+fn should_auto_plan_preflight(plan: &str) -> bool {
+    let lower = plan.to_ascii_lowercase();
+    [
+        "migration",
+        "schema",
+        "concurr",
+        "security",
+        "permission",
+        "public api",
+        "data loss",
+        "rollback",
+        "recovery",
+        "backward compatibility",
+    ]
+    .iter()
+    .any(|signal| lower.contains(signal))
+        || (lower.contains("risks / open questions")
+            && !lower.contains("risks / open questions\n\nnone"))
+}
+
 impl App {
     /// Park the live interview so the dashboard and its sessions can be used
     /// for repository research without flattening the interview into a saved
@@ -1997,6 +2020,7 @@ impl App {
                 }),
             _ => return,
         };
+        let should_preflight = should_auto_plan_preflight(&plan);
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.apply_synthesis(plan);
         }
@@ -2005,6 +2029,12 @@ impl App {
         // again.
         self.persist_plan_interview_draft();
         self.message = None;
+        if should_preflight && let Err(error) = self.start_plan_interview_critique() {
+            self.report_logged_error(
+                "plan_interview",
+                format!("Automatic expert preflight could not start: {error:#}"),
+            );
+        }
     }
 
     /// Accept the reviewed plan and execute the launch it has been holding.
@@ -3058,5 +3088,18 @@ mod tests {
         assert!(!repo.path().join(".claude/plan.md").exists());
         assert!(!repo.path().join("PLAN.md").exists());
         assert!(!repo.path().join("plan.md").exists());
+    }
+
+    #[test]
+    fn automatic_preflight_admission_is_conservative_and_risk_based() {
+        assert!(should_auto_plan_preflight(
+            "## Risks / open questions\n\nMigration rollback is unresolved."
+        ));
+        assert!(should_auto_plan_preflight(
+            "## Architecture\n\nAdd a public API with backward compatibility."
+        ));
+        assert!(!should_auto_plan_preflight(
+            "## Risks / open questions\n\nNone identified.\n\nImplement a label change."
+        ));
     }
 }

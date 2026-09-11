@@ -59,7 +59,13 @@ fn should_auto_plan_preflight(plan: &str) -> bool {
         || lower
             .split_once("risks / open questions")
             .map(|(_, risks)| {
+                let risks = risks
+                    .split_once("\n## ")
+                    .map_or(risks, |(section, _)| section);
                 risks.lines().any(|line| {
+                    if !line.trim_start().starts_with(['-', '*']) {
+                        return false;
+                    }
                     let item = line.trim().trim_start_matches(['-', '*', ' ']);
                     !item.is_empty()
                         && !item.eq_ignore_ascii_case("none identified.")

@@ -116,7 +116,8 @@ Requirements:
 - Include focused tests, fixtures, commands, failure paths, recovery paths, and observable acceptance
   checks in the validation plan.
 - List up to three clarification questions. Each question must identify the plan decision it unblocks
-  and the evidence or choice required. Write "None." when no question is necessary.
+  and the evidence or choice required. Format each as `- Q1: <question> — unblocks: <decision>`.
+  Write "None." when no question is necessary.
 - Use "None identified." under any other heading with no genuine finding. Never pad a section by
   restating the plan.
 - Spend extra reasoning on ambiguity, sequencing, and implementation risk; do not merely repeat the

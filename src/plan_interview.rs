@@ -1140,6 +1140,28 @@ pub fn parse_synthesized_plan(response: &str) -> Option<String> {
 /// all) and a rewritten plan, which is caught by the structure the synthesis
 /// contract defines rather than by the wording of the title.
 pub fn parse_plan_critique(response: &str) -> Option<String> {
+    parse_plan_preflight(response).map(|brief| brief.markdown)
+}
+
+/// One bounded clarification request from the expert preflight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanClarificationQuestion {
+    pub id: String,
+    pub question: String,
+    pub unblocks: String,
+}
+
+/// The structured contract returned by the expert plan preflight. The full
+/// markdown remains available for the review pane; questions are extracted so
+/// the UI can collect answers without asking the model to parse its own prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanPreflightResult {
+    pub markdown: String,
+    pub clarification_questions: Vec<PlanClarificationQuestion>,
+}
+
+/// Validate and extract the actionable plan-preflight contract.
+pub fn parse_plan_preflight(response: &str) -> Option<PlanPreflightResult> {
     let critique = strip_markdown_fence(response);
     let title = critique.lines().next()?;
     if !title.starts_with("# ") {
@@ -1168,7 +1190,45 @@ pub fn parse_plan_critique(response: &str) -> Option<String> {
     {
         return None;
     }
-    Some(format!("{critique}\n"))
+
+    let questions = critique
+        .split_once("## Clarification questions")
+        .and_then(|(_, section)| {
+            section
+                .split_once("\n## ")
+                .map(|(body, _)| body)
+                .or(Some(section))
+        })
+        .map(parse_clarification_questions)
+        .unwrap_or_default();
+    if questions.len() > 3 {
+        return None;
+    }
+    Some(PlanPreflightResult {
+        markdown: format!("{critique}\n"),
+        clarification_questions: questions,
+    })
+}
+
+fn parse_clarification_questions(section: &str) -> Vec<PlanClarificationQuestion> {
+    section
+        .lines()
+        .filter_map(|line| {
+            let body = line.trim().strip_prefix("- ")?;
+            let (id, rest) = body.split_once(':')?;
+            let (question, unblocks) = rest.split_once("— unblocks:")?;
+            let question = question.trim();
+            let unblocks = unblocks.trim();
+            if question.is_empty() || unblocks.is_empty() {
+                return None;
+            }
+            Some(PlanClarificationQuestion {
+                id: id.trim().to_string(),
+                question: question.to_string(),
+                unblocks: unblocks.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Validate the bounded report returned by one isolated investigator.
@@ -2261,6 +2321,27 @@ mod tests {
         assert!(critique.starts_with("# Plan review: guided-plans"));
         assert!(critique.contains("- Stop on ambiguity."));
         assert!(critique.ends_with('\n'));
+    }
+
+    #[test]
+    fn preflight_parser_extracts_bounded_clarification_questions() {
+        let response = "# Plan review: guided-plans\n\n\
+            ## Objective and non-goals\n- Ship the feature.\n\n\
+            ## Ordered implementation steps\n- Step one.\n\n## Code map\n- src/lib.rs.\n\n\
+            ## Invariants and decisions\n- Preserve the API.\n\n## Validation plan\n- Run tests.\n\n\
+            ## Risks and stop conditions\n- Stop on ambiguity.\n\n## Definition of done\n- Tests pass.\n\n\
+            ## Clarification questions\n- Q1: Which migration path is supported? — unblocks: schema rollout\n";
+
+        let parsed = parse_plan_preflight(response).unwrap();
+        assert_eq!(parsed.clarification_questions.len(), 1);
+        assert_eq!(parsed.clarification_questions[0].id, "Q1");
+        assert_eq!(parsed.clarification_questions[0].unblocks, "schema rollout");
+    }
+
+    #[test]
+    fn preflight_parser_rejects_more_than_three_questions() {
+        let sections = "## Objective and non-goals\n- x\n\n## Ordered implementation steps\n- x\n\n## Code map\n- x\n\n## Invariants and decisions\n- x\n\n## Validation plan\n- x\n\n## Risks and stop conditions\n- x\n\n## Definition of done\n- x\n\n## Clarification questions\n- Q1: a — unblocks: a\n- Q2: b — unblocks: b\n- Q3: c — unblocks: c\n- Q4: d — unblocks: d\n";
+        assert!(parse_plan_preflight(&format!("# Plan review: x\n\n{sections}")).is_none());
     }
 
     #[test]

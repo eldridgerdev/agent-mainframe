@@ -420,7 +420,7 @@ fn evaluation_export_keeps_failed_attempts_and_unknown_costs_explicit() {
 #[test]
 fn migration_36_rolls_back_partial_schema_and_version_on_failure() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch("CREATE TABLE schema_version(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL,description TEXT NOT NULL); INSERT INTO schema_version VALUES(35,'now','fixture'); CREATE TABLE expert_handoffs(conflict TEXT);").unwrap();
+    conn.execute_batch("CREATE TABLE schema_version(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL,description TEXT NOT NULL); INSERT INTO schema_version VALUES(35,'now','fixture'); CREATE TABLE plan_interviews(feature_id TEXT NOT NULL, stage TEXT NOT NULL, feature_name TEXT NOT NULL, brief TEXT NOT NULL, questions TEXT NOT NULL, answers TEXT NOT NULL, plan TEXT, ai_rounds_completed INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, custom_answers TEXT NOT NULL DEFAULT '[]', attached_docs TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(feature_id, stage)); CREATE TABLE expert_handoffs(conflict TEXT);").unwrap();
     assert!(super::super::migrations::run(&conn).is_err());
     let count: i64 = conn
         .query_row(
@@ -444,5 +444,5 @@ fn migration_36_rolls_back_partial_schema_and_version_on_failure() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 36);
+    assert_eq!(version, 37);
 }

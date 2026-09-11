@@ -1480,7 +1480,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 36);
+        assert_eq!(rows, 37);
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an
@@ -1591,7 +1591,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 36);
+        assert_eq!(version, 37);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

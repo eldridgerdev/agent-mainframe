@@ -56,8 +56,18 @@ fn should_auto_plan_preflight(plan: &str) -> bool {
     ]
     .iter()
     .any(|signal| lower.contains(signal))
-        || (lower.contains("risks / open questions")
-            && !lower.contains("risks / open questions\n\nnone"))
+        || lower
+            .split_once("risks / open questions")
+            .map(|(_, risks)| {
+                risks.lines().any(|line| {
+                    let item = line.trim().trim_start_matches(['-', '*', ' ']);
+                    !item.is_empty()
+                        && !item.eq_ignore_ascii_case("none identified.")
+                        && !item.eq_ignore_ascii_case("none identified")
+                        && !item.eq_ignore_ascii_case("none")
+                })
+            })
+            .unwrap_or(false)
 }
 
 impl App {
@@ -1097,7 +1107,7 @@ impl App {
                 AppMode::PlanInterview(state)
                     if state.phase == PlanInterviewPhase::Critique
                         && !state.critique_followup_used
-                        && state.critique_questions.iter().any(|_| true) =>
+                        && !state.critique_questions.is_empty() =>
                 {
                     let Some(plan) = state.synthesized_plan.clone() else {
                         return Ok(());

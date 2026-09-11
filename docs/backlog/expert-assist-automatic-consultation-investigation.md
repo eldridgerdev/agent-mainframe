@@ -153,17 +153,12 @@ default for a user who has just asked AMF to build something.
 
 ## Next implementation slice
 
-1. Refactor the existing plan critique into a policy-driven **plan preflight**
-   with a compact structured implementation brief, plan/evidence fingerprint,
-   and bounded clarification-question result.
-2. Add a review-screen answer step and one follow-up call that is consumed by
-   the plan revision/acceptance decision.
-3. Add a configurable policy: off, suggest, or require for selected risk
-   classes; default to suggest while collecting local measurements.
-4. Show the result in the existing plan review and include accepted findings in
-   the kickoff prompt without sending anything automatically to a live
-   session.
-5. Record usage and outcome against the plan/feature lifecycle, then evaluate
-   avoided retries and accepted-change quality before selecting model defaults.
+The first implementation slice is now complete: the existing plan critique is
+an automatic high-risk preflight, returns a structured implementation brief,
+supports up to three clarification questions and one follow-up, and carries
+the accepted brief into the implementation kickoff. The remaining work is a
+configurable off/suggest/require policy, durable preflight result and plan
+fingerprint persistence, lifecycle usage/outcome recording, and real quality
+and cost evaluation before selecting model defaults.
 
 Real provider conformance, pricing, and quality measurements remain pending.

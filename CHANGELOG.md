@@ -12,14 +12,6 @@ are tagged.
 
 ### Added
 
-- **Expert Assist consultations can now be requested from an agent feature.**
-  Open the local command picker and choose `ask-expert` to submit a bounded
-  question with acceptance criteria and optional attempted fixes. AMF shows an
-  explicit pre-call confirmation, tracks progress and failures, and stages an
-  editable handoff that you can review, change, dismiss, or send to the
-  originating session after its target is revalidated. No migration is
-  required; real provider trials and cost comparisons remain pending.
-
 - **A plan interview can now include reference documents.** On the feature-brief
   step, `Ctrl+D` opens a file browser (`Ctrl+X` removes the last one); attach up
   to four readable text files from anywhere on disk — a spec, a ticket, design

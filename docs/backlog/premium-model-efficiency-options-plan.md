@@ -134,10 +134,12 @@ percentages overlap and must not be added together.
 ## OPT-01: Expert Assist
 
 Feature design: [Expert Assist design and feasibility](expert-assist-design.md).
-The design investigation and opt-in prototype are complete, including the
-consultation form, bounded owned jobs, durable request/evidence state, and
-target-validated editable handoffs. Real provider conformance and cost/quality
-trials remain pending; the worked savings below remain hypothetical.
+The original opt-in prototype is complete but its manual consultation UX was
+closed for reconsideration. A follow-up investigation now recommends a
+policy-controlled plan preflight immediately after plan synthesis and before
+implementation; the prototype's bounded jobs, evidence, and usage foundations
+remain reusable. Real provider conformance and cost/quality trials remain
+pending, and the worked savings below remain hypothetical.
 
 ### Behavior and implementation shape
 

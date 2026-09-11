@@ -1,6 +1,10 @@
 # OPT-01: Expert Assist design and feasibility
 
-- **Status:** Design complete; prototype runner, owned jobs, persistence, evidence, consultation UI, and target-validated handoff foundations implemented. Paid evaluation remains pending.
+- **Status:** The original manual prototype is complete but its PR was closed for
+  reconsideration. Runner, owned-job, persistence, evidence, and prompt
+  foundations remain reusable; the recommended product direction is now the
+  automatic plan-preflight investigation in
+  [the follow-up placement document](expert-assist-automatic-consultation-investigation.md).
 - **Evidence date:** 2026-09-09.
 - **Code inspected:** `b04c5709e8fb9412d2b89a08c01659fc3bd1a2e7` in the
   `agent-mainframe-token-minning` worktree.

@@ -18,8 +18,41 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 
 use crate::plan_interview::PlanQuestion;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreflightEvaluationExport {
+    pub feature_id: String,
+    pub stage: String,
+    pub plan_fingerprint: Option<String>,
+    pub status: Option<String>,
+    pub token_estimate: usize,
+    pub has_brief: bool,
+}
+
+pub fn export_preflight_evaluation(conn: &Connection, feature_id: &str) -> Result<String> {
+    let mut statement = conn.prepare(
+        "SELECT feature_id, stage, preflight_fingerprint, preflight_status,
+                preflight_token_estimate, expert_brief
+         FROM plan_interviews WHERE feature_id = ?1 ORDER BY stage",
+    )?;
+    let rows = statement.query_map(params![feature_id], |row| {
+        Ok(PreflightEvaluationExport {
+            feature_id: row.get(0)?,
+            stage: row.get(1)?,
+            plan_fingerprint: row.get(2)?,
+            status: row.get(3)?,
+            token_estimate: row.get::<_, i64>(4)?.max(0) as usize,
+            has_brief: row
+                .get::<_, Option<String>>(5)?
+                .is_some_and(|v| !v.trim().is_empty()),
+        })
+    })?;
+    let exports = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(serde_json::to_string_pretty(&exports)?)
+}
 
 /// Which of a feature's two possible interview rows a record is.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -599,5 +632,22 @@ mod tests {
         db.save_store(&store).unwrap();
 
         assert!(db.plan_interview_draft("feat-1").unwrap().is_some());
+    }
+
+    #[test]
+    fn preflight_evaluation_export_preserves_status_and_cost_signals() {
+        let (_tmp, db) = open_temp_db();
+        let mut record = draft("feat-1");
+        record.preflight_fingerprint = Some("abc".into());
+        record.preflight_status = Some("completed".into());
+        record.preflight_token_estimate = 321;
+        record.expert_brief = Some("## Definition of done\nShip it".into());
+        db.save_plan_interview(&record).unwrap();
+
+        let json = db.export_plan_preflight_evaluation("feat-1").unwrap();
+        let rows: Vec<PreflightEvaluationExport> = serde_json::from_str(&json).unwrap();
+        assert_eq!(rows[0].status.as_deref(), Some("completed"));
+        assert_eq!(rows[0].token_estimate, 321);
+        assert!(rows[0].has_brief);
     }
 }

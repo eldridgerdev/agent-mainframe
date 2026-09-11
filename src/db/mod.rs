@@ -696,6 +696,11 @@ impl AmfDb {
         plan_interviews::save(&self.conn, record)
     }
 
+    /// Export durable preflight lifecycle data for quality and cost analysis.
+    pub fn export_plan_preflight_evaluation(&self, feature_id: &str) -> Result<String> {
+        plan_interviews::export_preflight_evaluation(&self.conn, feature_id)
+    }
+
     /// Promote the draft filed under `draft_feature_id` to the accepted
     /// transcript of `final_feature_id`. `false` when there was no draft to
     /// promote. The keys differ only for a feature-creation interview, whose

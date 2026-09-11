@@ -158,8 +158,9 @@ automatic high-risk preflight, returns a structured implementation brief,
 supports up to three clarification questions and one follow-up, and carries
 the accepted brief into the implementation kickoff. The policy now supports
 off, suggest, and require modes, and draft persistence stores the accepted
-brief and the SHA-256 fingerprint of the reviewed plan. Lifecycle usage and
-outcome export plus real quality and cost evaluation remain before selecting
+brief and the SHA-256 fingerprint of the reviewed plan. Lifecycle status,
+token estimates, and a JSON evaluation export are now available for each
+feature. Real provider quality and cost evaluation remains before selecting
 production model defaults.
 
 Real provider conformance, pricing, and quality measurements remain pending.

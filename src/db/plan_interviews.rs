@@ -83,6 +83,8 @@ pub struct PlanInterviewRecord {
     pub attached_docs: Vec<String>,
     pub expert_brief: Option<String>,
     pub preflight_fingerprint: Option<String>,
+    pub preflight_status: Option<String>,
+    pub preflight_token_estimate: usize,
     /// DB-owned timestamps. Ignored on [`save`], which sets them itself.
     pub created_at: String,
     pub updated_at: String,
@@ -135,7 +137,8 @@ pub fn load(
         .query_row(
             "SELECT feature_name, brief, questions, answers, plan,
                     ai_rounds_completed, created_at, updated_at, custom_answers,
-                    attached_docs, expert_brief, preflight_fingerprint
+                    attached_docs, expert_brief, preflight_fingerprint,
+                    preflight_status, preflight_token_estimate
              FROM plan_interviews WHERE feature_id = ?1 AND stage = ?2",
             params![feature_id, stage.as_db_str()],
             |row| {
@@ -152,6 +155,8 @@ pub fn load(
                     row.get::<_, String>(9)?,
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, i64>(13)?,
                 ))
             },
         )
@@ -170,6 +175,8 @@ pub fn load(
         attached_docs_json,
         expert_brief,
         preflight_fingerprint,
+        preflight_status,
+        preflight_token_estimate,
     )) = row
     else {
         return Ok(None);
@@ -213,6 +220,8 @@ pub fn load(
         attached_docs,
         expert_brief,
         preflight_fingerprint,
+        preflight_status,
+        preflight_token_estimate: preflight_token_estimate.max(0) as usize,
         created_at,
         updated_at,
     }))
@@ -235,8 +244,9 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
         "INSERT INTO plan_interviews
             (feature_id, stage, feature_name, brief, questions, answers, plan,
              ai_rounds_completed, created_at, updated_at, custom_answers, attached_docs,
-             expert_brief, preflight_fingerprint)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9, ?10, ?11, ?12)
+             expert_brief, preflight_fingerprint, preflight_status,
+             preflight_token_estimate)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(feature_id, stage) DO UPDATE SET
             feature_name        = excluded.feature_name,
             brief               = excluded.brief,
@@ -246,6 +256,8 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             attached_docs       = excluded.attached_docs,
             expert_brief        = excluded.expert_brief,
             preflight_fingerprint = excluded.preflight_fingerprint,
+            preflight_status    = excluded.preflight_status,
+            preflight_token_estimate = excluded.preflight_token_estimate,
             plan                = excluded.plan,
             ai_rounds_completed = excluded.ai_rounds_completed,
             updated_at          = datetime('now')",
@@ -262,6 +274,8 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             attached_docs,
             record.expert_brief,
             record.preflight_fingerprint,
+            record.preflight_status,
+            record.preflight_token_estimate as i64,
         ],
     )?;
     Ok(())

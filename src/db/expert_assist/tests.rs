@@ -444,5 +444,5 @@ fn migration_36_rolls_back_partial_schema_and_version_on_failure() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 37);
+    assert_eq!(version, 38);
 }

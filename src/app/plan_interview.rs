@@ -1753,6 +1753,10 @@ impl App {
                     "plan review worker thread ended unexpectedly".to_string(),
                 );
                 if self.close_plan_interview_critique_loading() {
+                    if let AppMode::PlanInterview(state) = &mut self.mode {
+                        state.fail_critique();
+                    }
+                    self.persist_plan_interview_draft();
                     self.message = Some("Plan review failed; the plan is unchanged".into());
                 }
                 return true;
@@ -1823,6 +1827,10 @@ impl App {
                 self.message = None;
             }
             None => {
+                if let AppMode::PlanInterview(state) = &mut self.mode {
+                    state.fail_critique();
+                }
+                self.persist_plan_interview_draft();
                 self.close_plan_interview_critique_loading();
                 self.message = failure.map(Into::into);
             }

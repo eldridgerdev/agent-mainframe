@@ -6035,6 +6035,8 @@ pub struct PlanInterviewState {
     /// Cleared whenever the plan changes, since the findings describe the
     /// draft they were written against.
     pub critique: Option<String>,
+    /// Durable lifecycle state for the automatic preflight.
+    pub critique_status: Option<String>,
     /// SHA-256 fingerprint of the plan the persisted preflight reviewed.
     pub preflight_fingerprint: Option<String>,
     /// Start time and prompt-size estimate for the agent-review loading frame.
@@ -6208,6 +6210,7 @@ impl PlanInterviewState {
             investigation_started_at: None,
             investigation_token_estimate: 0,
             critique: None,
+            critique_status: None,
             preflight_fingerprint: None,
             critique_started_at: None,
             critique_token_estimate: 0,
@@ -6329,6 +6332,8 @@ impl PlanInterviewState {
             self.synthesized_plan = Some(plan);
             self.critique = draft.expert_brief;
             self.preflight_fingerprint = draft.preflight_fingerprint;
+            self.critique_status = draft.preflight_status;
+            self.critique_token_estimate = draft.preflight_token_estimate;
             self.synthesis_attempted = true;
             self.phase = PlanInterviewPhase::Review;
             return true;
@@ -6633,6 +6638,8 @@ impl PlanInterviewState {
                 .synthesized_plan
                 .as_deref()
                 .map(|plan| format!("{:x}", Sha256::digest(plan.as_bytes()))),
+            preflight_status: self.critique_status.clone(),
+            preflight_token_estimate: self.critique_token_estimate,
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -6809,6 +6816,7 @@ impl PlanInterviewState {
             return false;
         }
         self.phase = PlanInterviewPhase::CritiqueLoading;
+        self.critique_status = Some("running".into());
         self.critique_followup_used = false;
         self.critique_started_at = Some(std::time::Instant::now());
         self.critique_token_estimate = token_estimate;
@@ -6819,6 +6827,7 @@ impl PlanInterviewState {
     /// Show a finished advisory review. The plan is deliberately untouched.
     pub fn apply_critique(&mut self, critique: String, questions: Vec<PlanClarificationQuestion>) {
         self.critique = Some(critique);
+        self.critique_status = Some("completed".into());
         self.critique_answers = vec![String::new(); questions.len()];
         self.critique_question_index = 0;
         self.critique_answering = false;
@@ -6973,6 +6982,7 @@ impl PlanInterviewState {
     /// Drop an advisory review that no longer describes the current plan.
     fn clear_critique(&mut self) {
         self.critique = None;
+        self.critique_status = None;
         self.preflight_fingerprint = None;
         self.critique_questions.clear();
         self.critique_answers.clear();
@@ -7071,6 +7081,14 @@ impl PlanInterviewState {
             self.questions.get(self.question_index)
         } else {
             None
+        }
+    }
+
+    pub fn fail_critique(&mut self) {
+        self.critique_status = Some("failed".into());
+        self.critique_started_at = None;
+        if self.phase == PlanInterviewPhase::CritiqueLoading {
+            self.phase = PlanInterviewPhase::Review;
         }
     }
 
@@ -8242,6 +8260,8 @@ mod tests {
             attached_docs: Vec::new(),
             expert_brief: None,
             preflight_fingerprint: None,
+            preflight_status: None,
+            preflight_token_estimate: 0,
             created_at: String::new(),
             updated_at: "2026-07-30 12:00:00".into(),
         }

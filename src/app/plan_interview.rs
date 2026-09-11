@@ -28,6 +28,15 @@ decisions are settled unless I say otherwise.
 Start with the first unchecked task, and keep the task checkboxes current as \
 you go.";
 
+fn plan_kickoff_prompt(expert_brief: Option<&str>) -> String {
+    let Some(brief) = expert_brief.filter(|brief| !brief.trim().is_empty()) else {
+        return PLAN_KICKOFF_PROMPT.to_string();
+    };
+    format!(
+        "{PLAN_KICKOFF_PROMPT}\n\nThe following expert implementation brief is guidance for this plan. Follow its ordered steps and invariants, run its validation plan, and stop if it names an unresolved assumption or stop condition.\n\n{brief}"
+    )
+}
+
 impl App {
     /// Park the live interview so the dashboard and its sessions can be used
     /// for repository research without flattening the interview into a saved
@@ -2000,7 +2009,7 @@ impl App {
 
     /// Accept the reviewed plan and execute the launch it has been holding.
     pub(crate) fn complete_plan_interview(&mut self) -> Result<()> {
-        let (workdir, plan, interview_key, todo_origin) = match &self.mode {
+        let (workdir, plan, interview_key, todo_origin, expert_brief) = match &self.mode {
             AppMode::PlanInterview(state) => (
                 state.workdir.clone(),
                 state.synthesized_plan.clone().unwrap_or_else(|| {
@@ -2013,6 +2022,7 @@ impl App {
                 }),
                 state.interview_key.clone(),
                 state.todo_origin.clone(),
+                state.critique.clone(),
             ),
             _ => return Ok(()),
         };
@@ -2050,7 +2060,7 @@ impl App {
             // harness's instruction file (via `ensure_feature_running`), so the
             // agent already knows the plan is user-approved before it reads the
             // kickoff prompt.
-            prepared.startup_prompt = Some(PLAN_KICKOFF_PROMPT.to_string());
+            prepared.startup_prompt = Some(plan_kickoff_prompt(expert_brief.as_deref()));
             let pending = PendingPlanLaunch {
                 prepared,
                 interview_key,
@@ -2381,6 +2391,10 @@ impl App {
     /// The prompt is left editable and unsubmitted, like every other compose
     /// seed — the session may be mid-task, and the user decides when it lands.
     pub(crate) fn send_plan_kickoff_to_live_session(&mut self) -> Result<()> {
+        let expert_brief = match &self.mode {
+            AppMode::PlanInterview(state) => state.critique.clone(),
+            _ => None,
+        };
         let Some(target) = (match &mut self.mode {
             AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::KickoffHandoff => {
                 state.kickoff_handoff.take()
@@ -2450,7 +2464,7 @@ impl App {
         // The seed is the whole point of saying yes, so a failure here has to be
         // visible: the session is open but its composer is empty, and silence
         // would read as "the agent has the plan".
-        if let Err(e) = self.open_compose_seeded(PLAN_KICKOFF_PROMPT.to_string()) {
+        if let Err(e) = self.open_compose_seeded(plan_kickoff_prompt(expert_brief.as_deref())) {
             self.report_logged_error(
                 "plan_interview",
                 format!(

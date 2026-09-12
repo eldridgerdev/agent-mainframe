@@ -252,12 +252,46 @@ list of one or more of:
 - `wait:<ms>` — sleep this many milliseconds before the next step.
 - `note:<text>` — a reviewer-facing sentence explaining what the next `shot:`
   proves; it is shown in the private Pages gallery, not sent as terminal input.
+  A `note:` is a *claim*, not a check — pair it with `expect:`/`expect_not:`
+  below so the claim is actually verified, not just narrated.
+- `expect:<text>` — a literal substring that **must** appear in the next
+  `shot:`'s captured pane (checked against the escape-free `.txt` twin).
+  Stack several `expect:` lines before one `shot:` to require all of them.
+  If the substring is missing, `shot()` prints the assertion, the offending
+  shot, and the actual pane content to stderr, and the whole run exits
+  nonzero **immediately** — no further steps run, and nothing gets published.
+  This is what turned the September 2026 "every screenshot was actually the
+  syntax-parser picker, not the feature under test" incident into a failed
+  CI run instead of a silently-wrong published gallery: the scenario assumed
+  a seeded project/feature that a bare `amf-publish-screenshots` call (no
+  `--seed`/`--seed-feature`) never provided, so the intended key sequence
+  drove the dashboard's default keybindings instead of the flow the scenario
+  claimed to show.
+- `expect_not:<text>` — the inverse: the next `shot:` must **not** contain
+  this substring. Same stacking, same fail-fast, all-or-nothing behavior as
+  `expect:`. Useful for asserting a fallback/error screen was *not* what
+  actually got captured.
 - `shot:<label>` — `capture-pane -e -p` the current pane to
   `NNN-<label>.ansi` in the output dir (`NNN` is a zero-padded, per-run
   step counter, not tied to the line number). Each shot also writes an
   escape-free `NNN-<label>.txt` twin (`capture-pane -p`) — the cheap
   artifact for greppable content checks, so nothing has to parse or
-  read the ANSI dump just to verify text.
+  read the ANSI dump just to verify text. Immediately after capturing,
+  `shot()` checks every `expect:`/`expect_not:` staged since the last
+  `shot:` and clears them.
+
+**Every shot that is meant to prove something needs at least one
+`expect:`/`expect_not:` immediately before it** — not just a `note:`. A
+`note:` only documents what a human reader should see; it is never checked
+against what the pane actually contains. `expect:`/`expect_not:` is the
+mechanism that actually verifies it, and a scenario ending with a staged
+`expect:`/`expect_not:` that no later `shot:` consumes is itself a hard
+error (a dead assertion that never ran proves nothing). A purely
+navigational shot with nothing specific to assert (e.g. "press Escape,
+capture the resulting dashboard" with no particular claim about its
+content) can skip it, but a shot the note describes as showing a specific
+title, label, or state must be backed by an assertion that would actually
+fail if that state were wrong.
 - `run:<cmd>` — `eval` an arbitrary shell command. The escape hatch for
   anything the grammar above can't express: a second automation call
   (this shell has `AMF_BIN` and the scratch instance's XDG vars

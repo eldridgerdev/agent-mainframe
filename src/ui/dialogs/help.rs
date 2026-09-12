@@ -41,6 +41,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Open Learning Mode (read this codebase, ask questions)",
         ),
         ("P", "Run a plan interview for this feature"),
+        ("Q", "Run a Quick Plan interview for this feature"),
         ("T", "Theme picker"),
         (
             "t",

@@ -18,6 +18,18 @@ are tagged.
 
 ### Added
 
+- **A new "Quick Plan" mode offers a lighter alternative to the full Plan
+  interview.** Press `Q` on a feature (parallel to `P` for the full interview)
+  to re-run it, or pick it from the feature-creation wizard's Plan field,
+  which is now a 3-way cycle — `None` / `Quick Plan` / `Full Plan` — instead
+  of a checkbox. Quick Plan asks as few clarifying questions as the task
+  needs, including none at all for something already clear, then does one of
+  three things: starts work right away with no plan file, shows a short
+  reviewable plan (the same accept/edit screen full Plan mode uses), or, if
+  the answers turn out to reveal more complexity than expected, escalates
+  into the full Plan-mode interview — with an explicit message explaining why
+  and everything already answered carried forward, so nothing is asked twice.
+
 - **A plan interview can now include reference documents.** On the feature-brief
   step, `Ctrl+D` opens a file browser (`Ctrl+X` removes the last one); attach up
   to four readable text files from anywhere on disk — a spec, a ticket, design

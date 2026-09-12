@@ -669,9 +669,15 @@ fn draw_create_feature_branch_mode(
     let review_widget = Paragraph::new(review_lines);
     frame.render_widget(review_widget, chunks[8]);
 
-    // Plan mode checkbox (chunks[10])
+    // Plan checkbox (chunks[10]): a 3-state cycle (None / Quick Plan / Full
+    // Plan) on one field, mirroring how the mode picker above lists its
+    // options rather than adding a second checkbox.
     let plan_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 3;
-    let plan_check = if state.plan_mode { "[x]" } else { "[ ]" };
+    let (plan_check, plan_label) = match (state.plan_mode, state.quick_plan) {
+        (true, true) => ("[Q]", "Quick Plan"),
+        (true, false) => ("[x]", "Full Plan (collaborative planning)"),
+        (false, _) => ("[ ]", "None"),
+    };
     let plan_style = if plan_active {
         Style::default().fg(theme.text.to_color())
     } else {
@@ -686,7 +692,7 @@ fn draw_create_feature_branch_mode(
                 Style::default().fg(theme.text_muted.to_color())
             },
         ),
-        Span::styled(format!("{} Collaborative planning", plan_check), plan_style),
+        Span::styled(format!("{plan_check} {plan_label}"), plan_style),
     ])];
     let plan_widget = Paragraph::new(plan_lines);
     frame.render_widget(plan_widget, chunks[10]);

@@ -6,7 +6,7 @@ instance.
 
 - `sidebar-warning.png` shows the selected session's `Fresh Context` item,
   critical usage, and `<leader F>` action.
-- `leader-menu.png` shows `F Fresh context` and `X Dismiss context hint`.
+- `leader-menu.png` shows `F Fresh context`.
 - `fresh-context-composer.png` shows the generated editable continuation
   prompt.
 

@@ -6,56 +6,33 @@ use super::{App, AppMode, ViewState};
 
 /// Per-session lifecycle state for the context-usage sidebar hint.
 ///
-/// This is deliberately separate from SessionContextState. Context telemetry
-/// describes the current measurement; this state records only the user's
-/// dismissal for that measurement's reset generation.
+/// This is deliberately separate from SessionContextState: it tracks which
+/// reset generation the hint has already been evaluated for, not the
+/// measurement itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ContextHintState {
     pub reset_generation: u64,
-    pub dismissed: bool,
 }
 
 impl ContextHintState {
-    /// Reconcile dismissal state with the latest transient context state.
-    ///
-    /// A reset generation or a cleared trigger arms the hint again. A stale
-    /// snapshot remains a real snapshot, so its warning/critical trigger is
-    /// retained and can still be shown with its stale marker.
+    /// Reconcile with the latest transient context state.
     pub fn sync(&mut self, context: Option<&SessionContextState>) {
         let generation = context.map_or(0, |state| state.reset.generation);
-        if generation != self.reset_generation {
-            self.reset_generation = generation;
-            self.dismissed = false;
-        }
+        self.reset_generation = generation;
+    }
 
-        let trigger_active = context.is_some_and(|state| {
+    pub fn is_eligible(&self, context: Option<&SessionContextState>) -> bool {
+        context.is_some_and(|state| {
             state
                 .snapshot
                 .as_ref()
                 .is_some_and(|snapshot| context_band_triggers_hint(snapshot.band))
-        });
-        if !trigger_active {
-            self.dismissed = false;
-        }
-    }
-
-    pub fn dismiss(&mut self) {
-        self.dismissed = true;
-    }
-
-    pub fn is_eligible(&self, context: Option<&SessionContextState>) -> bool {
-        !self.dismissed
-            && context.is_some_and(|state| {
-                state
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|snapshot| context_band_triggers_hint(snapshot.band))
-            })
+        })
     }
 }
 
-/// Dismissal state keyed by AMF session ID. It is transient and intentionally
-/// not part of the persisted project model.
+/// Hint-eligibility state keyed by AMF session ID. It is transient and
+/// intentionally not part of the persisted project model.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ContextHintStates {
     by_session: HashMap<String, ContextHintState>,
@@ -82,15 +59,6 @@ impl ContextHintStates {
         }
     }
 
-    pub fn dismiss(&mut self, session_id: &str, context: Option<&SessionContextState>) {
-        let Some(context) = context else {
-            return;
-        };
-        let state = self.by_session.entry(session_id.to_string()).or_default();
-        state.sync(Some(context));
-        state.dismiss();
-    }
-
     pub fn is_eligible(&self, session_id: &str, context: Option<&SessionContextState>) -> bool {
         self.by_session
             .get(session_id)
@@ -114,20 +82,6 @@ impl App {
         };
         self.context_hint_states
             .is_eligible(&session_id, self.context_states.get(&session_id))
-    }
-
-    /// Dismiss the hint for the agent session represented by the current view.
-    /// The next context reset or cleared trigger re-arms it.
-    pub(crate) fn dismiss_context_hint_from_view(&mut self) {
-        let session_id = match &self.mode {
-            AppMode::Viewing(view) => self.context_session_id_for_view(view),
-            _ => None,
-        };
-        let Some(session_id) = session_id else {
-            return;
-        };
-        self.context_hint_states
-            .dismiss(&session_id, self.context_states.get(&session_id));
     }
 
     fn context_session_id_for_view(&self, view: &ViewState) -> Option<String> {
@@ -204,15 +158,14 @@ mod tests {
     }
 
     #[test]
-    fn dismissal_is_scoped_to_the_session_and_current_generation() {
+    fn hint_state_is_scoped_to_the_session_and_tracks_generation() {
         let warning = context(70_000);
         let other_warning = context(85_000);
         let mut hints = ContextHintStates::default();
         hints.sync_session("first", Some(&warning));
         hints.sync_session("second", Some(&other_warning));
 
-        hints.dismiss("first", Some(&warning));
-        assert!(!hints.is_eligible("first", Some(&warning)));
+        assert!(hints.is_eligible("first", Some(&warning)));
         assert!(hints.is_eligible("second", Some(&other_warning)));
 
         let mut reset = warning.clone();
@@ -223,26 +176,10 @@ mod tests {
     }
 
     #[test]
-    fn a_cleared_trigger_rearms_the_hint() {
-        let warning = context(70_000);
-        let normal = context(50_000);
-        let mut hints = ContextHintStates::default();
-        hints.sync_session("session", Some(&warning));
-        hints.dismiss("session", Some(&warning));
-        assert!(!hints.is_eligible("session", Some(&warning)));
-
-        hints.sync_session("session", Some(&normal));
-        assert!(!hints.is_eligible("session", Some(&normal)));
-        hints.sync_session("session", Some(&warning));
-        assert!(hints.is_eligible("session", Some(&warning)));
-    }
-
-    #[test]
     fn unavailable_or_reset_pending_context_never_becomes_a_false_zero_hint() {
         let warning = context(70_000);
         let mut hints = ContextHintStates::default();
         hints.sync_session("session", Some(&warning));
-        hints.dismiss("session", Some(&warning));
 
         let mut reset_pending = warning.clone();
         reset_pending.snapshot = None;

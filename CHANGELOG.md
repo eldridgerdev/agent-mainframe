@@ -132,6 +132,16 @@ are tagged.
   prompt library always shows the latest saved templates when opened. No
   migration is required.
 
+- **The fresh-context sidebar hint no longer shows its `<leader F>` shortcut
+  twice, and the redundant `<leader X>` dismiss binding is gone.** At the
+  warning/critical context band, the sidebar's `Context` section previously
+  advertised the fresh-context action both in its title-top hint and again
+  in an `Action:`/`Dismiss:` line inside the body — with a separate leader
+  command just to dismiss it. The shortcut is now shown once, in the title,
+  matching every other sidebar section's convention, and the hint re-arms on
+  its own at the next context reset or cleared trigger, so there is nothing
+  left to dismiss. No migration is required.
+
 ## [v0.42.0] - 2026-09-04
 
 ### Fixed

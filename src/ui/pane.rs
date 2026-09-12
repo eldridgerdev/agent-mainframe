@@ -33,7 +33,6 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("m", "Markdown viewer"),
     ("n", "Open current plan"),
     ("F", "Fresh context"),
-    ("X", "Dismiss context hint"),
     ("b", "Show / hide sidebar"),
     ("v", "Expand / collapse todos"),
     ("V", "Check pending diff review"),
@@ -711,26 +710,14 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
 
     if let Some(snapshot) = data.context_snapshot.as_ref() {
         let indicator = format_context_indicator(snapshot);
-        // The reading is always shown; the fresh-context call to action is
-        // appended only while the hint is eligible (warning/critical band and
-        // not dismissed). The `Action:` row wraps to two inner lines at the
-        // default 32-column sidebar width, so with the reading and `Dismiss:`
-        // rows the ceiling has to clear four for `Dismiss` never to be
-        // clipped. The reading carries no `Usage:` label of its own now that
-        // a dedicated `Usage` section sits directly above it.
-        let (body, min_lines, max_lines) = if data.context_hint_visible {
-            (
-                format!(
-                    "{}\nAction: Fresh context: <leader F>\nDismiss: <leader X>",
-                    indicator.text
-                ),
-                2,
-                6,
-            )
-        } else {
-            (indicator.text.clone(), 1, 3)
-        };
-        let height = sidebar_section_height(&body, section_width, min_lines, max_lines);
+        // The reading is always shown. The fresh-context call to action lives
+        // only in the section's title-top hint (`<leader F>`, set below) —
+        // the same place every other sidebar section advertises its
+        // shortcut — so it isn't repeated in the body. The reading carries
+        // no `Usage:` label of its own now that a dedicated `Usage` section
+        // sits directly above it.
+        let body = indicator.text.clone();
+        let height = sidebar_section_height(&body, section_width, 1, 3);
         sections.push(
             SidebarSection::new("Context", body, Constraint::Length(height))
                 .with_accent_band(indicator.band),
@@ -1792,7 +1779,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_context_section_uses_the_shared_indicator_and_action_wording() {
+    fn fresh_context_section_shows_the_reading_with_the_action_only_in_the_title() {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Ready".into(),
@@ -1821,18 +1808,14 @@ mod tests {
             .find(|section| section.title == "Context")
             .expect("eligible context should have a dedicated section");
 
-        assert_eq!(
-            context.body,
-            "Ctx 70% WARNING · 70,000\nAction: Fresh context: <leader F>\nDismiss: <leader X>"
-        );
+        // The action lives only in the section's title-top hint (`<leader
+        // F>`, drawn by `draw_agent_sidebar`); the body stays the bare
+        // reading whether or not the hint is eligible.
+        assert_eq!(context.body, "Ctx 70% WARNING · 70,000");
         assert_eq!(
             context.accent_band,
             Some(crate::context_tracking::ContextBand::Warning)
         );
-        assert!(matches!(
-            context.constraint,
-            Constraint::Length(height) if height >= 4
-        ));
     }
 
     #[test]
@@ -1931,65 +1914,6 @@ mod tests {
             .expect("eligible context should remain present when wrapped");
 
         assert!(context.body.contains("Ctx ~85% CRITICAL STALE · 85,000"));
-        assert!(context.body.contains("Fresh context: <leader F>"));
-        assert!(matches!(
-            context.constraint,
-            Constraint::Length(height) if height >= 4
-        ));
-    }
-
-    #[test]
-    fn fresh_context_section_keeps_room_for_dismiss_at_default_sidebar_width() {
-        let sidebar = AgentSidebarData {
-            agent_kind: crate::project::SessionKind::Claude,
-            status_text: String::new(),
-            usage_text: None,
-            model_text: None,
-            prompt_text: String::new(),
-            work_text: None,
-            todos_text: None,
-            active_todos_text: None,
-            active_todo_affordance: false,
-            summary_text: String::new(),
-            pr_triage_text: None,
-            plan_text: String::new(),
-            context_snapshot: Some(context_snapshot(
-                70,
-                crate::context_tracking::ContextBand::Warning,
-                crate::context_tracking::ContextProvenance::Direct,
-                crate::context_tracking::ContextFreshness::Fresh,
-            )),
-            context_hint_visible: true,
-        };
-
-        let section_width = 32;
-        let sections = sidebar_sections(&sidebar, section_width);
-        let context = sections
-            .iter()
-            .find(|section| section.title == "Context")
-            .expect("eligible context should have a dedicated section");
-
-        // How many inner rows the body actually needs once wrapped at this
-        // width -- the section must be tall enough to show every one of them,
-        // borders included, or the last line (`Dismiss`) is clipped.
-        let inner_width = usize::from(section_width - 2);
-        let needed_inner_lines: u16 = context
-            .body
-            .lines()
-            .map(|line| (line.chars().count().max(1)).div_ceil(inner_width) as u16)
-            .sum();
-        assert!(
-            needed_inner_lines >= 4,
-            "body should wrap to at least four inner lines"
-        );
-
-        let Constraint::Length(height) = context.constraint else {
-            panic!("fresh context section uses a fixed height");
-        };
-        assert!(
-            height >= needed_inner_lines + 2,
-            "height {height} clips a body needing {needed_inner_lines} inner lines"
-        );
     }
 
     #[test]

@@ -70,14 +70,42 @@ comments ignored):
 - `wait:<ms>` — sleep, use after keys that trigger a redraw or async
   work (harness checks, status sync)
 - `note:<text>` — a complete sentence explaining what the immediately following
-  `shot:` proves to a reviewer
+  `shot:` proves to a reviewer. This is documentation only — it is never
+  checked against the actual pane, so it does not catch the scenario
+  claiming one thing and showing another.
+- `expect:<text>` — a literal substring that MUST appear in the next
+  `shot:`'s captured pane. Stack several before one `shot:` to require all
+  of them. `expect_not:<text>` is the inverse (must be absent). Either kind
+  fails the whole run immediately — before any further steps — if violated,
+  printing the offending shot and the actual captured pane.
 - `shot:<label>` — capture the pane now, written as
-  `NNN-<label>.ansi`
+  `NNN-<label>.ansi`, then check that shot's pending `expect:`/`expect_not:`
+  assertions before continuing.
 
 Put a `shot:` at every point worth showing (before the change, mid
 interaction, after the change lands) rather than just first/last. Put a
 reviewer-facing `note:` immediately before every shot so the published index
-explains the visible state and why it matters.
+explains the visible state and why it matters — **and pair it with at least
+one `expect:`/`expect_not:`** for any shot whose whole point is proving a
+specific title, label, or state, so that claim is actually machine-checked
+rather than trusted on sight. A shot deliberately checked into
+`scripts/dev/screenshot/scenarios/` with no `expect:`/`expect_not:` at all is
+a scenario nobody has hardened against silently drifting from what it
+claims to show — treat a missing assertion on a "proof" shot as a gap to
+fix, not a style choice. (A purely navigational shot with no specific claim
+— "press Escape, capture the resulting dashboard" — doesn't need one.)
+
+This is not optional ceremony: a scenario that ran without these once
+captured 18 "successful" shots that were all, in fact, the syntax-parser
+picker — because it assumed a seeded project/feature that the actual
+publish invocation never provided, so `key:j`/`key:Q`/typed brief text fell
+through to unrelated dashboard keybindings instead of driving the flow the
+scenario narrated. Nothing in the pipeline caught it before it was
+published to a PR. `expect:`/`expect_not:` on the shots that mattered would
+have failed that run loudly, in CI, before anything got deployed. Author
+every new "proof" shot as if this could happen again, because it already
+did.
+
 Author the file under `scripts/dev/screenshot/scenarios/` if it's
 worth keeping as a reusable example, otherwise a scratch path (e.g.
 your scratchpad dir) is fine for a one-off.
@@ -129,14 +157,21 @@ renders and assembles the GIF — nothing further to do.
 
 ## Step 4: verify cheaply, then return the result
 
-Verify content against the `.txt` twins, not the images: grep each
-one for the strings the frame should show (a dialog title, the typed
-text, a status line). The `.txt` files are small and escape-free —
-never read the `.ansi` files, whose escape codes waste tokens.
+If the scenario's `expect:`/`expect_not:` assertions are in place (Step 1),
+`amf-capture.sh` has already refused to produce a run where a shot doesn't
+show what it claims — a nonzero exit here means the run is broken, full
+stop; do not render or publish it, go fix the scenario or the feature and
+re-run. A clean exit means every assertion held, but assertions only cover
+what you thought to check, so still spot-check: grep the `.txt` twins for
+anything you didn't assert on but expect to be true, and Read **one or two
+representative PNGs** as images to confirm layout/colors look right — not
+every frame. Never read the `.ansi` files, whose escape codes waste tokens.
 
-Only after the text checks pass, Read **one or two representative
-PNGs** as images to confirm layout/colors look right — not every
-frame.
+If you are looking at a scenario that predates `expect:`/`expect_not:` and
+has none, do not trust it on the strength of its `note:` lines alone —
+`note:` is unverified narration. Either add assertions to it before reusing
+it for a "proof" shot, or verify its `.txt` twins by hand exactly as
+described above before treating the capture as evidence of anything.
 
 ## Step 5: publish the private Cloudflare Pages gallery to the PR
 
@@ -147,6 +182,19 @@ authenticated as `eldridgerdev`, and the deploy step (which runs locally, not in
 CI) needs `CLOUDFLARE_ACCOUNT_ID` set (it is, in the owner's shell) plus
 `wrangler` on `PATH` or `npx` available, and a `CLOUDFLARE_API_TOKEN`
 in the environment.
+
+**If Step 2's local capture used `--seed`/`--seed-feature`/`--config`, pass
+the identical files here too.** The remote capture workflow this dispatches
+starts from a blank scratch instance same as the local one does — it has no
+memory of what you seeded locally. Forgetting this is exactly how a
+scenario written and verified against seeded state (a project, a feature)
+ran for real against an empty dashboard: every keypress meant for the
+feature-under-test's UI instead fell through to unrelated dashboard-level
+keybindings, and — before `expect:`/`expect_not:` existed to catch it — the
+wrong screenshots got published without anyone noticing until a human
+opened the gallery. `expect:`/`expect_not:` (Step 1) now fails that run
+loudly instead, but passing the right seed files here is still what makes
+the run correct in the first place, not just detectably wrong.
 
 **Do not run `wrangler login` — it does not work well here, and you must not
 mint a token yourself.** The token is a Pages-scoped API token the repository
@@ -160,17 +208,30 @@ amf-publish-screenshots \
   --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
   --summary "One sentence explaining the complete flow under review" \
   --ref <pushed-branch> \
+  --seed scripts/dev/screenshot/scenarios/<seed-project>.json \
+  --seed-feature scripts/dev/screenshot/scenarios/<seed-feature>.json \
   --strict
 
 # equivalently, from a non-login shell:
 ( set -a; . ~/.secrets/cf-amf-pages.env; set +a
   scripts/dev/screenshot/publish-pages.sh --pr <number> \
     --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
-    --summary "..." --ref <pushed-branch> --strict )
+    --summary "..." --ref <pushed-branch> \
+    --seed scripts/dev/screenshot/scenarios/<seed-project>.json \
+    --seed-feature scripts/dev/screenshot/scenarios/<seed-feature>.json \
+    --strict )
 ```
+
+Omit `--seed`/`--seed-feature` only when the scenario genuinely needs no
+pre-existing project or feature (a truly empty-dashboard flow). `--config`
+is also forwarded the same way if Step 2 needed it.
 
 If `publish-pages.sh` still reports missing Cloudflare auth after that — the
 secrets file is absent or the token is unset — surface the warning and stop.
+If it reports the capture workflow did not succeed, that is very likely an
+`expect:`/`expect_not:` failure (or a missing seed file) — open the linked
+Actions run's log rather than retrying blind; the failure log names exactly
+which shot and which assertion.
 
 Add `--gif` only when the user asks for animation. The command dispatches the
 isolated **capture-only** workflow on GitHub, then — on this machine —

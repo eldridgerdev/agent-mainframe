@@ -1,0 +1,43 @@
+name: Deploy site
+
+# Builds site/ with Zola and deploys the result to Cloudflare Pages.
+#
+# Requires repo secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, and a
+# Cloudflare Pages project matching `projectName` below (see site/README.md).
+# Until those are configured this workflow will fail on the deploy step —
+# that's expected, it's scaffolding until the project is set up.
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["site/**", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zola
+        run: |
+          curl -sL https://github.com/getzola/zola/releases/download/v0.23.5/zola-v0.23.5-x86_64-unknown-linux-gnu.tar.gz -o zola.tar.gz
+          tar -xzf zola.tar.gz
+          sudo mv zola /usr/local/bin/zola
+
+      - name: Build
+        working-directory: site
+        run: zola build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: agent-mainframe-site
+          directory: site/public
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

@@ -376,6 +376,91 @@ explicit, opt-in exception: those passes then run through
   restores the list verbatim; paths are re-validated at dispatch, not on
   resume.
 
+### Quick Plan mode
+
+A lighter, dynamically-sized alternative to the full plan-mode interview: a
+task-triage round that may ask a couple of clarifying questions — or none at
+all for a trivial task — before deciding whether to proceed straight to work,
+show a short plan, or escalate into the full interview.
+
+- **Two triggers, same two shapes as full Plan mode:** the feature-creation
+  wizard's Plan field (`Mode` step, `mode_focus == 3`) and the dashboard's `Q`
+  (re-run on the selected feature, parallel to `P`). `Q` mirrors `P`'s exact
+  arming: `resume_paused_plan_interview()` first, so a parked interview of
+  either kind resumes rather than starting a second one
+  (`handlers/normal.rs`).
+- **One `PlanInterviewState`, a `kind` flag.** `PlanInterviewMode::{Full,
+  Quick}` (`app/state.rs`) — the two share every `PlanInterviewPhase`, the
+  round/synthesis dispatch, and the entire Q&A UI; `kind` only steers which
+  `PromptId` is resolved and how the synthesis response is interpreted. A
+  Quick interview is built with an **empty static question bank**
+  (`PlanInterviewState::for_feature_creation_quick` /
+  `for_feature_quick`), so `advance()`'s existing empty-bank handling — Brief
+  goes straight to `AiConsent`, already true for a project with zero
+  configured plan questions — is what skips Quick Plan past the static
+  question flow with no new phase-machine code.
+- **Prompts:** `PromptId::PlanInterviewQuickRound` /
+  `PlanInterviewQuickSynthesis` (`plan_interview.quick_round` /
+  `.quick_synthesis`), registered like any other prompt (editable via `E`).
+  The round prompt reuses the full round's exact `{"questions":[...]}`
+  contract and parser (`parse_ai_questions`) — only the framing differs,
+  tuned to prefer zero questions for a clear task. `MAX_QUICK_AI_ROUNDS` (1,
+  vs `MAX_AI_ROUNDS` for full) caps a live Quick interview to one adaptive
+  round before synthesis must decide; `PlanInterviewState::max_ai_rounds()`
+  is the one place that reads either constant, keyed off `kind`.
+- **Synthesis is a 3-way outcome, not a markdown document.** The quick
+  synthesis prompt returns one fenced ```json block:
+  `{"outcome":"direct","summary":"..."}` (trivial — proceed with no plan
+  artifact), `{"outcome":"plan","plan":"<markdown>"}` (the nested markdown
+  follows the exact full-mode plan contract, so it drops into the same
+  `AMF_PLAN.md` / Review-gate path unchanged), or
+  `{"outcome":"escalate","reason":"..."}`. Parsed by
+  `plan_interview::parse_quick_synthesis_outcome` into `QuickSynthesisOutcome`
+  (`Direct`/`Plan`/`Escalate`/`Unparseable`); `Unparseable` — and a harness
+  failure — fall back to the same raw-Q&A plan full mode uses on a failed
+  synthesis. Dispatched from `App::apply_quick_synthesis_result`
+  (`app/plan_interview.rs`), the one kind-aware branch inside
+  `poll_plan_interview_synthesis_bg`.
+- **`direct` outcome:** `App::complete_quick_plan_direct` — a
+  feature-creation interview launches the deferred feature exactly like
+  declining to plan at all (`prepared.plan_mode = false`, then
+  `finish_feature_launch_without_interview`, the same path
+  `launch_plan_interview_without_plan` uses); an on-demand interview on an
+  existing feature has nothing to launch, so it just closes. Either way the
+  model's optional `summary` becomes the toast message.
+- **`escalate` outcome:** `App::escalate_quick_plan_to_full` flips a live
+  interview's `kind` to `Full` **in place** — nothing is reset, so the brief
+  and every answer already given carry forward into the full round exactly as
+  the interview decision requires — sets `ai_followups_opted_in`, and
+  re-enters `continue_plan_interview_after_done()` so the ordinary full-mode
+  round/synthesis branching takes over from there with the full `PromptId`s.
+  The user sees an explicit toast ("Quick Plan → full Plan interview: …")
+  naming the model's stated reason.
+- **No `plan_interviews` DB persistence for Quick, by design (v1 scope
+  cut).** `persist_plan_interview_draft` no-ops for `kind == Quick` — every
+  round/synthesis call site's periodic save is a safe no-op rather than
+  needing its own guard — so there is no saved draft to resume and no
+  TODO-origin brief prefill on entry (unlike `start_plan_interview`,
+  `start_quick_plan_interview` skips both). Once escalated, `kind` is `Full`
+  and persistence resumes normally for the rest of the interview.
+  `feature.plan_mode` (the persisted, DB-backed "this feature has a plan to
+  read" flag `ensure_plan_mode_instructions` acts on) needs no Quick sibling:
+  it is set from whichever interview actually produced a plan, kind-agnostic.
+- **Feature-creation Plan field is a 3-way cycle, not two booleans.**
+  `CreateFeatureState::quick_plan: bool` sits alongside the existing
+  `plan_mode: bool` (also `PreparedFeatureLaunch`, `FeaturePreset`) rather
+  than replacing it with an enum — `plan_mode` is also the persisted
+  `Feature`/DB/`FeaturePreset` field, and an enum there would ripple into
+  schema and the automation JSON API this feature doesn't need to touch.
+  `CreateFeatureState::cycle_plan_choice(forward)` steps
+  `(plan_mode, quick_plan)` through `(false,false) → (true,true) →
+  (true,false) → (false,false)` (None → Quick Plan → Full Plan → None),
+  bound to Up/Down at the Plan field like every other Mode-step control.
+  **Not** threaded through the `on_worktree_created` hook continuation
+  (`app/hooks.rs`) in v1: a feature created through that path with Quick Plan
+  chosen falls back to full Plan mode rather than losing planning entirely —
+  safe, if not the requested variant.
+
 ### Editable Headless Prompts
 
 Every one-shot ("headless") AI call AMF makes runs a template from a central

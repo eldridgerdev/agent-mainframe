@@ -6501,6 +6501,7 @@ fn triage_setup_preset_fills_in_the_rows_below_it() {
         agent: AgentKind::Codex,
         review: true,
         plan_mode: true,
+        quick_plan: false,
         enable_chrome: true,
         remote_control: false,
     }];

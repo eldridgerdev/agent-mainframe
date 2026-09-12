@@ -1,0 +1,132 @@
+# quick-plan-mode: visual proof of the Quick Plan feature (AMF_PLAN.md).
+#
+# Shows, in order:
+#   1. 'Q' on an existing feature opening the Quick Plan interview — the
+#      same brief screen full Plan mode uses, but titled "Quick Plan"
+#      instead of "Plan Mode" (PlanInterviewMode::Quick's label).
+#   2. The feature-creation wizard's Mode step, where the Plan field is now
+#      a 3-way cycle (None / Quick Plan / Full Plan) instead of a checkbox.
+#   3. The '?' help overlay showing the new 'Q' keybinding next to 'P'.
+#
+# Requires --seed with a create-project payload and --seed-feature with a
+# create-feature payload for the same project (plan_mode false).
+#
+# Deliberately aborts every interview/wizard before accepting or creating
+# anything: accepting a Quick Plan interview runs a real headless AI round,
+# which costs tokens and would make the capture slow and non-deterministic.
+# Only the Brief step (no harness call yet) is shown.
+
+note:The seeded dashboard shows one project and one feature with no plan yet, the starting state for every trigger below.
+shot:dashboard-seeded
+
+key:j
+wait:300
+note:Selecting the feature row is required before either plan-interview trigger, since the interview plans one feature's workdir.
+shot:feature-selected
+
+# ---- Trigger 1: 'Q' on the dashboard, on-demand on an existing feature ----
+
+key:Q
+wait:600
+note:'Q' opens the interview titled "Quick Plan" (not "Plan Mode") directly against the existing feature -- no wizard, no deferred launch.
+shot:quick-plan-interview-opens
+
+text:Add a compact-mode toggle to the sidebar footer.
+wait:300
+note:The brief step is identical UI to full Plan mode; only the header label differs by PlanInterviewMode::kind.
+shot:quick-plan-brief-typed
+
+# Abort rather than continue: advancing past the brief spawns a real
+# headless AI round (the adaptive question round), which this capture must
+# not do.
+key:Escape
+wait:400
+note:Aborting from an on-demand interview offers only "leave the plan unchanged" -- there is no feature creation to cancel, matching full Plan mode's on-demand abort.
+shot:quick-plan-abort-confirm
+
+key:y
+wait:500
+note:Leaving is non-destructive -- the feature keeps having no plan, and the dashboard is unchanged from the seeded state.
+shot:dashboard-after-quick-plan-abort
+
+# ---- Trigger 2: the feature-creation wizard's 3-way Plan field ----
+
+key:k
+wait:200
+note:Selecting the project row is required to open the feature-creation wizard.
+shot:project-selected
+
+key:n
+wait:300
+note:'n' with a project selected opens the feature-creation wizard on the Branch (feature name) field, showing every field at once with the active one highlighted -- the Plan field already reads "[ ] None" here.
+shot:create-feature-branch-step
+
+text:second-feature
+wait:200
+note:A feature name is required to advance past this field.
+shot:create-feature-branch-typed
+
+key:Enter
+wait:200
+note:Enter advances focus from the name field to Worktree.
+shot:create-feature-worktree-step
+
+key:Enter
+wait:300
+note:Enter advances Worktree -> Mode, landing on the Harness/agent field (mode_focus 0).
+shot:create-feature-mode-agent
+
+key:Tab
+wait:150
+key:Tab
+wait:150
+key:Tab
+wait:200
+note:Three Tabs move focus to the Plan field (mode_focus 3, after Agent/Mode/Review) -- still showing its default "None" state.
+shot:create-feature-plan-none
+
+key:j
+wait:200
+note:One Down cycles the Plan field to "Quick Plan" -- the new option this feature adds, sitting between None and Full Plan.
+shot:create-feature-plan-quick
+
+key:j
+wait:200
+note:A second Down lands on "Full Plan", the renamed full Plan-mode checkbox -- completing the None -> Quick Plan -> Full Plan cycle.
+shot:create-feature-plan-full
+
+key:j
+wait:200
+note:A third Down wraps back to "None", proving the cycle is closed rather than open-ended.
+shot:create-feature-plan-wraps-to-none
+
+# Unwind out of the wizard without creating anything: Esc steps focus back
+# (3x: Plan -> Review -> Mode -> Agent), then Mode -> Worktree -> Branch ->
+# cancel. Branch's Esc cancels outright here (rather than returning to a
+# Source step) because this project's only worktree already belongs to the
+# seeded feature, so there is nothing free to reuse.
+key:Escape
+wait:150
+key:Escape
+wait:150
+key:Escape
+wait:150
+key:Escape
+wait:150
+key:Escape
+wait:150
+key:Escape
+wait:400
+note:Escaping all the way out cancels feature creation -- the dashboard shows no new feature was made.
+shot:dashboard-after-wizard-cancel
+
+# ---- The '?' help overlay ----
+
+key:?
+wait:300
+note:The help overlay lists the new 'Q' entry immediately after 'P', naming it as the Quick Plan trigger.
+shot:help-overlay-q-keybinding
+
+key:Escape
+wait:200
+shot:dashboard-final

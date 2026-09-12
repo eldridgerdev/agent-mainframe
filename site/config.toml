@@ -1,0 +1,27 @@
+# Zola config for the AMF marketing + docs site.
+# https://www.getzola.org/documentation/getting-started/configuration/
+#
+# NOTE: base_url is a placeholder. Set it to the real domain before the
+# first deploy — Zola uses it to build every absolute link, canonical tag,
+# and sitemap entry.
+base_url = "https://agentmainframe.dev"
+title = "Agent Mainframe"
+description = "Run multiple AI coding agents in parallel, each on its own branch and in its own terminal, without losing track of them."
+default_language = "en"
+compile_sass = true
+build_search_index = true
+generate_feeds = false
+
+[markdown]
+
+[markdown.highlighting]
+error_on_missing_language = true
+style = "inline"
+theme = "github-dark"
+
+[search]
+include_content = true
+
+[extra]
+github_url = "https://github.com/eldridgerdev/agent-mainframe"
+releases_url = "https://github.com/eldridgerdev/agent-mainframe/releases"

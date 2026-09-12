@@ -18,6 +18,16 @@ are tagged.
 
 ### Added
 
+- **AMF now has a public website** (`site/`, built with the Zola static site
+  generator): a landing page plus a documentation section covering
+  installation, quick start, core concepts, keybindings, Learning Mode,
+  reviewing changes and PR feedback, prompts and TODOs, overriding AI
+  prompts, attention/resource limits, and configuration. This does not
+  change the `amf` binary or any in-app behavior — it is separate,
+  publishable site content with its own build (`zola build`/`zola serve`)
+  and a GitHub Actions workflow that deploys it to Cloudflare Pages on push
+  to `main`. No migration is required.
+
 - **A plan interview can now include reference documents.** On the feature-brief
   step, `Ctrl+D` opens a file browser (`Ctrl+X` removes the last one); attach up
   to four readable text files from anywhere on disk — a spec, a ticket, design

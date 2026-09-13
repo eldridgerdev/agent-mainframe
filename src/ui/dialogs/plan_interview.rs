@@ -6,12 +6,22 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::app::{PlanInterviewPhase, PlanInterviewState, PriorAnswerState};
+use crate::app::{PlanInterviewMode, PlanInterviewPhase, PlanInterviewState, PriorAnswerState};
 use crate::plan_interview::{PlanQuestionKind, QuestionSource};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 use super::editor_view::{count_wrapped_editor_lines, editor_lines, sync_editor_scroll};
+
+/// The interview's user-facing name, used everywhere the dialog would
+/// otherwise say "Plan Mode" — Quick Plan and full Plan mode share every
+/// screen, so this is the one place that distinguishes them by label.
+fn interview_kind_label(kind: PlanInterviewMode) -> &'static str {
+    match kind {
+        PlanInterviewMode::Quick => "Quick Plan",
+        PlanInterviewMode::Full => "Plan Mode",
+    }
+}
 
 pub fn draw_plan_interview_dialog(
     frame: &mut Frame,
@@ -47,7 +57,11 @@ pub fn draw_plan_interview_dialog(
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = match state.phase {
-        PlanInterviewPhase::Review => format!(" Plan Review · {} ", state.feature_name),
+        PlanInterviewPhase::Review => format!(
+            " {} Review · {} ",
+            interview_kind_label(state.kind),
+            state.feature_name
+        ),
         PlanInterviewPhase::Editing => format!(" Edit Plan · {} ", state.feature_name),
         PlanInterviewPhase::DirectedFeedback | PlanInterviewPhase::DirectedFeedbackLoading => {
             format!(" Direct Plan Feedback · {} ", state.feature_name)
@@ -58,7 +72,11 @@ pub fn draw_plan_interview_dialog(
         PlanInterviewPhase::Critique | PlanInterviewPhase::CritiqueLoading => {
             format!(" Agent Review · {} ", state.feature_name)
         }
-        _ => format!(" Plan Mode · {} ", state.feature_name),
+        _ => format!(
+            " {} · {} ",
+            interview_kind_label(state.kind),
+            state.feature_name
+        ),
     };
     let block = Block::default()
         .title(title)
@@ -339,10 +357,14 @@ fn draw_ai_consent(
 ) {
     let warning = Style::default().fg(theme.warning.to_color());
     let attached = state.attached_docs.len();
+    let max_rounds = state.max_ai_rounds();
+    let ask_line = if state.kind == PlanInterviewMode::Quick {
+        "a  Ask a quick round of questions if any are needed, then decide how to proceed (uses tokens)."
+    } else {
+        "a  Ask AI follow-ups: generate more questions before drafting the plan (uses tokens)."
+    };
     let mut full = vec![
-        Line::from(
-            "a  Ask AI follow-ups: generate more questions before drafting the plan (uses tokens).",
-        ),
+        Line::from(ask_line),
         Line::from(
             "Ctrl+F  Draft plan now: skip remaining questions and synthesize from saved answers (uses tokens).",
         ),
@@ -352,8 +374,8 @@ fn draw_ai_consent(
         )),
         Line::from(""),
         Line::from(format!(
-            "AI follow-ups may run up to {} rounds using your brief, answers, and bounded repository context.",
-            crate::plan_interview::MAX_AI_ROUNDS
+            "AI follow-ups may run up to {max_rounds} round{} using your brief, answers, and bounded repository context.",
+            if max_rounds == 1 { "" } else { "s" }
         )),
     ];
     if attached > 0 {
@@ -368,13 +390,18 @@ fn draw_ai_consent(
     let lines = if wrapped_height(&full, area.width) <= area.height as usize {
         full
     } else {
+        let compact_ask_line = if state.kind == PlanInterviewMode::Quick {
+            "a  Ask a quick round of questions (uses tokens)"
+        } else {
+            "a  Ask AI follow-ups (uses tokens)"
+        };
         let mut compact = vec![
-            Line::from("a  Ask AI follow-ups (uses tokens)"),
+            Line::from(compact_ask_line),
             Line::from("Ctrl+F  Draft plan now (uses tokens)"),
             Line::from(Span::styled("Enter  Review raw plan (no tokens)", warning)),
             Line::from(format!(
-                "Up to {} AI rounds over your brief and repo context.",
-                crate::plan_interview::MAX_AI_ROUNDS
+                "Up to {max_rounds} AI round{} over your brief and repo context.",
+                if max_rounds == 1 { "" } else { "s" }
             )),
         ];
         if attached > 0 {

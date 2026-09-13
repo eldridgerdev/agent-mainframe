@@ -103,6 +103,11 @@ pub struct FeaturePreset {
     pub agent: AgentKind,
     pub review: bool,
     pub plan_mode: bool,
+    /// Route the preset's `plan_mode` through Quick Plan rather than the full
+    /// Plan-mode interview. `#[serde(default)]` at the struct level means an
+    /// older saved preset with no `quick_plan` key deserializes as `false` —
+    /// unchanged full-Plan-mode (or no-plan) behavior.
+    pub quick_plan: bool,
     pub enable_chrome: bool,
     pub remote_control: bool,
 }
@@ -116,6 +121,7 @@ struct FeaturePresetDe {
     agent: AgentKind,
     review: bool,
     plan_mode: bool,
+    quick_plan: bool,
     enable_chrome: bool,
     remote_control: bool,
 }
@@ -134,6 +140,7 @@ impl<'de> Deserialize<'de> for FeaturePreset {
             agent: preset.agent,
             review: preset.review || legacy_review,
             plan_mode: preset.plan_mode,
+            quick_plan: preset.quick_plan,
             enable_chrome: preset.enable_chrome,
             remote_control: preset.remote_control,
         })

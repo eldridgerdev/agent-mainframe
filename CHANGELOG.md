@@ -18,6 +18,18 @@ are tagged.
 
 ### Added
 
+- **A new "Quick Plan" mode offers a lighter alternative to the full Plan
+  interview.** Press `Q` on a feature (parallel to `P` for the full interview)
+  to re-run it, or pick it from the feature-creation wizard's Plan field,
+  which is now a 3-way cycle — `None` / `Quick Plan` / `Full Plan` — instead
+  of a checkbox. Quick Plan asks as few clarifying questions as the task
+  needs, including none at all for something already clear, then does one of
+  three things: starts work right away with no plan file, shows a short
+  reviewable plan (the same accept/edit screen full Plan mode uses), or, if
+  the answers turn out to reveal more complexity than expected, escalates
+  into the full Plan-mode interview — with an explicit message explaining why
+  and everything already answered carried forward, so nothing is asked twice.
+
 - **AMF now has a public website** (`site/`, built with the Zola static site
   generator): a landing page plus a documentation section covering
   installation, quick start, core concepts, keybindings, Learning Mode,
@@ -141,6 +153,16 @@ are tagged.
   session. Templates are now saved independently of other AMF state, and the
   prompt library always shows the latest saved templates when opened. No
   migration is required.
+
+- **The fresh-context sidebar hint no longer shows its `<leader F>` shortcut
+  twice, and the redundant `<leader X>` dismiss binding is gone.** At the
+  warning/critical context band, the sidebar's `Context` section previously
+  advertised the fresh-context action both in its title-top hint and again
+  in an `Action:`/`Dismiss:` line inside the body — with a separate leader
+  command just to dismiss it. The shortcut is now shown once, in the title,
+  matching every other sidebar section's convention, and the hint re-arms on
+  its own at the next context reset or cleared trigger, so there is nothing
+  left to dismiss. No migration is required.
 
 ## [v0.42.0] - 2026-09-04
 

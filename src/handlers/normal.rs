@@ -327,6 +327,11 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.start_plan_interview_for_selected_feature();
             }
         }
+        KeyCode::Char('Q') => {
+            if !app.resume_paused_plan_interview() {
+                app.start_quick_plan_interview_for_selected_feature();
+            }
+        }
         KeyCode::Char('E') => {
             app.open_prompt_overrides(None);
         }

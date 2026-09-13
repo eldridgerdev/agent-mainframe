@@ -1,6 +1,10 @@
 # Plan Mode: guided feature discovery interview
 
-- **Status:** Complete
+- **Status:** Complete. Extended by Quick Plan, a lighter dynamically-sized
+  sibling interview that reuses this epic's `PlanInterviewState`/round-and-
+  synthesis machinery (`kind: PlanInterviewMode`) — see `CLAUDE.md`'s
+  "Quick Plan mode" section and `AMF_PLAN.md` for that feature's own design
+  decisions.
 - **Owner:** unassigned
 - **Relates to:** current plan mode (`ensure_plan_mode_claude_md` in
   `src/app/setup.rs`, `Feature.plan_mode` in `src/project.rs`), feature

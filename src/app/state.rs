@@ -2501,6 +2501,17 @@ pub struct CreateFeatureState {
     pub mode_focus: usize,
     pub review: bool,
     pub plan_mode: bool,
+    /// Set alongside `plan_mode` when the Plan field's 3-way cycle
+    /// (`cycle_plan_choice`) lands on Quick Plan rather than full Plan mode.
+    /// Meaningless when `plan_mode` is false. Kept as a second bool rather
+    /// than replacing `plan_mode` with an enum because `plan_mode` is also
+    /// the persisted `Feature`/DB/`FeaturePreset` field — an enum there would
+    /// ripple into schema and automation-API surface this feature doesn't
+    /// need to touch. Not threaded through the `on_worktree_created` hook
+    /// continuation (`app/hooks.rs`) in v1: a feature created through that
+    /// path with Quick Plan chosen falls back to full Plan mode, which is
+    /// safe (still a guided interview) even though it isn't the requested one.
+    pub quick_plan: bool,
     pub create_terminal: bool,
     pub session_name: String,
     pub source_index: usize,
@@ -2563,6 +2574,7 @@ impl CreateFeatureState {
             mode_focus: 0,
             review: false,
             plan_mode: false,
+            quick_plan: false,
             create_terminal: false,
             session_name: "Claude 1".to_string(),
             source_index: 0,
@@ -2591,7 +2603,15 @@ impl CreateFeatureState {
             2 => Some(
                 "High token usage: writes developer notes with every code change for a detailed code review.",
             ),
-            3 => Some("Start in planning mode so the agent discusses the approach before editing."),
+            3 if self.plan_mode && self.quick_plan => Some(
+                "Quick Plan: a dynamically-sized round of clarifying questions before work starts, or none at all for a trivial task.",
+            ),
+            3 if self.plan_mode => {
+                Some("Start in planning mode so the agent discusses the approach before editing.")
+            }
+            3 => Some(
+                "Cycle to Quick Plan or full Plan mode for a guided interview before work starts.",
+            ),
             4 if self.agent == AgentKind::Claude => {
                 Some("Enable browser automation for features that need Chrome.")
             }
@@ -2604,6 +2624,21 @@ impl CreateFeatureState {
             }
             _ => Some("Use the prompt coach to sharpen the feature request before launch."),
         }
+    }
+
+    /// Cycle the Plan field's 3-state choice: None → Quick Plan → Full Plan →
+    /// None (`forward`), or the reverse. `(plan_mode, quick_plan)` encodes the
+    /// three states as `(false, false)`, `(true, true)`, `(true, false)`.
+    pub fn cycle_plan_choice(&mut self, forward: bool) {
+        let next = match (self.plan_mode, self.quick_plan, forward) {
+            (false, _, true) => (true, true),
+            (true, true, true) => (true, false),
+            (true, false, true) => (false, false),
+            (false, _, false) => (true, false),
+            (true, false, false) => (true, true),
+            (true, true, false) => (false, false),
+        };
+        (self.plan_mode, self.quick_plan) = next;
     }
 
     pub fn refresh_prompt_analysis(&mut self) {
@@ -2645,6 +2680,12 @@ pub struct PreparedFeatureLaunch {
     pub mode: VibeMode,
     pub review: bool,
     pub plan_mode: bool,
+    /// Route `plan_mode`'s deferred launch through Quick Plan rather than the
+    /// full Plan-mode interview. Meaningless when `plan_mode` is false;
+    /// unread past `App::finish_feature_launch` — see the note on
+    /// `CreateFeatureState::quick_plan`, including the `on_worktree_created`
+    /// hook scope cut.
+    pub quick_plan: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
     pub session_name: String,
@@ -2670,6 +2711,21 @@ pub struct PendingPlanLaunch {
     pub prepared: PreparedFeatureLaunch,
     pub interview_key: String,
     pub plan: String,
+}
+
+/// Which interview this [`PlanInterviewState`] is running.
+///
+/// The two share every phase, the round/synthesis machinery, and the Q&A UI
+/// — `kind` only steers which [`crate::prompts::PromptId`] is dispatched and
+/// how the synthesis response is interpreted (a single markdown plan for
+/// `Full`, a three-way outcome for `Quick`). Escalation
+/// (`App::escalate_quick_plan_to_full`) flips a live `Quick` interview to
+/// `Full` in place — nothing about the state is reset, so the brief and any
+/// answers already given carry forward into the full round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanInterviewMode {
+    Full,
+    Quick,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2761,8 +2817,11 @@ pub struct PlanInterviewState {
     /// The key this interview's draft and transcript are filed under in the
     /// `plan_interviews` table: the feature's id for an on-demand interview,
     /// or [`crate::plan_interview::pending_interview_key`] while the feature it
-    /// plans does not exist yet.
+    /// plans does not exist yet. Unread for a `Quick` interview: Quick Plan
+    /// skips the `plan_interviews` table entirely (see [`Self::kind`]).
     pub interview_key: String,
+    /// Full Plan-mode interview or Quick Plan. See [`PlanInterviewMode`].
+    pub kind: PlanInterviewMode,
     pub phase: PlanInterviewPhase,
     pub questions: Vec<PlanQuestion>,
     pub question_index: usize,
@@ -2924,6 +2983,16 @@ impl PlanInterviewState {
         Self::new(feature_name, interview_key, questions, Some(pending_launch))
     }
 
+    /// The Quick Plan sibling of [`Self::for_feature_creation`]: always an
+    /// empty static question bank (Quick Plan has no built-in question bank;
+    /// every question comes from the dynamically-sized adaptive round) and
+    /// `kind: PlanInterviewMode::Quick`.
+    pub fn for_feature_creation_quick(pending_launch: PreparedFeatureLaunch) -> Self {
+        let mut state = Self::for_feature_creation(pending_launch, Vec::new());
+        state.kind = PlanInterviewMode::Quick;
+        state
+    }
+
     /// An on-demand interview for a feature that already exists: no launch to
     /// defer, and the plan is written into the workdir the feature is already
     /// checked out in. Keyed by the feature's id, which is where an accepted
@@ -2938,6 +3007,19 @@ impl PlanInterviewState {
         let mut state = Self::new(feature_name, feature_id, questions, None);
         state.workdir = workdir;
         state.preferred_harness = agent;
+        state
+    }
+
+    /// The Quick Plan sibling of [`Self::for_feature`]: always an empty
+    /// static question bank and `kind: PlanInterviewMode::Quick`.
+    pub fn for_feature_quick(
+        feature_name: String,
+        feature_id: String,
+        workdir: PathBuf,
+        agent: AgentKind,
+    ) -> Self {
+        let mut state = Self::for_feature(feature_name, feature_id, Vec::new(), workdir, agent);
+        state.kind = PlanInterviewMode::Quick;
         state
     }
 
@@ -2986,6 +3068,7 @@ impl PlanInterviewState {
         Self {
             feature_name,
             interview_key,
+            kind: PlanInterviewMode::Full,
             phase: PlanInterviewPhase::Brief,
             questions,
             question_index: 0,
@@ -3435,6 +3518,17 @@ impl PlanInterviewState {
                 .collect(),
             created_at: String::new(),
             updated_at: String::new(),
+        }
+    }
+
+    /// The round cap `continue_plan_interview_after_done` checks
+    /// `ai_rounds_completed` against — [`crate::plan_interview::MAX_QUICK_AI_ROUNDS`]
+    /// while `kind` is `Quick`, [`crate::plan_interview::MAX_AI_ROUNDS`] once
+    /// escalated (or for a `Full` interview from the start).
+    pub fn max_ai_rounds(&self) -> usize {
+        match self.kind {
+            PlanInterviewMode::Quick => crate::plan_interview::MAX_QUICK_AI_ROUNDS,
+            PlanInterviewMode::Full => crate::plan_interview::MAX_AI_ROUNDS,
         }
     }
 
@@ -4920,6 +5014,7 @@ mod tests {
             mode: VibeMode::default(),
             review: false,
             plan_mode: true,
+            quick_plan: false,
             agent: AgentKind::Claude,
             create_terminal: false,
             session_name: "Claude 1".into(),
@@ -5126,5 +5221,104 @@ mod tests {
         assert_eq!(record.answers[0].as_deref(), Some("Just the TUI."));
         assert_eq!(record.answers[1], None);
         assert!(record.plan.is_none());
+    }
+
+    #[test]
+    fn quick_plan_constructors_start_with_no_static_questions_and_the_quick_kind() {
+        let creation = PlanInterviewState::for_feature_creation_quick(prepared_launch(
+            "my-project",
+            "planned-feature",
+        ));
+        assert_eq!(creation.kind, PlanInterviewMode::Quick);
+        assert!(creation.questions.is_empty());
+        assert_eq!(
+            creation.max_ai_rounds(),
+            crate::plan_interview::MAX_QUICK_AI_ROUNDS
+        );
+
+        let on_demand = PlanInterviewState::for_feature_quick(
+            "feature".into(),
+            "feat-1".into(),
+            PathBuf::from("/tmp/does-not-matter"),
+            AgentKind::Claude,
+        );
+        assert_eq!(on_demand.kind, PlanInterviewMode::Quick);
+        assert!(on_demand.questions.is_empty());
+    }
+
+    #[test]
+    fn full_plan_constructors_default_to_the_full_kind() {
+        let creation = PlanInterviewState::for_feature_creation(
+            prepared_launch("my-project", "planned-feature"),
+            vec![template_question("scope")],
+        );
+        assert_eq!(creation.kind, PlanInterviewMode::Full);
+        assert_eq!(
+            creation.max_ai_rounds(),
+            crate::plan_interview::MAX_AI_ROUNDS
+        );
+    }
+
+    #[test]
+    fn cycle_plan_choice_visits_none_quick_full_and_back_going_forward() {
+        let mut state = CreateFeatureState::new(
+            "my-project".into(),
+            PathBuf::from("/tmp/does-not-matter"),
+            Vec::new(),
+            true,
+        );
+        assert_eq!((state.plan_mode, state.quick_plan), (false, false));
+
+        state.cycle_plan_choice(true);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, true),
+            "None -> Quick Plan"
+        );
+
+        state.cycle_plan_choice(true);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, false),
+            "Quick Plan -> Full Plan"
+        );
+
+        state.cycle_plan_choice(true);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (false, false),
+            "Full Plan -> None"
+        );
+    }
+
+    #[test]
+    fn cycle_plan_choice_visits_the_same_states_in_reverse_going_backward() {
+        let mut state = CreateFeatureState::new(
+            "my-project".into(),
+            PathBuf::from("/tmp/does-not-matter"),
+            Vec::new(),
+            true,
+        );
+
+        state.cycle_plan_choice(false);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, false),
+            "None -> Full Plan"
+        );
+
+        state.cycle_plan_choice(false);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, true),
+            "Full Plan -> Quick Plan"
+        );
+
+        state.cycle_plan_choice(false);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (false, false),
+            "Quick Plan -> None"
+        );
     }
 }

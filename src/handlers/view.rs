@@ -457,9 +457,6 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                 app.open_fresh_context_prompt_from_view();
             }
         }
-        KeyCode::Char('X') => {
-            app.dismiss_context_hint_from_view();
-        }
         KeyCode::Char('A') => {
             // Harness setup is an intermediate destination, not the end of
             // the inspection trip. Keep the interview parked so replacing the

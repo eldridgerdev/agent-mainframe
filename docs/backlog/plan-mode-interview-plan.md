@@ -782,6 +782,17 @@ interview with prior answers pre-filled, get an updated
       gained `attached_docs: Vec<String>`; `MIGRATION_035` adds the column
       (backfilled `'[]'`); a resumed or re-run interview restores the list and
       re-validates each path at dispatch.
+- [x] New entry point: the sidebar plan selector (`AppMode::MarkdownFilePicker`
+      with `purpose: SelectPlan`, reached via leader `n` when neither the
+      conventional `AMF_PLAN.md` nor a manually selected plan resolves for the
+      current feature) can now start the interview directly: `p` in that
+      picker calls a new `App::start_plan_interview_for_feature_id`, the same
+      on-demand interview `start_plan_interview_for_selected_feature` already
+      runs (no launch, writes `AMF_PLAN.md`), but keyed off the picker's own
+      feature id rather than the dashboard selection. No new `AppMode`,
+      storage, or draft concept was needed: `AMF_PLAN.md` already outranks a
+      manually selected plan (`resolve_effective_plan`), and the existing
+      `plan_interviews` draft table already survives a cancel.
 
 ## Open questions
 

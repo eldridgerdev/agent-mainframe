@@ -387,13 +387,16 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<(
                 return Ok(());
             }
 
+            if let AppMode::MarkdownFilePicker(state) = &app.mode
+                && let crate::app::MarkdownFilePickerPurpose::SelectPlan { feature_id } =
+                    &state.purpose
+            {
+                let feature_id = feature_id.clone();
+                app.start_plan_interview_for_feature_id(&feature_id);
+                return Ok(());
+            }
+
             if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
-                if matches!(
-                    state.purpose,
-                    crate::app::MarkdownFilePickerPurpose::SelectPlan { .. }
-                ) {
-                    return Ok(());
-                }
                 state.plan_only = !state.plan_only;
                 clamp_markdown_picker_selection(state);
             }
@@ -1173,6 +1176,66 @@ mod tests {
         );
         app.selection = Selection::Feature(0, 0);
         app
+    }
+
+    #[test]
+    fn markdown_picker_p_starts_the_on_demand_plan_interview_when_selecting_a_plan() {
+        let mut app = codex_picker_app();
+        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
+            files: vec![PathBuf::from("/tmp/demo/docs/notes.md")],
+            selected: 0,
+            plan_only: false,
+            search_active: false,
+            query: String::new(),
+            workdir: PathBuf::from("/tmp/demo"),
+            repo_root: None,
+            purpose: crate::app::MarkdownFilePickerPurpose::SelectPlan {
+                feature_id: "feat-1".into(),
+            },
+            from_view: Some(picker_view()),
+        });
+
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::PlanInterview(state) => {
+                assert_eq!(state.interview_key, "feat-1");
+                assert_eq!(state.workdir, PathBuf::from("/tmp/demo"));
+                assert!(state.pending_launch.is_none());
+            }
+            _ => panic!("expected the plan interview to open"),
+        }
+    }
+
+    #[test]
+    fn markdown_picker_p_does_nothing_when_selecting_a_plan_for_a_missing_feature() {
+        let mut app = codex_picker_app();
+        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
+            files: vec![PathBuf::from("/tmp/demo/docs/notes.md")],
+            selected: 0,
+            plan_only: false,
+            search_active: false,
+            query: String::new(),
+            workdir: PathBuf::from("/tmp/demo"),
+            repo_root: None,
+            purpose: crate::app::MarkdownFilePickerPurpose::SelectPlan {
+                feature_id: "gone".into(),
+            },
+            from_view: Some(picker_view()),
+        });
+
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        assert!(matches!(app.mode, AppMode::MarkdownFilePicker(_)));
+        assert_eq!(app.message.as_deref(), Some("Feature no longer exists"));
     }
 
     #[test]

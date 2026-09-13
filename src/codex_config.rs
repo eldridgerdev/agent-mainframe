@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Command;
 
 use crate::project::VibeMode;
 
@@ -36,18 +37,9 @@ fn configured_model_for(config_path: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// Model names verified as available to this Codex account, read from
-/// `~/.codex/config.toml`'s `[tui.model_availability_nux]` table (the same
-/// table the Codex TUI itself populates once it has shown a model in its
-/// picker). Unlike Claude's small set of well-known tier aliases
-/// (`sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude --help`),
-/// Codex's `--model`/`-c model=` values are arbitrary, account-specific
-/// model ids with no CLI-enumerable alias list — so guessing a fixed preset
-/// list here would risk offering models the account can't actually use.
-/// Reading the account's own recorded list is the closest available
-/// equivalent to Claude's verified aliases. Returns an empty list (falling
-/// back to `Default`/`Custom` only) when the table is absent, e.g. a fresh
-/// install that has never opened the Codex TUI's model picker.
+/// Model slugs visible in Codex's own model picker. The catalog cache is the
+/// primary source; the older availability table remains a compatibility
+/// fallback for installs that predate the cache.
 ///
 /// No-ops under `cfg!(test)`, like [`ensure_user_config_notify_hook`], so
 /// unit tests never depend on the machine's real `~/.codex/config.toml`.
@@ -55,11 +47,51 @@ pub fn known_models() -> Vec<String> {
     if cfg!(test) {
         return Vec::new();
     }
-    let Some(config_path) = dirs::home_dir().map(|home| home.join(".codex").join("config.toml"))
-    else {
+    let Some(codex_home) = dirs::home_dir().map(|home| home.join(".codex")) else {
         return Vec::new();
     };
-    known_models_for(&config_path)
+    let cache_path = codex_home.join("models_cache.json");
+    known_models_from_cache(&cache_path)
+        .or_else(known_models_from_cli)
+        .unwrap_or_else(|| known_models_for(&codex_home.join("config.toml")))
+}
+
+/// Read the catalog used by Codex's own model picker. The NUX table in
+/// config.toml only records models that have already been surfaced to a user;
+/// the cache contains the complete visible catalog and is therefore the
+/// correct source for an AMF picker.
+fn known_models_from_cache(cache_path: &Path) -> Option<Vec<String>> {
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(cache_path).ok()?).ok()?;
+    known_models_from_catalog_value(&value)
+}
+
+/// Ask the installed Codex CLI for its catalog when its cache has not been
+/// written yet. This is the same catalog rendered by Codex's model picker and
+/// keeps a fresh AMF install from falling back to `Custom…` only.
+fn known_models_from_cli() -> Option<Vec<String>> {
+    let output = Command::new("codex")
+        .args(["debug", "models"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    known_models_from_catalog_value(&value)
+}
+
+fn known_models_from_catalog_value(value: &serde_json::Value) -> Option<Vec<String>> {
+    let models = value.get("models")?.as_array()?;
+    let mut models: Vec<String> = models
+        .iter()
+        .filter(|model| model.get("visibility").and_then(|v| v.as_str()) == Some("list"))
+        .filter_map(|model| model.get("slug").and_then(|slug| slug.as_str()))
+        .map(str::to_string)
+        .collect();
+    models.sort();
+    models.dedup();
+    Some(models)
 }
 
 fn known_models_for(config_path: &Path) -> Vec<String> {
@@ -281,6 +313,22 @@ mod tests {
         let config_path = dir.path().join("missing.toml");
 
         assert!(super::known_models_for(&config_path).is_empty());
+    }
+
+    #[test]
+    fn known_models_from_cache_reads_visible_catalog_slugs() {
+        let dir = TempDir::new().unwrap();
+        let cache_path = dir.path().join("models_cache.json");
+        fs::write(
+            &cache_path,
+            r#"{"models":[{"slug":"gpt-5.6-terra","visibility":"list"},{"slug":"hidden","visibility":"hide"},{"slug":"gpt-5.5","visibility":"list"},{"slug":"gpt-5.5","visibility":"list"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            super::known_models_from_cache(&cache_path),
+            Some(vec!["gpt-5.5".to_string(), "gpt-5.6-terra".to_string()])
+        );
     }
 
     #[test]

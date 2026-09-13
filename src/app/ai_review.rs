@@ -843,13 +843,11 @@ fn build_ai_review(
 /// Claude's are a fixed, well-known set of tier aliases,
 /// confirmed against `claude --help` ("Provide an alias for the latest
 /// model (e.g. 'fable', 'opus', or 'sonnet')"; `haiku` is the fourth
-/// well-known tier). Codex has no such alias list — its `--model` values are
-/// arbitrary, account-specific model ids — so its presets instead come from
-/// `codex_config::known_models`, the set this Codex account has actually
-/// seen offered (empty on a fresh install, same as any other harness without
-/// a reliably enumerable list). Every other harness offers just `Default`
-/// and `Custom`, since guessing a preset that doesn't exist would be worse
-/// than not offering one.
+/// well-known tier). Codex's presets come from `codex_config::known_models`,
+/// which reads the catalog used by Codex's own model picker and falls back to
+/// its recorded availability table on older installs. Every other harness
+/// offers just `Default` and `Custom`, since guessing a preset that doesn't
+/// exist would be worse than not offering one.
 pub(super) fn model_pick_rows(harness: &AgentKind, include_default: bool) -> Vec<ModelPickRow> {
     let mut rows = if include_default {
         vec![ModelPickRow::Default]

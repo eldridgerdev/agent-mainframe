@@ -18,6 +18,14 @@ are tagged.
 
 ### Added
 
+- **The plan picker can now create a plan, not just select one.** When a
+  feature has no plan yet, leader `n` in its session opens a picker over the
+  worktree's Markdown files; pressing `p` there now starts the same guided
+  plan-mode interview available elsewhere (e.g. `P` on the dashboard),
+  scoped to that feature. Accepting writes `AMF_PLAN.md` as usual, which is
+  picked up automatically, so a feature with no plan can get one without
+  leaving the picker to hand-write a file first.
+
 - **A new "Quick Plan" mode offers a lighter alternative to the full Plan
   interview.** Press `Q` on a feature (parallel to `P` for the full interview)
   to re-run it, or pick it from the feature-creation wizard's Plan field,

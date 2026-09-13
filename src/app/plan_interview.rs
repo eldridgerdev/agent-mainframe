@@ -2,7 +2,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use anyhow::{Context, Result, bail};
@@ -15,6 +15,7 @@ use super::{
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
 use crate::plan_interview::{self, PlanQuestion};
+use crate::project::AgentKind;
 
 const PLAN_FILE_NAME: &str = "AMF_PLAN.md";
 
@@ -260,6 +261,48 @@ impl App {
             feature.agent.clone(),
         );
 
+        self.start_plan_interview_for_feature_data(repo, feature_name, feature_id, workdir, agent);
+    }
+
+    /// The sidebar plan selector's "create new plan" entry (`p` in the picker
+    /// opened when neither the conventional nor a manually selected plan
+    /// resolves). The on-demand interview keyed off the feature the picker was
+    /// opened for, not the dashboard's current selection — while a session is
+    /// being viewed the two need not match.
+    pub(crate) fn start_plan_interview_for_feature_id(&mut self, feature_id: &str) {
+        if self.resume_paused_plan_interview() {
+            return;
+        }
+
+        let Some((pi, fi)) = self.feature_indices_by_id(feature_id) else {
+            self.message = Some("Feature no longer exists".into());
+            return;
+        };
+        let project = &self.store.projects[pi];
+        let feature = &project.features[fi];
+        let (repo, feature_name, feature_id, workdir, agent) = (
+            project.repo.clone(),
+            feature.name.clone(),
+            feature.id.clone(),
+            feature.workdir.clone(),
+            feature.agent.clone(),
+        );
+
+        self.start_plan_interview_for_feature_data(repo, feature_name, feature_id, workdir, agent);
+    }
+
+    /// Shared body of [`Self::start_plan_interview_for_selected_feature`] and
+    /// [`Self::start_plan_interview_for_feature_id`]: build the on-demand
+    /// interview for an existing feature, pre-filling it from any prior
+    /// transcript or saved draft.
+    fn start_plan_interview_for_feature_data(
+        &mut self,
+        repo: PathBuf,
+        feature_name: String,
+        feature_id: String,
+        workdir: PathBuf,
+        agent: AgentKind,
+    ) {
         let questions = self.extension_for_repo(&repo).plan_interview_questions();
         let mut state = PlanInterviewState::for_feature(
             feature_name,

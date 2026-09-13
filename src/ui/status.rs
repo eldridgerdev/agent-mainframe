@@ -811,10 +811,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("/", key_style()),
                 Span::raw(" search  "),
             ];
-            if !selecting_plan {
-                spans.push(Span::styled("p", key_style()));
-                spans.push(Span::raw(" plan  "));
-            }
+            spans.push(Span::styled("p", key_style()));
+            spans.push(Span::raw(if selecting_plan {
+                " new plan  "
+            } else {
+                " plan  "
+            }));
             spans.push(Span::styled("Enter", key_style()));
             spans.push(Span::raw(if selecting_plan {
                 " select  "

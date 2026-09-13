@@ -10,6 +10,13 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- **Expert plan preflight is now opt-in.** AMF no longer consults an Expert
+  automatically for new plans. Set the preflight policy to `suggest` or
+  `require` when you want that review; existing and new configurations default
+  to `off`. No migration is required.
+
 ### Added
 
 - **A plan interview can now include reference documents.** On the feature-brief

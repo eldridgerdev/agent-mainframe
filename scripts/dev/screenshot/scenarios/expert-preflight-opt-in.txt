@@ -1,0 +1,23 @@
+# Shows that plan mode is an explicit user choice and does not open an Expert
+# preflight dialog on its own.
+note:The seeded dashboard is the isolated starting point before feature creation.
+shot:dashboard-seeded
+key:n
+wait:300
+shot:create-feature-source
+key:Enter
+wait:200
+text:opt-in-review
+wait:200
+key:Enter
+wait:200
+key:Enter
+wait:200
+key:Tab
+key:Tab
+key:Tab
+wait:200
+key:j
+wait:300
+note:The feature wizard visibly lets the user choose Plan Mode; no Expert preflight dialog appears automatically, demonstrating that the review remains user-controlled.
+shot:plan-mode-opt-in

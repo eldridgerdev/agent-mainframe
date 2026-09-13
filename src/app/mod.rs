@@ -428,9 +428,10 @@ pub const APP_CONFIG_VERSION: u32 = 1;
 #[serde(rename_all = "lowercase")]
 pub enum PlanPreflightPolicy {
     /// Never consult an Expert automatically.
+    /// This is the default; users must explicitly choose another policy.
+    #[default]
     Off,
     /// Consult only when the synthesized plan contains high-risk signals.
-    #[default]
     Suggest,
     /// Consult every synthesized plan before acceptance.
     Require,
@@ -707,6 +708,8 @@ impl Default for AppConfig {
             theme: crate::theme::ThemeName::default(),
             transparent_background: false,
             token_pricing: TokenPricingConfig::default(),
+            // Expert preflight is opt-in. Existing config files without an
+            // explicit policy also deserialize to Off via the enum default.
             plan_preflight_policy: PlanPreflightPolicy::default(),
             remote_control_default: false,
             view_auto_refresh: false,

@@ -445,6 +445,19 @@ fn app_config_default_view_auto_refresh_is_disabled() {
 }
 
 #[test]
+fn app_config_default_plan_preflight_is_opt_in() {
+    let config = AppConfig::default();
+    assert_eq!(config.plan_preflight_policy, PlanPreflightPolicy::Off);
+
+    let legacy: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(legacy.plan_preflight_policy, PlanPreflightPolicy::Off);
+
+    let opted_in: AppConfig =
+        serde_json::from_str(r#"{"nerd_font":false,"plan_preflight_policy":"suggest"}"#).unwrap();
+    assert_eq!(opted_in.plan_preflight_policy, PlanPreflightPolicy::Suggest);
+}
+
+#[test]
 fn app_config_default_agent_restart_limit_is_one() {
     let config = AppConfig::default();
     assert_eq!(config.max_agent_autostart_sessions, 1);

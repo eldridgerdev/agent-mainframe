@@ -11,9 +11,11 @@ incorrect approach before implementation spends tokens on it. The result can
 be attached to the plan review and kickoff prompt; it does not need a separate
 session, handoff composer, or automatic message delivery.
 
-This should be an opt-in or policy-controlled preflight at first, with a local
-risk and value check deciding whether to spend the expert call. It should not
-run on every plan round or every feature start. The review may return a small
+This is an explicitly opt-in policy-controlled preflight. Its default policy is
+`off`; AMF never invokes an Expert automatically unless the user configures
+`suggest` or `require`. When enabled, a local risk and value check can decide
+whether to spend the expert call. It should not run on every plan round or
+every feature start. The review may return a small
 set of clarification questions; the user answers them in the same review
 surface and AMF permits one bounded follow-up. The closed Expert Assist PR
 implemented useful runner, evidence, and persistence foundations, but its
@@ -154,10 +156,10 @@ default for a user who has just asked AMF to build something.
 ## Next implementation slice
 
 The first implementation slice is complete: the existing plan critique is an
-automatic high-risk preflight, returns a structured implementation brief,
+opt-in high-risk preflight, returns a structured implementation brief,
 supports up to three clarification questions and one follow-up, and carries
 the accepted brief into the implementation kickoff. The policy now supports
-off, suggest, and require modes, and draft persistence stores the accepted
+off (the default), suggest, and require modes, and draft persistence stores the accepted
 brief and the SHA-256 fingerprint of the reviewed plan. Lifecycle status,
 token estimates, and a JSON evaluation export are now available for each
 feature. Real provider quality and cost evaluation remains before selecting

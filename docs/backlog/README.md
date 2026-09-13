@@ -63,6 +63,12 @@ doc always says exactly what remains.
 
 ## Index
 
+- [Crate package size](crate-package-size-plan.md) — _Backlog._ The
+  published crate is 20MB/703 files, mostly `docs/screenshots/` (~11MB)
+  and other non-embedded dev-tooling directories shipped in full.
+  Trim via a targeted `exclude` list checked against the handful of
+  files `src/` actually pulls in via `include_str!`, verified with
+  `cargo publish --dry-run` after each cut.
 - [Premium-model efficiency options](premium-model-efficiency-options-plan.md) —
   _Backlog._ Planning reference for eight ways AMF could make Astra/Fable more
   affordable, with worked savings calculations, implementation boundaries,

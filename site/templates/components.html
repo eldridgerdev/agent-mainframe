@@ -1,4 +1,4 @@
-{% component docs_nav(pages: array, current_path: string = "") %}
+{% macro docs_nav(pages, current_path="") %}
 <nav class="docs-nav" aria-label="Documentation">
   <ul>
     {% for p in pages %}
@@ -8,4 +8,4 @@
     {% endfor %}
   </ul>
 </nav>
-{% endcomponent docs_nav %}
+{% endmacro docs_nav %}

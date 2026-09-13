@@ -18,8 +18,10 @@ are tagged.
   in the pre-call confirmation. AMF never starts or suggests this review
   automatically, and it does not inherit the ordinary review model. The
   Expert's implementation brief and optional clarification questions still
-  feed the accepted-plan kickoff for the implementation agent. A one-time
-  migration records the selected model with the plan-review evaluation data.
+  feed the accepted-plan kickoff for the implementation agent. Codex choices
+  come from the same visible catalog as Codex's own model picker, with a legacy
+  config fallback. A one-time migration records the selected model with the
+  plan-review evaluation data.
 
 ### Added
 

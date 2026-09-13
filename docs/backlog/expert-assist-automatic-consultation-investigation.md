@@ -23,9 +23,11 @@ been consulted. The automatic `off`/`suggest`/`require` policy was removed.
 2. At the final review gate, the user may press `a` for **Expert review**.
 3. AMF requires an explicit frontier model for the plan's resolved harness.
    The user selects from the same verified presets used by AI Review, with
-   `Custom…` available for unlisted IDs. A `review_models.plan_preflight` value
-   may highlight the matching row, but the user must still confirm it. The
-   shared ordinary `review_model` is never used.
+   `Custom…` available for unlisted IDs. Codex presets come from the visible
+   catalog used by Codex's own picker, with its legacy availability table as a
+   fallback. A `review_models.plan_preflight` value may highlight the matching
+   row, but the user must still confirm it. The shared ordinary `review_model`
+   is never used.
 4. The normal pre-call confirmation shows the prompt, harness, model, and token
    estimate. Only another explicit Enter starts the call.
 5. The Expert reviews the plan read-only and returns a compact implementation

@@ -1,10 +1,12 @@
 # Zola config for the AMF marketing + docs site.
 # https://www.getzola.org/documentation/getting-started/configuration/
 #
-# NOTE: base_url is a placeholder. Set it to the real domain before the
-# first deploy — Zola uses it to build every absolute link, canonical tag,
-# and sitemap entry.
-base_url = "https://agentmainframe.dev"
+# NOTE: this is the Cloudflare Pages default domain for the
+# agent-mainframe-site project. Switch to https://agentmainframe.dev once
+# that custom domain is attached in the Pages project settings + DNS —
+# Zola uses this to build every absolute link, canonical tag, and sitemap
+# entry.
+base_url = "https://agent-mainframe-site.pages.dev"
 title = "Agent Mainframe"
 description = "Run multiple AI coding agents in parallel, each on its own branch and in its own terminal, without losing track of them."
 default_language = "en"

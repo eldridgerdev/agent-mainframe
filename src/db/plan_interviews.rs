@@ -28,6 +28,7 @@ pub struct PreflightEvaluationExport {
     pub stage: String,
     pub plan_fingerprint: Option<String>,
     pub status: Option<String>,
+    pub model: Option<String>,
     pub token_estimate: usize,
     pub has_brief: bool,
 }
@@ -35,7 +36,7 @@ pub struct PreflightEvaluationExport {
 pub fn export_preflight_evaluation(conn: &Connection, feature_id: &str) -> Result<String> {
     let mut statement = conn.prepare(
         "SELECT feature_id, stage, preflight_fingerprint, preflight_status,
-                preflight_token_estimate, expert_brief
+                preflight_model, preflight_token_estimate, expert_brief
          FROM plan_interviews WHERE feature_id = ?1 ORDER BY stage",
     )?;
     let rows = statement.query_map(params![feature_id], |row| {
@@ -44,9 +45,10 @@ pub fn export_preflight_evaluation(conn: &Connection, feature_id: &str) -> Resul
             stage: row.get(1)?,
             plan_fingerprint: row.get(2)?,
             status: row.get(3)?,
-            token_estimate: row.get::<_, i64>(4)?.max(0) as usize,
+            model: row.get(4)?,
+            token_estimate: row.get::<_, i64>(5)?.max(0) as usize,
             has_brief: row
-                .get::<_, Option<String>>(5)?
+                .get::<_, Option<String>>(6)?
                 .is_some_and(|v| !v.trim().is_empty()),
         })
     })?;
@@ -117,6 +119,8 @@ pub struct PlanInterviewRecord {
     pub expert_brief: Option<String>,
     pub preflight_fingerprint: Option<String>,
     pub preflight_status: Option<String>,
+    /// Exact model value passed to the selected harness for this review.
+    pub preflight_model: Option<String>,
     pub preflight_token_estimate: usize,
     /// DB-owned timestamps. Ignored on [`save`], which sets them itself.
     pub created_at: String,
@@ -171,7 +175,7 @@ pub fn load(
             "SELECT feature_name, brief, questions, answers, plan,
                     ai_rounds_completed, created_at, updated_at, custom_answers,
                     attached_docs, expert_brief, preflight_fingerprint,
-                    preflight_status, preflight_token_estimate
+                    preflight_status, preflight_model, preflight_token_estimate
              FROM plan_interviews WHERE feature_id = ?1 AND stage = ?2",
             params![feature_id, stage.as_db_str()],
             |row| {
@@ -189,7 +193,8 @@ pub fn load(
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<String>>(11)?,
                     row.get::<_, Option<String>>(12)?,
-                    row.get::<_, i64>(13)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, i64>(14)?,
                 ))
             },
         )
@@ -209,6 +214,7 @@ pub fn load(
         expert_brief,
         preflight_fingerprint,
         preflight_status,
+        preflight_model,
         preflight_token_estimate,
     )) = row
     else {
@@ -254,6 +260,7 @@ pub fn load(
         expert_brief,
         preflight_fingerprint,
         preflight_status,
+        preflight_model,
         preflight_token_estimate: preflight_token_estimate.max(0) as usize,
         created_at,
         updated_at,
@@ -278,8 +285,8 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             (feature_id, stage, feature_name, brief, questions, answers, plan,
              ai_rounds_completed, created_at, updated_at, custom_answers, attached_docs,
              expert_brief, preflight_fingerprint, preflight_status,
-             preflight_token_estimate)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9, ?10, ?11, ?12, ?13, ?14)
+             preflight_model, preflight_token_estimate)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(feature_id, stage) DO UPDATE SET
             feature_name        = excluded.feature_name,
             brief               = excluded.brief,
@@ -290,6 +297,7 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             expert_brief        = excluded.expert_brief,
             preflight_fingerprint = excluded.preflight_fingerprint,
             preflight_status    = excluded.preflight_status,
+            preflight_model     = excluded.preflight_model,
             preflight_token_estimate = excluded.preflight_token_estimate,
             plan                = excluded.plan,
             ai_rounds_completed = excluded.ai_rounds_completed,
@@ -308,6 +316,7 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             record.expert_brief,
             record.preflight_fingerprint,
             record.preflight_status,
+            record.preflight_model,
             record.preflight_token_estimate as i64,
         ],
     )?;
@@ -640,6 +649,7 @@ mod tests {
         let mut record = draft("feat-1");
         record.preflight_fingerprint = Some("abc".into());
         record.preflight_status = Some("completed".into());
+        record.preflight_model = Some("opus".into());
         record.preflight_token_estimate = 321;
         record.expert_brief = Some("## Definition of done\nShip it".into());
         db.save_plan_interview(&record).unwrap();
@@ -647,6 +657,7 @@ mod tests {
         let json = db.export_plan_preflight_evaluation("feat-1").unwrap();
         let rows: Vec<PreflightEvaluationExport> = serde_json::from_str(&json).unwrap();
         assert_eq!(rows[0].status.as_deref(), Some("completed"));
+        assert_eq!(rows[0].model.as_deref(), Some("opus"));
         assert_eq!(rows[0].token_estimate, 321);
         assert!(rows[0].has_brief);
     }

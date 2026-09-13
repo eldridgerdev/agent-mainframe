@@ -117,6 +117,13 @@ pub fn draw_prompt_precall(frame: &mut Frame, pending: &PendingPrecall, theme: &
                 Style::default().fg(theme.text.to_color()),
             ),
         ]),
+        Line::from(vec![
+            muted("   Model:   "),
+            Span::styled(
+                pending.model.as_deref().unwrap_or("Default").to_string(),
+                Style::default().fg(theme.text.to_color()),
+            ),
+        ]),
         Line::raw(""),
     ];
     if let Some(id) = &pending.consultation_id {

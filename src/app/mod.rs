@@ -423,20 +423,6 @@ impl ZaiPlanConfig {
 /// files have no `config_version` field and so read as 0.
 pub const APP_CONFIG_VERSION: u32 = 1;
 
-/// Controls when the Expert implementation preflight is consulted for a plan.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum PlanPreflightPolicy {
-    /// Never consult an Expert automatically.
-    /// This is the default; users must explicitly choose another policy.
-    #[default]
-    Off,
-    /// Consult only when the synthesized plan contains high-risk signals.
-    Suggest,
-    /// Consult every synthesized plan before acceptance.
-    Require,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -459,8 +445,6 @@ pub struct AppConfig {
     pub transparent_background: bool,
     #[serde(default)]
     pub token_pricing: TokenPricingConfig,
-    #[serde(default)]
-    pub plan_preflight_policy: PlanPreflightPolicy,
     /// Default state of the Remote Control toggle for new Claude features.
     /// Still subject to the availability guard (z.ai / provider / version),
     /// so enabling this never forces RC onto an incompatible session.
@@ -591,6 +575,8 @@ pub struct AppConfig {
 /// them would just be two knobs for one decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewAction {
+    /// Explicit Expert review of a synthesized implementation plan.
+    PlanPreflight,
     /// On-demand walkthrough for a noteless file (`w` in Final Review).
     Walkthrough,
     /// AI co-reviewer first pass over the current file (`A` in Final Review).
@@ -608,6 +594,7 @@ pub enum ReviewAction {
 impl ReviewAction {
     pub fn config_key(self) -> &'static str {
         match self {
+            ReviewAction::PlanPreflight => "plan_preflight",
             ReviewAction::Walkthrough => "walkthrough",
             ReviewAction::CoReview => "co_review",
             ReviewAction::ChangesetOverview => "changeset_overview",
@@ -708,9 +695,6 @@ impl Default for AppConfig {
             theme: crate::theme::ThemeName::default(),
             transparent_background: false,
             token_pricing: TokenPricingConfig::default(),
-            // Expert preflight is opt-in. Existing config files without an
-            // explicit policy also deserialize to Off via the enum default.
-            plan_preflight_policy: PlanPreflightPolicy::default(),
             remote_control_default: false,
             view_auto_refresh: false,
             max_agent_autostart_sessions: default_agent_restart_limit(),
@@ -751,10 +735,15 @@ impl AppConfig {
     /// entry for [`ReviewAction::config_key`] if set, else the shared
     /// `review_model` default, else `None` (harness default).
     pub fn review_model_for(&self, action: ReviewAction) -> Option<String> {
-        self.review_models
-            .get(action.config_key())
-            .cloned()
-            .or_else(|| self.review_model.clone())
+        let action_model = self.review_models.get(action.config_key()).cloned();
+        if action == ReviewAction::PlanPreflight {
+            // An Expert plan review must never silently inherit an ordinary
+            // review model. The user either names its model at dispatch time
+            // or configures this action explicitly.
+            action_model
+        } else {
+            action_model.or_else(|| self.review_model.clone())
+        }
     }
 
     /// The concurrency cap, or `None` when the check is disabled (`0`).
@@ -1020,7 +1009,7 @@ pub struct App {
     /// from adaptive rounds so late results can only be applied to the
     /// matching loading phase.
     pub plan_interview_synthesis_bg: Option<Receiver<Result<String>>>,
-    /// Receiver for the optional agent review of a draft plan. Separate again
+    /// Receiver for the optional Expert review of a draft plan. Separate again
     /// so a late review can never be mistaken for a synthesis result and
     /// overwrite the plan it was only meant to comment on.
     pub plan_interview_critique_bg: Option<Receiver<Result<String>>>,

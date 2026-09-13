@@ -161,12 +161,16 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             MIGRATION_036,
         ),
         (
-            "Persist automatic Expert preflight briefs and plan fingerprints",
+            "Persist Expert plan-review briefs and plan fingerprints",
             MIGRATION_037,
         ),
         (
-            "Persist automatic Expert preflight lifecycle status and estimates",
+            "Persist Expert plan-review lifecycle status and estimates",
             MIGRATION_038,
+        ),
+        (
+            "Persist the explicit model used for an Expert plan review",
+            MIGRATION_039,
         ),
     ];
 
@@ -1012,6 +1016,10 @@ ALTER TABLE plan_interviews ADD COLUMN preflight_status TEXT;
 ALTER TABLE plan_interviews ADD COLUMN preflight_token_estimate INTEGER NOT NULL DEFAULT 0;
 ";
 
+const MIGRATION_039: &str = "
+ALTER TABLE plan_interviews ADD COLUMN preflight_model TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1052,7 +1060,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 38);
+        assert_eq!(version, 39);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1147,7 +1155,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 38);
+        assert_eq!(version, 39);
     }
 
     #[test]
@@ -1489,7 +1497,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 38);
+        assert_eq!(rows, 39);
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an
@@ -1600,7 +1608,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 38);
+        assert_eq!(version, 39);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

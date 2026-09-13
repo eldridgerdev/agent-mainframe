@@ -6035,7 +6035,12 @@ pub struct PlanInterviewState {
     /// Cleared whenever the plan changes, since the findings describe the
     /// draft they were written against.
     pub critique: Option<String>,
-    /// Durable lifecycle state for the automatic preflight.
+    /// Explicit frontier model chosen for this plan's Expert review.
+    pub expert_model: Option<String>,
+    /// Present while the user is entering the model name. An Expert call can
+    /// never start while this is absent and `expert_model` is unset.
+    pub expert_model_input: Option<String>,
+    /// Durable lifecycle state for the explicitly requested Expert review.
     pub critique_status: Option<String>,
     /// SHA-256 fingerprint of the plan the persisted preflight reviewed.
     pub preflight_fingerprint: Option<String>,
@@ -6210,6 +6215,8 @@ impl PlanInterviewState {
             investigation_started_at: None,
             investigation_token_estimate: 0,
             critique: None,
+            expert_model: None,
+            expert_model_input: None,
             critique_status: None,
             preflight_fingerprint: None,
             critique_started_at: None,
@@ -6331,6 +6338,7 @@ impl PlanInterviewState {
         if let Some(plan) = draft.plan {
             self.synthesized_plan = Some(plan);
             self.critique = draft.expert_brief;
+            self.expert_model = draft.preflight_model;
             self.preflight_fingerprint = draft.preflight_fingerprint;
             self.critique_status = draft.preflight_status;
             self.critique_token_estimate = draft.preflight_token_estimate;
@@ -6639,6 +6647,7 @@ impl PlanInterviewState {
                 .as_deref()
                 .map(|plan| format!("{:x}", Sha256::digest(plan.as_bytes()))),
             preflight_status: self.critique_status.clone(),
+            preflight_model: self.expert_model.clone(),
             preflight_token_estimate: self.critique_token_estimate,
             created_at: String::new(),
             updated_at: String::new(),
@@ -6982,6 +6991,8 @@ impl PlanInterviewState {
     /// Drop an advisory review that no longer describes the current plan.
     fn clear_critique(&mut self) {
         self.critique = None;
+        self.expert_model = None;
+        self.expert_model_input = None;
         self.critique_status = None;
         self.preflight_fingerprint = None;
         self.critique_questions.clear();
@@ -8261,6 +8272,7 @@ mod tests {
             expert_brief: None,
             preflight_fingerprint: None,
             preflight_status: None,
+            preflight_model: None,
             preflight_token_estimate: 0,
             created_at: String::new(),
             updated_at: "2026-07-30 12:00:00".into(),
@@ -8377,6 +8389,7 @@ mod tests {
         let questions = vec![template_question("scope")];
         let mut stored = saved_draft(questions.clone(), vec![Some("Just the TUI.".into())]);
         stored.plan = Some("# Plan: feature\n".into());
+        stored.preflight_model = Some("opus".into());
 
         let mut state = PlanInterviewState::new("feature".into(), "feat-1".into(), questions, None);
         state.offer_resume(stored);
@@ -8385,6 +8398,7 @@ mod tests {
 
         assert_eq!(state.phase, PlanInterviewPhase::Review);
         assert_eq!(state.synthesized_plan.as_deref(), Some("# Plan: feature\n"));
+        assert_eq!(state.expert_model.as_deref(), Some("opus"));
         // Nothing should re-synthesize a plan the user already has on screen.
         assert!(state.synthesis_attempted);
     }

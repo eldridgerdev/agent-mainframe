@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use super::pr_review::estimate_tokens;
 use super::{
     App, AppMode, PendingPlanLaunch, PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget,
-    PlanPreflightPolicy, PreparedFeatureLaunch, Selection, StartIntent, TodoPlanOrigin,
+    PreparedFeatureLaunch, ReviewAction, Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
@@ -37,46 +37,79 @@ fn plan_kickoff_prompt(expert_brief: Option<&str>) -> String {
     )
 }
 
-/// Conservative local admission check for the automatic expert preflight.
-/// Ordinary plans should not pay for a second model; these terms identify
-/// changes where one prevented retry can plausibly repay the review.
-fn should_auto_plan_preflight(plan: &str) -> bool {
-    let lower = plan.to_ascii_lowercase();
-    [
-        "migration",
-        "schema",
-        "concurr",
-        "security",
-        "permission",
-        "public api",
-        "data loss",
-        "rollback",
-        "recovery",
-        "backward compatibility",
-    ]
-    .iter()
-    .any(|signal| lower.contains(signal))
-        || lower
-            .split_once("risks / open questions")
-            .map(|(_, risks)| {
-                let risks = risks
-                    .split_once("\n## ")
-                    .map_or(risks, |(section, _)| section);
-                risks.lines().any(|line| {
-                    if !line.trim_start().starts_with(['-', '*']) {
-                        return false;
-                    }
-                    let item = line.trim().trim_start_matches(['-', '*', ' ']);
-                    !item.is_empty()
-                        && !item.eq_ignore_ascii_case("none identified.")
-                        && !item.eq_ignore_ascii_case("none identified")
-                        && !item.eq_ignore_ascii_case("none")
-                })
-            })
-            .unwrap_or(false)
-}
-
 impl App {
+    /// Open the explicit model entry that gates every Expert plan review.
+    pub(crate) fn open_plan_expert_model_picker(&mut self) {
+        let configured = self.config.review_model_for(ReviewAction::PlanPreflight);
+        let (preferred, resolved) = match &self.mode {
+            AppMode::PlanInterview(state) => {
+                (state.preferred_harness.clone(), state.ai_harness.clone())
+            }
+            _ => return,
+        };
+        let harness = match resolved {
+            Some(resolved) => resolved,
+            None => HeadlessRunner::select_for_interview(&preferred),
+        };
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.ai_harness = Some(harness.clone());
+            if harness.is_some() {
+                state.expert_model_input = Some(configured.unwrap_or_default());
+            }
+        }
+        if harness.is_none() {
+            self.message =
+                Some("No headless-capable harness is available for Expert review".into());
+        } else {
+            self.message = None;
+        }
+    }
+
+    pub(crate) fn plan_expert_model_push(&mut self, c: char) {
+        if let AppMode::PlanInterview(state) = &mut self.mode
+            && let Some(input) = &mut state.expert_model_input
+        {
+            input.push(c);
+        }
+    }
+
+    pub(crate) fn plan_expert_model_backspace(&mut self) {
+        if let AppMode::PlanInterview(state) = &mut self.mode
+            && let Some(input) = &mut state.expert_model_input
+        {
+            input.pop();
+        }
+    }
+
+    pub(crate) fn cancel_plan_expert_model_picker(&mut self) {
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.expert_model_input = None;
+        }
+        self.message = None;
+    }
+
+    pub(crate) fn confirm_plan_expert_model_picker(&mut self) -> Result<()> {
+        let model = match &self.mode {
+            AppMode::PlanInterview(state) => state
+                .expert_model_input
+                .as_deref()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string),
+            _ => None,
+        };
+        let Some(model) = model else {
+            self.message = Some("Enter a frontier model for the Expert review".into());
+            return Ok(());
+        };
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.expert_model = Some(model);
+            state.expert_model_input = None;
+        }
+        self.persist_plan_interview_draft();
+        self.start_plan_interview_critique()
+    }
+
     /// Park the live interview so the dashboard and its sessions can be used
     /// for repository research without flattening the interview into a saved
     /// draft. Headless phases remain on screen: their pollers deliberately
@@ -943,7 +976,7 @@ impl App {
         Ok(())
     }
 
-    /// Spawn the optional agent review of the draft plan off the UI thread.
+    /// Spawn the explicitly requested Expert review of the draft plan.
     ///
     /// Purely advisory: the plan on screen is never modified by the result.
     /// A missing headless engine leaves the user at the review gate with a
@@ -968,6 +1001,15 @@ impl App {
             return Ok(());
         }
 
+        let has_model = matches!(
+            &self.mode,
+            AppMode::PlanInterview(state) if state.expert_model.is_some()
+        );
+        if !has_model {
+            self.open_plan_expert_model_picker();
+            return Ok(());
+        }
+
         let (
             preferred_harness,
             resolved_harness,
@@ -978,6 +1020,7 @@ impl App {
             workdir,
             plan,
             attached_docs,
+            model,
         ) = match &self.mode {
             AppMode::PlanInterview(state) => {
                 let Some(plan) = state.synthesized_plan.clone() else {
@@ -993,6 +1036,7 @@ impl App {
                     state.context_workdir(),
                     plan,
                     state.attached_docs.clone(),
+                    state.expert_model.clone().expect("model checked above"),
                 )
             }
             _ => return Ok(()),
@@ -1046,9 +1090,10 @@ impl App {
         );
         let token_estimate = estimate_tokens(&prompt);
 
-        if !self.precall_gate(
+        if !self.precall_gate_with_model(
             crate::app::precall::PrecallAction::PlanCritique,
             &harness,
+            Some(&model),
             &prompt,
         ) {
             return Ok(());
@@ -1067,8 +1112,9 @@ impl App {
         self.log_info(
             "plan_interview",
             format!(
-                "starting plan review with {} (~{token_estimate} tokens{})",
+                "starting Expert plan review with {} model {} (~{token_estimate} tokens{})",
                 harness.display_name(),
+                model,
                 if read_only {
                     format!(", read-only for {} attached doc(s)", attached.len())
                 } else {
@@ -1081,9 +1127,9 @@ impl App {
         self.plan_interview_critique_bg = Some(rx);
         std::thread::spawn(move || {
             let result = if read_only {
-                HeadlessRunner::run_read_only(&harness, &workdir, &prompt, None)
+                HeadlessRunner::run_read_only(&harness, &workdir, &prompt, Some(&model))
             } else {
-                HeadlessRunner::run(&harness, &workdir, &prompt, None, true)
+                HeadlessRunner::run(&harness, &workdir, &prompt, Some(&model), true)
             };
             let _ = tx.send(result);
         });
@@ -1108,6 +1154,7 @@ impl App {
             findings,
             clarification_answers,
             attached_docs,
+            model,
         ) =
             match &self.mode {
                 AppMode::PlanInterview(state)
@@ -1140,12 +1187,17 @@ impl App {
                         findings,
                         answers,
                         state.attached_docs.clone(),
+                        state.expert_model.clone(),
                     )
                 }
                 _ => return Ok(()),
             };
         let Some(harness) = harness else {
             self.message = Some("No expert harness is available for the follow-up".into());
+            return Ok(());
+        };
+        let Some(model) = model else {
+            self.message = Some("Choose an Expert model before requesting a follow-up".into());
             return Ok(());
         };
         let context = plan_interview::gather_repository_context(&workdir);
@@ -1163,9 +1215,10 @@ impl App {
             &clarification_answers,
         );
         let token_estimate = estimate_tokens(&prompt);
-        if !self.precall_gate(
+        if !self.precall_gate_with_model(
             crate::app::precall::PrecallAction::PlanCritiqueFollowup,
             &harness,
+            Some(&model),
             &prompt,
         ) {
             return Ok(());
@@ -1179,9 +1232,9 @@ impl App {
         self.plan_interview_critique_bg = Some(rx);
         std::thread::spawn(move || {
             let result = if attached.is_empty() {
-                HeadlessRunner::run(&harness, &workdir, &prompt, None, true)
+                HeadlessRunner::run(&harness, &workdir, &prompt, Some(&model), true)
             } else {
-                HeadlessRunner::run_read_only(&harness, &workdir, &prompt, None)
+                HeadlessRunner::run_read_only(&harness, &workdir, &prompt, Some(&model))
             };
             let _ = tx.send(result);
         });
@@ -1728,7 +1781,7 @@ impl App {
         true
     }
 
-    /// Poll the in-flight agent review. A failure, or output that does not
+    /// Poll the in-flight Expert review. A failure, or output that does not
     /// match the advisory contract, returns the user to the unchanged plan
     /// with a notice — there is nothing to fall back to and nothing to lose.
     pub fn poll_plan_interview_critique_bg(&mut self) -> bool {
@@ -2047,11 +2100,6 @@ impl App {
                 }),
             _ => return,
         };
-        let should_preflight = match self.config.plan_preflight_policy {
-            PlanPreflightPolicy::Off => false,
-            PlanPreflightPolicy::Suggest => should_auto_plan_preflight(&plan),
-            PlanPreflightPolicy::Require => true,
-        };
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.apply_synthesis(plan);
         }
@@ -2060,12 +2108,6 @@ impl App {
         // again.
         self.persist_plan_interview_draft();
         self.message = None;
-        if should_preflight && let Err(error) = self.start_plan_interview_critique() {
-            self.report_logged_error(
-                "plan_interview",
-                format!("Automatic expert preflight could not start: {error:#}"),
-            );
-        }
     }
 
     /// Accept the reviewed plan and execute the launch it has been holding.
@@ -3119,18 +3161,5 @@ mod tests {
         assert!(!repo.path().join(".claude/plan.md").exists());
         assert!(!repo.path().join("PLAN.md").exists());
         assert!(!repo.path().join("plan.md").exists());
-    }
-
-    #[test]
-    fn automatic_preflight_admission_is_conservative_and_risk_based() {
-        assert!(should_auto_plan_preflight(
-            "## Risks / open questions\n\nMigration rollback is unresolved."
-        ));
-        assert!(should_auto_plan_preflight(
-            "## Architecture\n\nAdd a public API with backward compatibility."
-        ));
-        assert!(!should_auto_plan_preflight(
-            "## Risks / open questions\n\nNone identified.\n\nImplement a label change."
-        ));
     }
 }

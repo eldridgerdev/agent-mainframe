@@ -1,168 +1,92 @@
-# Automatic Expert Consultation: placement investigation
+# Expert plan review: placement investigation
 
 ## Conclusion
 
-The highest value insertion point is the existing plan interview's final review
-gate, immediately after plan synthesis and before the user accepts the plan or
-AMF starts the feature. At that point AMF has a brief, answered discovery
-questions, a concrete plan, acceptance criteria, the feature workdir, and a
-deterministic repository context. One bounded expert review can catch an
-incorrect approach before implementation spends tokens on it. The result can
-be attached to the plan review and kickoff prompt; it does not need a separate
-session, handoff composer, or automatic message delivery.
+The highest-value insertion point is the plan interview's final review gate,
+after synthesis and before acceptance or implementation. At that point AMF has
+the user's brief, answered discovery questions, a concrete plan, repository
+context, and attached evidence. Advice can still change the implementation
+approach before a cheaper model spends tokens following it.
 
-This is an explicitly opt-in policy-controlled preflight. Its default policy is
-`off`; AMF never invokes an Expert automatically unless the user configures
-`suggest` or `require`. When enabled, a local risk and value check can decide
-whether to spend the expert call. It should not run on every plan round or
-every feature start. The review may return a small
-set of clarification questions; the user answers them in the same review
-surface and AMF permits one bounded follow-up. The closed Expert Assist PR
-implemented useful runner, evidence, and persistence foundations, but its
-manual question form and post-hoc handoff add coordination after the expensive
-work has already begun.
+The action must be explicitly requested for each plan. The comparison run for
+the automatic prototype showed that an Expert call can improve instructions,
+but it always adds its own context and output cost and does not guarantee that
+the avoided implementation work will exceed that cost. Automatic admission
+also hid a more basic problem: the UI exposed an ordinary agent review and the
+runner used the harness default model. That did not prove a frontier model had
+been consulted. The automatic `off`/`suggest`/`require` policy was removed.
 
-## Observed workflow boundaries
+## Workflow
 
-AMF already has these relevant transitions:
+1. Plan mode collects the brief and discovery answers, then synthesizes a
+   concrete implementation plan.
+2. At the final review gate, the user may press `a` for **Expert review**.
+3. AMF requires the exact frontier model value for the plan's resolved harness.
+   A `review_models.plan_preflight` value may prefill the field, but the user
+   must still confirm it. The shared ordinary `review_model` is never used.
+4. The normal pre-call confirmation shows the prompt, harness, model, and token
+   estimate. Only another explicit Enter starts the call.
+5. The Expert reviews the plan read-only and returns a compact implementation
+   brief. It may also ask up to three questions.
+6. The user can answer those questions and request one bounded follow-up. It
+   reuses the same harness and model and cannot create another question round.
+7. If the plan is accepted, the Expert brief is included in the kickoff prompt
+   for the cheaper implementation model.
 
-1. The feature wizard can enter `PlanInterview` before a feature exists. The
-   interview collects a brief and static answers, then optionally runs adaptive
-   rounds, synthesis, investigations, and revisions.
-2. Synthesis produces a structured plan and stops at a `Review` phase. The
-   user can edit, request critique, investigate a focus, request a directed
-   revision, or accept.
-3. Accepting a new-feature plan writes `AMF_PLAN.md`, persists the interview,
-   and then creates/starts the feature. The kickoff prompt tells the new agent
-   to read the approved plan.
-4. An on-demand interview for an existing feature writes the plan and offers a
-   user-controlled kickoff handoff to a live session. The session may already
-   have work in progress, so automatic injection is unsafe.
-5. Implementation and review already have failure/review surfaces, but their
-   context is larger, more fragmented, and later in the cost curve.
+Escape from model selection or pre-call confirmation spends no tokens and
+leaves the plan unchanged. Editing or regenerating the plan invalidates review
+findings for the superseded plan. Reopening a completed review does not make a
+second call.
 
-The existing user-triggered plan critique is already close to the desired
-preflight shape: it receives the draft plan, brief, answers, repository
-context, and attached evidence, and it is advisory. The main missing decision
-is when to offer or require it and which harness/profile should run it.
+## Expert output contract
+
+The Expert is asked to use its additional reasoning capacity to reduce
+rediscovery and rework for the implementation model. Its response includes:
+
+- objective and non-goals;
+- ordered implementation steps and dependency order;
+- a code map with relevant files, symbols, and ownership boundaries;
+- invariants, settled decisions, and rejected alternatives;
+- focused validation commands and observable acceptance checks;
+- risks, unsafe assumptions, recovery paths, and stop conditions;
+- a short definition-of-done checklist;
+- blockers, confidence, and up to three clarification questions when needed.
+
+Each clarification question states the decision it unlocks and the evidence or
+choice required. The Expert reviews and advises; it does not edit the worktree
+or silently expand scope.
 
 ## Placement comparison
 
-| Location | Benefit | Token risk | Recommendation |
+| Location | Benefit | Cost risk | Decision |
 | --- | --- | --- | --- |
-| Before the interview | Can challenge an initial brief | Too little intent or acceptance detail; duplicates discovery | Do not use as the default |
-| During adaptive rounds | May improve questions | Repeats on every round and pays before the shape of the work is known | Keep the existing planner; no automatic expert call |
-| After synthesis, before acceptance | Complete plan plus evidence; prevents wasted implementation and revision work; can expose questions while correction is still cheap | One initial call plus at most one bounded follow-up; can be skipped by policy | **Preferred default** |
-| After acceptance, before agent start | Final plan is stable and kickoff is available | Slightly later; still avoids implementation tokens | Fallback when the review gate is bypassed |
-| On repeated implementation failure | Strong escalation signal and concrete failure evidence | Late, potentially includes retries and a large transcript | Trigger only on explicit local signals |
-| During ordinary implementation | May rescue a difficult task | Hard to target, competes with the implementer, risks duplicated context | Avoid automatic invocation |
-| Completion/review | Finds defects | Too late to reduce most implementation tokens | Use existing review tools, not Expert Assist |
+| Before discovery | Can challenge the initial brief | Too little context; duplicates discovery | Do not add |
+| During adaptive questions | May improve individual questions | Repeated calls multiply spend | Keep the existing planner |
+| After synthesis, before acceptance | Full plan and evidence; changes are still cheap | One bounded review plus optional follow-up | Use as the explicit Expert action |
+| During implementation | Can rescue difficult work | Duplicates context and arrives after spend | Use separate manual escalation if needed |
+| Completion review | Finds defects | Too late to reduce implementation cost | Keep existing review tools |
 
-## Proposed automatic policy
+## Measurement
 
-The preflight should evaluate deterministic signals before invoking a paid
-expert:
-
-- plan mode is enabled and synthesis produced a non-empty plan;
-- the plan contains explicit acceptance criteria or validation steps;
-- the feature is new, or the accepted plan changed materially since the last
-  consultation;
-- the task has risk indicators such as migrations, concurrency, public API,
-  security, data loss, broad file scope, or an unresolved investigation;
-- no equivalent consultation result is fresh for the same plan fingerprint,
-  repository revision, and evidence packet.
-
-If the signals do not justify the cost, AMF proceeds normally. If they do, the
-user sees a short preflight notice with the expected purpose and bounded token
-budget. The expert returns an implementation brief, not just a critique. Its
-required sections are:
-
-- **Objective and non-goals:** what the implementer must accomplish and what
-  must remain untouched;
-- **Ordered implementation steps:** the safest sequence, including dependency
-  order and migration or compatibility ordering;
-- **Code map:** relevant files, modules, symbols, data boundaries, and
-  ownership points to inspect or change, with a reason for each target;
-- **Invariants and decisions:** behavior that must remain true, the rationale
-  for important choices, and alternatives that were rejected;
-- **Validation plan:** focused tests, fixtures, commands, and observable
-  acceptance checks, including failure and recovery paths;
-- **Risks and stop conditions:** likely failure modes, unsafe assumptions, and
-  when the implementer must pause for another review;
-- **Definition of done:** a short checklist the implementer can verify before
-  declaring the task complete.
-
-The expert also returns blockers, assumptions to verify, confidence, and
-optionally up to three clarification questions. Each question must state which
-plan decision it unblocks and what evidence or choice is required. The expert
-should spend its extra reasoning budget resolving ambiguity and making the
-implementation sequence precise, rather than producing a broad speculative
-patch or repeating the user brief. AMF never lets the expert edit the worktree.
-
-When questions are returned, the review screen shows a short answer step. The
-user can answer, skip a question, revise the plan directly, or continue without
-answering. AMF then permits at most one follow-up review, which receives the
-original packet, the expert findings, and the user's answers. A follow-up cannot
-emit another question round; unresolved questions are recorded as assumptions
-and the user may still accept the plan. Empty or unchanged answers do not
-trigger a paid follow-up.
-
-The accepted implementation brief is attached to the kickoff context for the
-cheaper model. The implementer is told to follow the ordered steps, preserve
-the listed invariants, run the validation plan, and report any stop condition.
-The brief is a compact working contract: it reduces rediscovery and
-backtracking without making the expert responsible for edits or silently
-expanding the task.
-
-The default should be one no-tools or tightly read-only review call. A second
-call is reserved for the bounded clarification follow-up or another concrete
-new signal, such as a materially changed plan or failed acceptance check. There
-is never an automatic third call. Adaptive rounds and repository investigations
-remain planner features; they should not silently multiply expert calls.
-
-## Token and quality model
-
-The relevant comparison is not expert-call tokens versus zero. It is:
+The useful comparison is:
 
 ```text
-preflight cost + implementer cost after correction
+Expert review cost + implementation cost after correction
 versus
-implementer cost + retries + failed validation + late review
+implementation cost + retries + failed validation + late review
 ```
 
-The preflight pays off when it prevents even one materially wasteful attempt.
-AMF should record plan fingerprint, expert usage, avoided/reported risk,
-implementation retries, validation outcome, and accepted-change result. Cost
-remains unknown until a concrete model and pricing snapshot are selected.
-Quality must compare accepted changes against an expert-only or implementer-
-only baseline; passing tests alone is insufficient.
+AMF stores the reviewed plan fingerprint, lifecycle status, selected model,
+token estimate, and whether an implementation brief was produced. This makes
+the consultation attributable without claiming savings that were not measured.
+Quality still needs scenario comparisons against an implementation-only
+baseline; a passing test suite alone does not establish that the extra call was
+worth its tokens.
 
-## Reuse from the closed prototype
+## Implementation status
 
-Keep the pieces that support this placement:
-
-- typed execution policies and bounded owned jobs;
-- evidence packets, omission markers, source hashes, and consultation-local
-  usage export;
-- immutable revisions and recovery semantics where a review may be resumed;
-- prompt registry and pre-call metadata patterns;
-- target validation only for explicitly requested handoffs.
-
-Do not carry forward the default UX of a dashboard `ask-expert` form, a
-separate post-hoc handoff, or automatic tmux delivery. Those are useful escape
-hatches for a later explicit escalation flow, but they are not the efficient
-default for a user who has just asked AMF to build something.
-
-## Next implementation slice
-
-The first implementation slice is complete: the existing plan critique is an
-opt-in high-risk preflight, returns a structured implementation brief,
-supports up to three clarification questions and one follow-up, and carries
-the accepted brief into the implementation kickoff. The policy now supports
-off (the default), suggest, and require modes, and draft persistence stores the accepted
-brief and the SHA-256 fingerprint of the reviewed plan. Lifecycle status,
-token estimates, and a JSON evaluation export are now available for each
-feature. Real provider quality and cost evaluation remains before selecting
-production model defaults.
-
-Real provider conformance, pricing, and quality measurements remain pending.
+The plan-review action is user initiated and requires an explicit model. The
+selected model is visible before dispatch, reaches the headless runner and the
+single clarification follow-up, persists with the plan interview, and appears
+in evaluation export. The structured brief and kickoff handoff from the first
+prototype remain because they directly improve the cheaper model's input.

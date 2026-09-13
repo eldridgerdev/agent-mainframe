@@ -116,6 +116,9 @@ pub fn draw_plan_interview_dialog(
 
     if state.phase == PlanInterviewPhase::Review {
         draw_plan_review(frame, inner, state, message, theme);
+        if state.expert_model_input.is_some() {
+            draw_expert_model_picker(frame, state, theme);
+        }
         return;
     }
     if state.phase == PlanInterviewPhase::Editing {
@@ -216,6 +219,54 @@ pub fn draw_plan_interview_dialog(
     }
 
     frame.render_widget(Paragraph::new(footer).wrap(Wrap { trim: false }), chunks[3]);
+}
+
+fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme: &Theme) {
+    let area = super::super::dashboard::centered_rect(58, 36, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let block = Block::default()
+        .title(" Choose Expert frontier model ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.warning.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+    let harness = interview_engine(state);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "This explicit Expert review strengthens the plan before implementation.\nHarness: {harness} · choose a frontier model supported by that harness."
+        ))
+        .style(Style::default().fg(theme.text.to_color()))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    let input = state.expert_model_input.as_deref().unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(format!("{input}█"))
+            .block(Block::default().title(" Model ").borders(Borders::ALL))
+            .style(Style::default().fg(theme.text.to_color())),
+        chunks[1],
+    );
+    frame.render_widget(
+        Paragraph::new("Examples: Claude `opus`; a Codex frontier model ID. AMF passes this exact value to the harness and shows it again before the call.")
+            .style(Style::default().fg(theme.text_muted.to_color()))
+            .wrap(Wrap { trim: false }),
+        chunks[2],
+    );
+    frame.render_widget(
+        Paragraph::new("Enter continue to confirmation · Esc cancel")
+            .style(Style::default().fg(theme.primary.to_color())),
+        chunks[3],
+    );
 }
 
 /// The dialog's hint row: the interview's message when there is one, otherwise
@@ -457,7 +508,7 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         ),
         PlanInterviewPhase::SynthesisLoading => (total, "Plan synthesis".to_string()),
         PlanInterviewPhase::CritiqueLoading | PlanInterviewPhase::Critique => {
-            (total, "Agent review".to_string())
+            (total, "Expert review".to_string())
         }
         PlanInterviewPhase::Review => (total, "Plan review".to_string()),
         PlanInterviewPhase::Editing => (total, "Edit plan".to_string()),
@@ -528,7 +579,7 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             ("Synthesizing implementation plan".to_string(), false)
         }
         PlanInterviewPhase::CritiqueLoading => ("Reviewing the draft plan".to_string(), false),
-        PlanInterviewPhase::Critique => ("Agent review of the plan".to_string(), false),
+        PlanInterviewPhase::Critique => ("Expert review of the plan".to_string(), false),
         PlanInterviewPhase::Review => ("Review implementation plan".to_string(), false),
         PlanInterviewPhase::Editing => ("Edit raw markdown".to_string(), false),
         PlanInterviewPhase::DirectedFeedback => {
@@ -906,7 +957,7 @@ fn draw_plan_review(
         Span::raw(if state.critique.is_some() {
             " show review  "
         } else {
-            " agent review  "
+            " Expert review  "
         }),
         hint("f", theme),
         Span::raw(" direct feedback  "),
@@ -1145,7 +1196,7 @@ fn draw_plan_critique(
         frame,
         chunks[0],
         content,
-        std::path::Path::new("agent review"),
+        std::path::Path::new("Expert review"),
         &mut state.critique_scroll_offset,
         &mut state.critique_rendered_width,
         &mut state.critique_rendered_lines,

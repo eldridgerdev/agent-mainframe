@@ -73,6 +73,8 @@ pub struct PendingPrecall {
     pub action: PrecallAction,
     pub prompt_id: PromptId,
     pub harness: AgentKind,
+    /// Explicit model selected for this call. `None` means the harness default.
+    pub model: Option<String>,
     /// The rendered prompt, shown when the user presses `v`.
     pub preview: String,
     /// Whether the prompt preview is currently expanded.
@@ -86,6 +88,14 @@ pub struct PendingPrecall {
     pub consultation_id: Option<String>,
     pub request_revision: Option<i64>,
     pub evidence_digest: Option<String>,
+}
+
+#[derive(Default)]
+struct PrecallOptions {
+    model: Option<String>,
+    consultation_id: Option<String>,
+    request_revision: Option<i64>,
+    evidence_digest: Option<String>,
 }
 
 impl App {
@@ -102,6 +112,24 @@ impl App {
         self.precall_gate_with_metadata(action, harness, rendered_prompt, None, None, None)
     }
 
+    pub(crate) fn precall_gate_with_model(
+        &mut self,
+        action: PrecallAction,
+        harness: &AgentKind,
+        model: Option<&str>,
+        rendered_prompt: &str,
+    ) -> bool {
+        self.precall_gate_with_options(
+            action,
+            harness,
+            rendered_prompt,
+            PrecallOptions {
+                model: model.map(str::to_string),
+                ..PrecallOptions::default()
+            },
+        )
+    }
+
     pub(crate) fn precall_gate_with_metadata(
         &mut self,
         action: PrecallAction,
@@ -110,6 +138,26 @@ impl App {
         consultation_id: Option<String>,
         request_revision: Option<i64>,
         evidence_digest: Option<String>,
+    ) -> bool {
+        self.precall_gate_with_options(
+            action,
+            harness,
+            rendered_prompt,
+            PrecallOptions {
+                consultation_id,
+                request_revision,
+                evidence_digest,
+                ..PrecallOptions::default()
+            },
+        )
+    }
+
+    fn precall_gate_with_options(
+        &mut self,
+        action: PrecallAction,
+        harness: &AgentKind,
+        rendered_prompt: &str,
+        options: PrecallOptions,
     ) -> bool {
         if self.precall_cleared == Some(action) {
             self.precall_cleared = None;
@@ -120,13 +168,14 @@ impl App {
             action,
             prompt_id: action.prompt_id(),
             harness: harness.clone(),
+            model: options.model,
             preview: rendered_prompt.to_string(),
             viewing: false,
             scroll: 0,
             prior_mode: Box::new(prior),
-            consultation_id,
-            request_revision,
-            evidence_digest,
+            consultation_id: options.consultation_id,
+            request_revision: options.request_revision,
+            evidence_digest: options.evidence_digest,
         }));
         self.message = None;
         false

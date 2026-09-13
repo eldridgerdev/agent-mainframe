@@ -445,19 +445,6 @@ fn app_config_default_view_auto_refresh_is_disabled() {
 }
 
 #[test]
-fn app_config_default_plan_preflight_is_opt_in() {
-    let config = AppConfig::default();
-    assert_eq!(config.plan_preflight_policy, PlanPreflightPolicy::Off);
-
-    let legacy: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
-    assert_eq!(legacy.plan_preflight_policy, PlanPreflightPolicy::Off);
-
-    let opted_in: AppConfig =
-        serde_json::from_str(r#"{"nerd_font":false,"plan_preflight_policy":"suggest"}"#).unwrap();
-    assert_eq!(opted_in.plan_preflight_policy, PlanPreflightPolicy::Suggest);
-}
-
-#[test]
 fn app_config_default_agent_restart_limit_is_one() {
     let config = AppConfig::default();
     assert_eq!(config.max_agent_autostart_sessions, 1);
@@ -615,6 +602,7 @@ fn review_model_for_falls_back_to_shared_default_when_unset() {
         config.review_model_for(ReviewAction::ChangesetOverview),
         Some("opus".to_string())
     );
+    assert_eq!(config.review_model_for(ReviewAction::PlanPreflight), None);
 }
 
 #[test]
@@ -635,6 +623,22 @@ fn review_model_for_prefers_per_action_override() {
     assert_eq!(
         config.review_model_for(ReviewAction::CoReview),
         Some("opus".to_string())
+    );
+}
+
+#[test]
+fn plan_preflight_model_uses_only_its_explicit_override() {
+    let mut config = AppConfig {
+        review_model: Some("ordinary-review-model".to_string()),
+        ..AppConfig::default()
+    };
+    config.review_models.insert(
+        ReviewAction::PlanPreflight.config_key().to_string(),
+        "frontier-model".to_string(),
+    );
+    assert_eq!(
+        config.review_model_for(ReviewAction::PlanPreflight),
+        Some("frontier-model".to_string())
     );
 }
 
@@ -4446,6 +4450,115 @@ fn begin_plan_critique_for_test(app: &mut App) -> std::sync::mpsc::Sender<anyhow
     let (tx, rx) = std::sync::mpsc::channel();
     app.plan_interview_critique_bg = Some(rx);
     tx
+}
+
+#[test]
+fn expert_review_requires_an_explicit_model_before_any_call_is_staged() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.expert_model.is_none()
+                && state.expert_model_input.as_deref() == Some("")
+    ));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Enter a frontier model for the Expert review")
+    );
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.expert_model_input.is_some()
+    ));
+}
+
+#[test]
+fn expert_review_carries_the_chosen_model_into_the_precall_gate() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    for c in "opus".chars() {
+        crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char(c))).unwrap();
+    }
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert!(app.plan_interview_critique_bg.is_none());
+    match &app.mode {
+        AppMode::PromptPrecall(pending) => {
+            assert_eq!(
+                pending.action,
+                crate::app::precall::PrecallAction::PlanCritique
+            );
+            assert_eq!(pending.harness, crate::project::AgentKind::Claude);
+            assert_eq!(pending.model.as_deref(), Some("opus"));
+            assert!(matches!(
+                pending.prior_mode.as_ref(),
+                AppMode::PlanInterview(state)
+                    if state.expert_model.as_deref() == Some("opus")
+                        && state.expert_model_input.is_none()
+            ));
+        }
+        _ => panic!("expected the Expert pre-call confirmation"),
+    }
+}
+
+#[test]
+fn cancelling_the_expert_model_picker_spends_no_tokens() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.expert_model.is_none()
+                && state.expert_model_input.is_none()
+    ));
+}
+
+#[test]
+fn configured_expert_model_is_preloaded_but_still_needs_user_confirmation() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.config.review_models.insert(
+        ReviewAction::PlanPreflight.config_key().to_string(),
+        "frontier-model".to_string(),
+    );
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.expert_model.is_none()
+                && state.expert_model_input.as_deref() == Some("frontier-model")
+    ));
 }
 
 /// Drop straight into an in-flight directed revision without launching a real
@@ -27446,6 +27559,7 @@ fn precall_edit_opens_the_manager_focused_and_returns_to_the_notice() {
         action: PrecallAction::ReviewChangesetOverview,
         prompt_id: PromptId::ReviewChangesetOverview,
         harness: AgentKind::Claude,
+        model: None,
         preview: "some rendered prompt".to_string(),
         viewing: false,
         scroll: 0,

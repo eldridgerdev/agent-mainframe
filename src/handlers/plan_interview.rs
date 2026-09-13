@@ -12,6 +12,25 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    let choosing_expert_model = matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.expert_model_input.is_some()
+    );
+    if choosing_expert_model {
+        match key.code {
+            KeyCode::Esc => app.cancel_plan_expert_model_picker(),
+            KeyCode::Enter => app.confirm_plan_expert_model_picker()?,
+            KeyCode::Backspace => app.plan_expert_model_backspace(),
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                app.plan_expert_model_push(c)
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     let confirming_abort =
         matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation);
     // Only a feature-creation interview has a launch to cancel; for an
@@ -471,7 +490,7 @@ fn handle_plan_investigation_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// The advisory agent review of the draft plan. Every action here either
+/// The advisory Expert review of the draft plan. Every action here either
 /// scrolls, returns to the untouched plan, or asks for an explicit revision —
 /// the review never rewrites the plan on its own.
 fn handle_plan_critique_key(app: &mut App, key: KeyEvent) -> Result<()> {

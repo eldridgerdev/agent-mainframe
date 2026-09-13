@@ -165,7 +165,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("e", "Edit raw plan markdown"),
         (
             "a",
-            "Agent review of the plan, or re-open one already held (uses tokens for a new review)",
+            "Expert review with an explicit frontier model, or re-open one already held (uses tokens for a new review)",
         ),
         (
             "f",
@@ -204,7 +204,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  During an agent review of the plan:",
+        "  During an Expert review of the plan:",
         Style::default()
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),

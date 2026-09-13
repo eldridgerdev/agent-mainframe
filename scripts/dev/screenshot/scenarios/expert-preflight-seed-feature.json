@@ -1,7 +1,7 @@
 {
   "project_name": "screenshot-demo",
   "branch": "expert-preflight-screenshot",
-  "agent": "claude",
+  "agent": "__HARNESS__",
   "mode": "vibe",
   "review": false,
   "plan_mode": false,

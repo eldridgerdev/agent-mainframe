@@ -6037,9 +6037,8 @@ pub struct PlanInterviewState {
     pub critique: Option<String>,
     /// Explicit frontier model chosen for this plan's Expert review.
     pub expert_model: Option<String>,
-    /// Present while the user is entering the model name. An Expert call can
-    /// never start while this is absent and `expert_model` is unset.
-    pub expert_model_input: Option<String>,
+    /// Single-select model picker shown before the Expert pre-call gate.
+    pub expert_model_pick: Option<AiModelPickState>,
     /// Durable lifecycle state for the explicitly requested Expert review.
     pub critique_status: Option<String>,
     /// SHA-256 fingerprint of the plan the persisted preflight reviewed.
@@ -6216,7 +6215,7 @@ impl PlanInterviewState {
             investigation_token_estimate: 0,
             critique: None,
             expert_model: None,
-            expert_model_input: None,
+            expert_model_pick: None,
             critique_status: None,
             preflight_fingerprint: None,
             critique_started_at: None,
@@ -6992,7 +6991,7 @@ impl PlanInterviewState {
     fn clear_critique(&mut self) {
         self.critique = None;
         self.expert_model = None;
-        self.expert_model_input = None;
+        self.expert_model_pick = None;
         self.critique_status = None;
         self.preflight_fingerprint = None;
         self.critique_questions.clear();

@@ -13,9 +13,9 @@ are tagged.
 ### Changed
 
 - **Expert plan review is now an explicit frontier-model action.** At the final
-  plan review, press `a` to request an Expert review, enter the exact frontier
-  model for the plan's harness, and verify both harness and model in the
-  pre-call confirmation. AMF never starts or suggests this review
+  plan review, press `a` to request an Expert review, select a model from the
+  same verified choices used by AI Review, and verify both harness and model
+  in the pre-call confirmation. AMF never starts or suggests this review
   automatically, and it does not inherit the ordinary review model. The
   Expert's implementation brief and optional clarification questions still
   feed the accepted-plan kickoff for the implementation agent. A one-time

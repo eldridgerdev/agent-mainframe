@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::app::{PlanInterviewPhase, PlanInterviewState, PriorAnswerState};
+use crate::app::{ModelPickRow, PlanInterviewPhase, PlanInterviewState, PriorAnswerState};
 use crate::plan_interview::{PlanQuestionKind, QuestionSource};
 use crate::theme::Theme;
 
@@ -116,7 +116,7 @@ pub fn draw_plan_interview_dialog(
 
     if state.phase == PlanInterviewPhase::Review {
         draw_plan_review(frame, inner, state, message, theme);
-        if state.expert_model_input.is_some() {
+        if state.expert_model_pick.is_some() {
             draw_expert_model_picker(frame, state, theme);
         }
         return;
@@ -222,7 +222,10 @@ pub fn draw_plan_interview_dialog(
 }
 
 fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme: &Theme) {
-    let area = super::super::dashboard::centered_rect(58, 36, frame.area());
+    let Some(pick) = state.expert_model_pick.as_ref() else {
+        return;
+    };
+    let area = super::super::dashboard::centered_rect(58, 46, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
     let block = Block::default()
         .title(" Choose Expert frontier model ")
@@ -234,37 +237,65 @@ fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
             Constraint::Length(3),
             Constraint::Min(1),
-            Constraint::Length(2),
+            Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
+            Constraint::Length(1),
         ])
         .split(inner);
     let harness = interview_engine(state);
     frame.render_widget(
         Paragraph::new(format!(
-            "This explicit Expert review strengthens the plan before implementation.\nHarness: {harness} · choose a frontier model supported by that harness."
+            "Strengthen the plan before implementation.\nHarness: {harness} · select the Expert model."
         ))
         .style(Style::default().fg(theme.text.to_color()))
         .wrap(Wrap { trim: false }),
         chunks[0],
     );
-    let input = state.expert_model_input.as_deref().unwrap_or_default();
+    let lines = pick.rows.iter().enumerate().map(|(index, row)| {
+        let selected = index == pick.selected;
+        let style = if selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        let mut label = match row {
+            ModelPickRow::Preset(name) => name.clone(),
+            ModelPickRow::Custom => "Custom…".to_string(),
+            ModelPickRow::Default => "Default".to_string(),
+        };
+        if matches!(row, ModelPickRow::Custom) && !pick.custom_input.is_empty() {
+            label = format!("{label} ({})", pick.custom_input);
+        }
+        Line::from(vec![
+            Span::styled(
+                if selected { "  > " } else { "    " },
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(label, style),
+        ])
+    });
+    frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()), chunks[1]);
+    if pick.editing_custom {
+        frame.render_widget(
+            Paragraph::new(format!("  model: {}▏", pick.custom_input))
+                .style(Style::default().fg(theme.text.to_color())),
+            chunks[2],
+        );
+    }
+    let custom_selected = matches!(pick.rows.get(pick.selected), Some(ModelPickRow::Custom));
+    let hint = if pick.editing_custom {
+        "  [⏎] use this model   [esc] back to list"
+    } else if custom_selected {
+        "  [j/k] choose   [⏎] type a model   [esc] cancel"
+    } else {
+        "  [j/k] choose   [⏎] continue   [esc] cancel"
+    };
     frame.render_widget(
-        Paragraph::new(format!("{input}█"))
-            .block(Block::default().title(" Model ").borders(Borders::ALL))
-            .style(Style::default().fg(theme.text.to_color())),
-        chunks[1],
-    );
-    frame.render_widget(
-        Paragraph::new("Examples: Claude `opus`; a Codex frontier model ID. AMF passes this exact value to the harness and shows it again before the call.")
-            .style(Style::default().fg(theme.text_muted.to_color()))
-            .wrap(Wrap { trim: false }),
-        chunks[2],
-    );
-    frame.render_widget(
-        Paragraph::new("Enter continue to confirmation · Esc cancel")
-            .style(Style::default().fg(theme.primary.to_color())),
+        Paragraph::new(hint).style(Style::default().fg(theme.primary.to_color())),
         chunks[3],
     );
 }

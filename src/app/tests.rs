@@ -4453,7 +4453,7 @@ fn begin_plan_critique_for_test(app: &mut App) -> std::sync::mpsc::Sender<anyhow
 }
 
 #[test]
-fn expert_review_requires_an_explicit_model_before_any_call_is_staged() {
+fn expert_review_opens_an_explicit_model_picker_before_any_call_is_staged() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
     if let AppMode::PlanInterview(state) = &mut app.mode {
         state.apply_synthesis(synthesized_plan_response());
@@ -4468,18 +4468,16 @@ fn expert_review_requires_an_explicit_model_before_any_call_is_staged() {
         AppMode::PlanInterview(state)
             if state.phase == PlanInterviewPhase::Review
                 && state.expert_model.is_none()
-                && state.expert_model_input.as_deref() == Some("")
-    ));
-
-    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
-    assert_eq!(
-        app.message.as_deref(),
-        Some("Enter a frontier model for the Expert review")
-    );
-    assert!(app.plan_interview_critique_bg.is_none());
-    assert!(matches!(
-        &app.mode,
-        AppMode::PlanInterview(state) if state.expert_model_input.is_some()
+                && state.expert_model_pick.as_ref().is_some_and(|pick| {
+                    pick.selected == 1
+                        && pick.rows == vec![
+                            ModelPickRow::Preset("sonnet".into()),
+                            ModelPickRow::Preset("opus".into()),
+                            ModelPickRow::Preset("haiku".into()),
+                            ModelPickRow::Preset("fable".into()),
+                            ModelPickRow::Custom,
+                        ]
+                })
     ));
 }
 
@@ -4492,9 +4490,6 @@ fn expert_review_carries_the_chosen_model_into_the_precall_gate() {
     }
 
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
-    for c in "opus".chars() {
-        crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char(c))).unwrap();
-    }
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
 
     assert!(app.plan_interview_critique_bg.is_none());
@@ -4510,7 +4505,7 @@ fn expert_review_carries_the_chosen_model_into_the_precall_gate() {
                 pending.prior_mode.as_ref(),
                 AppMode::PlanInterview(state)
                     if state.expert_model.as_deref() == Some("opus")
-                        && state.expert_model_input.is_none()
+                        && state.expert_model_pick.is_none()
             ));
         }
         _ => panic!("expected the Expert pre-call confirmation"),
@@ -4534,16 +4529,16 @@ fn cancelling_the_expert_model_picker_spends_no_tokens() {
         AppMode::PlanInterview(state)
             if state.phase == PlanInterviewPhase::Review
                 && state.expert_model.is_none()
-                && state.expert_model_input.is_none()
+                && state.expert_model_pick.is_none()
     ));
 }
 
 #[test]
-fn configured_expert_model_is_preloaded_but_still_needs_user_confirmation() {
+fn configured_expert_model_is_selected_but_still_needs_user_confirmation() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
     app.config.review_models.insert(
         ReviewAction::PlanPreflight.config_key().to_string(),
-        "frontier-model".to_string(),
+        "opus".to_string(),
     );
     if let AppMode::PlanInterview(state) = &mut app.mode {
         state.apply_synthesis(synthesized_plan_response());
@@ -4557,7 +4552,34 @@ fn configured_expert_model_is_preloaded_but_still_needs_user_confirmation() {
         &app.mode,
         AppMode::PlanInterview(state)
             if state.expert_model.is_none()
-                && state.expert_model_input.as_deref() == Some("frontier-model")
+                && state.expert_model_pick.as_ref().is_some_and(|pick| {
+                    pick.selected == 1 && !pick.editing_custom && pick.custom_input.is_empty()
+                })
+    ));
+}
+
+#[test]
+fn custom_expert_model_is_available_without_making_typing_the_default_path() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.config.review_models.insert(
+        ReviewAction::PlanPreflight.config_key().to_string(),
+        "frontier-model".to_string(),
+    );
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.expert_model_pick.as_ref().is_some_and(|pick| {
+                pick.selected == pick.rows.len() - 1
+                    && !pick.editing_custom
+                    && pick.custom_input == "frontier-model"
+            })
     ));
 }
 

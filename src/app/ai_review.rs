@@ -837,9 +837,10 @@ fn build_ai_review(
     (body, inline)
 }
 
-/// Rows offered by the AI-review model picker for a given harness: `Default`
-/// and `Custom` always appear; presets are a best-effort, *verified* set of
-/// model names. Claude's are a fixed, well-known set of tier aliases,
+/// Rows offered by a model picker for a given harness. `Custom` always
+/// appears, while callers decide whether the harness `Default` is valid for
+/// their workflow; presets are a best-effort, *verified* set of model names.
+/// Claude's are a fixed, well-known set of tier aliases,
 /// confirmed against `claude --help` ("Provide an alias for the latest
 /// model (e.g. 'fable', 'opus', or 'sonnet')"; `haiku` is the fourth
 /// well-known tier). Codex has no such alias list — its `--model` values are
@@ -849,8 +850,12 @@ fn build_ai_review(
 /// a reliably enumerable list). Every other harness offers just `Default`
 /// and `Custom`, since guessing a preset that doesn't exist would be worse
 /// than not offering one.
-fn model_pick_rows(harness: &AgentKind) -> Vec<ModelPickRow> {
-    let mut rows = vec![ModelPickRow::Default];
+pub(super) fn model_pick_rows(harness: &AgentKind, include_default: bool) -> Vec<ModelPickRow> {
+    let mut rows = if include_default {
+        vec![ModelPickRow::Default]
+    } else {
+        Vec::new()
+    };
     match harness {
         AgentKind::Claude => rows.extend([
             ModelPickRow::Preset("sonnet".to_string()),
@@ -1541,7 +1546,7 @@ impl App {
             return;
         };
         if !model_picked {
-            let rows = model_pick_rows(&harness);
+            let rows = model_pick_rows(&harness, true);
             let configured = self.config.review_model_for(ReviewAction::PrReview);
             let preset_match = configured.as_ref().and_then(|configured| {
                 rows.iter().position(
@@ -1734,7 +1739,7 @@ impl App {
         if harness_changed {
             if let AppMode::AiReview(state) = &mut self.mode {
                 state.model_pick = Some(AiModelPickState {
-                    rows: model_pick_rows(&chosen),
+                    rows: model_pick_rows(&chosen, true),
                     selected: 0,
                     custom_input: String::new(),
                     editing_custom: false,
@@ -2842,19 +2847,19 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
 
     #[test]
     fn model_pick_rows_offers_verified_presets_for_claude_and_no_codex_presets_in_tests() {
-        let claude = model_pick_rows(&AgentKind::Claude);
+        let claude = model_pick_rows(&AgentKind::Claude, true);
         assert!(claude.contains(&ModelPickRow::Preset("sonnet".to_string())));
         // `codex_config::known_models` no-ops under `cfg!(test)` (never reads
         // the real machine's `~/.codex/config.toml`), so Codex gets no
         // presets here even though outside tests it would offer whatever
         // model ids that account's config records.
-        let codex = model_pick_rows(&AgentKind::Codex);
+        let codex = model_pick_rows(&AgentKind::Codex, true);
         assert!(!codex.iter().any(|r| matches!(r, ModelPickRow::Preset(_))));
         // Pi accepts `--model` (see `HeadlessRunner::supports_model_flag`), so
         // it gets the same Default/Custom picker as the other unenumerable
         // harnesses rather than being skipped.
         assert_eq!(
-            model_pick_rows(&AgentKind::Pi),
+            model_pick_rows(&AgentKind::Pi, true),
             vec![ModelPickRow::Default, ModelPickRow::Custom]
         );
     }

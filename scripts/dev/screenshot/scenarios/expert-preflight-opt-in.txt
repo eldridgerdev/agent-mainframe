@@ -13,9 +13,8 @@ note:The synthesized plan is shown at the review gate before the Expert review i
 shot:plan-review-before-expert
 key:a
 wait:700
-note:Expert review is a distinct user-triggered step that requires an explicit frontier model before AMF can stage a call.
+note:Expert review is a distinct user-triggered step with the harness's verified model choices; no model name must be typed.
 shot:expert-frontier-model-picker
-text:opus
 key:Enter
 wait:700
 note:The Expert pre-call confirmation shows the exact selected harness and frontier model before any tokens are spent.

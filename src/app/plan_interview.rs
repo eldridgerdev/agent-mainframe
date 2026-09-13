@@ -9,8 +9,9 @@ use anyhow::{Context, Result, bail};
 
 use super::pr_review::estimate_tokens;
 use super::{
-    App, AppMode, PendingPlanLaunch, PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget,
-    PreparedFeatureLaunch, ReviewAction, Selection, StartIntent, TodoPlanOrigin,
+    AiModelPickState, App, AppMode, ModelPickRow, PendingPlanLaunch, PlanInterviewPhase,
+    PlanInterviewState, PlanKickoffTarget, PreparedFeatureLaunch, ReviewAction, Selection,
+    StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
@@ -38,7 +39,7 @@ fn plan_kickoff_prompt(expert_brief: Option<&str>) -> String {
 }
 
 impl App {
-    /// Open the explicit model entry that gates every Expert plan review.
+    /// Open the explicit model picker that gates every Expert plan review.
     pub(crate) fn open_plan_expert_model_picker(&mut self) {
         let configured = self.config.review_model_for(ReviewAction::PlanPreflight);
         let (preferred, resolved) = match &self.mode {
@@ -53,8 +54,27 @@ impl App {
         };
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.ai_harness = Some(harness.clone());
-            if harness.is_some() {
-                state.expert_model_input = Some(configured.unwrap_or_default());
+            if let Some(harness) = &harness {
+                let rows = super::ai_review::model_pick_rows(harness, false);
+                let preset_match = configured.as_ref().and_then(|configured| {
+                    rows.iter().position(
+                        |row| matches!(row, ModelPickRow::Preset(preset) if preset == configured),
+                    )
+                });
+                let frontier_default = rows.iter().position(
+                    |row| matches!(row, ModelPickRow::Preset(preset) if preset == "opus"),
+                );
+                let (selected, custom_input) = match (preset_match, configured) {
+                    (Some(index), _) => (index, String::new()),
+                    (None, Some(configured)) => (rows.len() - 1, configured),
+                    (None, None) => (frontier_default.unwrap_or(0), String::new()),
+                };
+                state.expert_model_pick = Some(AiModelPickState {
+                    rows,
+                    selected,
+                    custom_input,
+                    editing_custom: false,
+                });
             }
         }
         if harness.is_none() {
@@ -65,46 +85,95 @@ impl App {
         }
     }
 
+    pub(crate) fn plan_expert_model_pick_move(&mut self, delta: isize) {
+        if let AppMode::PlanInterview(state) = &mut self.mode
+            && let Some(pick) = &mut state.expert_model_pick
+            && !pick.editing_custom
+            && !pick.rows.is_empty()
+        {
+            let len = pick.rows.len() as isize;
+            pick.selected = ((pick.selected as isize + delta).rem_euclid(len)) as usize;
+        }
+    }
+
     pub(crate) fn plan_expert_model_push(&mut self, c: char) {
         if let AppMode::PlanInterview(state) = &mut self.mode
-            && let Some(input) = &mut state.expert_model_input
+            && let Some(pick) = &mut state.expert_model_pick
+            && pick.editing_custom
         {
-            input.push(c);
+            pick.custom_input.push(c);
         }
     }
 
     pub(crate) fn plan_expert_model_backspace(&mut self) {
         if let AppMode::PlanInterview(state) = &mut self.mode
-            && let Some(input) = &mut state.expert_model_input
+            && let Some(pick) = &mut state.expert_model_pick
+            && pick.editing_custom
         {
-            input.pop();
+            pick.custom_input.pop();
         }
     }
 
     pub(crate) fn cancel_plan_expert_model_picker(&mut self) {
         if let AppMode::PlanInterview(state) = &mut self.mode {
-            state.expert_model_input = None;
+            let Some(pick) = &mut state.expert_model_pick else {
+                return;
+            };
+            if pick.editing_custom {
+                pick.editing_custom = false;
+                self.message = None;
+                return;
+            }
+            state.expert_model_pick = None;
         }
         self.message = None;
     }
 
     pub(crate) fn confirm_plan_expert_model_picker(&mut self) -> Result<()> {
-        let model = match &self.mode {
-            AppMode::PlanInterview(state) => state
-                .expert_model_input
-                .as_deref()
-                .map(str::trim)
-                .filter(|model| !model.is_empty())
-                .map(str::to_string),
-            _ => None,
+        let (row, editing_custom) = match &self.mode {
+            AppMode::PlanInterview(state) => {
+                let Some(pick) = &state.expert_model_pick else {
+                    return Ok(());
+                };
+                (pick.rows.get(pick.selected).cloned(), pick.editing_custom)
+            }
+            _ => return Ok(()),
         };
-        let Some(model) = model else {
-            self.message = Some("Enter a frontier model for the Expert review".into());
+        let Some(row) = row else {
             return Ok(());
         };
+        let model = match row {
+            ModelPickRow::Preset(model) => model,
+            ModelPickRow::Custom if !editing_custom => {
+                if let AppMode::PlanInterview(state) = &mut self.mode
+                    && let Some(pick) = &mut state.expert_model_pick
+                {
+                    pick.editing_custom = true;
+                }
+                self.message = None;
+                return Ok(());
+            }
+            ModelPickRow::Custom => {
+                let model = match &self.mode {
+                    AppMode::PlanInterview(state) => state
+                        .expert_model_pick
+                        .as_ref()
+                        .map(|pick| pick.custom_input.trim().to_string())
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                if model.is_empty() {
+                    self.message = Some("Enter a model name or press Esc to choose one".into());
+                    return Ok(());
+                }
+                model
+            }
+            ModelPickRow::Default => return Ok(()),
+        };
+        self.message = None;
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.expert_model = Some(model);
-            state.expert_model_input = None;
+            state.expert_model_pick = None;
         }
         self.persist_plan_interview_draft();
         self.start_plan_interview_critique()

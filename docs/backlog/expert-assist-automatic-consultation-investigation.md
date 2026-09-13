@@ -21,9 +21,11 @@ been consulted. The automatic `off`/`suggest`/`require` policy was removed.
 1. Plan mode collects the brief and discovery answers, then synthesizes a
    concrete implementation plan.
 2. At the final review gate, the user may press `a` for **Expert review**.
-3. AMF requires the exact frontier model value for the plan's resolved harness.
-   A `review_models.plan_preflight` value may prefill the field, but the user
-   must still confirm it. The shared ordinary `review_model` is never used.
+3. AMF requires an explicit frontier model for the plan's resolved harness.
+   The user selects from the same verified presets used by AI Review, with
+   `Custom…` available for unlisted IDs. A `review_models.plan_preflight` value
+   may highlight the matching row, but the user must still confirm it. The
+   shared ordinary `review_model` is never used.
 4. The normal pre-call confirmation shows the prompt, harness, model, and token
    estimate. Only another explicit Enter starts the call.
 5. The Expert reviews the plan read-only and returns a compact implementation
@@ -85,8 +87,9 @@ worth its tokens.
 
 ## Implementation status
 
-The plan-review action is user initiated and requires an explicit model. The
-selected model is visible before dispatch, reaches the headless runner and the
-single clarification follow-up, persists with the plan interview, and appears
-in evaluation export. The structured brief and kickoff handoff from the first
-prototype remain because they directly improve the cheaper model's input.
+The plan-review action is user initiated and requires an explicit selection
+from the shared model picker. The selected model is visible before dispatch,
+reaches the headless runner and the single clarification follow-up, persists
+with the plan interview, and appears in evaluation export. The structured brief
+and kickoff handoff from the first prototype remain because they directly
+improve the cheaper model's input.

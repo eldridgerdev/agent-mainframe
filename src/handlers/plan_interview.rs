@@ -14,18 +14,33 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
     let choosing_expert_model = matches!(
         &app.mode,
-        AppMode::PlanInterview(state) if state.expert_model_input.is_some()
+        AppMode::PlanInterview(state) if state.expert_model_pick.is_some()
     );
     if choosing_expert_model {
+        let editing_custom = matches!(
+            &app.mode,
+            AppMode::PlanInterview(state)
+                if state.expert_model_pick.as_ref().is_some_and(|pick| pick.editing_custom)
+        );
+        if editing_custom {
+            match key.code {
+                KeyCode::Esc => app.cancel_plan_expert_model_picker(),
+                KeyCode::Enter => app.confirm_plan_expert_model_picker()?,
+                KeyCode::Backspace => app.plan_expert_model_backspace(),
+                KeyCode::Char(c)
+                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    app.plan_expert_model_push(c)
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         match key.code {
             KeyCode::Esc => app.cancel_plan_expert_model_picker(),
             KeyCode::Enter => app.confirm_plan_expert_model_picker()?,
-            KeyCode::Backspace => app.plan_expert_model_backspace(),
-            KeyCode::Char(c)
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                app.plan_expert_model_push(c)
-            }
+            KeyCode::Down | KeyCode::Char('j') => app.plan_expert_model_pick_move(1),
+            KeyCode::Up | KeyCode::Char('k') => app.plan_expert_model_pick_move(-1),
             _ => {}
         }
         return Ok(());

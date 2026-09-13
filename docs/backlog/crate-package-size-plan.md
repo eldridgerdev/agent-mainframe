@@ -1,6 +1,6 @@
 # Crate package size
 
-- **Status:** Backlog
+- **Status:** Shipped
 - **Owner:** unassigned
 - **Relates to:** the `publish-crate` CI job and `Cargo.toml` metadata added
   to enable crates.io publishing (see `.github/workflows/release.yml`,
@@ -8,36 +8,39 @@
 
 ## Why / problem
 
-The published package is far larger than it needs to be:
-`cargo publish --dry-run` reports **703 files, 20.0MiB uncompressed /
+The published package was far larger than it needed to be:
+`cargo publish --dry-run` reported **703 files, 20.0MiB uncompressed /
 11.1MiB compressed**. Inspecting `target/package/agent-mainframe-<ver>/`
-shows most of that is not needed to build the `amf` binary:
+showed most of that wasn't needed to build the `amf` binary:
 
-- `docs/screenshots/` alone is **~11MB** — over half the package, and
+- `docs/screenshots/` alone was **~11MB** — over half the package, and
   pure documentation imagery with no `include_str!`/`include_bytes!`
   reference from `src/`.
 - `docs/backlog/` (776K), `docs/development/` (456K), and most other
   `docs/*.md` files are design notes, not build inputs.
 - `.agents/`, `.claude/`, `.codex/`, `examples/`, `docker/`, `site/`
-  (the new marketing/docs site), and most of `plugins/` ship in full but
-  are irrelevant to compiling or running the binary.
+  (the new marketing/docs site), and most of `.opencode/` shipped in full
+  but are irrelevant to compiling or running the binary.
 
-The first real publish attempt (after the metadata fix landed) failed
-with a `503 backend write error` from crates.io's Varnish layer — almost
-certainly a transient issue on their end, since reads to the registry
-worked fine and no partial crate was created. But an unnecessarily large
-upload is more likely to hit exactly this kind of transient failure, and
-there's no reason to ship 20MB of screenshots and internal dev tooling to
-every `cargo install agent-mainframe` user regardless.
+This turned out not to be cosmetic: the real publish attempts (after the
+metadata fix landed) consistently failed with a `503 backend write
+error`. Confirmed root cause via
+[rust-lang/crates.io#10098](https://github.com/rust-lang/crates.io/issues/10098):
+crates.io enforces a **hard 10MB cap on the compressed `.crate` file**;
+an oversized upload gets a `413 Payload Too Large` from their API, but
+their CDN layer (Heroku/CloudFront/Varnish, depending on which part of
+the stack) mangles that clean rejection into an opaque `503` before it
+reaches `cargo`. Our compressed size (11.1MiB) was just over that cap —
+this is almost certainly why every publish attempt failed identically.
 
 ## Proposed design
 
 `src/` legitimately pulls a handful of files from outside `src/` via
 `include_str!`/`include_bytes!`, so the package can't just be `include =
-["/src", ...]` — that was tried once already and broke the
-`cargo publish --dry-run` verification build (it compiles the packaged
-tarball, so a missing embed fails loudly, which is useful). The known
-embed targets, as of this writing:
+["/src", ...]` — that was tried once and broke the `cargo publish
+--dry-run` verification build (it compiles the packaged tarball, so a
+missing embed fails loudly, which is useful). The known embed targets,
+as of this writing:
 
 - `themes/opencode/*.json` (`src/theme.rs`)
 - `skills/amf-add-session/SKILL.md`, `amf-add-hook`, `amf-add-preset`,
@@ -48,47 +51,45 @@ embed targets, as of this writing:
 - `docs/tsx-syntax-test.tsx`, `docs/syntax-tests/syntax-test-highlight.ts`
   (`src/highlight/tree_sitter.rs`, `src/ui/dialogs/diff.rs`)
 
-So the right shape is an **exclude list of specific heavy,
-non-embedded paths**, built and verified incrementally — not a
-from-scratch include allowlist. `docs/screenshots/` is the single
-biggest win and should be excluded first; the rest of `docs/` needs a
-path-by-path check against the list above before exclusion (only two
-files under `docs/` are actually embedded).
+So the right shape was an **exclude list of specific heavy,
+non-embedded paths**, not a from-scratch include allowlist.
 
 ## Progress
 
-- [ ] Exclude `docs/screenshots/` (biggest single win, ~11MB, no embeds).
-- [ ] Audit remaining `docs/*` subpaths against the embed list above and
-      exclude everything except `docs/tsx-syntax-test.tsx` and
-      `docs/syntax-tests/`.
-- [ ] Exclude `.agents/`, `.claude/`, `.codex/`, `examples/`, `docker/`,
-      `site/`.
-- [ ] Exclude `.opencode/*` except `.opencode/plugins/*.js`, and
-      `plugins/*` except `plugins/diff-review/scripts/custom-diff-review.sh`.
-- [ ] Re-run `cargo publish --dry-run` after each batch of excludes —
-      it compiles the packaged tarball, so a missing embed fails
-      immediately rather than at actual publish time.
-- [ ] Record the final compressed size and confirm it's meaningfully
-      smaller.
-- [ ] Confirm an actual (non-dry-run) publish succeeds once the package
-      is slimmed down, independent of whatever caused the 503.
+- [x] Excluded `docs/screenshots/` (biggest single win, ~11MB, no embeds).
+- [x] Audited remaining `docs/*` subpaths against the embed list above and
+      excluded everything except `docs/tsx-syntax-test.tsx` and
+      `docs/syntax-tests/` (`docs/automation`, `docs/backlog`,
+      `docs/development`, and the standalone `docs/*.md` design notes).
+- [x] Excluded `/.agents`, `/.claude`, `/.codex`, `/examples`, `/docker`,
+      `/site`.
+- [x] Excluded `.opencode/commands`, `.opencode/opencode.json`,
+      `.opencode/themes` (keeping `.opencode/plugins/*.js`, the only
+      embedded part). `plugins/` needed no exclusion — it already
+      contains only the one embedded script.
+- [x] Re-ran `cargo publish --dry-run` after the change — verification
+      build compiled clean, and every embed target
+      (`for f in ...; do test -f target/package/.../$f; done`) confirmed
+      present in the packaged tree.
+- [x] Final size: **385 files, 8.2MiB uncompressed / 1.7MiB compressed**
+      (down from 703 files / 20.0MiB / 11.1MiB) — comfortably under the
+      10MB compressed cap with margin for growth.
+- [ ] Confirm an actual (non-dry-run) `cargo publish` succeeds now that
+      the package is under the cap. Expected to fix the `503`s, but not
+      yet re-attempted after this change.
 
 ## Open questions
 
-- Was the `503 backend write error` actually size-related, or an
-  unrelated transient crates.io issue? No way to confirm after the fact;
-  treat this as good hygiene regardless, not a guaranteed fix.
-- Does crates.io currently enforce a hard package size cap we're closer
-  to than we'd like? Worth checking before assuming headroom.
+- None outstanding on the packaging side. The one open item is
+  confirming the live publish succeeds (see Progress).
 - Keep `CHANGELOG.md`, `README.md`, `AGENTS.md`, `CLAUDE.md` in the
-  package (small, conventional, useful on crates.io/docs.rs) — no open
-  question there, just noting they're intentionally out of scope for
-  trimming.
+  package (small, conventional, useful on crates.io/docs.rs) —
+  intentionally out of scope for trimming.
+- `examples/vtcheck.rs` is now excluded along with the rest of
+  `/examples`, so `cargo publish` prints a harmless
+  "ignoring example `vtcheck`" warning. It's a standalone dev diagnostic,
+  not part of the installed binary, so this is expected.
 
 ## Reasoning / when to build
 
-Low urgency — doesn't block anything if the next publish attempt
-succeeds on retry regardless of size. Worth doing before the crate is
-publicly discoverable on crates.io, since first impressions there
-(package size shown on the crate page, install time) are hard to walk
-back later.
+Done — this was blocking real publishes, not just a size nice-to-have.

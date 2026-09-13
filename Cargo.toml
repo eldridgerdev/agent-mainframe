@@ -9,9 +9,34 @@ readme = "README.md"
 keywords = ["tui", "tmux", "agents", "claude", "worktree"]
 categories = ["command-line-utilities", "development-tools"]
 homepage = "https://agentmainframe.dev"
-# Tracked but broken outside a real checkout: a symlink to the gitignored
-# .claude/settings.json, which `cargo package` fails to follow.
-exclude = [".opencode/settings.json"]
+# Keep the packaged .crate under crates.io's 10MB compressed hard cap (an
+# oversized upload gets rejected with a 413 that their CDN mangles into an
+# opaque 503 — see docs/backlog/crate-package-size-plan.md). Everything
+# excluded here is dev tooling / docs with no `include_str!`/`include_bytes!`
+# reference from src/; docs/tsx-syntax-test.tsx and docs/syntax-tests/ are
+# kept because src/highlight and src/ui/dialogs/diff.rs embed them.
+exclude = [
+    ".opencode/settings.json",
+    ".opencode/commands",
+    ".opencode/opencode.json",
+    ".opencode/themes",
+    "/.agents",
+    "/.claude",
+    "/.codex",
+    "/docker",
+    "/examples",
+    "/site",
+    "/docs/automation",
+    "/docs/backlog",
+    "/docs/batched-review.md",
+    "/docs/context-usage-telemetry.md",
+    "/docs/development",
+    "/docs/docker-no-tmux.md",
+    "/docs/final-review-subagent-notes-investigation.md",
+    "/docs/repository-cleanup-audit.md",
+    "/docs/screenshots",
+    "/docs/usability-review.md",
+]
 
 [[bin]]
 name = "amf"

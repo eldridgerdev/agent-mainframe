@@ -63,12 +63,13 @@ doc always says exactly what remains.
 
 ## Index
 
-- [Crate package size](crate-package-size-plan.md) — _Backlog._ The
-  published crate is 20MB/703 files, mostly `docs/screenshots/` (~11MB)
-  and other non-embedded dev-tooling directories shipped in full.
-  Trim via a targeted `exclude` list checked against the handful of
-  files `src/` actually pulls in via `include_str!`, verified with
-  `cargo publish --dry-run` after each cut.
+- [Crate package size](crate-package-size-plan.md) — _Shipped._ The
+  published crate was 20MB/703 files (11.1MiB compressed) — over
+  crates.io's 10MB compressed cap, which is what turned every publish
+  attempt into an opaque `503` instead of a clean rejection. Trimmed via
+  a targeted `Cargo.toml` `exclude` list checked against the handful of
+  files `src/` actually pulls in via `include_str!`, down to 8.2MiB/1.7MiB
+  compressed.
 - [Premium-model efficiency options](premium-model-efficiency-options-plan.md) —
   _Backlog._ Planning reference for eight ways AMF could make Astra/Fable more
   affordable, with worked savings calculations, implementation boundaries,

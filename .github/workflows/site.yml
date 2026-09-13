@@ -4,8 +4,9 @@ name: Deploy site
 #
 # Requires repo secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, and a
 # Cloudflare Pages project matching `projectName` below (see site/README.md).
-# Until those are configured this workflow will fail on the deploy step —
-# that's expected, it's scaffolding until the project is set up.
+# The build always runs (it's a useful check on its own), but the deploy step
+# is skipped — not failed — until CLOUDFLARE_API_TOKEN is set, same pattern
+# as the crates.io publish job in release.yml.
 
 on:
   push:
@@ -34,6 +35,7 @@ jobs:
         run: zola build
 
       - name: Deploy to Cloudflare Pages
+        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
         uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

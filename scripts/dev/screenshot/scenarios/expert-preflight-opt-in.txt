@@ -1,23 +1,17 @@
-# Shows that plan mode is an explicit user choice and does not open an Expert
-# preflight dialog on its own.
-note:The seeded dashboard is the isolated starting point before feature creation.
-shot:dashboard-seeded
-key:n
-wait:300
-shot:create-feature-source
-key:Enter
-wait:200
-text:opt-in-review
-wait:200
-key:Enter
-wait:200
-key:Enter
-wait:200
-key:Tab
-key:Tab
-key:Tab
-wait:200
+# Shows the Expert pre-call confirmation against a deterministic synthesized
+# plan fixture. No provider call is sent because the scenario stops at the
+# confirmation surface.
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db"
+wait:700
 key:j
 wait:300
-note:The feature wizard visibly lets the user choose Plan Mode; no Expert preflight dialog appears automatically, demonstrating that the review remains user-controlled.
-shot:plan-mode-opt-in
+key:P
+wait:700
+key:r
+wait:700
+note:The synthesized plan is shown at the review gate before the Expert review is requested.
+shot:plan-review-before-expert
+key:a
+wait:700
+note:The Expert pre-call confirmation identifies the draft-review prompt and harness, and requires an explicit Enter before any Expert call is sent.
+shot:expert-preflight-confirmation

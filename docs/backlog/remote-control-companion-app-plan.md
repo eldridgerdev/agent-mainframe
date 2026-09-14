@@ -265,16 +265,34 @@ Needs Epic 1 only — the read-only relay logic can be built and tested
 against a local client before pairing/auth exists, though it should be
 gated behind auth (Epic 4) before being exposed on a real network.
 
-- [ ] Read-only status/notification endpoint (WebSocket or polling)
+- [x] Read-only status/notification endpoint (WebSocket or polling)
       sourced from the existing `app/notifications.rs` scan.
-- [ ] Independent of the remote-control toggle's on/off state, per the
+- [x] Independent of the remote-control toggle's on/off state, per the
       notification/toggle split in Architecture.
 - [ ] Auth-gated once Epic 4 lands (do not ship unauthenticated on a
-      real network).
+      real network). Still open — mitigated for now by binding
+      loopback-only (`127.0.0.1`, OS-assigned port), not by auth.
 
-Verification: automated test that a simulated attention event is
-delivered over the channel; manual check that a live AMF instance's
-status is visible over the relay.
+**Done (2026-09-14), backend half.** `GET /status` on
+`src/remote_server.rs` serves a `RemoteStatusSnapshot` (plain polling,
+not a WebSocket — simplest thing that works for a feed this small and
+low-frequency; nothing here rules out a push transport later).
+`App::build_remote_status_snapshot` builds it from `self.store` plus the
+existing in-memory `self.attention` map — attention *detection* was
+already independent of this toggle before this epic (that's
+`app/notifications.rs`, untouched here); what's new is a read-only
+window onto it. Pushed to the server thread over a `tokio::mpsc`
+channel every `poll_remote_server_bg` tick; a relay task holds the
+latest snapshot behind a `Mutex` so the server thread never reads `App`
+directly. `RemoteFeatureStatus` is a deliberately narrow wire type, not
+a mirror of `project::Feature`. The Flutter-side status *view* is Epic
+6's job — this epic is the backend feed it will call.
+
+Verification: 3 new tests, including a real HTTP round trip
+(`ureq::get` against a live `/status`) both before and after
+`publish_status`, and the `poll_remote_server_bg` publish loop verified
+end-to-end over real HTTP from `App`. Full suite (2261 tests, run twice
+for flakiness), clippy, and fmt all clean.
 
 ### Epic 6 — App shell + push (P1)
 

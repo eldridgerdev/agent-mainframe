@@ -83,6 +83,23 @@ tar -xzf amf.tar.gz
 sudo install -m 755 amf-aarch64-apple-darwin/amf /usr/local/bin/amf
 ```
 
+### Install from crates.io
+
+Install the `agent-mainframe` crate with Cargo:
+
+```bash
+cargo install agent-mainframe --locked
+```
+
+The crate installs the `amf` binary. Make sure `~/.cargo/bin` is in your
+`PATH`, then run:
+
+```bash
+amf
+```
+
+This source installation requires Rust, a C compiler, and `tmux`.
+
 ### Build from source
 
 Building uses the current stable Rust toolchain, a C compiler, and `tmux`:

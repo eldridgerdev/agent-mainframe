@@ -12,6 +12,7 @@
   </div>
 
   <pre class="install-snippet"><code>{{ section.extra.install_cmd }}</code></pre>
+  <p class="install-note">{{ section.extra.install_note }}</p>
 
   {% if section.extra.hero_image %}
   <img class="hero-image" src="{{ get_url(path=section.extra.hero_image) }}" alt="{{ section.extra.hero_image_alt | default(value='AMF dashboard') }}">

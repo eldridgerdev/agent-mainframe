@@ -845,7 +845,11 @@ fn build_ai_review(
 /// model (e.g. 'fable', 'opus', or 'sonnet')"; `haiku` is the fourth
 /// well-known tier). Codex's presets come from `codex_config::known_models`,
 /// which reads the catalog used by Codex's own model picker and falls back to
-/// its recorded availability table on older installs. Every other harness
+/// its recorded availability table on older installs — both fast, synchronous
+/// reads. A fresh install with neither has empty presets here; callers that
+/// open a picker on the result should follow up with
+/// [`App::maybe_refresh_codex_known_models`] to backfill it from the `codex`
+/// CLI in the background rather than shelling out inline. Every other harness
 /// offers just `Default` and `Custom`, since guessing a preset that doesn't
 /// exist would be worse than not offering one.
 pub(super) fn model_pick_rows(harness: &AgentKind, include_default: bool) -> Vec<ModelPickRow> {
@@ -870,6 +874,86 @@ pub(super) fn model_pick_rows(harness: &AgentKind, include_default: bool) -> Vec
     }
     rows.push(ModelPickRow::Custom);
     rows
+}
+
+impl App {
+    /// Backfill an open Codex model picker whose presets came back empty from
+    /// [`model_pick_rows`] (a fresh install with neither a written catalog
+    /// cache nor a recorded availability table). Spawns
+    /// `codex_config::spawn_cli_catalog_probe` on a background thread — never
+    /// calls the `codex` CLI inline, since that can block for as long as the
+    /// process takes to exit. A no-op for any other harness, or if a probe is
+    /// already in flight.
+    pub(super) fn maybe_refresh_codex_known_models(&mut self, harness: &AgentKind, rows: &[ModelPickRow]) {
+        if !matches!(harness, AgentKind::Codex) || self.codex_models_cli_bg.is_some() {
+            return;
+        }
+        if rows.iter().any(|row| matches!(row, ModelPickRow::Preset(_))) {
+            return;
+        }
+        self.codex_models_cli_bg = Some(crate::codex_config::spawn_cli_catalog_probe());
+    }
+
+    /// Drain the background Codex catalog probe started by
+    /// [`Self::maybe_refresh_codex_known_models`]. Returns `true` when the app
+    /// state changed and a redraw is warranted.
+    pub fn poll_codex_models_cli_bg(&mut self) -> bool {
+        let Some(rx) = self.codex_models_cli_bg.as_ref() else {
+            return false;
+        };
+        let models = match rx.try_recv() {
+            Ok(models) => models,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.codex_models_cli_bg = None;
+                return true;
+            }
+        };
+        self.codex_models_cli_bg = None;
+        let Some(models) = models.filter(|models| !models.is_empty()) else {
+            return true;
+        };
+        match &mut self.mode {
+            AppMode::PlanInterview(state) => {
+                if let Some(pick) = &mut state.expert_model_pick {
+                    merge_codex_preset_rows(pick, models);
+                }
+            }
+            AppMode::AiReview(state) => {
+                if let Some(pick) = &mut state.model_pick {
+                    merge_codex_preset_rows(pick, models);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+}
+
+/// Splice freshly probed Codex preset rows into an open picker, ahead of its
+/// `Custom` row, keeping whichever row was highlighted selected. Guarded by
+/// the same emptiness check as [`App::maybe_refresh_codex_known_models`], so
+/// a picker re-opened (with cache-sourced presets) before the probe lands
+/// isn't clobbered by the stale-by-then CLI result.
+fn merge_codex_preset_rows(pick: &mut AiModelPickState, models: Vec<String>) {
+    if pick.rows.iter().any(|row| matches!(row, ModelPickRow::Preset(_))) {
+        return;
+    }
+    let selected_row = pick.rows.get(pick.selected).cloned();
+    let insert_at = pick
+        .rows
+        .iter()
+        .position(|row| matches!(row, ModelPickRow::Custom))
+        .unwrap_or(pick.rows.len());
+    for (offset, model) in models.into_iter().enumerate() {
+        pick.rows
+            .insert(insert_at + offset, ModelPickRow::Preset(model));
+    }
+    if let Some(row) = selected_row
+        && let Some(index) = pick.rows.iter().position(|candidate| *candidate == row)
+    {
+        pick.selected = index;
+    }
 }
 
 fn model_for_ai_review_run(
@@ -1545,6 +1629,7 @@ impl App {
         };
         if !model_picked {
             let rows = model_pick_rows(&harness, true);
+            self.maybe_refresh_codex_known_models(&harness, &rows);
             let configured = self.config.review_model_for(ReviewAction::PrReview);
             let preset_match = configured.as_ref().and_then(|configured| {
                 rows.iter().position(

@@ -157,20 +157,16 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             MIGRATION_035,
         ),
         (
-            "Persist Expert Assist consultations independently of full-replace project saves",
+            "Persist Expert plan-review briefs and plan fingerprints",
             MIGRATION_036,
         ),
         (
-            "Persist Expert plan-review briefs and plan fingerprints",
+            "Persist Expert plan-review lifecycle status and estimates",
             MIGRATION_037,
         ),
         (
-            "Persist Expert plan-review lifecycle status and estimates",
-            MIGRATION_038,
-        ),
-        (
             "Persist the explicit model used for an Expert plan review",
-            MIGRATION_039,
+            MIGRATION_038,
         ),
     ];
 
@@ -946,77 +942,16 @@ ALTER TABLE plan_interviews ADD COLUMN attached_docs TEXT NOT NULL DEFAULT '[]';
 ";
 
 const MIGRATION_036: &str = "
-CREATE TABLE expert_consultations (
-    id TEXT PRIMARY KEY,
-    schema_version INTEGER NOT NULL,
-    project_id TEXT NOT NULL,
-    feature_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    origin_json TEXT NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
-    request_revision INTEGER NOT NULL DEFAULT 1 CHECK(request_revision > 0),
-    state TEXT NOT NULL DEFAULT 'draft',
-    active_attempt_id TEXT,
-    owner_json TEXT,
-    heartbeat_at INTEGER,
-    handoff_state TEXT NOT NULL DEFAULT 'none',
-    handoff_revision INTEGER NOT NULL DEFAULT 0,
-    delivery_id TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-CREATE INDEX expert_origin ON expert_consultations(project_id, feature_id, session_id);
-CREATE INDEX expert_recovery ON expert_consultations(state, heartbeat_at);
-CREATE TABLE expert_requests (
-    consultation_id TEXT NOT NULL REFERENCES expert_consultations(id) ON DELETE CASCADE,
-    revision INTEGER NOT NULL CHECK(revision > 0),
-    request_json TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY(consultation_id, revision)
-);
-CREATE TABLE expert_attempts (
-    id TEXT PRIMARY KEY,
-    consultation_id TEXT NOT NULL REFERENCES expert_consultations(id) ON DELETE CASCADE,
-    request_revision INTEGER NOT NULL,
-    number INTEGER NOT NULL CHECK(number > 0),
-    owner_json TEXT NOT NULL,
-    state TEXT NOT NULL,
-    outcome_json TEXT,
-    started_at INTEGER NOT NULL,
-    finished_at INTEGER,
-    UNIQUE(consultation_id, number),
-    FOREIGN KEY(consultation_id, request_revision) REFERENCES expert_requests(consultation_id, revision)
-);
-CREATE TABLE expert_handoffs (
-    consultation_id TEXT NOT NULL REFERENCES expert_consultations(id) ON DELETE CASCADE,
-    revision INTEGER NOT NULL CHECK(revision > 0),
-    body TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY(consultation_id, revision)
-);
-CREATE TABLE expert_deliveries (
-    id TEXT PRIMARY KEY,
-    consultation_id TEXT NOT NULL REFERENCES expert_consultations(id) ON DELETE CASCADE,
-    handoff_revision INTEGER NOT NULL,
-    state TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    finished_at INTEGER,
-    UNIQUE(consultation_id, handoff_revision),
-    FOREIGN KEY(consultation_id, handoff_revision) REFERENCES expert_handoffs(consultation_id, revision)
-);
-";
-
-const MIGRATION_037: &str = "
 ALTER TABLE plan_interviews ADD COLUMN expert_brief TEXT;
 ALTER TABLE plan_interviews ADD COLUMN preflight_fingerprint TEXT;
 ";
 
-const MIGRATION_038: &str = "
+const MIGRATION_037: &str = "
 ALTER TABLE plan_interviews ADD COLUMN preflight_status TEXT;
 ALTER TABLE plan_interviews ADD COLUMN preflight_token_estimate INTEGER NOT NULL DEFAULT 0;
 ";
 
-const MIGRATION_039: &str = "
+const MIGRATION_038: &str = "
 ALTER TABLE plan_interviews ADD COLUMN preflight_model TEXT;
 ";
 
@@ -1060,7 +995,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 39);
+        assert_eq!(version, 38);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1155,7 +1090,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 38);
     }
 
     #[test]
@@ -1497,7 +1432,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 39);
+        assert_eq!(rows, 38);
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an
@@ -1608,7 +1543,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 38);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

@@ -1078,6 +1078,13 @@ pub struct App {
     pub ai_review_triage_refresh_bg: Option<Receiver<Result<pr_review::PrReview>>>,
     /// PR/workdir identity paired with `ai_review_triage_refresh_bg`.
     pub ai_review_triage_refresh_pending: Option<AiReviewTriageRefresh>,
+    /// Background `codex debug models` catalog probe
+    /// (`codex_config::spawn_cli_catalog_probe`), kicked off when a Codex
+    /// model picker opens with no preset rows (cache and availability table
+    /// both empty — a fresh install). Polled and, once it resolves, merged
+    /// into whichever model picker is still open; never awaited inline, since
+    /// that would block the event loop on the `codex` CLI.
+    pub codex_models_cli_bg: Option<Receiver<Option<Vec<String>>>>,
     /// Memoized `GhCli::current_user` result for the session, so opening or
     /// refreshing the PR picker doesn't repeat the `gh api user` call every
     /// time. `None` = not yet resolved; `Some(None)` = resolution was
@@ -2488,6 +2495,7 @@ impl App {
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
+            codex_models_cli_bg: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
@@ -2743,6 +2751,7 @@ impl App {
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
+            codex_models_cli_bg: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),

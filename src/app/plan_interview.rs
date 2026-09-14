@@ -52,10 +52,15 @@ impl App {
             Some(resolved) => resolved,
             None => HeadlessRunner::select_for_interview(&preferred),
         };
+        let rows = harness
+            .as_ref()
+            .map(|harness| super::ai_review::model_pick_rows(harness, false));
+        if let (Some(harness), Some(rows)) = (&harness, &rows) {
+            self.maybe_refresh_codex_known_models(harness, rows);
+        }
         if let AppMode::PlanInterview(state) = &mut self.mode {
             state.ai_harness = Some(harness.clone());
-            if let Some(harness) = &harness {
-                let rows = super::ai_review::model_pick_rows(harness, false);
+            if let Some(rows) = rows {
                 let preset_match = configured.as_ref().and_then(|configured| {
                     rows.iter().position(
                         |row| matches!(row, ModelPickRow::Preset(preset) if preset == configured),

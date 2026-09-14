@@ -37,9 +37,14 @@ fn configured_model_for(config_path: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// Model slugs visible in Codex's own model picker. The catalog cache is the
-/// primary source; the older availability table remains a compatibility
-/// fallback for installs that predate the cache.
+/// Model slugs visible in Codex's own model picker, from sources that are
+/// cheap to read synchronously: the catalog cache first, falling back to the
+/// older availability table for installs that predate the cache. Deliberately
+/// excludes the `codex debug models` CLI probe — that shells out to the
+/// `codex` binary and can block for as long as the process takes to exit (or
+/// hang, on a stuck or network-blocked install), so it must never run on the
+/// TUI's event-loop thread. Callers that want the CLI-sourced catalog spawn
+/// [`spawn_cli_catalog_probe`] on a background thread instead.
 ///
 /// No-ops under `cfg!(test)`, like [`ensure_user_config_notify_hook`], so
 /// unit tests never depend on the machine's real `~/.codex/config.toml`.
@@ -52,8 +57,21 @@ pub fn known_models() -> Vec<String> {
     };
     let cache_path = codex_home.join("models_cache.json");
     known_models_from_cache(&cache_path)
-        .or_else(known_models_from_cli)
         .unwrap_or_else(|| known_models_for(&codex_home.join("config.toml")))
+}
+
+/// Spawn a background thread that asks the installed Codex CLI for its model
+/// catalog and reports the result on the returned channel. This is the only
+/// caller of [`known_models_from_cli`]: it keeps the (potentially slow or
+/// hanging) `Command::output()` call off the TUI's event-loop thread, mirroring
+/// every other headless call in this codebase, which is spawned on a
+/// background thread and polled rather than awaited inline.
+pub fn spawn_cli_catalog_probe() -> std::sync::mpsc::Receiver<Option<Vec<String>>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(known_models_from_cli());
+    });
+    rx
 }
 
 /// Read the catalog used by Codex's own model picker. The NUX table in

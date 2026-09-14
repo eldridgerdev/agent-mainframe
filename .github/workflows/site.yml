@@ -5,8 +5,11 @@ name: Deploy site
 # Requires repo secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, and a
 # Cloudflare Pages project matching `projectName` below (see site/README.md).
 # The build always runs (it's a useful check on its own), but the deploy step
-# is skipped — not failed — until CLOUDFLARE_API_TOKEN is set, same pattern
-# as the crates.io publish job in release.yml.
+# is skipped — not failed — until CLOUDFLARE_API_TOKEN is set. That check is
+# routed through the job-level `env.CF_TOKEN_SET` rather than referencing
+# `secrets` directly in the step's `if:`, because GitHub Actions fails to
+# parse a workflow that does the latter (the crates.io publish job in
+# release.yml has the same bug — not yet fixed there).
 
 on:
   push:
@@ -21,6 +24,10 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      # Secrets can't be referenced directly in an `if:` conditional (GitHub
+      # silently fails to parse the workflow); route through a plain env var.
+      CF_TOKEN_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +42,7 @@ jobs:
         run: zola build
 
       - name: Deploy to Cloudflare Pages
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+        if: ${{ env.CF_TOKEN_SET == 'true' }}
         uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

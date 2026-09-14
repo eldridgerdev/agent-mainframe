@@ -36,17 +36,25 @@ jobs:
     name: Publish to crates.io
     needs: test
     runs-on: ubuntu-latest
-    # Skipped (not failed) until CARGO_REGISTRY_TOKEN is set on the repo, so
-    # tag pushes keep releasing GitHub binaries while crates.io publishing
-    # is being set up.
-    if: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    # Steps below are skipped (not failed) until CARGO_REGISTRY_TOKEN is set
+    # on the repo, so tag pushes keep releasing GitHub binaries while
+    # crates.io publishing is being set up. This can't be a job-level `if:`
+    # on `secrets.CARGO_REGISTRY_TOKEN` — GitHub Actions fails to parse a
+    # workflow that references `secrets` directly in an `if:` conditional —
+    # so the check is routed through a job-level env var and applied to each
+    # step instead (same fix as site.yml's deploy job).
+    env:
+      CARGO_TOKEN_SET: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
+        if: ${{ env.CARGO_TOKEN_SET == 'true' }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        if: ${{ env.CARGO_TOKEN_SET == 'true' }}
 
       - name: cargo publish
+        if: ${{ env.CARGO_TOKEN_SET == 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked

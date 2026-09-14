@@ -13,6 +13,8 @@ reviewed.
 
 <img width="1896" height="1030" alt="AMF dashboard showing several agent sessions" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
+**Docs and more:** [agent-mainframe-site.pages.dev](https://agent-mainframe-site.pages.dev)
+
 ## What AMF does
 
 - Runs several coding-agent sessions side by side from one dashboard.
@@ -82,6 +84,23 @@ curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download
 tar -xzf amf.tar.gz
 sudo install -m 755 amf-aarch64-apple-darwin/amf /usr/local/bin/amf
 ```
+
+### Install from crates.io
+
+Install the `agent-mainframe` crate with Cargo:
+
+```bash
+cargo install agent-mainframe --locked
+```
+
+The crate installs the `amf` binary. Make sure `~/.cargo/bin` is in your
+`PATH`, then run:
+
+```bash
+amf
+```
+
+This source installation requires Rust, a C compiler, and `tmux`.
 
 ### Build from source
 

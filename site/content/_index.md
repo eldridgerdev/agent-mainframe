@@ -5,7 +5,8 @@ template = "index.html"
 [extra]
 headline = "Run multiple AI coding agents in parallel, without losing track of them."
 subhead = "AMF is a terminal dashboard for managing Claude Code, Codex, OpenCode, and Pi sessions. It organizes work by project and feature, creates isolated git worktrees when needed, and shows which agents are asking a question and which have finished work waiting to be reviewed."
-install_cmd = "curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl.tar.gz -o amf.tar.gz\ntar -xzf amf.tar.gz\nsudo mv amf-x86_64-unknown-linux-musl /opt/amf\nsudo ln -s /opt/amf/amf /usr/local/bin/amf"
+install_cmd = "cargo install agent-mainframe --locked\namf"
+install_note = "The crate installs the amf binary. Keep ~/.cargo/bin in your PATH. This source installation requires Rust, a C compiler, and tmux."
 hero_image = "images/dashboard.png"
 hero_image_alt = "AMF dashboard showing a project with four concurrent Claude agent sessions, each on its own git worktree"
 

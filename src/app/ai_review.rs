@@ -884,11 +884,18 @@ impl App {
     /// calls the `codex` CLI inline, since that can block for as long as the
     /// process takes to exit. A no-op for any other harness, or if a probe is
     /// already in flight.
-    pub(super) fn maybe_refresh_codex_known_models(&mut self, harness: &AgentKind, rows: &[ModelPickRow]) {
+    pub(super) fn maybe_refresh_codex_known_models(
+        &mut self,
+        harness: &AgentKind,
+        rows: &[ModelPickRow],
+    ) {
         if !matches!(harness, AgentKind::Codex) || self.codex_models_cli_bg.is_some() {
             return;
         }
-        if rows.iter().any(|row| matches!(row, ModelPickRow::Preset(_))) {
+        if rows
+            .iter()
+            .any(|row| matches!(row, ModelPickRow::Preset(_)))
+        {
             return;
         }
         self.codex_models_cli_bg = Some(crate::codex_config::spawn_cli_catalog_probe());
@@ -936,7 +943,11 @@ impl App {
 /// a picker re-opened (with cache-sourced presets) before the probe lands
 /// isn't clobbered by the stale-by-then CLI result.
 fn merge_codex_preset_rows(pick: &mut AiModelPickState, models: Vec<String>) {
-    if pick.rows.iter().any(|row| matches!(row, ModelPickRow::Preset(_))) {
+    if pick
+        .rows
+        .iter()
+        .any(|row| matches!(row, ModelPickRow::Preset(_)))
+    {
         return;
     }
     let selected_row = pick.rows.get(pick.selected).cloned();

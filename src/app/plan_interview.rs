@@ -10,8 +10,8 @@ use anyhow::{Context, Result, bail};
 use super::pr_review::estimate_tokens;
 use super::{
     AiModelPickState, App, AppMode, ModelPickRow, PendingPlanLaunch, PlanInterviewMode,
-    PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget, PreparedFeatureLaunch,
-    ReviewAction, Selection, StartIntent, TodoPlanOrigin,
+    PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget, PreparedFeatureLaunch, ReviewAction,
+    Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;

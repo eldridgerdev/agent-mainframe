@@ -1,4 +1,7 @@
+
 # Agent Mainframe (AMF)
+
+**Docs and more:** [agent-mainframe-site.pages.dev](https://agent-mainframe-site.pages.dev)
 
 Run multiple AI coding agents in parallel—each on its own branch and in its
 own terminal—without losing track of them.
@@ -13,7 +16,6 @@ reviewed.
 
 <img width="1896" height="1030" alt="AMF dashboard showing several agent sessions" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
-**Docs and more:** [agent-mainframe-site.pages.dev](https://agent-mainframe-site.pages.dev)
 
 ## What AMF does
 

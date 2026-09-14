@@ -35,3 +35,7 @@ body = "Browse a repository read-only and ask an agent about any file, hunk, or 
 title = "Reusable building blocks"
 body = "Reusable prompts, scoped TODO lists, themes, lifecycle hooks, and workspace presets carry across features and projects."
 +++
+
+## About the project
+
+🤖 AMF is a terminal-based control center for running AI coding agents (Claude Code, Codex, OpenCode, Pi) against your own repos — built for everyday developers, not teams burning enterprise budgets on the priciest frontier models. It's designed around subscription plans people already have through work or pay for out of pocket, so you get real leverage from AI-assisted coding without needing a premium API tier. Full transparency is the core value: every prompt is visible and editable, every diff is reviewable before it lands, and nothing happens in a black box — whether you want to read every line an agent writes or just skim the summary and trust the process. The goal is to make AI-assisted development practical and honest for the average developer, not just the well-funded ones.

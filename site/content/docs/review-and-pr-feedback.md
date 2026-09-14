@@ -17,6 +17,11 @@ reviews an oversized file hunk group by hunk group rather than sending one
 truncated prompt; the status line reports if any group could not be
 reviewed.
 
+<figure>
+  <img src="/images/docs/final-review-file-tree.png" alt="Final Review's hierarchical file tree, with directory headers and per-file status, +/- counts, and risk flags">
+  <figcaption>Final Review's file tree, with per-file status and risk flags at a glance.</figcaption>
+</figure>
+
 ## Work through pull-request feedback
 
 With an authenticated `gh` and a GitHub remote, a feature whose branch has a
@@ -30,6 +35,11 @@ threads, send an individual fix prompt or, with `B`, a batched one covering
 several comments in a single agent run, reply, and mark threads done.
 Press `W` to have AMF run its own review of the PR diff. GitHub actions are
 presented for confirmation before AMF writes to the pull request.
+
+<figure>
+  <img src="/images/docs/pr-triage-comments.png" alt="PR Triage listing several review comments with a detail pane showing the selected comment's diff hunk and text">
+  <figcaption>PR Triage: comments on the left, the selected one's diff hunk and text on the right.</figcaption>
+</figure>
 
 A comment that asks a question rather than requesting a change can be
 investigated instead of fixed: press `v` to run a strictly read-only headless
@@ -53,6 +63,11 @@ is listed rather than dropped, and the summary is prefixed with a
 "⚠ Partial coverage" note. The size threshold is a per-harness default; set
 `review_prompt_budget_tokens` in `~/.config/amf/config.json` (or per repo in
 `amf.json`) to change it, or to `0` to turn pre-send splitting off.
+
+<figure>
+  <img src="/images/docs/ai-review-findings.png" alt="AI Review pane listing findings with the selected finding's file, line, and diff hunk shown in the detail pane">
+  <figcaption>AMF's own AI review of a PR diff, cached so it doesn't need to run again to view.</figcaption>
+</figure>
 
 To seed review memory from earlier reviews, open the PR picker and press
 `b`. Choose a lookback of 20, 50, 100, or all recent closed and merged pull

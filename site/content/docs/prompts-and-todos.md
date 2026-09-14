@@ -42,6 +42,11 @@ visible lists. `M` moves the selected TODO to another visible list and `C`
 copies it — a move carries whatever was already started for the item, while
 a copy lands as fresh, unstarted work.
 
+<figure>
+  <img src="/images/docs/todo-three-states.png" alt="TODO list showing a not-started item, an in-progress item marked [~], and a completed item marked [x]">
+  <figcaption>The three TODO states: not started, in progress (agent reserved), and completed.</figcaption>
+</figure>
+
 From any session, press `Ctrl+Space`, then `N` to capture a TODO without
 leaving your current work. It lands in that feature's worktree list (the
 project's if the feature sits on the repo root).
@@ -61,6 +66,11 @@ highest-priority TODO nobody has started, opens an agent on it, and marks
 the item in progress (`[~]`) so the next `I` moves on. It considers whichever
 lists are currently visible, preferring the narrower scope at equal
 priority: worktree, then project, then global.
+
+<figure>
+  <img src="/images/docs/todo-implement-next.png" alt="Session opened by Implement Next, with the composer pre-filled with the TODO's text and the sidebar showing the same prompt">
+  <figcaption><code>I</code> opens a session on the next TODO with its text already in the composer.</figcaption>
+</figure>
 
 Press `i` on a TODO to set or clear its in-progress mark by hand — useful
 when you abandoned a session without closing it.

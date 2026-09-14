@@ -18,6 +18,11 @@ manifest that project actually has. Press `t` at any time for starter
 questions ("Explain this line by line", "What would break if I deleted
 this?") that load into the prompt so you can edit them before asking.
 
+<figure>
+  <img src="/images/docs/learning-mode-start-here.png" alt="Learning Mode's file pane open on the pinned Start here group, with the read-only banner across the top">
+  <figcaption>The pinned Start here group, and the permanent read-only header.</figcaption>
+</figure>
+
 ## Asking a question
 
 Point at what you want to ask about with `f` (the whole file), `v` (start a
@@ -32,6 +37,11 @@ branch-changes scope). Then ask one of two ways:
 Answers are written for a **newcomer** by default — terms defined on first
 use, ending with what to read next — and `L` switches to **familiar** for
 denser answers.
+
+<figure>
+  <img src="/images/docs/learning-mode-file-view.png" alt="Learning Mode showing src/main.rs open in the file pane, with the Questions pane on the right prompting to press e or t">
+  <figcaption>Pointing at a file with <code>f</code>, ready to ask about it with <code>e</code> or <code>c</code>.</figcaption>
+</figure>
 
 ## Acting on an answer
 
@@ -48,6 +58,11 @@ so it can name files or line numbers that don't exist. `D` re-asks the same
 question with the repository open and keeps both answers so you can read
 them against each other. Codex is the exception — it has no way to answer
 without reading the repository, so every Codex answer already read it.
+
+<figure>
+  <img src="/images/docs/learning-mode-answered.png" alt="An answered Learning Mode question with the action footer showing F ask a follow-up, D ask again reading the repo, a keep as a to-do, and S escalate">
+  <figcaption>An answered question, with the follow-up, re-ask, keep-as-TODO, and escalate actions in the footer.</figcaption>
+</figure>
 
 Questions and answers are kept per project, so reopening `K` brings back
 what you asked before. Press `?` inside Learning Mode for the full key list.

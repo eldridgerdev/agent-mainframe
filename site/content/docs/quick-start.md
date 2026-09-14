@@ -26,5 +26,10 @@ weight = 20
 6. Press `s` on a feature to add another agent, terminal, editor, TODO list,
    or custom session.
 
+<figure>
+  <img src="/images/dashboard.png" alt="AMF dashboard showing a project with four concurrent Claude agent sessions, each on its own git worktree">
+  <figcaption>A project with several features running side by side, each in its own worktree.</figcaption>
+</figure>
+
 Press `?` at any time on the dashboard to see the complete, current
 keybinding reference.

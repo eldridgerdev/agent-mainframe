@@ -45,6 +45,11 @@ for when AMF surfaces that hint on its own — pressing `Shift+F` there
 pre-fills the prompt with a generated continuation instruction instead of
 starting from a blank one.
 
+<figure>
+  <img src="/images/docs/fresh-context-composer.png" alt="Fresh context prompt dialog with a generated continuation instruction loaded, ready to edit before starting the new session">
+  <figcaption>The fresh-context prompt: a generated continuation, editable before it starts a new session.</figcaption>
+</figure>
+
 ## Remote Control status
 
 Claude Code's own Remote Control (research preview, v2.1.51+) bridges a

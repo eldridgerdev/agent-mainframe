@@ -51,6 +51,16 @@ Context tracking works across all four harnesses; the usage windows are
 Claude- and Codex-only. See [Choosing a Harness](@/docs/harnesses.md) for
 the full breakdown.
 
+<figure>
+  <img src="/images/docs/context-sidebar-warning.png" alt="Session sidebar showing Ctx ~88% CRITICAL usage with a Fresh context: <leader F> action offered">
+  <figcaption>The sidebar's Fresh Context hint once a session's context usage reaches the critical band.</figcaption>
+</figure>
+
+<figure>
+  <img src="/images/docs/sidebar-usage-box.png" alt="Session sidebar's Usage box showing 5h 41% left · 1h and 7d 70% left · 3d">
+  <figcaption>The Usage box, mirroring the dashboard's own 5h/7d rate-limit windows.</figcaption>
+</figure>
+
 ## Let AMF summarize a session for you
 
 Press `Z` on the dashboard, or `Ctrl+Space`, then `g` from inside a
@@ -60,6 +70,11 @@ It's a one-off, on-demand call rather than something that runs
 automatically — press it again any time the row goes stale. Like Learning
 Mode's quick answers, it runs in AMF's restricted, no-tools headless mode,
 so it costs one small call regardless of which harness the feature uses.
+
+<figure>
+  <img src="/images/docs/session-summary.png" alt="Dashboard row for a Codex feature showing the generated summary 'Handled by Codex, not Claude'">
+  <figcaption>A generated summary on a feature's dashboard row.</figcaption>
+</figure>
 
 ## Keep the machine from filling up
 
@@ -71,6 +86,11 @@ every project, plus any headless review or plan run in flight — and how
 much memory is left. If either is past its threshold, one dialog says
 which, and `y` starts it anyway. **It never refuses.** Terminals, editors,
 and TODO sessions are not counted and never raise it.
+
+<figure>
+  <img src="/images/docs/resource-check-dialog.png" alt="Resource Check dialog warning that one agent is already running against a limit of one, with a Start anyway (y/n) prompt">
+  <figcaption>The resource-check dialog: it asks before starting another agent past the limit, it never blocks.</figcaption>
+</figure>
 
 Creating a feature never raises that dialog: a batch create would queue one
 per feature. The feature is created and left stopped instead, with a toast
